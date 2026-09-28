@@ -1,0 +1,9 @@
+{
+  "name": "oneloop-vendor-audit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generated audit-only inventory; do not install or independently update",
+  "dependencies": {
+    "bundled-0": "npm:github-markdown-css@5.9.0"
+  }
+}

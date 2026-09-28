@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TZ: UTC
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    # Budget: 12 minutes with a warm Rust cache; the rest is headroom for a cold cache.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Rust formatting
+        run: cargo fmt --check
+      - name: Frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Frontend typecheck
+        run: npm --prefix frontend run typecheck
+      - name: Frontend lint
+        run: npm --prefix frontend run lint
+      - name: Frontend tests (in a non-UTC zone)
+        env:
+          TZ: Pacific/Kiritimati
+        run: npm --prefix frontend test
+      - name: Repository script tests
+        run: node --test "scripts/tests/*.test.mjs"
+      - name: Documentation links, vendored assets and notices
+        run: |
+          node scripts/check-doc-links.mjs
+          node scripts/vendor-verify.mjs --local
+          node scripts/markdown-preview-css.mjs --check
+          node scripts/third-party-notices.mjs --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Also runs benches/workload.rs once with its small fixture as a harness check.
+      - name: Rust tests
+        run: cargo test --locked --all-targets
+      - name: Crate contents
+        run: node scripts/check-package.mjs
+      - name: Package from the packaged sources
+        run: cargo package --locked
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Rust tests (in a non-UTC zone)
+        env:
+          TZ: America/Los_Angeles
+        run: cargo test --locked --all-targets
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # Budget: @smoke under 2 minutes and the full suite under 10, after the release build.
+    timeout-minutes: 30
+    env:
+      # Pull requests run the @smoke subset in Chromium; main, releases and
+      # scheduled runs run every journey in Chromium, Firefox and WebKit.
+      E2E_SCOPE: ${{ github.event_name == 'pull_request' && 'smoke' || 'full' }}
+      ONELOOP_TEST_BINARY: target/release/oneloop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Release build
+        run: cargo build --locked --release
+      - name: Verify the systemd template and report sandbox exposure
+        run: |
+          mkdir -p target/service-check
+          sed "s|ExecStart=/usr/local/bin/oneloop serve|ExecStart=$PWD/target/release/oneloop serve|" deploy/systemd/oneloop.service.example > target/service-check/oneloop.service
+          systemd-analyze verify target/service-check/oneloop.service
+          systemd-analyze security --offline=yes target/service-check/oneloop.service
+      - name: Browser test dependencies
+        run: |
+          npm --prefix e2e ci
+          if [ "$E2E_SCOPE" = smoke ]; then browsers=chromium; else browsers="chromium firefox webkit"; fi
+          # shellcheck disable=SC2086 # Browser names are separate arguments.
+          npm --prefix e2e exec -- playwright install --with-deps $browsers
+      - name: Browser journeys
+        run: |
+          if [ "$E2E_SCOPE" = smoke ]; then npm --prefix e2e run test:smoke; else npm --prefix e2e test; fi
+      - name: Keep failed browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failures
+          path: |
+            target/e2e-results
+            target/e2e-report
+          retention-days: 7
+          if-no-files-found: ignore
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image without publishing
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: docker build --build-arg SOURCE_REVISION="$SOURCE_REVISION" -t oneloop:check .
+      - name: Run the documented quick start against the image
+        run: scripts/check-quickstart.sh oneloop:check
+
+  workload:
+    name: weekly workload
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      - name: Full backend workload
+        run: cargo bench --locked --bench workload

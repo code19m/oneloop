@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a problem you can reproduce.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Report security problems privately, as described in SECURITY.md, not in a public issue. Remove passwords, tokens, personal data and private URLs from everything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `oneloop --version`, or the Docker image tag.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system and architecture, browser, how you installed oneloop (cargo install or Docker) and your reverse proxy, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines, with private details removed.
+      render: text

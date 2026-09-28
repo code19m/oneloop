@@ -1,0 +1,27 @@
+# Send only the build inputs and license files to the image build.
+*
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!src/
+!src/**
+!migrations/
+!migrations/**
+!frontend/
+!frontend/index.html
+!frontend/src/
+!frontend/src/**
+!frontend/views/
+!frontend/views/**
+!frontend/styles/
+!frontend/styles/**
+!frontend/icons/
+!frontend/icons/**
+!frontend/vendor/
+!frontend/vendor/**
+src/**/tests.rs
+frontend/vendor/**/*.md
+frontend/vendor/**/*.json
+**/.DS_Store

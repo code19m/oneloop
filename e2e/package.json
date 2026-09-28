@@ -1,0 +1,17 @@
+{
+  "name": "oneloop-e2e",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "playwright test --project=chromium --grep @smoke"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.11.1",
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "@playwright/test": "1.63.0"
+  }
+}

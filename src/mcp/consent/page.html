@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Connect {client}</title>
+<link rel=stylesheet href=/mcp/assets/consent.css>
+</head>
+<body>
+<main class=mcp-consent>
+<div class=brand>oneloop</div>
+<h1>Connect <bdi>{client}</bdi></h1>
+<p class=hint>App name supplied by the client; identity is unverified.</p>
+<p class=warning>{destination}</p>
+<p class=account>Signed in as <bdi>{display_name}</bdi> (@<bdi>{username}</bdi>)</p>
+<p class=lead>This app can send permitted oneloop data to its AI provider. Select only the projects and capabilities it needs.</p>{error}<form method=post action=/oauth/authorize>
+<input type=hidden name=request_id value="{request_id}">
+<fieldset>
+<legend>Projects</legend>{project_rows}</fieldset>
+<fieldset>
+<legend>Capabilities</legend>
+<label>
+<input type=checkbox checked disabled> <span>Read selected projects</span>
+</label>{scope_rows}</fieldset>
+<p class=hint>Private Inbox, My Pool and destructive access are off by default.</p>
+<div class=actions>
+<button class=secondary type=submit name=decision value=deny>Cancel</button>
+<button class=primary type=submit name=decision value=allow>Connect</button>
+</div>
+</form>
+</main>
+<script src=/mcp/assets/consent.js defer>
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# oneloop with Docker Compose.
+# Walkthrough: https://code19m.github.io/oneloop/quick-start.html
+name: oneloop
+
+services:
+  oneloop:
+    image: ghcr.io/code19m/oneloop:0.1.0-rc.1
+    restart: unless-stopped
+    stop_grace_period: 35s
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ONELOOP_PUBLIC_URL: http://localhost:8080
+      ONELOOP_TIMEZONE: UTC # Your team's timezone, for example Europe/Berlin
+    volumes:
+      - oneloop-data:/data
+
+volumes:
+  oneloop-data:
+    name: oneloop-data

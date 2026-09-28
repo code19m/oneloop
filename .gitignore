@@ -1,0 +1,20 @@
+# Build and test output (Playwright and coverage reports also go to target/)
+/target/
+/docs/book/
+*.profraw
+
+# JavaScript dependencies
+node_modules/
+
+# Local data, settings and personal agent instructions
+/.local/
+/data/
+/.env*
+/AGENTS.override.md
+/CLAUDE.local.md
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~

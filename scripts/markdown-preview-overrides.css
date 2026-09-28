@@ -1,0 +1,30 @@
+
+.markdown-scroll { display:block;overflow:auto;overscroll-behavior:contain; }
+:root[data-theme] .markdown-scroll .markdown-body { box-sizing:border-box;max-width:980px;min-height:100%;margin:0 auto;padding:32px 40px;background:transparent; }
+.file-preview-content .markdown-body pre { display:block;flex:none;padding:16px;margin:0 0 16px;font-size:85%;line-height:1.45;white-space:pre;overflow:auto;overflow-wrap:normal; }
+:root[data-theme] .file-preview-content .markdown-body pre code.hljs { background:transparent;padding:0; }
+.file-preview-content .markdown-body h2 { white-space:normal;overflow:visible;font-size:1.5em;margin-top:24px;margin-bottom:16px; }
+.markdown-image-placeholder { display:inline-block;padding:8px 12px;border:1px solid var(--line-strong);border-radius:6px;color:var(--ink-muted);font-size:13px; }
+.markdown-body .task-list-item { list-style:none; }.markdown-body .task-list-item-checkbox { margin-left:-1.4em;margin-right:.4em; }
+@media(max-width:600px) { :root[data-theme] .markdown-scroll .markdown-body { padding:24px 16px; } }
+
+.markdown-body .markdown-diagram { margin:16px 0;padding:20px;border:1px solid var(--line);border-radius:8px;overflow:auto;text-align:center;min-height:64px; }
+.markdown-body .markdown-diagram img { display:block;max-width:100%;height:auto;margin:auto;background:transparent; }
+.markdown-diagram-status { display:block;color:var(--ink-muted);font:13px/1.5 var(--font);text-align:left;margin-bottom:8px; }
+.markdown-body .markdown-diagram pre { text-align:left;margin:12px 0 0; }
+
+/* GitHub extras retain document semantics without inheriting application controls. */
+.markdown-body .markdown-math-block { overflow-x:auto;overflow-y:hidden;margin:16px 0;padding:4px 0; }
+.markdown-body .katex-display { margin:0; }
+.markdown-body .markdown-alert { padding:8px 16px;margin:16px 0;border-left:4px solid var(--md-alert-color); }
+.markdown-body .markdown-alert>:first-child { margin-top:0; }
+.markdown-body .markdown-alert>:last-child { margin-bottom:0; }
+.markdown-body .markdown-alert .markdown-alert-title { display:flex;align-items:center;gap:8px;font-weight:600;color:var(--md-alert-color);margin-bottom:8px; }
+.markdown-alert-title svg { flex-shrink:0;width:16px;height:16px;fill:currentColor; }
+.markdown-alert-note { --md-alert-color:#0969da; }.markdown-alert-tip { --md-alert-color:#1a7f37; }.markdown-alert-important { --md-alert-color:#8250df; }.markdown-alert-warning { --md-alert-color:#9a6700; }.markdown-alert-caution { --md-alert-color:#cf222e; }
+:root[data-theme=dark] .markdown-alert-note { --md-alert-color:#4493f8; }:root[data-theme=dark] .markdown-alert-tip { --md-alert-color:#3fb950; }:root[data-theme=dark] .markdown-alert-important { --md-alert-color:#ab7df8; }:root[data-theme=dark] .markdown-alert-warning { --md-alert-color:#d29922; }:root[data-theme=dark] .markdown-alert-caution { --md-alert-color:#f85149; }
+.markdown-body .footnotes { margin-top:32px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-muted); }
+.markdown-body .footnotes li:focus { outline:2px solid var(--focus-ring);outline-offset:4px; }
+
+/* Uploaded markup stays inside its reading surface. */
+.markdown-body{contain:layout paint;isolation:isolate}

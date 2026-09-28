@@ -1,0 +1,98 @@
+# oneloop behind nginx. Replace the domain and certificate paths, include this
+# file in nginx.conf's http context, and run nginx -t before reloading.
+# Walkthrough: https://code19m.github.io/oneloop/reverse-proxy.html
+#
+# In nginx.conf's main context, set "worker_shutdown_timeout 30s;" so old
+# workers don't hold live-update and MCP streams open for long after a reload.
+# Browsers reconnect by themselves.
+#
+# Keep the literal IPv4 address below: a name such as localhost can resolve to
+# an address oneloop doesn't listen on.
+upstream oneloop_app {
+    server 127.0.0.1:8080;
+    keepalive 16;
+    # oneloop closes idle connections after 15 seconds; nginx must let go first.
+    keepalive_timeout 10s;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tasks.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    # On nginx 1.25.1 or newer, use "listen 443 ssl;" and "http2 on;".
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name tasks.example.com;
+
+    ssl_certificate /etc/ssl/certs/tasks.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/tasks.example.com/privkey.pem;
+
+    # Set ONELOOP_PUBLIC_URL to https://tasks.example.com. oneloop sends its own
+    # Content-Security-Policy and Strict-Transport-Security headers: don't add,
+    # replace or hide them here. Keep the port 80 redirect above.
+
+    # Attachments are up to 25 MiB.
+    client_max_body_size 27m;
+
+    # Compress the web app's files, but not API responses or live updates.
+    location ~ "^/(?:$|index\.html$|(?:v/[a-f0-9]{64}/)?(?:src|views|styles|icons|vendor)/)" {
+        gzip on;
+        gzip_min_length 1024;
+        gzip_comp_level 5;
+        gzip_vary on;
+        gzip_proxied no-cache;
+        gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
+
+        proxy_pass http://oneloop_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host; # Preserve the external port for canonical Host checks.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location / {
+        proxy_pass http://oneloop_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host; # Preserve the external port for canonical Host checks.
+        # Overwrite client-supplied values. The app trusts this proxy only when
+        # ONELOOP_TRUSTED_PROXIES contains its source address.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Optional: limit /healthz, which shows the version, to your monitoring
+    # network. Signed-in users still see the version in the app.
+    # location = /healthz {
+    #     allow 127.0.0.1;
+    #     allow ::1;
+    #     allow 192.0.2.0/24;
+    #     deny all;
+    #     proxy_pass http://oneloop_app;
+    #     proxy_http_version 1.1;
+    #     proxy_set_header Host $http_host;
+    #     proxy_set_header X-Forwarded-For $remote_addr;
+    #     proxy_set_header Connection "";
+    # }
+
+    # Live updates: one long-lived stream per open tab. Buffering delays them.
+    location = /api/events {
+        proxy_pass http://oneloop_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host; # Preserve the external port for canonical Host checks.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

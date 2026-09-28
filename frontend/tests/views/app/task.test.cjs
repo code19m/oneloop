@@ -1,0 +1,96 @@
+// views/app.js: the task page, its dialogs, save feedback and activity feed.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { bootApp } = require('../../support/dom.cjs');
+
+/** Boot the views; `prepare(D, w)` edits the projection before they load. */
+const boot = (route = 'board', { stored, prepare } = {}) => bootApp({ route, stored, prepare });
+
+/** A task page whose toasts are recorded as notices. */
+function taskPage() {
+  const t = bootApp({ route: 'task/BIR-079' });
+  const notices = [];
+  t.A.toast = (text, kind = 'success') => notices.push({ text, kind });
+  return { ...t, notices };
+}
+const event=target=>({target,preventDefault(){}});
+function block(t,mode,reason){t.A.openModal(mode,'BIR-079');const form=t.d.querySelector('.modal form');form.querySelector('[name=reason]').value=reason;t.A.saveBlock(event(form),'BIR-079',mode);}
+
+test('field saves show a quiet Saved status and block actions announce once', () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
+ t.A.updTask(task.id,'title','Changed title');assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
+ // No-op command feedback is covered by view-bridge tests against the production command gateway.
+ t.A.updTask(task.id,'state','progress');assert.equal(status(),'Saved');
+ t.d.querySelector('.tp-title').dispatchEvent(new t.w.Event('input',{bubbles:true}));assert.equal(status(),'');
+ t.A.updTask(task.id,'deadline','bad');assert.equal(status(),'');assert(t.d.querySelector('.date-error'));
+ const button=t.d.querySelector('[onclick*="tpAssign"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
+ block(t,'block','');assert.equal(t.notices.length,0);block(t,'block','Waiting');assert.equal(t.notices.at(-1).text,'Task blocked');
+ const count=t.notices.length;block(t,'block','Waiting');assert.equal(t.notices.length,count);block(t,'block','Waiting for review');assert.equal(t.notices.at(-1).text,'Block reason updated');
+ block(t,'completeBlocked','Ready');assert.equal(t.notices.at(-1).text,'Task unblocked and completed');assert.equal(task.state,'done');assert.equal(t.notices.length,count+2);
+});
+
+
+test('attachment actions announce changes, stay quiet on cancel or no change and report stale permissions', () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079');task.attachments=[{id:'one',name:'one.txt',size:1},{id:'two',name:'two.txt',size:1}];t.A.refresh();
+ t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.at(-1).text,'Attachment marked temporary');assert(!task.attachments[1].ephemeral);let count=t.notices.length;t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.length,count);
+ t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-cancel]').click();assert.equal(t.notices.length,count);t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Attachment deleted');
+ assert.equal(task.attachments.length,1);t.A.delAttachment(task.id,0);t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).kind,'error');assert.notEqual(task.attachments[0].state,'removed');
+});
+
+test('deleting a comment announces once and deleting it again reports an error', () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079');task.comments=[{id:'test-comment',who:'taylorwu',text:'Hello',ts:Date.now(),mentions:[],attachments:[]}];t.A.refresh();t.A.deleteComment(task.id,'test-comment');t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Comment deleted');t.A.deleteComment(task.id,'test-comment');assert.equal(t.notices.at(-1).kind,'error');
+});
+
+test('the deadline field saves on blur and rejects invalid text, and task actions follow permissions', () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),input=t.d.getElementById('tpDl-input');
+ input.value='2026-09-01';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert(!t.d.querySelector('.date-display'));assert.equal(input.value,'2026-09-01');
+ input.value='bad';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert.equal(input.getAttribute('aria-invalid'),'true');
+ input.value='';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,null);assert.equal(input.value,'');
+ const actions=t.d.querySelector('.task-actions-button');t.A.taskActions({currentTarget:actions},task.id);assert(t.d.querySelector('.menu').textContent.includes('Delete task'));t.A.menuAction(0);assert(t.d.querySelector('.modal').textContent.includes('Delete task?'));assert(t.D.tasks.includes(task));t.A.closeOverlays();
+ t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.A.refresh();assert(!t.d.querySelector('.task-actions-button'));t.A.taskActions({currentTarget:actions},task.id);assert(!t.d.querySelector('.menu'));
+});
+
+test('new tasks and Pool promotions save their deadline and assignees and validate both', () => {
+ const t=taskPage(),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
+ assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Asia\/Tashkent$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);
+ const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
+ t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';const count=t.D.tasks.length;t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);const task=t.D.tasks.at(-1);assert.equal(task.deadline,'2026-10-15');assert.deepEqual([...task.assignees],['robin']);assert(Number.isFinite(task.created));assert(t.D.notifications.some(n=>n.taskId===task.id&&n.recipientId==='robin'&&n.reason==='assigned'));
+ t.A.openModal('task');form=fill('2026-99-99','robin');form.querySelector('[name="title"]').value='Invalid';t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);assert(t.d.querySelector('.date-error'));form.querySelector('.date-text').value='';t.D.users.find(u=>u.id==='robin').active=false;t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);assert(t.d.querySelector('.modal').textContent.includes('no longer available'));t.D.users.find(u=>u.id==='robin').active=true;t.A.closeOverlays();
+ t.A.openModal('pool');const item=t.D.pool.find(x=>x.id==='pl1'),title=item.title,desc=item.desc;t.A.promotePool(item.id);form=fill('2026-11-01','taylorwu');assert.equal(form.querySelector('[name="title"]').value,title);assert.equal(form.querySelector('[name="desc"]').value,desc);t.A.saveTask(event(form));const promoted=t.D.tasks.at(-1);assert.equal(promoted.deadline,'2026-11-01');assert.deepEqual([...promoted.assignees],['taylorwu']);assert.equal(promoted.desc,desc);assert(!t.D.pool.includes(item));
+});
+
+test('new epics require an explicit track', () => {
+ const t=taskPage(),count=t.D.epics.length;t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count);assert(form.textContent.includes('Choose a track.'));form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count+1);const epic=t.D.epics.at(-1);t.A.openModal('epic',epic.id);assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
+});
+
+test('comment readers reset every height before measuring any of them', () => {
+  const { w, d } = bootApp({ route: 'task/BIR-079', media: () => false });
+  const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
+  task.comments = Array.from({ length: 150 }, (_, i) => ({ id: `perf-${i}`, who: w.DATA.session.userId, ts: Date.now() + i, text: 'Long comment '.repeat(50), mentions: [] }));
+  let reads = 0;
+  Object.defineProperty(w.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() {
+    if (this.matches('.comment-body-content')) { reads++; const bodies = [...d.querySelectorAll('.comment-body-content')]; assert.ok(bodies.every(body => body.style.height === '0px'), 'all height resets precede the first measurement'); return 500; }
+    return 0;
+  } });
+  w.App.refresh(); assert.ok(reads > 0);
+});
+
+test('epic, milestone and task descriptions share bounded readers and editors that keep their scroll position', () => {
+ const t=boot('roadmap',{prepare:D=>{D.epics[0].desc='<script>unsafe</script>\n'+('A long epic description.\n'.repeat(50));D.milestones[0].desc='A milestone goal.\n'.repeat(25);}});
+ t.A.openPeek(t.D.epics[0].id);let reader=t.d.querySelector('.description-content');assert(reader.textContent.includes('<script>unsafe</script>'));assert(!reader.querySelector('script'));Object.defineProperty(reader,'scrollHeight',{value:1600});t.w.innerHeight=1000;t.A.sizeDescription();assert.equal(reader.style.height,'240px');assert(t.d.querySelector('.peek-description').classList.contains('is-collapsed'));
+ t.A.toggleDescription(t.d.querySelector('.peek-description .description-toggle'));assert.equal(reader.style.height,'800px');assert.equal(reader.style.overflowY,'auto');assert(!t.d.querySelector('.peek-description').classList.contains('is-collapsed'));reader.scrollTop=130;t.A.sizeDescription();assert.equal(reader.scrollTop,130);
+ for(const [kind,id] of [['epic',t.D.epics[0].id],['milestone',t.D.milestones[0].id],['task',null]]){t.A.closeOverlays();t.A.openModal(kind,id);const input=t.d.querySelector('[data-description-editor]');assert(input);assert(t.d.querySelector('.modal .optional-mark'));assert(!t.d.querySelector('.modal .description-toggle'));Object.defineProperty(input,'scrollHeight',{value:1600});t.A.sizeDescriptionEditors();assert.equal(input.style.height,'320px');assert.equal(input.style.overflowY,'auto');input.scrollTop=180;t.A.sizeDescriptionEditors();assert.equal(input.scrollTop,180);t.w.innerHeight=500;t.A.sizeDescriptionEditors();assert.equal(input.style.height,'200px');t.w.innerHeight=1000;}
+ t.A.closeOverlays();t.A.openTask('BIR-079');const input=t.d.querySelector('#task-description');Object.defineProperty(input,'scrollHeight',{value:1600});t.A.sizeDescription();assert.equal(input.style.height,'240px');t.A.expandDescription();assert.equal(input.style.height,'800px');t.A.toggleDescription();assert.equal(input.style.height,'240px');
+});
+
+test('closing the task dialog discards its unsent input without a stored draft', () => {
+const {w,d,A}=boot();A.openModal('task');const form=d.querySelector('.modal form');form.querySelector('[name="title"]').value='Recover me';form.querySelector('[name="title"]').dispatchEvent(new w.Event('input',{bubbles:true}));A.closeOverlays();A.openModal('task');assert.equal(d.querySelector('.modal [name="title"]').value,'');assert.equal(w.localStorage.getItem('oneloop.drafts.v1'),null);
+});
+
+test('opaque task IDs resolve to the task page', () => {
+const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaque-example'});assert(opaque.d.querySelector('.topbar').textContent.includes('BIR-064'));
+});
+
+test('the activity feed loads older records in batches', () => {
+const x=boot('task/BIR-079');const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
+});
