@@ -1,0 +1,781 @@
+{
+  "timeZone": "Asia/Tashkent",
+  "users": [
+    {
+      "id": "taylorwu",
+      "name": "Taylor Wu",
+      "admin": true,
+      "active": true,
+      "avatar": null
+    },
+    {
+      "id": "robin",
+      "name": "Robin Vale",
+      "admin": false,
+      "active": true,
+      "avatar": null
+    },
+    {
+      "id": "blairq",
+      "name": "Blair Quinn",
+      "admin": false,
+      "active": true,
+      "avatar": null
+    },
+    {
+      "id": "danaell",
+      "name": "Dana Ellis",
+      "admin": false,
+      "active": false,
+      "avatar": null
+    }
+  ],
+  "session": {
+    "userId": "taylorwu",
+    "id": "web-current",
+    "authenticatedAt": 1790540817701
+  },
+  "browserSessions": [
+    {
+      "id": "web-current",
+      "userId": "taylorwu",
+      "device": "This browser",
+      "browser": null,
+      "ip": null,
+      "createdAt": 1790454417701,
+      "lastActiveAt": 1790540817701
+    },
+    {
+      "id": "web-phone",
+      "userId": "taylorwu",
+      "device": "iPhone",
+      "browser": "Safari · iOS",
+      "ip": "198.51.100.24",
+      "createdAt": 1790108817701,
+      "lastActiveAt": 1790539317701
+    },
+    {
+      "id": "web-laptop",
+      "userId": "taylorwu",
+      "device": "Windows laptop",
+      "browser": "Firefox · Windows",
+      "ip": "192.0.2.18",
+      "createdAt": 1789504017701,
+      "lastActiveAt": 1790454417701
+    }
+  ],
+  "appGrants": [
+    {
+      "id": "app-claude",
+      "userId": "taylorwu",
+      "clientId": "sample-claude-code",
+      "clientName": "Claude Code",
+      "protocol": "MCP",
+      "authorizedAt": 1790195217701,
+      "lastUsedAt": 1790538117701,
+      "expiresAt": 1792787217701,
+      "access": [
+        {
+          "projectId": "p1",
+          "permissions": [
+            "read",
+            "manage_board"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "app-codex",
+      "userId": "taylorwu",
+      "clientId": "sample-codex",
+      "clientName": "Codex",
+      "protocol": "MCP",
+      "authorizedAt": 1790368017701,
+      "lastUsedAt": 1790530017701,
+      "expiresAt": 1792960017701,
+      "access": [
+        {
+          "projectId": "p2",
+          "permissions": [
+            "read",
+            "manage_roadmap",
+            "manage_board"
+          ]
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "p1",
+      "key": "BIR",
+      "name": "Birch Grove",
+      "members": [
+        {
+          "userId": "taylorwu",
+          "permissions": []
+        },
+        {
+          "userId": "robin",
+          "permissions": [
+            "manage_board"
+          ]
+        },
+        {
+          "userId": "blairq",
+          "permissions": []
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "key": "ONE",
+      "name": "oneloop",
+      "members": [
+        {
+          "userId": "taylorwu",
+          "permissions": []
+        },
+        {
+          "userId": "blairq",
+          "permissions": [
+            "manage_roadmap"
+          ]
+        }
+      ]
+    }
+  ],
+  "tracks": [
+    {
+      "id": "t1",
+      "projectId": "p1",
+      "name": "Backend & API",
+      "order": 1
+    },
+    {
+      "id": "t2",
+      "projectId": "p1",
+      "name": "Web Apps",
+      "order": 2
+    },
+    {
+      "id": "t3",
+      "projectId": "p1",
+      "name": "Mobile experience",
+      "order": 3
+    },
+    {
+      "id": "t4",
+      "projectId": "p1",
+      "name": "Integrations",
+      "order": 4
+    },
+    {
+      "id": "t5",
+      "projectId": "p1",
+      "name": "Community tools",
+      "order": 5
+    }
+  ],
+  "epics": [
+    {
+      "id": "e1",
+      "trackId": "t1",
+      "title": "Library catalog API",
+      "start": "2026-08-05",
+      "end": "2026-08-28",
+      "state": "done",
+      "done": 18,
+      "total": 18
+    },
+    {
+      "id": "e2",
+      "trackId": "t1",
+      "title": "Reading summaries",
+      "start": "2026-09-08",
+      "end": "2026-10-10",
+      "state": "planning",
+      "done": 0,
+      "total": 6
+    },
+    {
+      "id": "e3",
+      "trackId": "t1",
+      "title": "Search relevance",
+      "start": "2026-09-15",
+      "end": "2026-10-22",
+      "state": "planning",
+      "done": 0,
+      "total": 5
+    },
+    {
+      "id": "e4",
+      "trackId": "t1",
+      "title": "Catalog sync recovery",
+      "start": "2026-09-29",
+      "end": "2026-10-31",
+      "state": "planning",
+      "done": 0,
+      "total": 4
+    },
+    {
+      "id": "e5",
+      "trackId": "t2",
+      "title": "Polish reader & librarian apps",
+      "start": "2026-08-18",
+      "end": null,
+      "state": "active",
+      "done": 63,
+      "total": 67,
+      "desc": "Ongoing improvements to the fictional library workspace. Small reader and librarian fixes continue alongside planning releases. Closed manually, never by task completion.",
+      "weekly": [
+        4,
+        7,
+        3,
+        9,
+        6,
+        12,
+        8
+      ],
+      "closedThisWeek": 12,
+      "activity": [
+        {
+          "who": "taylorwu",
+          "ts": 1790216817701,
+          "text": "created the epic"
+        },
+        {
+          "who": "taylorwu",
+          "ts": 1790447217701,
+          "text": "edited the description"
+        }
+      ]
+    },
+    {
+      "id": "e6",
+      "trackId": "t3",
+      "title": "Reader app build",
+      "start": "2026-08-22",
+      "end": "2026-09-30",
+      "state": "active",
+      "done": 21,
+      "total": 34
+    },
+    {
+      "id": "e7",
+      "trackId": "t3",
+      "title": "Reading list load test",
+      "start": "2026-10-02",
+      "end": "2026-10-22",
+      "state": "planning",
+      "done": 0,
+      "total": 3
+    },
+    {
+      "id": "e8",
+      "trackId": "t4",
+      "title": "Catalog import adapters",
+      "start": "2026-08-01",
+      "end": "2026-08-21",
+      "state": "done",
+      "done": 12,
+      "total": 12
+    },
+    {
+      "id": "e9",
+      "trackId": "t4",
+      "title": "Reading reminder service",
+      "start": "2026-09-01",
+      "end": "2026-09-30",
+      "state": "active",
+      "done": 1,
+      "total": 5
+    },
+    {
+      "id": "e10",
+      "trackId": "t4",
+      "title": "Community calendar sync",
+      "start": "2026-10-13",
+      "end": "2026-11-10",
+      "state": "planning",
+      "done": 0,
+      "total": 7
+    },
+    {
+      "id": "e11",
+      "trackId": "t5",
+      "title": "Book club assistant",
+      "start": "2026-07-06",
+      "end": null,
+      "state": "active",
+      "done": 0,
+      "total": 0,
+      "desc": "A fictional book club assistant that suggests reading lists from the sample catalog. Maintained alongside the reader workspace."
+    }
+  ],
+  "milestones": [
+    {
+      "id": "m1",
+      "date": "2026-08-18",
+      "name": "Library preview",
+      "desc": "Librarians try the fictional lending workspace."
+    },
+    {
+      "id": "m2",
+      "date": "2026-10-22",
+      "name": "Reading festival",
+      "desc": "Readers explore the sample catalog during a fictional community event."
+    }
+  ],
+  "pool": [
+    {
+      "id": "pl1",
+      "projectId": "p1",
+      "scope": "mine",
+      "ownerId": "taylorwu",
+      "title": "Date pickers",
+      "desc": "Use one compact calendar across task dates and milestone forms."
+    },
+    {
+      "id": "pl2",
+      "projectId": "p1",
+      "scope": "mine",
+      "ownerId": "taylorwu",
+      "title": "Responsiveness pass"
+    },
+    {
+      "id": "pl3",
+      "projectId": "p1",
+      "scope": "project",
+      "title": "Branch map overview"
+    },
+    {
+      "id": "pl4",
+      "projectId": "p1",
+      "scope": "project",
+      "title": "Book cover gallery"
+    },
+    {
+      "id": "pl5",
+      "projectId": "p1",
+      "scope": "project",
+      "title": "Reading list follow-ups"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "BIR-064",
+      "created": 1789936017701,
+      "epicId": "e5",
+      "state": "progress",
+      "title": "Recurring reading reminder dates",
+      "assignees": [
+        "robin",
+        "taylorwu"
+      ],
+      "start": "2026-08-30",
+      "deadline": "2026-09-05",
+      "desc": "Monthly reading reminders on days 29–31 need a clear short-month rule. Clamp to month end and keep completed reminders unchanged when rebuilding the schedule.",
+      "attachments": [
+        {
+          "name": "edge-cases.xlsx",
+          "size": 18432
+        }
+      ],
+      "comments": [
+        {
+          "who": "taylorwu",
+          "ts": 1790447217701,
+          "text": "The clamp rule is ruled: day 31 in a 30-day month lands on the 30th, never the 1st.",
+          "id": "comment-BIR-064-0",
+          "mentions": [],
+          "notifiedRecipients": []
+        },
+        {
+          "who": "robin",
+          "ts": 1790530017701,
+          "text": "Fixtures for February are ready, running them against the schedule generator now.",
+          "id": "comment-BIR-064-1",
+          "mentions": [],
+          "notifiedRecipients": []
+        },
+        {
+          "id": "inbox-sample-v1-0-comment",
+          "who": "robin",
+          "ts": 1790540097716,
+          "text": "The February fixtures are ready. Could you check the reminder dates before we merge?",
+          "mentions": [],
+          "notifiedRecipients": [
+            "taylorwu"
+          ],
+          "parentId": null,
+          "replyToId": null
+        },
+        {
+          "id": "inbox-sample-v1-1-comment",
+          "who": "blairq",
+          "ts": 1790537937716,
+          "text": "Confirmed in the reader app. The final reminder now lands on the correct date.",
+          "mentions": [],
+          "notifiedRecipients": [
+            "taylorwu"
+          ],
+          "parentId": "comment-BIR-064-0",
+          "replyToId": "comment-BIR-064-0"
+        }
+      ],
+      "activity": [
+        {
+          "who": "taylorwu",
+          "ts": 1790364417701,
+          "text": "created the task"
+        },
+        {
+          "who": "taylorwu",
+          "ts": 1790443617701,
+          "text": "assigned robin"
+        },
+        {
+          "who": "robin",
+          "ts": 1790454417701,
+          "text": "moved it to In Progress"
+        }
+      ],
+      "internalId": "task-BIR-064"
+    },
+    {
+      "id": "BIR-072",
+      "created": 1789763217701,
+      "epicId": "e6",
+      "state": "progress",
+      "title": "Reader app: reading list screen",
+      "assignees": [
+        "robin"
+      ],
+      "deadline": "2026-09-12",
+      "internalId": "task-BIR-072"
+    },
+    {
+      "id": "BIR-080",
+      "created": 1790368017701,
+      "epicId": "e5",
+      "state": "progress",
+      "title": "Reading guide wording pass",
+      "assignees": [
+        "taylorwu"
+      ],
+      "deadline": "2026-09-01",
+      "internalId": "task-BIR-080"
+    },
+    {
+      "id": "BIR-075",
+      "created": 1790454417701,
+      "epicId": "e9",
+      "state": "progress",
+      "title": "Reminder delivery probe",
+      "internalId": "task-BIR-075"
+    },
+    {
+      "id": "BIR-066",
+      "created": 1790022417701,
+      "epicId": "e5",
+      "state": "review",
+      "title": "Reading window placeholders",
+      "assignees": [
+        "blairq"
+      ],
+      "start": "2026-08-28",
+      "deadline": "2026-09-03",
+      "activity": [
+        {
+          "who": "blairq",
+          "ts": 1790432817701,
+          "text": "moved it to In Progress"
+        },
+        {
+          "who": "blairq",
+          "ts": 1790522817701,
+          "text": "moved it to In Review"
+        }
+      ],
+      "internalId": "task-BIR-066",
+      "comments": [
+        {
+          "id": "inbox-sample-v1-5-comment",
+          "who": "robin",
+          "ts": 1790432817716,
+          "text": "The empty-state wording is updated. Ready for one last look.",
+          "mentions": [],
+          "notifiedRecipients": [
+            "taylorwu"
+          ],
+          "parentId": null,
+          "replyToId": null
+        }
+      ]
+    },
+    {
+      "id": "BIR-071",
+      "created": 1790108817701,
+      "epicId": "e6",
+      "state": "review",
+      "title": "Reader app deep links",
+      "assignees": [
+        "robin"
+      ],
+      "internalId": "task-BIR-071"
+    },
+    {
+      "id": "BIR-079",
+      "created": 1790281617701,
+      "epicId": "e2",
+      "state": "planning",
+      "title": "Flexible reading schedule",
+      "internalId": "task-BIR-079"
+    },
+    {
+      "id": "BIR-081",
+      "created": 1790195217701,
+      "epicId": "e6",
+      "state": "planning",
+      "title": "App store screenshots & listing",
+      "internalId": "task-BIR-081",
+      "comments": [
+        {
+          "id": "inbox-sample-v1-3-comment",
+          "who": "robin",
+          "ts": 1790522817716,
+          "text": "The new screenshots are ready for review. Please share feedback before the release.",
+          "mentions": [],
+          "notifiedRecipients": [
+            "taylorwu"
+          ],
+          "parentId": null,
+          "replyToId": null
+        }
+      ]
+    },
+    {
+      "id": "BIR-069",
+      "created": 1790368017701,
+      "epicId": "e5",
+      "state": "planning",
+      "title": "First reading reminder follow-up",
+      "internalId": "task-BIR-069"
+    },
+    {
+      "id": "BIR-076",
+      "created": 1789504017701,
+      "epicId": "e10",
+      "state": "planning",
+      "title": "Community calendar link format",
+      "internalId": "task-BIR-076"
+    },
+    {
+      "id": "BIR-077",
+      "created": 1789676817701,
+      "epicId": "e7",
+      "state": "planning",
+      "title": "Load test: reading list lookup",
+      "internalId": "task-BIR-077"
+    },
+    {
+      "id": "BIR-061",
+      "created": 1788812817701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Completed reading summary",
+      "internalId": "task-BIR-061"
+    },
+    {
+      "id": "BIR-058",
+      "created": 1788899217701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Reading list spreadsheet export",
+      "internalId": "task-BIR-058",
+      "comments": [
+        {
+          "id": "inbox-sample-v1-8-comment",
+          "who": "blairq",
+          "ts": 1790195217716,
+          "text": "Export checked against the source data. Everything matches.",
+          "mentions": [],
+          "notifiedRecipients": [
+            "taylorwu"
+          ],
+          "parentId": null,
+          "replyToId": null
+        }
+      ]
+    },
+    {
+      "id": "BIR-057",
+      "created": 1788985617701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Cancel a reading reminder",
+      "internalId": "task-BIR-057"
+    },
+    {
+      "id": "BIR-056",
+      "created": 1789158417701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Library branch filter",
+      "internalId": "task-BIR-056"
+    },
+    {
+      "id": "BIR-055",
+      "created": 1789244817701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Whole-day reminder intervals",
+      "internalId": "task-BIR-055"
+    },
+    {
+      "id": "BIR-052",
+      "created": 1788640017701,
+      "epicId": "e5",
+      "state": "done",
+      "title": "Reader selector polish",
+      "internalId": "task-BIR-052"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "inbox-sample-v1-0",
+      "eventId": "inbox-sample-v1-0",
+      "recipientId": "taylorwu",
+      "actorId": "robin",
+      "projectId": "p1",
+      "taskId": "BIR-064",
+      "commentId": "inbox-sample-v1-0-comment",
+      "rootId": "inbox-sample-v1-0-comment",
+      "reason": "mention",
+      "createdAt": 1790540097716,
+      "readAt": null,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-1",
+      "eventId": "inbox-sample-v1-1",
+      "recipientId": "taylorwu",
+      "actorId": "blairq",
+      "projectId": "p1",
+      "taskId": "BIR-064",
+      "commentId": "inbox-sample-v1-1-comment",
+      "rootId": "comment-BIR-064-0",
+      "reason": "reply",
+      "createdAt": 1790537937716,
+      "readAt": null,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-2",
+      "eventId": "inbox-sample-v1-2",
+      "recipientId": "taylorwu",
+      "actorId": "robin",
+      "projectId": "p1",
+      "taskId": "BIR-080",
+      "commentId": null,
+      "rootId": null,
+      "reason": "assigned",
+      "createdAt": 1790533617716,
+      "readAt": null,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-3",
+      "eventId": "inbox-sample-v1-3",
+      "recipientId": "taylorwu",
+      "actorId": "robin",
+      "projectId": "p1",
+      "taskId": "BIR-081",
+      "commentId": "inbox-sample-v1-3-comment",
+      "rootId": "inbox-sample-v1-3-comment",
+      "reason": "everyone",
+      "createdAt": 1790522817716,
+      "readAt": 1790522817716,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-4",
+      "eventId": "inbox-sample-v1-4",
+      "recipientId": "taylorwu",
+      "actorId": "blairq",
+      "projectId": "p1",
+      "taskId": "BIR-069",
+      "commentId": null,
+      "rootId": null,
+      "reason": "assigned",
+      "createdAt": 1790447217716,
+      "readAt": 1790447217716,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-5",
+      "eventId": "inbox-sample-v1-5",
+      "recipientId": "taylorwu",
+      "actorId": "robin",
+      "projectId": "p1",
+      "taskId": "BIR-066",
+      "commentId": "inbox-sample-v1-5-comment",
+      "rootId": "inbox-sample-v1-5-comment",
+      "reason": "mention",
+      "createdAt": 1790432817716,
+      "readAt": null,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-6",
+      "eventId": "inbox-sample-v1-6",
+      "recipientId": "taylorwu",
+      "actorId": "blairq",
+      "projectId": "p1",
+      "taskId": "BIR-075",
+      "commentId": null,
+      "rootId": null,
+      "reason": "unblocked",
+      "createdAt": 1790353617716,
+      "readAt": 1790353617716,
+      "archivedAt": null
+    },
+    {
+      "id": "inbox-sample-v1-7",
+      "eventId": "inbox-sample-v1-7",
+      "recipientId": "taylorwu",
+      "actorId": "robin",
+      "projectId": "p1",
+      "taskId": "BIR-061",
+      "commentId": null,
+      "rootId": null,
+      "reason": "assigned",
+      "createdAt": 1790267217716,
+      "readAt": 1790267217716,
+      "archivedAt": 1790267217716
+    },
+    {
+      "id": "inbox-sample-v1-8",
+      "eventId": "inbox-sample-v1-8",
+      "recipientId": "taylorwu",
+      "actorId": "blairq",
+      "projectId": "p1",
+      "taskId": "BIR-058",
+      "commentId": "inbox-sample-v1-8-comment",
+      "rootId": "inbox-sample-v1-8-comment",
+      "reason": "mention",
+      "createdAt": 1790195217716,
+      "readAt": 1790195217716,
+      "archivedAt": 1790195217716
+    }
+  ],
+  "prefixRegistry": {
+    "BIR": "p1",
+    "ONE": "p2"
+  },
+  "taskCounters": {
+    "p1": 100
+  },
+  "peopleVersion": 1
+}

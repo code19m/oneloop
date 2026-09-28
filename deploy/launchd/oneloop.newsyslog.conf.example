@@ -1,0 +1,5 @@
+# Run explicitly with newsyslog -f only while the launchd job is booted out.
+# Do not install in /etc/newsyslog.d: a running job retains the old file descriptor.
+# Replace REPLACE_ME with the service account in both the path and owner field.
+# logfile                                            owner:group        mode count size(KiB) when flags
+/Users/REPLACE_ME/Library/Logs/oneloop.log              REPLACE_ME:staff   600  7     10240     *    JN

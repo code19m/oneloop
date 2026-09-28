@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.oneloop</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/usr/local/libexec/oneloop-launchd.sh</string>
+    <string>/usr/local/bin/oneloop</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE_ME/Library/Application Support/oneloop</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ONELOOP_PUBLIC_URL</key>
+    <string>https://tasks.example.com</string>
+    <key>ONELOOP_LISTEN</key>
+    <string>127.0.0.1:8080</string>
+    <key>ONELOOP_DATA_DIR</key>
+    <string>/Users/REPLACE_ME/Library/Application Support/oneloop/data</string>
+    <!-- The IANA timezone used for deadlines and the Roadmap's Today. -->
+    <key>ONELOOP_TIMEZONE</key>
+    <string>UTC</string>
+    <key>ONELOOP_STORAGE_LIMIT</key>
+    <string>10GiB</string>
+    <key>ONELOOP_DISK_MIN_FREE</key>
+    <string>1GiB</string>
+    <key>ONELOOP_TRUSTED_PROXIES</key>
+    <string>127.0.0.1</string>
+    <key>ONELOOP_LOG_LEVEL</key>
+    <string>info</string>
+  </dict>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>8192</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>8192</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>Umask</key>
+  <integer>63</integer>
+  <!-- The launcher (oneloop-launchd.sh) runs oneloop serve --check first and
+       stops the job cleanly on a configuration error; other failures retry
+       at most once a minute. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <!-- Both streams share one log. Rotate it only while the job is booted out:
+       https://code19m.github.io/oneloop/running-as-a-service.html -->
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/oneloop.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Logs/oneloop.log</string>
+</dict>
+</plist>

@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/code19m/oneloop
+
+jobs:
+  metadata:
+    name: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag against Cargo.toml and CHANGELOG.md
+        id: meta
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release-metadata.mjs "$RELEASE_TAG"
+
+  verify:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  dependencies:
+    needs: metadata
+    uses: ./.github/workflows/dependencies.yml
+    permissions:
+      contents: read
+
+  image:
+    name: image (${{ matrix.platform }})
+    needs: [metadata, verify, dependencies]
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build natively and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          sbom: true
+          provenance: mode=max
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: manifest
+    needs: [metadata, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Release candidates get only their X.Y.Z-rc.N tag; final releases get X.Y.Z, X.Y and latest.
+      - name: Create the multi-architecture image
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS: ${{ needs.metadata.outputs.tags }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then tags+=(--tag "$tag"); fi
+          done <<< "$TAGS"
+          sources=()
+          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
+          if [ "${#sources[@]}" -ne 2 ]; then echo "Expected two platform digests" >&2; exit 1; fi
+          docker buildx imagetools create "${tags[@]}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/code19m/oneloop" \
+            --annotation "index:org.opencontainers.image.description=Lightweight, self-hosted task management for small teams, in a single binary" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
+            "${sources[@]}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+      - name: Check the SBOM and provenance attestations
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            sbom=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .SBOM \"$platform\") }}")
+            provenance=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .Provenance \"$platform\") }}")
+            case "$sbom" in *'"SPDX"'*) ;; *) echo "No SBOM for $platform" >&2; exit 1 ;; esac
+            case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $platform" >&2; exit 1 ;; esac
+          done
+
+  crate:
+    name: crate
+    needs: [metadata, manifest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.92.0 --profile minimal
+      # A release candidate becomes a crates.io pre-release, installed only with --version.
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  github-release:
+    name: GitHub release
+    needs: [metadata, crate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create the release with the CHANGELOG.md notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          node scripts/release-metadata.mjs "$RELEASE_TAG"
+          args=()
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease --latest=false); fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "oneloop $VERSION" --notes-file target/release-notes.md "${args[@]}"

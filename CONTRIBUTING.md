@@ -1,0 +1,196 @@
+# Contributing to oneloop
+
+Thanks for helping. This guide gets you from a fresh clone to a merged pull
+request. For a map of the code and the rules it keeps, read
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Getting set up
+
+You need:
+
+- **Rust.** `rust-toolchain.toml` pins the toolchain (1.92.0, the minimum
+  supported version), and rustup installs it on first use.
+- **A C compiler.** SQLite is compiled in, so `cc` must work.
+- **Node.js 22 or newer**, for frontend checks and browser tests. The exact
+  range is in `frontend/package.json`.
+- **mdBook**, only if you change the documentation site.
+
+Install the JavaScript tools. They are needed only for checks and tests; the
+app itself has no JavaScript build step.
+
+```sh
+npm --prefix frontend ci
+npm --prefix e2e ci
+npm --prefix e2e exec -- playwright install chromium firefox webkit
+```
+
+## Running the app locally
+
+Use a throwaway data directory. `.local/` is ignored by Git.
+
+```sh
+export ONELOOP_PUBLIC_URL=http://localhost:8080
+export ONELOOP_DATA_DIR="$PWD/.local/dev-data"
+cargo run -- db migrate
+cargo run -- user add admin --admin
+cargo run -- serve
+```
+
+Open <http://localhost:8080> and sign in. Use the same host name as
+`ONELOOP_PUBLIC_URL`; oneloop rejects requests for any other host.
+
+The web client in `frontend/` is embedded in the binary. A debug build reads
+it from disk, so a browser reload shows frontend changes; a release build
+needs a rebuild.
+
+## Checks before a pull request
+
+Run these from the repository root:
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+npm --prefix frontend run typecheck
+npm --prefix frontend run lint
+npm --prefix frontend test
+cargo build --locked
+npm --prefix e2e run test:smoke
+
+# If you changed repository scripts:
+node --test "scripts/tests/*.test.mjs"
+# If you changed dependencies or vendored files:
+node scripts/third-party-notices.mjs --check
+node scripts/vendor-verify.mjs --local
+# If you changed the docs:
+mdbook build docs
+node scripts/check-doc-links.mjs
+```
+
+CI runs all of these, plus `cargo package`, a dependency audit, a Docker
+build, the full end-to-end suite on `main` and the tests on macOS. If you
+change something on a hot path, compare `cargo bench --bench workload` before
+and after.
+
+## Tests
+
+| Kind | Where | Add one when |
+| --- | --- | --- |
+| Unit | A `#[cfg(test)] mod tests` next to the code, inline or in a sibling `tests.rs` | A private function has logic worth pinning down on its own |
+| Integration | `tests/integration/`, one test crate (`main.rs`) with one module per area and shared helpers in `support/` | Behavior is visible through HTTP, MCP or the CLI. Most backend changes belong here |
+| Frontend unit | `frontend/tests/` | You change a module in `frontend/src/` or rendering in `frontend/views/` |
+| End-to-end | `e2e/journeys/`, Playwright against the real binary | A user journey needs a real browser. Tag the fast, essential ones `@smoke` |
+
+Run one integration area with `cargo test --locked --test integration files::`.
+[e2e/README.md](e2e/README.md) explains the browser harness.
+
+Name a test after the behavior it checks, for example
+`revoked_session_cannot_open_event_stream`, and check one behavior per test.
+Tests must not depend on sleeps, the wall clock, the host time zone or locale.
+
+Keep the suites fast. Warm `cargo test` should finish in under 60 seconds on a
+10-core laptop, frontend unit tests in under 10 seconds, the end-to-end smoke
+set in under 2 minutes, and the full end-to-end suite in a few minutes locally
+(about 12 on CI's two workers). CI timeouts enforce these budgets.
+
+## Pull requests
+
+- Keep each pull request small and about one thing. Leave unrelated cleanup for
+  another one.
+- For a large change, a new feature or anything that changes behavior people
+  rely on, open an issue first so we can agree on the approach.
+- Describe the problem, the new behavior and the checks you ran.
+- Update the documentation and the `Unreleased` section of
+  [CHANGELOG.md](CHANGELOG.md) in the same pull request when users would notice
+  the change.
+- Never edit a migration that has been released. Add a new one; see
+  [ARCHITECTURE.md](ARCHITECTURE.md#migrations).
+- Report security problems privately, as described in [SECURITY.md](SECURITY.md).
+
+By contributing, you license your work under the [MIT license](LICENSE). Only
+contribute work you have the right to license.
+
+## Writing documentation
+
+The site in `docs/src/` is for people who use or run oneloop. Preview it with
+`mdbook serve docs`.
+
+- Write for the reader, not about the code: use "you", short sentences and a
+  friendly, precise tone.
+- Start every page with one sentence that says what the reader will get from it.
+- Show the example first (a command, a config snippet or a screenshot), then
+  explain.
+- Task pages use numbered steps and end with "Check that it worked". Reference
+  pages lead with a table.
+- Use UI labels exactly as the app shows them, such as **Board**, **Pool**,
+  **Inbox** and **Planning**.
+- Keep pages short, and change them in the same pull request as the behavior.
+  A new environment variable belongs in `configuration.md`, a new command in
+  `cli.md` and a new MCP tool or operation in `mcp-tools.md`. Tests in
+  `tests/integration/docs.rs` check all three, and that the quick start's
+  `compose.yaml` matches `deploy/compose.yaml`.
+
+## Releasing (maintainers)
+
+Tags are `vX.Y.Z` for releases and `vX.Y.Z-rc.N` for release candidates, for
+example `v0.1.0-rc.1`.
+
+1. Set the version in `Cargo.toml` and run `cargo check` to update
+   `Cargo.lock`. Update the version that `README.md`, `deploy/compose.yaml`
+   and the pages in `docs/src/` show; `rg -F` with the previous version finds
+   them.
+2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
+   `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
+   bottom, and note any upgrade steps.
+3. Check the version and notes, and the crate contents:
+
+   ```sh
+   node scripts/release-metadata.mjs vX.Y.Z
+   cargo package --locked
+   node scripts/check-package.mjs
+   ```
+
+   Both `cargo package` and `check-package.mjs` accept `--allow-dirty` for a
+   trial run before you commit.
+4. Review what ships besides our own code:
+   - regenerate and review the notices with `node scripts/third-party-notices.mjs`,
+     then run `node scripts/vendor-audit.mjs --check`;
+   - look at the latest Dependencies workflow run;
+   - compare the bundled SQLite version with SQLite's release and security
+     notes, because the Rust advisory database doesn't cover it.
+5. Build the image and try it on both architectures if you can: first run,
+   an upgrade from the previous release, and a backup restore.
+6. Merge to `main`, then tag and push:
+
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+The Release workflow then:
+
+- checks that the tag matches `Cargo.toml` and `CHANGELOG.md`, then runs the
+  full verification and the dependency checks;
+- builds the linux/amd64 and linux/arm64 image and pushes it to
+  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations;
+- publishes the crate to crates.io;
+- creates a GitHub Release with the changelog notes and no binary files.
+
+A release candidate gets only the `X.Y.Z-rc.N` image tag and never moves
+`latest`. On crates.io it is a pre-release, so people install it with
+`cargo install oneloop --version X.Y.Z-rc.N --locked`. A final release is tagged
+`X.Y.Z`, `X.Y` and `latest`.
+
+Afterwards, check the crate page, the image and the GitHub Release. Publishing
+is not atomic: if one step fails, look at what already went out before you
+retry. Crates.io versions can't be replaced and tags must never move, so fix
+forward with a new version when needed.
+
+### Dependencies
+
+Dependabot proposes weekly updates for Cargo, npm and GitHub Actions. The
+Dependencies workflow runs `cargo deny` (advisories, licenses, sources and
+bans), `npm audit` and a check of the vendored browser files on pull requests,
+on pushes to `main` and weekly. Browser libraries under `frontend/vendor/` are copied from exact npm
+releases rather than installed; [frontend/vendor/README.md](frontend/vendor/README.md)
+explains how to update one. After any dependency change, regenerate the notices.

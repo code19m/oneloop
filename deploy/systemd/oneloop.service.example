@@ -1,0 +1,55 @@
+# Install as /etc/systemd/system/oneloop.service, then set your public address
+# and other settings below. Create the oneloop account, its data directory and
+# the database first: https://code19m.github.io/oneloop/running-as-a-service.html
+[Unit]
+Description=oneloop team task management
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=oneloop
+Group=oneloop
+WorkingDirectory=/var/lib/oneloop
+Environment=ONELOOP_PUBLIC_URL=https://tasks.example.com
+Environment=ONELOOP_LISTEN=127.0.0.1:8080
+Environment=ONELOOP_DATA_DIR=/var/lib/oneloop/data
+# The IANA timezone used for deadlines and the Roadmap's Today.
+Environment=ONELOOP_TIMEZONE=UTC
+Environment=ONELOOP_STORAGE_LIMIT=10GiB
+Environment=ONELOOP_DISK_MIN_FREE=1GiB
+Environment=ONELOOP_TRUSTED_PROXIES=127.0.0.1
+Environment=ONELOOP_LOG_LEVEL=info
+ExecStart=/usr/local/bin/oneloop serve
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+# oneloop gives open requests up to 30 seconds to finish after SIGTERM.
+TimeoutStopSec=35
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/oneloop/data
+
+[Install]
+WantedBy=multi-user.target

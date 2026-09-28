@@ -1,0 +1,17 @@
+[book]
+title = "oneloop"
+description = "Lightweight, self-hosted task management for small teams, in a single binary."
+authors = ["Nuriddin Obidjonov"]
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "/oneloop/"
+git-repository-url = "https://github.com/code19m/oneloop"
+edit-url-template = "https://github.com/code19m/oneloop/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true
+
+[output.html.search]
+enable = true

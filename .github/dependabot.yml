@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      compatible-updates:
+        update-types: [minor, patch]
+    # Major upgrades are done deliberately, in their own change.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      compatible-updates:
+        update-types: [minor, patch]
+    # Major upgrades are done deliberately, in their own change.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule:
+      interval: weekly
+    groups:
+      compatible-updates:
+        update-types: [minor, patch]
+    # Major upgrades are done deliberately, in their own change.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      compatible-updates:
+        update-types: [minor, patch]
+    # Major upgrades are done deliberately, in their own change.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

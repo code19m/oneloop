@@ -1,0 +1,1 @@
+(()=>{const f=document.querySelector('form');if(!f)return;f.addEventListener('submit',e=>{if(e.submitter?.value==='allow'&&!f.querySelector('input[name=project]:checked')){e.preventDefault();alert('Select at least one project.');}});})();
