@@ -21,16 +21,26 @@ struct Migration {
 #[path = "legacy/mod.rs"]
 mod legacy;
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../../migrations/0001_initial.sql"),
-    hook_revision: "",
-    hook: None,
-    foreign_keys_off: false,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../../migrations/0001_initial.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 2,
+        name: "knowledge",
+        sql: include_str!("../../migrations/0002_knowledge.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
+];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

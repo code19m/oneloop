@@ -133,6 +133,9 @@ and deleting needs `destructive` too.
 | `read_comments` | Reads a task's comments and replies, or one comment in context | Read |
 | `read_activity` | Reads the activity of a project or task, or one blocking episode | Read |
 | `read_inbox` | Reads your Inbox, for the selected projects only | Read |
+| `read_knowledge_overview` | Reads the knowledge base's sync state, a folder's README and an index of its files with their titles and headings | Read |
+| `read_knowledge_file` | Reads one knowledge base file's text, or one section of a Markdown file | Read |
+| `search_knowledge` | Searches knowledge base file names, paths and text | Read |
 | `execute_work_command` | Creates and changes Roadmap, task and Pool work | Write |
 | `execute_discussion_command` | Posts and edits your comments, and updates your Inbox | Write |
 | `execute_destructive_command` | Permanently deletes work, or one of your own comments | Delete |

@@ -4,6 +4,7 @@ use crate::{
     auth::Actor,
     collaboration::{CollaborationCommand, CollaborationService},
     domain::{CommandEnvelope, DomainOperation},
+    knowledge::{KnowledgeCommand, KnowledgeService},
 };
 use axum::{Extension, Json, extract::State};
 use serde_json::Value;
@@ -15,9 +16,10 @@ pub(crate) async fn execute(
     ApiJson(input): ApiJson<CommandInput>,
 ) -> AppResult<Json<Value>> {
     let collaboration = CollaborationService::supports(&input.operation);
+    let knowledge = KnowledgeService::supports(&input.operation);
     let operation =
         serde_json::from_value::<DomainOperation>(Value::String(input.operation.clone())).ok();
-    if !collaboration && operation.is_none() {
+    if !collaboration && !knowledge && operation.is_none() {
         return Err(AppError::validation(
             "operation",
             "is not a supported operation",
@@ -35,6 +37,21 @@ pub(crate) async fn execute(
                 .execute(
                     &actor,
                     CollaborationCommand {
+                        operation: input.operation,
+                        payload,
+                        idempotency_key: input.idempotency_key,
+                        expected_revision: input.expected_revision,
+                    },
+                )
+                .await?,
+        )
+    } else if knowledge {
+        serde_json::to_value(
+            state
+                .knowledge
+                .execute(
+                    &actor,
+                    KnowledgeCommand {
                         operation: input.operation,
                         payload,
                         idempotency_key: input.idempotency_key,

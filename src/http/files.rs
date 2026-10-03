@@ -332,6 +332,11 @@ async fn html_preview(
         .files
         .html_preview_bytes(&actor, &attachment_id)
         .await?;
+    Ok(html_preview_response(bytes))
+}
+
+/// Sanitized HTML for a sandboxed, same-origin preview frame.
+pub(super) fn html_preview_response(bytes: Vec<u8>) -> Response {
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
     headers.insert(
@@ -374,7 +379,7 @@ async fn html_preview(
              worker-src 'none'; media-src 'none'",
         ),
     );
-    Ok(response)
+    response
 }
 
 async fn upload_avatar(
@@ -469,7 +474,7 @@ async fn storage_cleanup(
     state.files.cleanup_if_needed().await.map(Json)
 }
 
-fn validator(headers: &HeaderMap) -> Option<String> {
+pub(super) fn validator(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -631,7 +636,7 @@ fn parse_single_range(value: Option<&HeaderValue>, size: u64) -> SingleRange {
     SingleRange::Range(start, end.min(size - 1))
 }
 
-fn content_disposition(name: &str, attachment: bool) -> AppResult<HeaderValue> {
+pub(super) fn content_disposition(name: &str, attachment: bool) -> AppResult<HeaderValue> {
     // Old uploads may predate filename validation. Do not propagate directional
     // overrides to download-manager labels; preserve ordinary RTL and joiners.
     let name: String = name
@@ -796,7 +801,7 @@ mod generated_tests {
     }
 }
 
-fn require_safe_file_destination(headers: &HeaderMap) -> AppResult<()> {
+pub(super) fn require_safe_file_destination(headers: &HeaderMap) -> AppResult<()> {
     if headers
         .get("sec-fetch-dest")
         .and_then(|v| v.to_str().ok())

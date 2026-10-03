@@ -378,7 +378,7 @@ fn schema_four_repairs_only_historical_assignee_projections() {
 
     let outcome = migrate(&data, Some(backups)).unwrap();
     assert_eq!(outcome.previous_version, 3);
-    assert_eq!(outcome.applied, vec![1]);
+    assert_eq!(outcome.applied, vec![1, 2]);
     let connection = Connection::open(database).unwrap();
     let repaired = connection
         .prepare(
@@ -605,7 +605,8 @@ async fn deletion_foreign_keys_use_indexes_or_documented_exceptions() {
             ("pool_items","owner_user_id"),("activity_events","actor_user_id"),("activity_projection","actor_user_id"),
             ("security_events","actor_user_id"),("notification_events","actor_user_id"),
             ("upload_reservations","user_id"),("idempotency_keys","actor_user_id"),
-            ("oauth_authorization_requests","user_id"),("oauth_authorization_codes","user_id")];
+            ("oauth_authorization_requests","user_id"),("oauth_authorization_codes","user_id"),
+            ("knowledge_sources","created_by"),("knowledge_sources","updated_by")];
         // Short-lived reservations/transfers/authorization rows are bounded by expiry.
         let transient_scans = [("upload_reservations","task_id"),("mcp_file_transfers","task_id"),
             ("mcp_file_transfers","attachment_id"),("mcp_file_transfers","grant_id"),

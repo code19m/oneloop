@@ -14,6 +14,7 @@ pub mod error;
 pub mod files;
 pub mod http;
 mod idempotency;
+pub mod knowledge;
 mod legacy_values;
 pub mod mcp;
 pub mod retention;
@@ -42,14 +43,17 @@ pub struct Application {
     pub router: Router,
     pub collaboration: collaboration::CollaborationRuntime,
     pub files: files::FileService,
+    pub knowledge: knowledge::KnowledgeService,
 }
 
 pub fn application(state: AppState) -> Application {
     let collaboration = state.collaboration_runtime.clone();
     let files = state.files.clone();
+    let knowledge = state.knowledge.clone();
     let work = http::domain::read_router()
         .route("/api/commands", post(http::commands::execute))
         .merge(http::files::router())
+        .merge(http::knowledge::router())
         .nest("/api", http::collaboration::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -87,6 +91,7 @@ pub fn application(state: AppState) -> Application {
         router,
         collaboration,
         files,
+        knowledge,
     }
 }
 
