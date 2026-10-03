@@ -196,6 +196,21 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
 });
 
+test('page headings and the main area take focus without drawing a focus ring', async ({ page, instance }) => {
+  const outline = locator => locator.evaluate(el => getComputedStyle(el).outlineStyle);
+  await openApp(page, instance, 'roadmap');
+  const heading = page.getByRole('heading', { name: 'Roadmap', exact: true });
+  await expect(heading).toBeFocused();
+  expect(await outline(heading)).toBe('none');
+  await page.locator('.skip-link').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
+  expect(await outline(page.getByRole('main'))).toBe('none');
+  // Controls keep their keyboard focus ring.
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle)).not.toBe('none');
+});
+
 test('the drawer contains focus through rerenders and returns it on close', async ({ page, instance }) => {
   await page.setViewportSize({ width: 768, height: 900 });
   await openApp(page, instance, 'board');
