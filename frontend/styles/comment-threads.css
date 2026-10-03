@@ -1,6 +1,6 @@
 /* Conversations retain one reply level and one active editor. */
 .comment-conversation { min-width:0; }
-.comment-conversation>.tl-cmt { padding:14px 16px 10px;border-color:color-mix(in srgb,var(--line) 65%,transparent);background:color-mix(in srgb,var(--surface-raised) 65%,var(--surface-canvas)); }
+.comment-conversation>.tl-cmt { --comment-surface:color-mix(in srgb,var(--surface-raised) 65%,var(--surface-canvas));--description-blur-surface:var(--comment-surface);padding:14px 16px 10px;border-color:color-mix(in srgb,var(--line) 65%,transparent);background:var(--comment-surface); }
 .comment-conversation .tl-cmt.is-reply-target { border-color:var(--line-strong); }
 .tl-cmt .cmt-head { display:flex;align-items:center;flex-wrap:nowrap;gap:8px; }
 .cmt-head>.avatar { flex-shrink:0;border-radius:6px; }
@@ -13,6 +13,8 @@
 .comment-reading .description-preview { min-width:0; }
 .comment-reading.is-collapsed .description-preview::after { content:"";position:absolute;inset:auto 0 0;height:112px;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);background:color-mix(in srgb,var(--description-blur-surface,var(--surface-canvas)) 15%,transparent);mask-image:linear-gradient(to bottom,transparent,#000 85%);-webkit-mask-image:linear-gradient(to bottom,transparent,#000 85%);pointer-events:none; }
 .comment-reading .comment-body-content { box-sizing:border-box;margin-top:10px;overflow-wrap:anywhere;transition:height var(--motion-normal) var(--ease-out); }
+/* A comment has no frame around it, so the cut-off text fades into the card instead of ending at an edge. */
+.comment-reading.is-collapsed .comment-body-content { mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent);-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent); }
 .comment-reading .description-toggle { margin-top:6px; }
 .comment-actions { display:flex;align-items:center;margin-top:6px; }
 .comment-actions .reply-action { min-height:30px;padding:4px 7px;margin-left:-7px;font-size:var(--text-sm);gap:6px;color:var(--ink-muted); }

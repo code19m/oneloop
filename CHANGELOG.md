@@ -26,6 +26,8 @@ All notable changes to oneloop are recorded here. The format follows
   zone name. They are still shown in the instance time zone.
 - Inbox items have a small gap between them, so highlighted items no longer
   touch.
+- A long comment's "Show more" preview now fades out smoothly, like a long
+  description, instead of ending at a hard edge.
 
 ## [0.1.0-rc.1] - 2026-09-28
 
