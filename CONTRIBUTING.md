@@ -40,8 +40,9 @@ Open <http://localhost:8080> and sign in. Use the same host name as
 `ONELOOP_PUBLIC_URL`; oneloop rejects requests for any other host.
 
 The web client in `frontend/` is embedded in the binary. A debug build reads
-it from disk, so a browser reload shows frontend changes; a release build
-needs a rebuild.
+it from disk, so frontend changes need no rebuild. Browsers cache the client's
+files for good, so use a hard reload (Shift+Cmd+R or Ctrl+Shift+R) to see a
+change. A release build needs a rebuild.
 
 ## Checks before a pull request
 
