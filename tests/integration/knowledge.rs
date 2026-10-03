@@ -352,6 +352,9 @@ async fn administrators_connect_a_folder_and_members_read_its_files() {
         assert_eq!(file(&view, path)["updatedAt"], FIRST, "{path}");
     }
 
+    let version = file(&view, "README.md")["version"].as_str().unwrap();
+    assert_eq!(version.len(), 16, "a short content checksum keys client caches");
+
     let admin = fixture.view(&fixture.admin).await;
     let source = &admin["source"];
     assert_eq!(source["branch"], "main");
@@ -463,7 +466,7 @@ async fn files_follow_the_attachment_safety_rules() {
     let preview = fixture
         .get(
             &fixture.member,
-            "/api/projects/p1/knowledge/preview/html?path=page.html",
+            "/api/projects/p1/knowledge/preview/html?path=page.html&reload=1",
         )
         .await;
     assert_eq!(preview.status(), StatusCode::OK);

@@ -268,10 +268,12 @@
     <section class="storage-history"><div class="storage-section-heading"><h2>Recent cleanup</h2></div>${history.length?history.map(event=>`<div class="storage-history-row"><span class="storage-history-icon">${icons.clock}</span><div><strong>${event.fileCount} temporary ${event.fileCount===1?'file':'files'} cleaned up</strong><time datetime="${new Date(event.at*1000).toISOString()}">${hooks.instant(event.at*1000)}</time></div><span>${size(event.bytes)} freed</span></div>`).join(''):`<div class="storage-history-empty">${icons.clock}<span>No cleanup runs yet</span></div>`}</section>`;
   }
 
+  /** The dialog's preview owns `preview`; an inline preview lives while its host does. */
+  const previewActive=(owner,host)=>!!owner&&!owner.disposed&&(owner.inline?host.isConnected:preview===owner);
   function bindWheelZoom(surface,owner,zoom){
     surface.setAttribute('aria-description','Hold Ctrl or Command and scroll to zoom.');
     const wheel=event=>{
-      if(preview!==owner||!surface.isConnected||surface.closest('[inert]')||!(event.ctrlKey||event.metaKey)||!Number.isFinite(event.deltaY)||event.deltaY===0)return;
+      if(!previewActive(owner,surface)||!surface.isConnected||surface.closest('[inert]')||!(event.ctrlKey||event.metaKey)||!Number.isFinite(event.deltaY)||event.deltaY===0)return;
       event.preventDefault();event.stopPropagation();
       const pixels=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?surface.clientHeight||800:1);
       zoom(-Math.max(-100,Math.min(100,pixels))*.0025,event);
@@ -302,16 +304,20 @@
     owner.hideRetentionHelp=()=>{if(tip.hidden)return false;hide();return true;};
     owner.retentionHelpOff=()=>{hide();tip.remove();document.removeEventListener('pointerdown',outside);document.removeEventListener('scroll',position,true);window.removeEventListener('resize',position);};
   }
-  function disposePreview(owner){if(!owner)return;owner.sourceController?.abort();clearTimeout(owner.sourceTimeout);owner.retentionHelpOff?.();owner.zoomWheelOff?.();clearTimeout(owner.pdfWheelTimer);clearTimeout(owner.pdfTimeout);clearTimeout(owner.pdfResizeTimer);owner.pdfResize?.disconnect();owner.imageResize?.disconnect();owner.detailsMedia?.removeEventListener?.('change',owner.detailsSync);owner.pdfRender?.cancel();owner.pdfLoading?.destroy()?.catch?.(()=>{});}
+  function disposePreview(owner){if(!owner)return;owner.disposed=true;owner.sourceController?.abort();clearTimeout(owner.sourceTimeout);owner.retentionHelpOff?.();owner.zoomWheelOff?.();clearTimeout(owner.pdfWheelTimer);clearTimeout(owner.pdfTimeout);clearTimeout(owner.pdfResizeTimer);owner.pdfResize?.disconnect();owner.imageResize?.disconnect();owner.detailsMedia?.removeEventListener?.('change',owner.detailsSync);owner.pdfRender?.cancel();owner.pdfLoading?.destroy()?.catch?.(()=>{});}
   function closePreview(){if(!preview)return;disposePreview(preview);const focus=preview.focus;UIMotion.remove(document.querySelector('.file-overlay'));document.getElementById('app').inert=false;preview=null;if(focus?.isConnected)focus.focus({preventScroll:true});}
   const uploadedDate=value=>hooks.instant(value);
-  function previewAttachment(taskId,fileId){
-    if(!window.DATA.session||!hooks.canRead(taskId)){app.toast('This file is unavailable','error');return;}const task=hooks.task(taskId),file=task?.attachments?.find(f=>f.id===fileId);if(!file){app.toast('This attachment is no longer available','error');return;}
+  function previewAttachment(taskId,fileId,collection=null){
+    if(!window.DATA.session||!(collection?collection.canRead():hooks.canRead(taskId))){app.toast('This file is unavailable','error');return;}const task=collection?null:hooks.task(taskId),file=(collection?.files||task?.attachments)?.find(f=>f.id===fileId);if(!file){app.toast('This attachment is no longer available','error');return;}
     if(file.state&&file.state!=='available'){app.toast(file.state==='cleaned'?'This temporary file was cleaned up':'This attachment is no longer available','info');return;}
-    if(!canPreview(file)){downloadOriginal(taskId,fileId);return;}
-    const existingLayer=preview?document.querySelector('.file-overlay:not([data-motion-exiting])'):null,switching=!!existingLayer,detailsOpen=existingLayer?.querySelector('[data-file-details]')?.getAttribute('aria-expanded')==='true',oldFocus=preview?.focus||document.activeElement;disposePreview(preview);existingLayer?.querySelectorAll('iframe').forEach(frame=>frame.remove());preview={taskId,fileId,scale:1,focus:oldFocus};file.lastAccessAt=Date.now();
-    const editable=hooks.can(taskId)&&(!file.state||file.state==='available');
+    if(!canPreview(file)){if(!collection)downloadOriginal(taskId,fileId);return;}
+    const existingLayer=preview?document.querySelector('.file-overlay:not([data-motion-exiting])'):null,switching=!!existingLayer,detailsOpen=existingLayer?.querySelector('[data-file-details]')?.getAttribute('aria-expanded')==='true',oldFocus=preview?.focus||document.activeElement;disposePreview(preview);existingLayer?.querySelectorAll('iframe').forEach(frame=>frame.remove());preview={taskId,fileId,collection,scale:1,focus:oldFocus};file.lastAccessAt=Date.now();
+    const editable=!collection&&hooks.can(taskId)&&(!file.state||file.state==='available');
     let layer=document.createElement('div');layer.className='file-overlay';UIHTML(layer,`<div class="scrim"></div><section class="file-dialog" role="dialog" aria-modal="true" aria-labelledby="file-preview-title"><header><span class="file-preview-symbol" aria-hidden="true">${icons.document}</span><div class="file-preview-heading"><h2 id="file-preview-title" title="${escape(file.name)}">${escape(file.name)}</h2><span>${escape(extension(file).toUpperCase())}<span aria-hidden="true"> · </span>${size(file.size)}</span></div><button class="btn quiet file-details-toggle" aria-label="File details" aria-expanded="false" aria-controls="file-preview-details" data-file-details>${icons.info}<span>Details</span></button><a class="btn primary" href="${escape(file.downloadUrl||file.url||'#')}" download="${escape(file.name)}" data-file-download aria-label="Download ${escape(file.name)}">${icons.download}<span>Download</span></a><button class="btn icon" aria-label="Close file preview" data-file-close title="Close preview (Esc)">${icons.close}</button></header><div class="file-toolbar"><div class="file-navigation" role="group" aria-label="Attachment navigation"><button class="btn icon" aria-label="Previous file" data-file-prev>${icons.left}</button><span class="preview-position" data-file-position></span><button class="btn icon" aria-label="Next file" data-file-next>${icons.right}</button></div><div class="file-tools"></div></div><div class="file-preview-body"><div class="file-preview-content"></div><aside class="file-info" id="file-preview-details" hidden><h3>File details</h3><dl><dt>File name</dt><dd>${escape(file.name)}</dd><dt>Type</dt><dd>${escape(file.name.split('.').pop().toUpperCase())}</dd><dt>Size</dt><dd>${size(file.size)}</dd><dt>Uploaded by</dt><dd>${escape(window.DATA.users.find(u=>u.id===file.uploadedBy)?.name||'Unavailable')}</dd><dt>Uploaded</dt><dd>${file.uploadedAt?uploadedDate(file.uploadedAt):'Unavailable'}</dd><dt>Retention</dt><dd class="file-retention-control"><span data-file-retention>${file.ephemeral?'Temporary':'Permanent'}</span>${editable?`${retentionSwitch(taskId,file,true)}<span class="retention-help"><button type="button" class="btn icon" aria-label="About temporary files" aria-expanded="false" aria-describedby="retention-help-text">${icons.info}</button><span id="retention-help-text" role="tooltip">Allow this file to be removed when storage is low.</span></span>`:''}</dd></dl>${file.checksum?`<div class="file-integrity"><button type="button" class="file-integrity-toggle" aria-expanded="false" aria-controls="file-checksum-value"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="m4 2 5 4-5 4z"/></svg>File checksum</button><div class="file-integrity-content" id="file-checksum-value" aria-hidden="true" inert><div><div class="file-checksum">${escape(file.checksum)}</div></div></div></div>`:''}</aside></div></section>`);
+    if(collection){
+      // Synced files have a path and a date, never an uploader or a retention choice.
+      UIHTML(layer.querySelector('.file-info dl'),`<dt>File name</dt><dd>${escape(file.name)}</dd><dt>Path</dt><dd>${escape(file.path||file.name)}</dd><dt>Size</dt><dd>${size(file.size)}</dd>${file.updatedAt?`<dt>Updated</dt><dd>${hooks.instant(file.updatedAt*1000)}</dd>`:''}`);
+    }
     if(existingLayer){
       // Keep the scrim, dialog and layout mounted; only the selected file changes.
       existingLayer.querySelector('header').replaceWith(layer.querySelector('header'));
@@ -322,10 +328,10 @@
       layer=existingLayer;
     }else{document.body.append(layer);UIMotion.enter(layer.querySelector('.file-dialog'));}
     document.getElementById('app').inert=true;
-    layer.querySelector('[data-file-close]').onclick=closePreview;layer.querySelector('[data-file-close]').focus();layer.querySelector('[data-file-download]').onclick=e=>download(e,taskId,fileId);
-    const files=available(task).filter(canPreview),index=files.indexOf(file),previous=layer.querySelector('[data-file-prev]'),next=layer.querySelector('[data-file-next]');
+    layer.querySelector('[data-file-close]').onclick=closePreview;layer.querySelector('[data-file-close]').focus();if(!collection)layer.querySelector('[data-file-download]').onclick=e=>download(e,taskId,fileId);
+    const files=(collection?collection.files:available(task)).filter(canPreview),index=files.indexOf(file),previous=layer.querySelector('[data-file-prev]'),next=layer.querySelector('[data-file-next]');
     layer.querySelector('[data-file-position]').textContent=`File ${index+1} of ${files.length}`;layer.querySelector('.file-navigation').hidden=files.length<2;previous.disabled=index<=0;next.disabled=index>=files.length-1;
-    const move=delta=>{const target=files[index+delta];if(!target)return;previewAttachment(taskId,target.id);document.querySelector(delta<0?'[data-file-prev]:not(:disabled)':'[data-file-next]:not(:disabled)')?.focus({preventScroll:true});};previous.onclick=()=>move(-1);next.onclick=()=>move(1);
+    const move=delta=>{const target=files[index+delta];if(!target)return;previewAttachment(taskId,target.id,collection);document.querySelector(delta<0?'[data-file-prev]:not(:disabled)':'[data-file-next]:not(:disabled)')?.focus({preventScroll:true});};previous.onclick=()=>move(-1);next.onclick=()=>move(1);
     const checksumToggle=layer.querySelector('.file-integrity-toggle');
     if(checksumToggle)checksumToggle.onclick=()=>{const open=checksumToggle.getAttribute('aria-expanded')!=='true',content=layer.querySelector('.file-integrity-content');checksumToggle.setAttribute('aria-expanded',String(open));content.setAttribute('aria-hidden',String(!open));content.inert=!open;checksumToggle.closest('.file-integrity').classList.toggle('is-expanded',open);};
     const host=layer.querySelector('.file-preview-content'),ext=extension(file),kind=file.previewKind||(['png','jpg','jpeg','webp','gif','avif'].includes(ext)?'image':ext==='pdf'?'pdf':['html','htm'].includes(ext)?'html':['md','markdown'].includes(ext)?'markdown':'text');
@@ -336,32 +342,33 @@
     detailsButton.onclick=()=>{owner.hideRetentionHelp?.();const open=detailsButton.getAttribute('aria-expanded')!=='true';detailsButton.setAttribute('aria-expanded',String(open));UIMotion.visibility(detailsPanel,open);detailsBody.classList.toggle('has-details',open);owner.detailsSync();};
     if(file.state&&file.state!=='available'){host.textContent=file.state==='cleaned'?'Temporary file removed during storage cleanup.':'Attachment removed.';return;}
     if(!file.url){UIHTML(host,'<div class="preview-unavailable">File bytes are unavailable. Try downloading the file again.</div>');return;}
-    if(kind==='image'){
-      UIHTML(host,`<div class="image-controls"><div class="preview-control-group"><button class="btn quiet" data-image-fit>Fit</button><span class="preview-position" data-image-zoom>100%</span><button class="btn icon" aria-label="Zoom out" data-image-out>−</button><button class="btn icon" aria-label="Zoom in" data-image-in>+</button></div></div><div class="image-stage" tabindex="0" role="region" aria-label="Image"><div class="preview-unavailable" data-image-loading role="status">Loading image…</div><div class="image-canvas" hidden><img alt="${escape(file.name)}" src="${escape(file.url)}"></div></div>`);
-
-      const controls=host.querySelector('.image-controls');layer.querySelector('.file-tools').append(controls);
-      const owner=preview,stage=host.querySelector('.image-stage'),image=host.querySelector('img');
-      const layoutImage=()=>{if(preview!==owner||!image.naturalWidth)return;const fit=Math.min(1,Math.max(1,stage.clientWidth-48)/image.naturalWidth,Math.max(1,stage.clientHeight-48)/image.naturalHeight);image.style.width=Math.round(image.naturalWidth*fit*owner.scale)+'px';image.style.height=Math.round(image.naturalHeight*fit*owner.scale)+'px';stage.classList.toggle('is-zoomed',owner.scale>1);controls.querySelector('[data-image-zoom]').textContent=(fit*owner.scale<.01?'<1':Math.round(fit*owner.scale*100))+'%';};
-      const zoom=(amount,event)=>{if(controls.querySelector('[data-image-in]').disabled&&controls.querySelector('[data-image-out]').disabled)return;const before=image.getBoundingClientRect(),anchor=event&&before.width&&before.height?{x:Math.max(0,Math.min(1,(event.clientX-before.left)/before.width)),y:Math.max(0,Math.min(1,(event.clientY-before.top)/before.height))}:null;owner.scale=Math.max(.5,Math.min(4,owner.scale+amount));layoutImage();if(anchor){const after=image.getBoundingClientRect();stage.scrollLeft+=after.left+after.width*anchor.x-event.clientX;stage.scrollTop+=after.top+after.height*anchor.y-event.clientY;}controls.querySelector('[data-image-out]').disabled=owner.scale===.5;controls.querySelector('[data-image-in]').disabled=owner.scale===4;};
-      controls.querySelector('[data-image-out]').onclick=()=>zoom(-.25);controls.querySelector('[data-image-in]').onclick=()=>zoom(.25);bindWheelZoom(stage,owner,zoom);
-      controls.querySelector('[data-image-fit]').onclick=()=>{owner.scale=1;zoom(0);stage.scrollLeft=0;stage.scrollTop=0;};
-      image.onload=()=>{if(preview!==owner)return;host.querySelector('[data-image-loading]')?.remove();host.querySelector('.image-canvas').hidden=false;layoutImage();UIMotion.fade(image);};image.onerror=()=>{if(preview!==owner)return;UIHTML(stage,'<div class="preview-unavailable">This image could not be displayed. Try downloading the original.</div>');controls.querySelectorAll('[data-image-fit],[data-image-in],[data-image-out]').forEach(button=>button.disabled=true);};if(image.complete&&image.naturalWidth)image.onload();
-      if(window.ResizeObserver){owner.imageResize=new ResizeObserver(layoutImage);owner.imageResize.observe(stage);}
-      let drag;stage.onpointerdown=e=>{if(e.button!==0)return;drag={x:e.clientX,y:e.clientY,left:stage.scrollLeft,top:stage.scrollTop};stage.setPointerCapture(e.pointerId);};stage.onpointermove=e=>{if(drag){stage.scrollLeft=drag.left+drag.x-e.clientX;stage.scrollTop=drag.top+drag.y-e.clientY;}};stage.onpointerup=()=>drag=null;stage.onpointercancel=()=>drag=null;
-    }else if(kind==='html')renderHTML(host,file);
+    if(kind==='image')renderImage(host,file,preview,layer.querySelector('.file-tools'));
+    else if(kind==='html')renderHTML(host,file);
     else if(kind==='pdf')renderPDF(host,file);
     else if(canPreview(file))renderText(host,file,ext);
     else UIHTML(host,'<div class="preview-unavailable">Preview is not available for this format. Download the original file.</div>');
   }
-  async function sourceFor(file,url){
+  function renderImage(host,file,owner,tools){
+    UIHTML(host,`<div class="image-controls"><div class="preview-control-group"><button class="btn quiet" data-image-fit>Fit</button><span class="preview-position" data-image-zoom>100%</span><button class="btn icon" aria-label="Zoom out" data-image-out>−</button><button class="btn icon" aria-label="Zoom in" data-image-in>+</button></div></div><div class="image-stage" tabindex="0" role="region" aria-label="Image"><div class="preview-unavailable" data-image-loading role="status">Loading image…</div><div class="image-canvas" hidden><img alt="${escape(file.name)}" src="${escape(file.url)}"></div></div>`);
+    const controls=host.querySelector('.image-controls');tools?.append(controls);
+    const stage=host.querySelector('.image-stage'),image=host.querySelector('img');
+    const layoutImage=()=>{if(!previewActive(owner,host)||!image.naturalWidth)return;const fit=Math.min(1,Math.max(1,stage.clientWidth-48)/image.naturalWidth,Math.max(1,stage.clientHeight-48)/image.naturalHeight);image.style.width=Math.round(image.naturalWidth*fit*owner.scale)+'px';image.style.height=Math.round(image.naturalHeight*fit*owner.scale)+'px';stage.classList.toggle('is-zoomed',owner.scale>1);controls.querySelector('[data-image-zoom]').textContent=(fit*owner.scale<.01?'<1':Math.round(fit*owner.scale*100))+'%';};
+    const zoom=(amount,event)=>{if(controls.querySelector('[data-image-in]').disabled&&controls.querySelector('[data-image-out]').disabled)return;const before=image.getBoundingClientRect(),anchor=event&&before.width&&before.height?{x:Math.max(0,Math.min(1,(event.clientX-before.left)/before.width)),y:Math.max(0,Math.min(1,(event.clientY-before.top)/before.height))}:null;owner.scale=Math.max(.5,Math.min(4,owner.scale+amount));layoutImage();if(anchor){const after=image.getBoundingClientRect();stage.scrollLeft+=after.left+after.width*anchor.x-event.clientX;stage.scrollTop+=after.top+after.height*anchor.y-event.clientY;}controls.querySelector('[data-image-out]').disabled=owner.scale===.5;controls.querySelector('[data-image-in]').disabled=owner.scale===4;};
+    controls.querySelector('[data-image-out]').onclick=()=>zoom(-.25);controls.querySelector('[data-image-in]').onclick=()=>zoom(.25);bindWheelZoom(stage,owner,zoom);
+    controls.querySelector('[data-image-fit]').onclick=()=>{owner.scale=1;zoom(0);stage.scrollLeft=0;stage.scrollTop=0;};
+    image.onload=()=>{if(!previewActive(owner,host))return;host.querySelector('[data-image-loading]')?.remove();host.querySelector('.image-canvas').hidden=false;layoutImage();UIMotion.fade(image);};image.onerror=()=>{if(!previewActive(owner,host))return;UIHTML(stage,'<div class="preview-unavailable">This image could not be displayed. Try downloading the original.</div>');controls.querySelectorAll('[data-image-fit],[data-image-in],[data-image-out]').forEach(button=>button.disabled=true);};if(image.complete&&image.naturalWidth)image.onload();
+    if(window.ResizeObserver){owner.imageResize=new ResizeObserver(layoutImage);owner.imageResize.observe(stage);}
+    let drag;stage.onpointerdown=e=>{if(e.button!==0)return;drag={x:e.clientX,y:e.clientY,left:stage.scrollLeft,top:stage.scrollTop};stage.setPointerCapture(e.pointerId);};stage.onpointermove=e=>{if(drag){stage.scrollLeft=drag.left+drag.x-e.clientX;stage.scrollTop=drag.top+drag.y-e.clientY;}};stage.onpointerup=()=>drag=null;stage.onpointercancel=()=>drag=null;
+  }
+  async function sourceFor(file,url,owner=preview,host=null){
     const current=cachedSource(file.id);if(current)return current;if(!url)return null;
-    const owner=preview,session=window.DATA.session?.id,controller=new AbortController();
+    const session=window.DATA.session?.id,controller=new AbortController();
     owner.sourceController=controller;owner.sourceTimeout=setTimeout(()=>controller.abort(),30000);
     try{
       const response=await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
       if(!response.ok)throw new Error('Preview unavailable.');
       const buffer=await response.arrayBuffer();
-      if(controller.signal.aborted||preview!==owner||window.DATA.session?.id!==session)throw new DOMException('Preview closed','AbortError');
+      if(controller.signal.aborted||!previewActive(owner,host)||window.DATA.session?.id!==session)throw new DOMException('Preview closed','AbortError');
       const source={blob:new Blob([buffer]),buffer};cacheSource(file.id,source);return source;
     }finally{clearTimeout(owner.sourceTimeout);}
   }
@@ -371,7 +378,7 @@
     sourceFor(file,file.sourceUrl).then(source=>{if(!source||preview?.fileId!==file.id)return;showText(host,file,ext,source);}).catch(()=>{if(preview?.fileId===file.id)UIHTML(host,'<div class="preview-unavailable">Preview unavailable. Download the original file.</div>');});
   }
   function showText(host,file,ext,source){
-    host.replaceChildren();const text=new TextDecoder().decode(source.buffer.slice(0,200000));if(['md','markdown'].includes(ext)){FileViews.markdown(host,file,text,file.size>200000);return;}let shown=text;if(ext==='json'&&file.size<=200000){try{shown=JSON.stringify(JSON.parse(text),null,2);}catch{}}const pre=document.createElement('pre');pre.tabIndex=0;pre.textContent=shown;host.append(pre);if(file.size>200000){const note=document.createElement('p');note.className='access-note';note.textContent='Preview truncated to 200 KB. Download the full file.';host.prepend(note);}
+    host.replaceChildren();const text=new TextDecoder().decode(source.buffer.slice(0,200000));if(['md','markdown'].includes(ext)){FileViews.markdown(host,file,text,file.size>200000,file.markdownContext);return;}FileViews.text(host,file,text,file.size>200000);
   }
   function renderHTML(host,file){
     const current=cachedSource(file.id);if(current){showHTML(host,file,current);return;}
@@ -382,34 +389,34 @@
     FileViews.html(host,file,new TextDecoder().decode(source.buffer));
   }
 
-  async function renderPDF(host,file){
-    const owner=preview;let source=cachedSource(file.id);UIHTML(host,'<p class="access-note" role="status">Loading PDF…</p>');
+  async function renderPDF(host,file,owner=preview,tools=host.closest('.file-dialog')?.querySelector('.file-tools')){
+    let source=cachedSource(file.id);UIHTML(host,'<p class="access-note" role="status">Loading PDF…</p>');
 
-    if(!source)try{source=await sourceFor(file,file.contentUrl);}catch{}if(!source){UIHTML(host,'<div class="preview-unavailable">Preview unavailable. Download the original file.</div>');return;}
+    if(!source)try{source=await sourceFor(file,file.contentUrl,owner,host);}catch{}if(!source){UIHTML(host,'<div class="preview-unavailable">Preview unavailable. Download the original file.</div>');return;}
     try{
       const root=new URL('vendor/pdfjs/',assetBase),pdfjs=await import(new URL('pdf.mjs',root).href);
-      if(preview!==owner)return;pdfjs.GlobalWorkerOptions.workerSrc=new URL('pdf.worker.mjs',root).href;
+      if(!previewActive(owner,host))return;pdfjs.GlobalWorkerOptions.workerSrc=new URL('pdf.worker.mjs',root).href;
       owner.pdfLoading=pdfjs.getDocument({data:new Uint8Array(source.buffer.slice(0)),isEvalSupported:false,enableXfa:false,useWasm:false,useSystemFonts:false,useWorkerFetch:false,standardFontDataUrl:new URL('standard_fonts/',root).href,cMapUrl:new URL('cmaps/',root).href,cMapPacked:true});
-      owner.pdfTimeout=setTimeout(()=>{if(preview===owner){disposePreview(owner);host.textContent='PDF preview took too long. Download the original file.';}},30000);
-      const pdf=await owner.pdfLoading.promise;if(preview!==owner)return;clearTimeout(owner.pdfTimeout);
+      owner.pdfTimeout=setTimeout(()=>{if(previewActive(owner,host)){disposePreview(owner);host.textContent='PDF preview took too long. Download the original file.';}},30000);
+      const pdf=await owner.pdfLoading.promise;if(!previewActive(owner,host))return;clearTimeout(owner.pdfTimeout);
       let pageNumber=1,zoom=1,sequence=0,requestedKey=null,paintedPage=null;
       UIHTML(host,`<div class="pdf-controls"><div class="preview-control-group"><button class="btn icon" aria-label="Previous page" data-pdf-prev>${icons.left}</button><span data-pdf-page aria-live="polite"></span><button class="btn icon" aria-label="Next page" data-pdf-next>${icons.right}</button></div><div class="preview-control-group"><button class="btn quiet" data-pdf-fit>Fit width</button><button class="btn icon" aria-label="Zoom out" data-pdf-out>−</button><button class="btn icon" aria-label="Zoom in" data-pdf-in>+</button></div></div><div class="pdf-surface" tabindex="0" role="region" aria-label="PDF page"></div>`);
-      const controls=host.querySelector('.pdf-controls');host.closest('.file-dialog').querySelector('.file-tools').append(controls);
-      const paint=async()=>{clearTimeout(owner.pdfWheelTimer);owner.pdfWheelTimer=null;if(preview!==owner)return;const width=Math.round(host.clientWidth),density=Math.min(devicePixelRatio||1,2),key=[pageNumber,zoom,width,density].join(':');if(key===requestedKey)return;requestedKey=key;const seq=++sequence;owner.pdfRender?.cancel();clearTimeout(owner.pdfTimeout);
+      const controls=host.querySelector('.pdf-controls');tools?.append(controls);if(owner.inline&&pdf.numPages===1)controls.querySelectorAll('[data-pdf-prev],[data-pdf-next]').forEach(button=>button.hidden=true);
+      const paint=async()=>{clearTimeout(owner.pdfWheelTimer);owner.pdfWheelTimer=null;if(!previewActive(owner,host))return;const width=Math.round(host.clientWidth),density=Math.min(devicePixelRatio||1,2),key=[pageNumber,zoom,width,density].join(':');if(key===requestedKey)return;requestedKey=key;const seq=++sequence;owner.pdfRender?.cancel();clearTimeout(owner.pdfTimeout);
         controls.querySelector('[data-pdf-out]').disabled=zoom===.5;controls.querySelector('[data-pdf-in]').disabled=zoom===4;
         controls.querySelector('[data-pdf-page]').textContent=`Page ${pageNumber} of ${pdf.numPages}`;controls.querySelector('[data-pdf-prev]').disabled=pageNumber===1;controls.querySelector('[data-pdf-next]').disabled=pageNumber===pdf.numPages;
-        try{const page=await pdf.getPage(pageNumber);if(preview!==owner||seq!==sequence)return;
+        try{const page=await pdf.getPage(pageNumber);if(!previewActive(owner,host)||seq!==sequence)return;
           const natural=page.getViewport({scale:1}),fit=Math.max(100,width-40)/natural.width;
           const scale=Math.min(fit*zoom,8192/natural.width/density,8192/natural.height/density,Math.sqrt(8e6/(natural.width*natural.height*density*density))),viewport=page.getViewport({scale});
           const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width*density);canvas.height=Math.ceil(viewport.height*density);canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';canvas.setAttribute('aria-label',`Page ${pageNumber} of ${pdf.numPages}`);
           owner.pdfRender=page.render({canvasContext:canvas.getContext('2d'),viewport,transform:density===1?null:[density,0,0,density,0,0],annotationMode:0});
-          owner.pdfTimeout=setTimeout(()=>{if(preview===owner){owner.pdfRender?.cancel();host.querySelector('.pdf-surface').textContent='This page is too complex to preview. Download the original.';}},30000);
-          await owner.pdfRender.promise;if(preview!==owner||seq!==sequence)return;host.querySelector('.pdf-surface').replaceChildren(canvas);if(paintedPage!==pageNumber)UIMotion.fade(canvas);paintedPage=pageNumber;clearTimeout(owner.pdfTimeout);
-        }catch(error){if(preview!==owner||seq!==sequence)return;clearTimeout(owner.pdfTimeout);requestedKey=null;if(error.name!=='RenderingCancelledException')host.querySelector('.pdf-surface').textContent='Unable to preview this page. Download the original file.';}
+          owner.pdfTimeout=setTimeout(()=>{if(previewActive(owner,host)){owner.pdfRender?.cancel();host.querySelector('.pdf-surface').textContent='This page is too complex to preview. Download the original.';}},30000);
+          await owner.pdfRender.promise;if(!previewActive(owner,host)||seq!==sequence)return;host.querySelector('.pdf-surface').replaceChildren(canvas);if(paintedPage!==pageNumber)UIMotion.fade(canvas);paintedPage=pageNumber;clearTimeout(owner.pdfTimeout);
+        }catch(error){if(!previewActive(owner,host)||seq!==sequence)return;clearTimeout(owner.pdfTimeout);requestedKey=null;if(error.name!=='RenderingCancelledException')host.querySelector('.pdf-surface').textContent='Unable to preview this page. Download the original file.';}
       };
-      bindWheelZoom(host.querySelector('.pdf-surface'),owner,amount=>{const next=Math.max(.5,Math.min(4,zoom+amount));if(next===zoom)return;zoom=next;controls.querySelector('[data-pdf-out]').disabled=zoom===.5;controls.querySelector('[data-pdf-in]').disabled=zoom===4;if(!owner.pdfWheelTimer)owner.pdfWheelTimer=setTimeout(()=>{owner.pdfWheelTimer=null;if(preview===owner)paint();},80);});
-      controls.querySelector('[data-pdf-prev]').onclick=()=>{if(pageNumber>1){pageNumber--;paint();}};controls.querySelector('[data-pdf-next]').onclick=()=>{if(pageNumber<pdf.numPages){pageNumber++;paint();}};controls.querySelector('[data-pdf-fit]').onclick=()=>{zoom=1;paint();};controls.querySelector('[data-pdf-out]').onclick=()=>{zoom=Math.max(.5,zoom-.25);paint();};controls.querySelector('[data-pdf-in]').onclick=()=>{zoom=Math.min(4,zoom+.25);paint();};if(window.ResizeObserver){let observedWidth=Math.round(host.clientWidth);owner.pdfResize=new ResizeObserver(()=>{const width=Math.round(host.clientWidth);if(width===observedWidth)return;observedWidth=width;clearTimeout(owner.pdfResizeTimer);owner.pdfResizeTimer=setTimeout(()=>{if(preview===owner)paint();},120);});owner.pdfResize.observe(host);}await paint();
-    }catch(error){clearTimeout(owner.pdfTimeout);if(preview===owner)host.textContent=error.name==='PasswordException'?'This PDF is password protected. Download it to open it.':'Unable to preview this PDF. Download the original file.';}
+      bindWheelZoom(host.querySelector('.pdf-surface'),owner,amount=>{const next=Math.max(.5,Math.min(4,zoom+amount));if(next===zoom)return;zoom=next;controls.querySelector('[data-pdf-out]').disabled=zoom===.5;controls.querySelector('[data-pdf-in]').disabled=zoom===4;if(!owner.pdfWheelTimer)owner.pdfWheelTimer=setTimeout(()=>{owner.pdfWheelTimer=null;if(previewActive(owner,host))paint();},80);});
+      controls.querySelector('[data-pdf-prev]').onclick=()=>{if(pageNumber>1){pageNumber--;paint();}};controls.querySelector('[data-pdf-next]').onclick=()=>{if(pageNumber<pdf.numPages){pageNumber++;paint();}};controls.querySelector('[data-pdf-fit]').onclick=()=>{zoom=1;paint();};controls.querySelector('[data-pdf-out]').onclick=()=>{zoom=Math.max(.5,zoom-.25);paint();};controls.querySelector('[data-pdf-in]').onclick=()=>{zoom=Math.min(4,zoom+.25);paint();};if(window.ResizeObserver){let observedWidth=Math.round(host.clientWidth);owner.pdfResize=new ResizeObserver(()=>{const width=Math.round(host.clientWidth);if(width===observedWidth)return;observedWidth=width;clearTimeout(owner.pdfResizeTimer);owner.pdfResizeTimer=setTimeout(()=>{if(previewActive(owner,host))paint();},120);});owner.pdfResize.observe(host);}await paint();
+    }catch(error){clearTimeout(owner.pdfTimeout);if(previewActive(owner,host))host.textContent=error.name==='PasswordException'?'This PDF is password protected. Download it to open it.':'Unable to preview this PDF. Download the original file.';}
   }
   function download(event,taskId,fileId){const file=hooks.task(taskId)?.attachments?.find(f=>f.id===fileId);if(!window.DATA.session||!hooks.canRead(taskId)||!(file?.downloadUrl||file?.url)||file.state&&file.state!=='available'){event.preventDefault();app.toast('File unavailable','error');return false;}if(!transport())file.lastAccessAt=Date.now();return true;}
   function reorderAttachment(taskId,fileId,targetId,after=false){
@@ -498,7 +505,16 @@
   document.addEventListener('dragend',clearDropHighlight);window.addEventListener('blur',clearDropHighlight);window.addEventListener('hashchange',clearDropHighlight);
   document.addEventListener('keydown',e=>{if(!preview)return;if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(preview.hideRetentionHelp?.())return;closePreview();}if(e.key==='Tab'){const items=[...document.querySelectorAll('.file-dialog button:not(:disabled),.file-dialog a[href],.file-dialog input:not(:disabled),.file-dialog summary,.file-dialog [tabindex="0"]')].filter(el=>!el.closest('[hidden]')&&el.getClientRects().length),first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}},true);
   window.addEventListener('hashchange',closePreview);
-  window.Uploads={validateAccess(){if(preview&&!hooks.canRead(preview.taskId))closePreview();},inspect,mount,attachmentHeader,renderAttachments,storageHtml,cleanup,usage,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(owner){jobs.filter(j=>j.owner===owner).forEach(j=>{j.cancelled=true;j.reader?.abort();});if(transport()){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();serverStorage=null;serverStorageState='unloaded';closePreview();}},
+  window.Uploads={validateAccess(){if(preview&&!(preview.collection?preview.collection.canRead():hooks.canRead(preview.taskId)))closePreview();},
+    /** Show an image or PDF inside a page, with its controls in `tools`. Returns a disposer. */
+    mountInlinePreview(host,file,tools){
+      const owner={inline:true,disposed:false,scale:1};
+      if(file.previewKind==='pdf')renderPDF(host,file,owner,tools);
+      else if(file.previewKind==='image')renderImage(host,file,owner,tools);
+      return ()=>disposePreview(owner);
+    },
+    /** Open read-only files, such as synced Knowledge files, in the file dialog. */
+    previewCollection(files,fileId,canRead){if(typeof canRead==='function'&&canRead())previewAttachment(null,fileId,{files,canRead});},inspect,mount,attachmentHeader,renderAttachments,storageHtml,cleanup,usage,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(owner){jobs.filter(j=>j.owner===owner).forEach(j=>{j.cancelled=true;j.reader?.abort();});if(transport()){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();serverStorage=null;serverStorageState='unloaded';closePreview();}},
     bind(api,callbacks){app=api;hooks=callbacks;
       let accountScope=window.DATA.session?.id;
       runtimeUnsubscribe?.();runtimeUnsubscribe=window.OneloopTransport?.subscribe?.(change=>{if(change?.type==='auth'&&accountScope!==window.DATA.session?.id){window.Uploads.clearAccount();accountScope=window.DATA.session?.id;}if(change?.type==='bootstrap'){productionLoaded=new WeakSet();serverStorage=null;serverStorageState='unloaded';return;}if(change?.type==='sse'){if(app.context?.().view==='storage')loadStorageUsage();if(change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=hooks.task(change.taskId);if(changedTask)loadProduction(changedTask.id,true);}}});

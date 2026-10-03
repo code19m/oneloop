@@ -51,6 +51,15 @@ struct FileQuery {
     path: String,
 }
 
+/// The preview frame adds `reload` so a restart always fetches again.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewQuery {
+    path: String,
+    #[serde(default, rename = "reload")]
+    _reload: Option<String>,
+}
+
 async fn view(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
@@ -107,7 +116,7 @@ async fn html_preview(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
-    ApiQuery(query): ApiQuery<FileQuery>,
+    ApiQuery(query): ApiQuery<PreviewQuery>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
     require_safe_file_destination(&headers)?;

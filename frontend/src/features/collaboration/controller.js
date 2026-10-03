@@ -405,7 +405,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
     }
     // These hints cannot change cards, timeline planning, Pool or account screens.
     if(kind==='activity.changed'){
-      if(['comment','attachment'].includes(hint.entityType))return;
+      // Knowledge syncs refresh only the Knowledge page, which follows them itself.
+      if(['comment','attachment','knowledge_source'].includes(hint.entityType))return;
       const accessChange=['project','membership'].includes(hint.entityType);
       if(['inbox','profile','users','storage','settings'].includes(context.view)&&!accessChange)return;
     }
@@ -430,7 +431,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       source=eventSourceFactory('/api/events'+(initial&&data.syncCursor?`?cursor=${encodeURIComponent(data.syncCursor)}`:''));
       const activeSource=source;
       source.addEventListener?.('open',()=>{if(source!==activeSource)return;transport.publish?.({type:'live-open'});globalThis.OneloopRecovery?.liveConnected?.();});
-      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{})});void reconcile(kind,payload);};
+      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
       source.addEventListener?.('error',()=>{
         if(source!==activeSource)return;

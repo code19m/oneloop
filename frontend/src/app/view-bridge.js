@@ -529,7 +529,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       else if(current.view==='profile')await loadProfileAccess();
       if(!stillCurrent())return {stale:true};
       const projectId=context().projectId;
-      if(!reuseBootstrap&&(['roadmap','task'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId);
+      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId);
       return {stale:!stillCurrent()};
     }catch(error){
       if(!stillCurrent())return {stale:true};

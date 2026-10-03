@@ -17,6 +17,7 @@ import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
 import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
 import { installCollaborationController } from '../features/collaboration/controller.js';
+import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController, leaveUnavailableProject } from '../features/recovery/controller.js';
 
 const data = createLegacyData();
@@ -53,6 +54,7 @@ runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection
 runtimeHooks = installAttachmentTransport(runtimeHooks);
 globalThis.OneloopTransport = runtimeHooks;
 installCollaborationController({transport:runtimeHooks});
+installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
 const auth = createAuthController({
   api, data,
@@ -90,7 +92,7 @@ const buildMonitor=createBuildMonitor({
   onUpdate:()=>recovery.buildChanged(),
 });
 runtimeHooks.subscribe(change=>{
-  const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment'].includes(change.entityType)
+  const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
     ||change.type==='command'&&change.result?.entities?.some((/** @type {{entityType?:string}} */ entity)=>['project','membership','track','epic','milestone','task','taskBlock','poolItem'].includes(entity.entityType));
   if(boardChanged&&app?.context?.().view!=='board')reads.invalidateBoard();
   if(change.type==='live-open')void buildMonitor.check();

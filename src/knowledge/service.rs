@@ -120,6 +120,8 @@ pub struct KnowledgeFile {
     pub size: i64,
     pub kind: Option<PreviewKind>,
     pub updated_at: i64,
+    /// Changes whenever the content does; clients key caches on it.
+    pub version: String,
 }
 
 /// The connection as administrators manage it. A saved token is reported only
@@ -468,7 +470,7 @@ impl KnowledgeService {
                     });
                 };
                 let mut statement = connection.prepare(
-                    "SELECT path,size,preview_kind,updated_at FROM knowledge_files
+                    "SELECT path,size,preview_kind,updated_at,substr(checksum,1,16) FROM knowledge_files
                      WHERE project_id=?1 ORDER BY path",
                 )?;
                 let files = statement
@@ -478,6 +480,7 @@ impl KnowledgeService {
                             size: row.get(1)?,
                             kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref()),
                             updated_at: row.get(3)?,
+                            version: row.get(4)?,
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1058,7 +1061,7 @@ fn update(
     if !moved && !credentials_changed {
         return Err(AppError::validation(
             "payload",
-            "no knowledge base settings changed",
+            "no knowledge base fields changed",
         ));
     }
     let mut events = Vec::new();
