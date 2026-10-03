@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Docker quick start from docs/src/quick-start.md against a locally built image.
+# Run the Docker install steps from docs/src/install.md against a locally built image.
 #
 # Usage: scripts/check-quickstart.sh [IMAGE]
 #
@@ -14,7 +14,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 image=${1:-oneloop:check}
 port=${QUICKSTART_PORT:-8080}
-guide="$root/docs/src/quick-start.md"
+guide="$root/docs/src/install.md"
 id="oneloop-quickstart-$$"
 
 fail() { echo "check-quickstart: $*" >&2; exit 1; }

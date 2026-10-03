@@ -1,6 +1,5 @@
 //! The documentation site names every configuration variable, command and MCP
-//! tool the binary offers, and the quick start's compose file matches the one
-//! in deploy/.
+//! tool the binary offers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -68,20 +67,20 @@ fn table_rows<'a>(docs: &'a str, heading: &str) -> Vec<Vec<&'a str>> {
 
 #[test]
 fn configuration_reference_names_every_environment_variable() {
-    let docs = read("docs/src/configuration.md");
+    let docs = read("docs/src/reference.md");
     let missing = configuration_variables()
         .into_iter()
         .filter(|name| !docs.contains(&format!("`{name}`")))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
-        "docs/src/configuration.md does not mention {missing:?}"
+        "docs/src/reference.md does not mention {missing:?}"
     );
 }
 
 #[test]
 fn command_reference_names_every_subcommand() {
-    let docs = read("docs/src/cli.md");
+    let docs = read("docs/src/reference.md");
     let mut paths = Vec::new();
     command_paths(&Cli::command(), "", &mut paths);
     assert!(paths.iter().any(|path| path == "db migrate"));
@@ -91,22 +90,7 @@ fn command_reference_names_every_subcommand() {
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
-        "docs/src/cli.md does not mention {missing:?}"
-    );
-}
-
-#[test]
-fn quick_start_compose_file_matches_the_deploy_example() {
-    let docs = read("docs/src/quick-start.md");
-    let block = docs
-        .split_once("```yaml\n")
-        .and_then(|(_, rest)| rest.split_once("```\n"))
-        .expect("quick-start.md has a yaml block")
-        .0;
-    assert_eq!(
-        block,
-        read("deploy/compose.yaml"),
-        "the compose.yaml in docs/src/quick-start.md differs from deploy/compose.yaml"
+        "docs/src/reference.md does not mention {missing:?}"
     );
 }
 
@@ -120,13 +104,13 @@ async fn mcp_reference_lists_every_tool_and_operation() {
         McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
     let listed = mcp.request("tools/list", json!({})).await;
     let registered = listed["result"]["tools"].as_array().unwrap();
-    let docs = read("docs/src/mcp-tools.md");
+    let docs = read("docs/src/mcp.md");
 
-    let documented_access = table_rows(&docs, "# MCP tools")
+    let documented_access = table_rows(&docs, "## Tool reference")
         .into_iter()
         .map(|cells| (cells[0].trim_matches('`').to_owned(), cells[2].to_owned()))
         .collect::<BTreeMap<_, _>>();
-    let documented_operations = table_rows(&docs, "## Operations")
+    let documented_operations = table_rows(&docs, "### Operations")
         .into_iter()
         .map(|cells| {
             let operations = cells[1]
@@ -168,7 +152,7 @@ async fn mcp_reference_lists_every_tool_and_operation() {
             assert_eq!(
                 documented,
                 Some(&operations),
-                "operations for {name} in docs/src/mcp-tools.md"
+                "operations for {name} in docs/src/mcp.md"
             );
         }
     }

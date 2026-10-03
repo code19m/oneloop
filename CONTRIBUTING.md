@@ -114,20 +114,34 @@ contribute work you have the right to license.
 The site in `docs/src/` is for people who use or run oneloop. Preview it with
 `mdbook serve docs`.
 
-- Write for the reader, not about the code: use "you", short sentences and a
-  friendly, precise tone.
-- Start every page with one sentence that says what the reader will get from it.
-- Show the example first (a command, a config snippet or a screenshot), then
-  explain.
-- Task pages use numbered steps and end with "Check that it worked". Reference
-  pages lead with a table.
-- Use UI labels exactly as the app shows them, such as **Board**, **Pool**,
-  **Inbox** and **Planning**.
-- Keep pages short, and change them in the same pull request as the behavior.
-  A new environment variable belongs in `configuration.md`, a new command in
-  `cli.md` and a new MCP tool or operation in `mcp-tools.md`. Tests in
-  `tests/integration/docs.rs` check all three, and that the quick start's
-  `compose.yaml` matches `deploy/compose.yaml`.
+- Write plain English that non-native speakers can follow: short sentences,
+  common words, "you" and the active voice.
+- Say each thing once, on the page where readers look for it, and link to it
+  from other pages. Each page has one job:
+
+  | Page | Covers |
+  | --- | --- |
+  | `install.md` | Getting oneloop running on one computer |
+  | `user-guide.md`, `admin-guide.md` | Using the app, and managing people, projects and storage |
+  | `mcp.md` | Connecting AI assistants, and the MCP tool reference |
+  | `production.md` | HTTPS, the reverse proxy, services and security |
+  | `backups-and-upgrades.md`, `troubleshooting.md` | Running oneloop over time |
+  | `reference.md` | Every setting, command and limit |
+
+- Start with what the reader needs, not with a sentence about the page. Show the
+  command or the setting first, then explain what isn't obvious.
+- Explain rules and behavior that readers can't see in the app. Skip
+  click-by-click steps for things the interface already makes clear.
+- Use UI labels exactly as the app shows them, such as **Board**, **Pool** and
+  **Planning**.
+- Keep the sidebar short: add a section to a page before you add a page. When
+  you rename or remove a page or heading that people may have linked to, add a
+  redirect in `docs/book.toml`.
+- Change the docs in the same pull request as the behavior. A new environment
+  variable or command goes in `reference.md`, and a new MCP tool or operation in
+  `mcp.md`; tests in `tests/integration/docs.rs` check both. The pages include
+  `deploy/compose.yaml` and the nginx example directly, so edit those files
+  instead of copying them.
 
 ## Releasing (maintainers)
 

@@ -1,6 +1,6 @@
 # Install as /etc/systemd/system/oneloop.service, then set your public address
 # and other settings below. Create the oneloop account, its data directory and
-# the database first: https://code19m.github.io/oneloop/running-as-a-service.html
+# the database first: https://code19m.github.io/oneloop/production.html#systemd-linux
 [Unit]
 Description=oneloop team task management
 Wants=network-online.target

@@ -1,0 +1,91 @@
+# Admin guide
+
+Admins manage people, projects and storage, and they can see and change every
+project. As an admin, you find **Users** and **Storage** in the menu under your
+name at the bottom of the sidebar.
+
+## Permissions
+
+Access is set for each project. A person you add to a project becomes a member
+with read-only access. Tick **Roadmap** or **Board** to let them change things.
+
+| Action | Member | + Roadmap | + Board | Admin |
+| --- | --- | --- | --- | --- |
+| See the project's Roadmap, Board, tasks, files and Team Pool | Yes | Yes | Yes | Every project |
+| Comment, reply and mention people | Yes | Yes | Yes | Every project |
+| Edit or delete comments | Own | Own | Own | Any |
+| Use their private My Pool | Yes | Yes | Yes | Yes |
+| Be assigned tasks | Yes | Yes | Yes | Where also a member |
+| Change tracks, epics and milestones | No | Yes | No | Yes |
+| Create, move, block and delete tasks, upload files, change the Team Pool | No | No | Yes | Yes |
+| Manage projects, members, users and storage | No | No | No | Yes |
+
+People don't see projects they aren't members of. Changes apply at once, also
+to their connected AI assistants.
+
+## Add people
+
+You create the first admin on the server when you [install](install.md)
+oneloop. Add everyone else in the app:
+
+1. Open **Users** and choose **New user**.
+2. Enter a **Username** and a **Full name**. Tick **Admin** only for people who
+   should manage the whole instance.
+3. Choose **Create user**. oneloop shows a temporary password once. Send it to
+   the person privately. They choose their own password when they first sign
+   in.
+
+Usernames have 3 to 32 lowercase letters, digits, dots, underscores or hyphens,
+and they can't be changed later. Passwords need at least 5 characters. Ask
+people, especially admins, to use long passphrases.
+
+You can also create accounts on the server with
+[`oneloop user add`](reference.md#commands).
+
+## Give access to a project
+
+1. Select the project and open **Settings** in the sidebar.
+2. Under **Project access**, pick a person in **Add member**.
+3. Tick **Roadmap**, **Board** or both.
+
+To remove someone, choose **Remove from project** (×) on their row. You can't
+remove a person while they have open tasks in the project, so reassign those
+tasks first.
+
+## Reset a password or deactivate someone
+
+Open **Users** and click the person.
+
+- **Reset password** shows a new temporary password once.
+- To deactivate the person, clear **Active** and choose **Save**. Their work
+  and history stay, because accounts are never deleted. Tick **Active** again
+  to restore them with their old project access.
+
+Both actions sign the person out everywhere and disconnect their AI assistants.
+The last active admin can't be deactivated or lose the admin role.
+
+If no admin can sign in, reset a password on the server. This works while
+oneloop is running:
+
+```sh
+oneloop user passwd alice
+```
+
+## Projects
+
+To create a project, choose **New project** in the project selector. A project
+needs a name and a task prefix of 2 to 4 letters or digits. Task IDs use the
+prefix, such as `APP-042`. If you change the prefix later, only new tasks use
+it.
+
+To delete a project, open its **Settings**, choose **Delete project** and type
+the project's name. This deletes all of the project's work and files, and you
+can't undo it. The last project can't be deleted.
+
+## Storage
+
+The **Storage** page shows how much space uploaded files use, in total and for
+each project. When storage runs low, oneloop removes old temporary files by
+itself, and **Clean up now** does it at once. [Storage](reference.md#storage)
+explains the rules. When storage is full, uploads fail. Then delete files, or
+raise `ONELOOP_STORAGE_LIMIT`.

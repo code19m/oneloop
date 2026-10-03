@@ -42,5 +42,6 @@ account, with a private data directory and private backups. It trusts the
 people who can reach its host, read its data directory or run its commands, and
 it relies on the proxy for TLS. Problems that need one of those protections to
 be missing, or that sit in a third-party client or AI model, are out of scope.
-The [security page](https://code19m.github.io/oneloop/security.html) of the
-documentation describes the deployment boundary in detail.
+The
+[security checklist](https://code19m.github.io/oneloop/production.html#security-checklist)
+in the documentation lists what a safe deployment needs.

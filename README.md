@@ -16,58 +16,50 @@
 
 ![The oneloop Board, with task cards in the Planning, In Progress, In Review and Done columns](docs/src/assets/screenshots/board.png)
 
-oneloop gives a small team one calm place to plan and track work: a Roadmap for
-the big picture, a Board for day-to-day tasks, and task pages that keep the
-discussion, files and history together. It runs as one binary with SQLite, so
-hosting it is as simple as running a single container.
+oneloop is a lightweight task manager for small teams. You host it yourself.
+It is a single program with a built-in database, so it runs well on a small
+server or in one container.
 
 ## Features
 
-- **Roadmap**: tracks, epics and milestones on a timeline.
-- **Board**: Planning, In Progress, In Review and Done, with drag and drop, filters and a Pool for loose ideas.
-- **Task pages**: assignees, deadlines, blocking, comments with replies and mentions, and attachments with safe previews for images, PDF, Markdown, diagrams and HTML.
-- **Inbox**: mentions, replies, assignments and unblocked tasks that concern you.
-- **Live updates**: changes appear for everyone without a refresh.
-- **AI assistants**: connect Claude Code, Codex or any MCP client, with access you choose per project.
-- **Simple to run**: one binary, SQLite, built-in backup and restore, light and dark themes.
+- **Roadmap**: plan tracks, epics and milestones on a timeline.
+- **Board**: move tasks through Planning, In Progress, In Review and Done. Keep
+  loose ideas in the Pool.
+- **Tasks**: assignees, deadlines, blocking, comments, mentions, and files with
+  previews.
+- **Inbox**: one private list of mentions, replies, assignments and unblocked
+  tasks.
+- **Live updates**: everyone sees changes without reloading the page.
+- **AI assistants**: connect Claude Code, Codex or another MCP client, with the
+  access you choose.
+- **Easy to run**: one binary, SQLite storage and backups with one command.
 
-## Install
+## Quick start
 
-With Docker:
-
-```sh
-docker run --rm -v oneloop-data:/data ghcr.io/code19m/oneloop:0.1.0-rc.1 db migrate
-docker run --rm -it -v oneloop-data:/data ghcr.io/code19m/oneloop:0.1.0-rc.1 user add admin --admin
-docker run -d --name oneloop --restart unless-stopped -v oneloop-data:/data -p 127.0.0.1:8080:8080 \
-  -e ONELOOP_PUBLIC_URL=http://localhost:8080 ghcr.io/code19m/oneloop:0.1.0-rc.1
-```
-
-Then open <http://localhost:8080> and sign in.
-
-From source, with Rust 1.92 or newer:
+With Docker Compose:
 
 ```sh
-cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.1 --locked
+mkdir oneloop && cd oneloop
+curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.1/deploy/compose.yaml
+docker compose run --rm oneloop db migrate
+docker compose run --rm oneloop user add admin --admin
+docker compose up -d
 ```
 
-The [quick start](https://code19m.github.io/oneloop/quick-start.html) walks you
-through Docker Compose step by step, and
-[Install from source](https://code19m.github.io/oneloop/install-from-source.html)
-covers running the binary without Docker. For anything beyond trying oneloop on
-your own computer, put it behind HTTPS; see
-[HTTPS and reverse proxy](https://code19m.github.io/oneloop/reverse-proxy.html).
+Then open <http://localhost:8080> and sign in. The
+[install guide](https://code19m.github.io/oneloop/install.html) explains each
+step and how to build from source. Before your team uses oneloop, set up HTTPS
+with the [production guide](https://code19m.github.io/oneloop/production.html).
 
-## Documentation
-
-Everything else is in the [documentation](https://code19m.github.io/oneloop/):
-using the Roadmap and Board, configuration, users and permissions, backups and
-upgrades, and connecting AI assistants.
+The [documentation](https://code19m.github.io/oneloop/) covers everything else:
+the user and admin guides, AI assistants, backups and upgrades, and the
+reference.
 
 ## Status
 
-oneloop is at its first release candidate. It's ready for small teams to try.
-Expect rough edges, and read the [changelog](CHANGELOG.md) before you upgrade.
-It runs on Linux and macOS, natively or in Docker. Windows is not supported.
+oneloop is at its first release candidate. Small teams can use it, but expect
+some bugs, and read the [changelog](CHANGELOG.md) before you upgrade. It runs on
+Linux and macOS, directly or in Docker. Windows is not supported.
 
 ## Contributing
 

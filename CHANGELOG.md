@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation has fewer, shorter pages. Links to the old pages redirect
+  to the new ones.
+
 ### Fixed
 
 - A sidebar click is no longer lost when the page redraws at the same moment,

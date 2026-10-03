@@ -17,4 +17,26 @@ no-section-label = true
 enable = true
 
 [output.html.redirect]
-"/install-cargo.html" = "install-from-source.html"
+# Pages from 0.1.0-rc.1, merged into the current pages.
+"/quick-start.html" = "install.html"
+"/install-from-source.html" = "install.html#from-source"
+"/install-cargo.html" = "install.html#from-source"
+"/roadmap.html" = "user-guide.html#roadmap"
+"/roadmap.html#projects" = "admin-guide.html#projects"
+"/board-and-tasks.html" = "user-guide.html#board"
+"/board-and-tasks.html#blocking" = "user-guide.html#blocking"
+"/board-and-tasks.html#attachments-and-previews" = "user-guide.html#files"
+"/comments-and-inbox.html" = "user-guide.html#comments-and-mentions"
+"/comments-and-inbox.html#the-inbox" = "user-guide.html#inbox"
+"/account.html" = "user-guide.html#your-account"
+"/users-and-permissions.html" = "admin-guide.html"
+"/reverse-proxy.html" = "production.html#https-with-a-reverse-proxy"
+"/reverse-proxy.html#trusted-proxy" = "production.html#trusted-proxy"
+"/running-as-a-service.html" = "production.html#start-at-boot"
+"/security.html" = "production.html#security-checklist"
+"/configuration.html" = "reference.html#configuration"
+"/configuration.html#attachment-storage" = "reference.html#storage"
+"/cli.html" = "reference.html#commands"
+"/limits.html" = "reference.html#limits"
+"/mcp-tools.html" = "mcp.html#tool-reference"
+"/contributing.html" = "https://github.com/code19m/oneloop/blob/main/CONTRIBUTING.md"

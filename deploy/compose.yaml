@@ -1,5 +1,5 @@
 # oneloop with Docker Compose.
-# Walkthrough: https://code19m.github.io/oneloop/quick-start.html
+# Guide: https://code19m.github.io/oneloop/install.html
 name: oneloop
 
 services:

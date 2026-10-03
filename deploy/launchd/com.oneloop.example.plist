@@ -57,7 +57,7 @@
   <key>ThrottleInterval</key>
   <integer>60</integer>
   <!-- Both streams share one log. Rotate it only while the job is booted out:
-       https://code19m.github.io/oneloop/running-as-a-service.html -->
+       https://code19m.github.io/oneloop/production.html#launchd-macos -->
   <key>StandardOutPath</key>
   <string>/Users/REPLACE_ME/Library/Logs/oneloop.log</string>
   <key>StandardErrorPath</key>
