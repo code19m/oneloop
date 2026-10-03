@@ -17,6 +17,7 @@ All notable changes to oneloop are recorded here. The format follows
   for example while a task from another project is loading.
 - On narrow screens, the Board's filters no longer sit against the top edge,
   and its first column no longer touches the left edge.
+- Page titles no longer show a focus ring after a refresh or a page change.
 
 ## [0.1.0-rc.1] - 2026-09-28
 
