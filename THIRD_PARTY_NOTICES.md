@@ -226,7 +226,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | httparse@1.10.1 | MIT OR Apache-2.0 |
 | httpdate@1.0.3 | MIT OR Apache-2.0 |
 | hybrid-array@0.4.15 | MIT OR Apache-2.0 |
-| hyper-util@0.1.20 | MIT |
+| hyper-util@0.1.21 | MIT |
 | hyper@1.11.1 | MIT |
 | iconv-lite@0.6.3 | MIT |
 | icu_collections@2.3.0 | Unicode-3.0 |
@@ -3022,7 +3022,7 @@ THIS SOFTWARE.
 - httparse@1.10.1: Copyright (c) 2015-2025 Sean McArthur
 - httpdate@1.0.3: Copyright (c) 2016 Pyfisch
 - hybrid-array@0.4.15: Copyright (c) 2022-2026 The RustCrypto Project Developers
-- hyper-util@0.1.20: Copyright (c) 2023-2025 Sean McArthur
+- hyper-util@0.1.21: Copyright (c) 2023-2025 Sean McArthur
 - hyper@1.11.1: Copyright (c) 2014-2026 Sean McArthur
 - iconv-lite@0.6.3: Copyright (c) 2011 Alexander Shtuchkin
 - ident_case@1.0.1
