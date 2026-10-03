@@ -218,7 +218,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     return `<div class="knowledge-banner" role="status">${icon('warn')}<span>Knowledge may be out of date<small>Couldn’t sync with the repository.${since}</small></span>${isAdmin() ? retryButton(data) : ''}</div>`;
   }
 
-  const toolbarHtml = () => `<div class="knowledge-toolbar${S.finding ? ' is-searching' : ''}"><label class="knowledge-search">${icon('search')}<input type="search" aria-label="Search knowledge" placeholder="Search knowledge" value="${esc(S.query)}" autocomplete="off" spellcheck="false" aria-controls="knowledge-results" aria-expanded="${S.finding}" data-knowledge-search><button type="button" class="knowledge-search-clear" aria-label="Clear search" data-knowledge-action="clear-query">${icon('close', 12)}</button><kbd class="knowledge-search-kbd" aria-hidden="true">/</kbd></label><button type="button" class="btn quiet knowledge-search-cancel" data-knowledge-action="cancel-search">Cancel</button></div>`;
+  const toolbarHtml = () => `<div class="knowledge-toolbar${S.finding ? ' is-searching' : ''}"><label class="knowledge-search">${icon('search')}<input type="search" aria-label="Search knowledge" placeholder="Search knowledge" value="${esc(S.query)}" autocomplete="off" spellcheck="false" ${S.finding ? 'aria-controls="knowledge-results" ' : ''}data-knowledge-search><button type="button" class="knowledge-search-clear" aria-label="Clear search" data-knowledge-action="clear-query">${icon('close', 12)}</button><kbd class="knowledge-search-kbd" aria-hidden="true">/</kbd></label><button type="button" class="btn quiet knowledge-search-cancel" data-knowledge-action="cancel-search">Cancel</button></div>`;
 
   function breadcrumbHtml(/** @type {string} */ projectId, /** @type {KnowledgeView} */ data) {
     const parts = S.path.split('/').filter(Boolean), root = data.folder ? baseName(data.folder) : 'Knowledge';
@@ -292,7 +292,9 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     disposePreviews(reader);
     setHTML(reader, bannerHtml(data) + readerHtml(S.projectId, data));
     documentObject.querySelector('.knowledge-toolbar')?.classList.toggle('is-searching', S.finding);
-    documentObject.querySelector('[data-knowledge-search]')?.setAttribute('aria-expanded', String(S.finding));
+    // The results exist only while searching; the field names them only then.
+    documentObject.querySelector('[data-knowledge-search]')?.toggleAttribute('aria-controls', false);
+    if (S.finding) documentObject.querySelector('[data-knowledge-search]')?.setAttribute('aria-controls', 'knowledge-results');
     const workspace = documentObject.querySelector('.knowledge-workspace');
     if (workspace) workspace.setAttribute('data-knowledge-key', workspaceKey(S.projectId));
   }
