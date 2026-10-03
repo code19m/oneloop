@@ -9,7 +9,6 @@ repository = "https://github.com/code19m/oneloop"
 homepage = "https://code19m.github.io/oneloop/"
 # Distributed as a Docker image and from source; never published to a registry.
 publish = false
-build = "build.rs"
 # All integration tests live in one crate so Cargo links a single test binary.
 autotests = false
 
@@ -21,14 +20,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "now"] 
 chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive"] }
 fs4 = { version = "1.1", default-features = false }
+getrandom = "0.4"
 hex = "0.4"
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
-ipnet = "2.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+ipnet = "2.11"
 mime_guess = "2.0"
-getrandom = "0.4"
-rpassword = "7.4"
 rmcp = { version = "3.4", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+rpassword = "7.4"
 rusqlite = { version = "0.40.2", features = ["backup", "bundled", "functions"] }
 rust-embed = { version = "8.7", features = ["include-exclude"] }
 schemars = "1"
@@ -51,14 +50,14 @@ walkdir = "2.5"
 sha2 = "0.10"
 
 [dev-dependencies]
-tokio = { version = "1.48", features = ["test-util"] }
-scraper = "0.27"
-proptest = "1.9"
-rusqlite = { version = "0.40.2", features = ["trace"] }
 assert_cmd = "2.0"
 http-body-util = "0.1"
 predicates = "3.1"
+proptest = "1.9"
+rusqlite = { version = "0.40.2", features = ["trace"] }
+scraper = "0.27"
 tempfile = "3.23"
+tokio = { version = "1.48", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
@@ -78,26 +77,12 @@ strip = "symbols"
 # Keep application code easy to debug while accelerating password, image and
 # SQLite work. Bundled SQLite at opt-level 0 made SQL-heavy tests about twice
 # as slow and cost a fifth more test CPU time.
-[profile.dev.package.argon2]
-opt-level = 2
-
-[profile.dev.package.blake2]
-opt-level = 2
-
-[profile.dev.package.sha2]
-opt-level = 2
-
-[profile.dev.package.image]
-opt-level = 2
-
-[profile.dev.package.png]
-opt-level = 2
-
-[profile.dev.package.zune-jpeg]
-opt-level = 2
-
-[profile.dev.package.image-webp]
-opt-level = 2
-
-[profile.dev.package.libsqlite3-sys]
-opt-level = 2
+[profile.dev.package]
+argon2 = { opt-level = 2 }
+blake2 = { opt-level = 2 }
+sha2 = { opt-level = 2 }
+image = { opt-level = 2 }
+png = { opt-level = 2 }
+zune-jpeg = { opt-level = 2 }
+image-webp = { opt-level = 2 }
+libsqlite3-sys = { opt-level = 2 }
