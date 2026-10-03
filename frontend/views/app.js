@@ -51,7 +51,8 @@
   };
   const formatInstant = (value) => {
     const parts = instantParts(value);
-    return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${instantFormatter.resolvedOptions().timeZone}` : 'Unavailable';
+    // The instance time zone applies everywhere, so the label would only add noise.
+    return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}` : 'Unavailable';
   };
   const instanceDateKey = (value=instanceNow()) => formatInstant(value).slice(0, 10);
   const previousDate = value => { const date = d(value); date.setUTCDate(date.getUTCDate() - 1); return iso(date); };

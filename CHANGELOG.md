@@ -22,6 +22,8 @@ All notable changes to oneloop are recorded here. The format follows
   flying back to its old place first.
 - "Try again in … seconds" after too many sign-in attempts now counts down,
   and says when you can try again.
+- Exact times, such as a task's creation time, no longer end with the time
+  zone name. They are still shown in the instance time zone.
 
 ## [0.1.0-rc.1] - 2026-09-28
 
