@@ -47,6 +47,11 @@ export async function openApp(page, instance, route = `task/${instance.projects[
   // A hash change keeps the signed-out document; load it again with the session.
   if (sameDocument) await page.reload({ waitUntil: 'commit' });
   await expectSignedIn(page);
+  await waitForLiveChannel(page);
+}
+
+/** Wait until this document's live event stream has opened, for example after page.reload(). */
+export async function waitForLiveChannel(page) {
   await expect.poll(() => page.evaluate(() => window.__oneloopLiveChannel ?? null), { message: 'live event stream opens' }).not.toBeNull();
 }
 

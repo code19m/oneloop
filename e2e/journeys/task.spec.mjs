@@ -1,5 +1,5 @@
 // The task page: editing, blocks, discussion and the activity feed.
-import { test, expect, openApp, holdResponses, command, useTheme } from '../support/test.mjs';
+import { test, expect, openApp, waitForLiveChannel, holdResponses, command, useTheme } from '../support/test.mjs';
 
 test('the task page integrates comments and attachments', { tag: '@smoke' }, async ({ page, instance }) => {
   await useTheme(page, 'dark');
@@ -152,6 +152,7 @@ test('feed updates reuse unchanged comments and animate only connected document 
   expect(await page.evaluate(() => window.invalidAnimations)).toBe(0);
   // A new page starts a fresh window for the independent node/listener budget.
   await page.reload();
+  await waitForLiveChannel(page);
   await expect(page.locator('.comment-conversation')).toHaveCount(50);
   const liveComment = async i => {
     await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: `Live comment ${i}`, mentions: [] });
@@ -182,6 +183,21 @@ test('feed updates reuse unchanged comments and animate only connected document 
   expect(after.Nodes).toBeLessThan(baseline.Nodes * 1.15 + 100);
   expect(after.JSEventListeners).toBeLessThan(baseline.JSEventListeners * 1.15 + 20);
   await cdp.detach();
+});
+
+test('Load older activity still works when a live comment arrives during the click', async ({ page, instance }) => {
+  const task = instance.projects[0].task;
+  for (let i = 0; i < 55; i++) await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: `Comment ${i}`, mentions: [] });
+  await openApp(page, instance);
+  await expect(page.locator('.comment-conversation')).toHaveCount(50);
+  await expect(page.locator('.timeline')).not.toContainText('Comment 0');
+  await page.getByRole('button', { name: 'Load older activity' }).hover();
+  await page.mouse.down();
+  // The live update refreshes the timeline between press and release.
+  await command(instance.writer, 'discussion.comment.create', { taskId: task.id, content: 'Live during the click', mentions: [] });
+  await expect(page.locator('.timeline')).toContainText('Live during the click');
+  await page.mouse.up();
+  await expect(page.locator('.timeline')).toContainText('Comment 0');
 });
 
 test('large task and Inbox renderer workloads preserve unchanged rows', async ({ page, instance }, testInfo) => {

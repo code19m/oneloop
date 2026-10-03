@@ -28,6 +28,8 @@ All notable changes to oneloop are recorded here. The format follows
   touch.
 - A long comment's "Show more" preview now fades out smoothly, like a long
   description, instead of ending at a hard edge.
+- Clicking "Load older activity" is no longer lost when a new comment or
+  change arrives at the same moment.
 
 ## [0.1.0-rc.1] - 2026-09-28
 
