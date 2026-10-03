@@ -194,9 +194,10 @@ never move, so fix forward with a new version when needed.
 
 ### Dependencies
 
-Dependabot proposes weekly updates for Cargo, npm and GitHub Actions. The
-Dependencies workflow runs `cargo deny` (advisories, licenses, sources and
-bans), `npm audit` and a check of the vendored browser files on pull requests,
-on pushes to `main` and weekly. Browser libraries under `frontend/vendor/` are copied from exact npm
-releases rather than installed; [frontend/vendor/README.md](frontend/vendor/README.md)
+Dependabot proposes monthly updates for Cargo, npm and GitHub Actions, and
+security updates as soon as they are published. The Dependencies workflow runs
+`cargo deny` (advisories, licenses, sources and bans), `npm audit` and a check
+of the vendored browser files on pull requests, on pushes to `main` and weekly.
+Browser libraries under `frontend/vendor/` are copied from exact npm releases
+rather than installed; [frontend/vendor/README.md](frontend/vendor/README.md)
 explains how to update one. After any dependency change, regenerate the notices.
