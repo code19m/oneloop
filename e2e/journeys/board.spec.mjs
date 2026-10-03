@@ -11,6 +11,27 @@ test('Board keeps its filter controls and task columns', { tag: '@smoke' }, asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
 });
 
+test('on narrow screens the toolbar stays centered and the first column keeps its gutter', async ({ page, instance }) => {
+  await openApp(page, instance, 'board');
+  for (const width of [390, 600, 852]) {
+    await page.setViewportSize({ width, height: 800 });
+    // Column snapping must stop at the board's padding, not at its scroll edge.
+    await expect.poll(() => page.evaluate(() => {
+      const board = document.querySelector('.board');
+      return document.querySelector('.board .col').getBoundingClientRect().left - board.getBoundingClientRect().left;
+    }), `${width}: first column gutter`).toBeGreaterThanOrEqual(12);
+    const toolbar = await page.evaluate(() => {
+      const bar = document.querySelector('.page-header > .topbar');
+      const header = document.querySelector('.page-header').getBoundingClientRect();
+      const control = document.querySelector('.board-filters > *').getBoundingClientRect();
+      return { overflows: bar.scrollWidth > bar.clientWidth, scrollbar: bar.offsetHeight - bar.clientHeight, above: control.top - header.top, below: header.bottom - control.bottom };
+    });
+    expect(toolbar.overflows, `${width}: the toolbar scrolls sideways`).toBe(true);
+    expect(toolbar.scrollbar, `${width}: no scrollbar takes height from the toolbar`).toBe(0);
+    expect(Math.abs(toolbar.above - toolbar.below), `${width}: controls are vertically centered`).toBeLessThanOrEqual(1);
+  }
+});
+
 test('track filters open, select and close with the keyboard', async ({ page, instance }) => {
   await openApp(page, instance, 'board');
   const filter = page.locator('[data-filter-key="fTrack"]');

@@ -207,6 +207,10 @@ a { color: var(--accent); text-decoration: none; }
 
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; margin-left: var(--sb-w); transition: margin-left var(--speed-regular) var(--ease-shell);  background: var(--surface-canvas);}
 .topbar { overflow-x: auto; height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-bottom: 0; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; z-index: 15; }
+/* A narrow toolbar scrolls sideways. A visible scrollbar would take height from
+   the bar and push its controls against the top edge. */
+.topbar { scrollbar-width: none; }
+.topbar::-webkit-scrollbar { display: none; }
 .topbar h1 { flex-shrink: 0; white-space: nowrap; margin: 0; font-size: var(--text-ui); font-weight: 600; }
 .menu-btn { color: var(--ink-faint); }
 .side-scrim { display: none; }
@@ -657,8 +661,8 @@ div.ms-label {cursor:default}
   .task-page { flex-direction: column; padding: 16px; gap: 18px; }
   .tp-rail { width: 100%; }
   .tp-main { max-width: none; }
-  .board { padding: 10px; scroll-snap-type: x mandatory; }
-  .col { min-width: 250px; scroll-snap-align: start; }
+  .board { scroll-snap-type: x mandatory; }
+  .col { scroll-snap-align: start; }
   .peek { width: min(420px, 100vw); }
   .settings { padding: 16px; }
   .auth-card { width: calc(100vw - 32px); max-width: 360px; }
@@ -719,7 +723,7 @@ div.ms-label {cursor:default}
   .side-scrim { top: 52px; }
   .topbar { padding: 0 12px; gap: 8px; }
   .topbar h1 { white-space: nowrap; }
-  .board { padding: 16px 12px; }
+  .board { padding: 16px 12px; scroll-padding-inline: 12px; }
   .col { min-width: 270px; }
   .task-page { padding: 24px 18px; gap: 24px; }
   .tp-title { font-size: 23px; }
@@ -766,7 +770,6 @@ div.ms-label {cursor:default}
 @media (max-width: 480px) {
   .modal .field-row, .settings .field-row { flex-direction: column; gap: 0; }
   .modal-actions { flex-wrap: wrap; }
-  .board { scroll-padding-left: 12px; }
   .col { min-width: min(290px, calc(100vw - 36px)); }
 }
 @media (pointer: coarse) {
