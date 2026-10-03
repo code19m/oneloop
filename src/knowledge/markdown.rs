@@ -297,8 +297,11 @@ fn word_edge(chars: &[char], index: usize) -> bool {
 /// Plain text of block lines: list markers, quotes and table pipes removed.
 fn plain(lines: &[&str]) -> String {
     let mut text = String::new();
+    let mut previous_row = false;
     for line in lines {
         let mut line = line.trim();
+        // Table rows read as one list: cells and rows are both separated by dots.
+        let row = line.starts_with('|');
         if line
             .chars()
             .all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' '))
@@ -325,9 +328,10 @@ fn plain(lines: &[&str]) -> String {
         let inline = inline_text(&cells);
         if !inline.is_empty() {
             if !text.is_empty() {
-                text.push(' ');
+                text.push_str(if row && previous_row { " · " } else { " " });
             }
             text.push_str(&inline);
+            previous_row = row;
         }
     }
     text
@@ -393,6 +397,15 @@ mod tests {
             "tag https://example.com"
         );
         assert_eq!(inline_text(r"\*literal\*"), "*literal*");
+    }
+
+    #[test]
+    fn table_cells_and_rows_read_as_one_list() {
+        let text = "| Day | Due |\n| --- | --- |\n| 31 | 30 |\n| 30 | 28 |\n\nAfter the table.\n";
+        assert_eq!(
+            sections(text)[0].text,
+            "Day · Due · 31 · 30 · 30 · 28 After the table."
+        );
     }
 
     #[test]

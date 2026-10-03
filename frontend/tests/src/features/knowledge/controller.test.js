@@ -210,6 +210,29 @@ test('the connection dialog sends the access the URL needs and keeps a saved tok
   assert.equal(t.state.commands.filter(([operation]) => operation === 'knowledge.deploy-key.create').length, 1);
 });
 
+test('a reload while the dialog is open keeps what the administrator typed', async () => {
+  const source = { url: 'https://git.example.test/docs.git', repository: 'git.example.test/docs', branch: 'main', folder: 'docs', state: 'ready', hasToken: false, deployKey: null, revision: 2 };
+  const t = fixture({ page: 'settings', view: { ...handbook(), source } });
+  await painted(t);
+  t.state.context.modal = { type: 'knowledge' };
+  t.d.getElementById('overlay').innerHTML = `<div class="modal">${t.controller.modalHtml()}</div>`;
+  const form = t.d.querySelector('form[data-knowledge-form]');
+  form.elements.url.value = 'git@git.example.test:team/docs.git';
+  form.elements.branch.value = 'release';
+  const row = t.d.querySelector('.knowledge-source-row');
+  t.state.view = { ...t.state.view, source: { ...source, deployKey: 'ssh-ed25519 AAAA oneloop' } };
+  t.listeners.forEach((listener) => listener({ type: 'sse', kind: 'activity.changed', entityType: 'knowledge_source', projectId: 'p1' }));
+  await settle(); await settle();
+  assert.equal(t.d.querySelector('form[data-knowledge-form]'), form, 'the dialog is not rebuilt');
+  assert.equal(form.elements.branch.value, 'release');
+  assert.equal(form.querySelector('#knowledge-key').value, 'ssh-ed25519 AAAA oneloop');
+  assert.equal(t.d.querySelector('.knowledge-source-row'), row, 'the page waits until the dialog closes');
+  t.state.context.modal = null;
+  t.listeners.forEach((listener) => listener({ type: 'sse', kind: 'activity.changed', entityType: 'knowledge_source', projectId: 'p1' }));
+  await settle(); await settle();
+  assert.notEqual(t.d.querySelector('.knowledge-source-row'), row, 'the next read repaints the page');
+});
+
 test('server validation errors point at the field that needs a change', async () => {
   const t = fixture({ page: 'settings', view: { state: 'unconnected', syncing: false, folder: null, checkedAt: null, skippedFiles: 0, files: [] } });
   await painted(t);

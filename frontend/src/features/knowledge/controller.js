@@ -17,7 +17,7 @@ import {
 
 /** @typedef {import('./model.js').KnowledgeFile} KnowledgeFile */
 /** @typedef {{state:string,syncing:boolean,folder:string|null,checkedAt:number|null,skippedFiles:number,files:KnowledgeFile[],source?:any}} KnowledgeView */
-/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,version:number}} Cached */
+/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,version:number,unpainted:boolean}} Cached */
 
 const POLL_MS = 3000;
 const SEARCH_DELAY_MS = 120;
@@ -109,14 +109,15 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
 
   /** Load (or reload) one project's Knowledge view and repaint what shows it. */
   function load(/** @type {string} */ projectId, { background = false } = {}) {
-    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, version: 0 };
+    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, version: 0, unpainted: false };
     cache.set(projectId, entry);
     if (entry.promise) return entry.promise;
     entry.promise = api.request(`/api/projects/${encodeURIComponent(projectId)}/knowledge`, { background })
       .then((/** @type {KnowledgeView} */ data) => {
         const json = JSON.stringify(data);
         entry.error = null;
-        if (json !== entry.json) { entry.data = data; entry.json = json; entry.version++; repaint(projectId); }
+        if (json !== entry.json) { entry.data = data; entry.json = json; entry.version++; entry.unpainted = true; }
+        if (entry.unpainted) repaint(projectId);
       })
       .catch((/** @type {any} */ error) => {
         if (error?.code === 'aborted') return;
@@ -128,16 +129,18 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   }
 
   function repaint(/** @type {string} */ projectId) {
-    const current = context();
+    const current = context(), entry = cache.get(projectId);
     if (current.projectId !== projectId || !['knowledge', 'settings'].includes(current.view)) return;
-    app()?.refresh?.();
     if (current.modal?.type === 'knowledge') {
-      // Fill a deploy key or revision the dialog was waiting for, without losing typed values.
-      const form = documentObject.querySelector('form[data-knowledge-form]');
+      // A repaint would reset the dialog, so only fill a deploy key it waits
+      // for; the page behind it repaints on a later read.
       const key = viewOf(projectId)?.source?.deployKey;
-      const input = /** @type {HTMLInputElement|null} */ (form?.querySelector('#knowledge-key') ?? null);
+      const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('form[data-knowledge-form] #knowledge-key'));
       if (input && key && !input.value) input.value = key;
+      return;
     }
+    if (entry) entry.unpainted = false;
+    app()?.refresh?.();
   }
 
   /** While a sync runs, read again every few seconds: an unchanged branch sends no live hint. */
@@ -181,6 +184,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   function render(/** @type {string} */ projectId) {
     if (S.projectId !== projectId) { S.projectId = projectId; S.mode = 'tree'; S.path = ''; S.section = ''; S.valid = true; S.finding = false; S.query = ''; S.results = null; }
     const entry = cache.get(projectId), data = entry?.data ?? null;
+    if (entry) entry.unpainted = false;
     const ready = !!data && data.files.length > 0;
     const toolbar = ready ? toolbarHtml() : '';
     let body;
@@ -502,6 +506,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
 
   function settingsHtml(/** @type {string} */ projectId) {
     const entry = cache.get(projectId), data = entry?.data, source = data?.source;
+    if (entry) entry.unpainted = false;
     let row;
     if (!data) row = entry?.error ? `<p class="access-note" role="alert">${esc(errorText(entry.error, 'Knowledge base settings could not be loaded.'))} <button type="button" class="btn quiet" data-knowledge-action="reload">Retry</button></p>` : '<p class="access-note" role="status">Loading…</p>';
     else if (!source) row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b>No repository connected</b><small>Show a folder from any Git repository as this project’s knowledge base.</small></span><button type="button" class="btn" onclick="App.openModal('knowledge')">Connect repository</button></div>`;

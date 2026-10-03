@@ -353,7 +353,11 @@ async fn administrators_connect_a_folder_and_members_read_its_files() {
     }
 
     let version = file(&view, "README.md")["version"].as_str().unwrap();
-    assert_eq!(version.len(), 16, "a short content checksum keys client caches");
+    assert_eq!(
+        version.len(),
+        16,
+        "a short content checksum keys client caches"
+    );
 
     let admin = fixture.view(&fixture.admin).await;
     let source = &admin["source"];

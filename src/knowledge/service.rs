@@ -34,7 +34,8 @@ use super::{
 
 /// Text files larger than this are found by name only.
 const INDEXED_FILE_BYTES: i64 = 1024 * 1024;
-const CACHED_CATALOGS: usize = 16;
+/// Memory for search indexes across projects; the newest always stays.
+const CATALOG_BYTES: usize = 128 * 1024 * 1024;
 const OVERVIEW_FILES_MAX: usize = 200;
 const OVERVIEW_SECTIONS_MAX: usize = 12;
 const README_CHARS_MAX: usize = 20_000;
@@ -869,8 +870,9 @@ impl Inner {
         let mut catalogs = self.catalogs.lock().expect("catalog cache lock");
         catalogs.retain(|cached| cached.project_id != catalog.project_id);
         catalogs.push(catalog);
-        if catalogs.len() > CACHED_CATALOGS {
-            catalogs.remove(0);
+        let mut total: usize = catalogs.iter().map(|cached| cached.index.bytes()).sum();
+        while catalogs.len() > 1 && total > CATALOG_BYTES {
+            total -= catalogs.remove(0).index.bytes();
         }
     }
 

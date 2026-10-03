@@ -19,6 +19,8 @@ const TEXT_LINES_MAX: usize = 5_000;
 pub(crate) struct Index {
     names: Vec<Name>,
     documents: Vec<Document>,
+    /// Approximate memory held by the index.
+    bytes: usize,
 }
 
 struct Name {
@@ -94,7 +96,21 @@ impl Index {
             }
         }
         names.extend(folders.iter().map(|folder| Name::new(folder, true)));
-        Self { names, documents }
+        let bytes = names.iter().map(|name| name.path.len() * 3).sum::<usize>()
+            + documents
+                .iter()
+                .flat_map(|document| &document.entries)
+                .map(|entry| (entry.heading.len() + entry.text.len()) * 2)
+                .sum::<usize>();
+        Self {
+            names,
+            documents,
+            bytes,
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
     }
 
     pub(crate) fn search(&self, query: &str) -> Results {
@@ -405,6 +421,13 @@ mod tests {
         assert!(excerpt.ends_with(" …"));
         assert!(excerpt.contains("needle sits here"));
         assert!(excerpt.chars().count() <= SNIPPET_CHARS + 4);
+    }
+
+    #[test]
+    fn the_index_reports_the_memory_it_holds() {
+        assert_eq!(Index::build([]).bytes(), 0);
+        let small = Index::build([("a.md", Content::Markdown("# A\n\nshort\n"))]);
+        assert!(index().bytes() > small.bytes() && small.bytes() > 0);
     }
 
     #[test]

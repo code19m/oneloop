@@ -153,7 +153,13 @@ struct Session<'a> {
 
 impl Drop for Session<'_> {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        // A working copy can hold thousands of files; remove it off the
+        // async workers when a runtime is there.
+        let root = std::mem::take(&mut self.root);
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(move || std::fs::remove_dir_all(root))),
+            Err(_) => drop(std::fs::remove_dir_all(root)),
+        }
     }
 }
 
