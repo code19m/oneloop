@@ -242,6 +242,33 @@ test('a card title drags to another column and remains a keyboard task link', as
   await expect(page.locator('.tp-title')).toBeVisible();
 });
 
+test('a dropped card settles into its new column, not back to its old one', async ({ page, instance }) => {
+  await openApp(page, instance, 'board');
+  await page.evaluate(() => {
+    window.settleTargets = [];
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.classList?.contains('drag-settle')) window.settleTargets.push({ left: parseFloat(node.style.left), top: parseFloat(node.style.top) });
+      }
+    }).observe(document.body, { childList: true });
+  });
+  const title = page.locator('.card .card-title-button').first(), box = await title.boundingBox();
+  const destination = await page.locator('[data-col="review"]').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(destination.x + destination.width / 2, destination.y + 70, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator('[data-col=review] .card')).toHaveCount(1);
+  await page.evaluate(() => Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))));
+  const { targets, card } = await page.evaluate(() => {
+    const rect = document.querySelector('[data-col=review] .card').getBoundingClientRect();
+    return { targets: window.settleTargets, card: { left: rect.left, top: rect.top } };
+  });
+  expect(targets).toHaveLength(1);
+  expect(Math.abs(targets[0].left - card.left)).toBeLessThanOrEqual(2);
+  expect(Math.abs(targets[0].top - card.top)).toBeLessThanOrEqual(2);
+});
+
 test('touch and pen grips reorder without taking away card-body scrolling', async ({ page, instance, browserName }) => {
   test.skip(browserName !== 'chromium', 'CDP supplies native touch and pen input');
   await page.emulateMedia({ reducedMotion: 'reduce' });

@@ -1137,7 +1137,7 @@
     while (current.childNodes.length > children.length) current.lastChild.remove();
     return current;
   }
-  function applyBoardFilters(reset = true, fromServer = false) {
+  function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
     if (!fromServer) cancelBoardSearch();
     updateDocumentTitle();
     if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
@@ -1151,7 +1151,7 @@
     const previous = new Map([...board.querySelectorAll('.col-cards > *')].map((card) =>
       [boardRowKey(card,card.closest('.col').dataset.col), { card, rect: card.getBoundingClientRect(), opacity: getComputedStyle(card).opacity }]));
     clearFilterMotion();
-    const animate = !reducedMotion.matches && typeof board.animate === 'function' && !App._drag;
+    const animate = motion && !reducedMotion.matches && typeof board.animate === 'function' && !App._drag;
     const template = document.createElement('template');
     setHTML(template,renderBoard());
     if (!board.querySelector('.col') || !template.content.querySelector('.col')) {
@@ -2428,7 +2428,8 @@
       }
     },
     selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;render(); },
-    refreshBoard() { applyBoardFilters(false,true); App.refreshCounts(); },
+    // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
+    refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
     refreshRoadmap({zoom=false}={}) {
       refreshEpicSummary();
       if(state.view!=='roadmap'){refreshBackground();return;}
@@ -3195,10 +3196,10 @@
         const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
         const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
         App.dragEnd(false);if(!change)return;
-        App.refreshBoard();document.querySelector('.board').scrollLeft=boardLeft;
+        App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
         scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
         animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
-        submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard();animateLayout(rollbackBefore,'.card[data-task]',id);});
+        submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
         return;
       }
       const before = motionRects('.card[data-task]');
