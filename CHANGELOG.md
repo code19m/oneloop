@@ -6,6 +6,22 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Knowledge**: each project can show one folder of a Git repository as a
+  read-only knowledge base, with folder pages, README files, inline previews,
+  full view and one search over names and text. Admins connect it in project
+  Settings, from any Git host, over HTTPS with an access token or over SSH with
+  a deploy key. oneloop checks the branch every minute.
+- MCP tools `read_knowledge_overview`, `read_knowledge_file` and
+  `search_knowledge` let assistants read the knowledge base.
+
+### Upgrade notes
+
+- Run `oneloop db migrate`; it upgrades the database to schema 2.
+- Knowledge needs Git 2.31 or later and an SSH client on the server. The Docker
+  image now includes both.
+
 ### Changed
 
 - The documentation has fewer, shorter pages. Links to the old pages redirect

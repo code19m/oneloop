@@ -56,7 +56,9 @@ Continue with [First steps](#first-steps).
 ## From source
 
 You need Linux or macOS, Rust 1.92 or newer, and a C compiler, because oneloop
-builds its own copy of SQLite.
+builds its own copy of SQLite. To show a Git folder as a project's Knowledge,
+the server also needs Git 2.31 or later and an SSH client. The Docker image
+includes both.
 
 Build and install a release. This takes a few minutes and puts `oneloop` in
 `~/.cargo/bin`:
