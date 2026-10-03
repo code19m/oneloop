@@ -41,10 +41,10 @@ for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', '
   }
 }
 // The rmcp crates omit their workspace-root license. This copy comes from the published crates' VCS
-// revision 9427a929959e665e0d12e9395f674026baf4bd48 of github.com/modelcontextprotocol/rust-sdk.
+// revision 0cde3c5cf3e6aff0cc852ce6045f107e95991f48 of github.com/modelcontextprotocol/rust-sdk.
 const crateOverrides = {
-  'rmcp@3.4.1': ['scripts/licenses/rmcp-Apache-2.0.txt'],
-  'rmcp-macros@3.4.1': ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  'rmcp@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  'rmcp-macros@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
 };
 let crateCount = 0;
 for (const pkg of metadata.packages) {

@@ -316,8 +316,8 @@ The full EPL-2.0 text is reproduced under License texts below.
 | ref-cast@1.0.27 | MIT OR Apache-2.0 |
 | regex-automata@0.4.18 | MIT OR Apache-2.0 |
 | regex-syntax@0.8.11 | MIT OR Apache-2.0 |
-| rmcp-macros@3.4.1 | Apache-2.0 |
-| rmcp@3.4.1 | Apache-2.0 |
+| rmcp-macros@3.5.0 | Apache-2.0 |
+| rmcp@3.5.0 | Apache-2.0 |
 | robust-predicates@3.0.2 | Unlicense |
 | roughjs@4.6.6 | MIT |
 | rpassword@7.5.4 | Apache-2.0 |
@@ -1152,8 +1152,8 @@ Software.
 
 ### 4. Apache License 2.0
 
-- rmcp-macros@3.4.1: Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
-- rmcp@3.4.1: Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+- rmcp-macros@3.5.0: Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+- rmcp@3.5.0: Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
 
 ```text
 The MCP project is undergoing a licensing transition from the MIT License to the Apache License, Version 2.0 ("Apache-2.0"). All new code and specification contributions to the project are licensed under Apache-2.0. Documentation contributions (excluding specifications) are licensed under CC-BY-4.0.

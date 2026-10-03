@@ -144,7 +144,7 @@ async fn distribution_notices_are_embedded_as_plain_text() {
     let body = body_bytes(response).await;
     let text = std::str::from_utf8(&body).unwrap();
     // A Rust crate, an EPL text from the Mermaid bundle and a vendored stylesheet's copyright.
-    for expected in ["rmcp@3.4.1", "Eclipse Public License", "Sindre Sorhus"] {
+    for expected in ["rmcp@", "Eclipse Public License", "Sindre Sorhus"] {
         assert!(text.contains(expected), "{expected}");
     }
     let response = app
