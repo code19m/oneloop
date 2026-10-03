@@ -67,10 +67,9 @@ mdbook build docs
 node scripts/check-doc-links.mjs
 ```
 
-CI runs all of these, plus `cargo package`, a dependency audit, a Docker
-build, the full end-to-end suite on `main` and the tests on macOS. If you
-change something on a hot path, compare `cargo bench --bench workload` before
-and after.
+CI runs all of these, plus a dependency audit, a Docker build, the full
+end-to-end suite on `main` and the tests on macOS. If you change something on a
+hot path, compare `cargo bench --bench workload` before and after.
 
 ## Tests
 
@@ -142,16 +141,11 @@ example `v0.1.0-rc.1`.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
    `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
    bottom, and note any upgrade steps.
-3. Check the version and notes, and the crate contents:
+3. Check the version and notes:
 
    ```sh
    node scripts/release-metadata.mjs vX.Y.Z
-   cargo package --locked
-   node scripts/check-package.mjs
    ```
-
-   Both `cargo package` and `check-package.mjs` accept `--allow-dirty` for a
-   trial run before you commit.
 4. Review what ships besides our own code:
    - regenerate and review the notices with `node scripts/third-party-notices.mjs`,
      then run `node scripts/vendor-audit.mjs --check`;
@@ -173,18 +167,16 @@ The Release workflow then:
   full verification and the dependency checks;
 - builds the linux/amd64 and linux/arm64 image and pushes it to
   `ghcr.io/code19m/oneloop` with SBOM and provenance attestations;
-- publishes the crate to crates.io;
 - creates a GitHub Release with the changelog notes and no binary files.
 
 A release candidate gets only the `X.Y.Z-rc.N` image tag and never moves
-`latest`. On crates.io it is a pre-release, so people install it with
-`cargo install oneloop --version X.Y.Z-rc.N --locked`. A final release is tagged
-`X.Y.Z`, `X.Y` and `latest`.
+`latest`. A final release is tagged `X.Y.Z`, `X.Y` and `latest`. oneloop is not
+published to crates.io; people who don't use Docker install a tag from source
+with `cargo install --git`.
 
-Afterwards, check the crate page, the image and the GitHub Release. Publishing
-is not atomic: if one step fails, look at what already went out before you
-retry. Crates.io versions can't be replaced and tags must never move, so fix
-forward with a new version when needed.
+Afterwards, check the image and the GitHub Release. Publishing is not atomic:
+if one step fails, look at what already went out before you retry. Tags must
+never move, so fix forward with a new version when needed.
 
 ### Dependencies
 

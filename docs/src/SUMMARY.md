@@ -5,7 +5,7 @@
 # Getting started
 
 - [Quick start with Docker](quick-start.md)
-- [Install with Cargo](install-cargo.md)
+- [Install from source](install-from-source.md)
 - [HTTPS and reverse proxy](reverse-proxy.md)
 
 # Using oneloop

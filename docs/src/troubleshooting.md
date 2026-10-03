@@ -12,7 +12,7 @@ curl --fail --max-time 5 https://tasks.example.com/healthz
 {"status":"ok","version":"0.1.0-rc.1","revision":"…","schemaVersion":1}
 ```
 
-`/healthz` needs no sign-in and returns HTTP 200 when the server is up and its database answers. Checking through the public address tests your proxy too. A Cargo install also answers at `http://127.0.0.1:8080/healthz` on the server itself. The check doesn't cover backups, attachments or live updates.
+`/healthz` needs no sign-in and returns HTTP 200 when the server is up and its database answers. Checking through the public address tests your proxy too. An install from source also answers at `http://127.0.0.1:8080/healthz` on the server itself. The check doesn't cover backups, attachments or live updates.
 
 ## Logs
 

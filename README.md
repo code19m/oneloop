@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/code19m/oneloop/actions/workflows/ci.yml"><img src="https://github.com/code19m/oneloop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://crates.io/crates/oneloop"><img src="https://img.shields.io/crates/v/oneloop" alt="crates.io"></a>
+  <a href="https://github.com/code19m/oneloop/releases"><img src="https://img.shields.io/github/v/release/code19m/oneloop?include_prereleases" alt="Latest release"></a>
   <a href="https://code19m.github.io/oneloop/"><img src="https://img.shields.io/badge/docs-code19m.github.io-blue" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
@@ -44,17 +44,17 @@ docker run -d --name oneloop --restart unless-stopped -v oneloop-data:/data -p 1
 
 Then open <http://localhost:8080> and sign in.
 
-With Cargo:
+From source, with Rust 1.92 or newer:
 
 ```sh
-cargo install oneloop --locked --version 0.1.0-rc.1
+cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.1 --locked
 ```
 
 The [quick start](https://code19m.github.io/oneloop/quick-start.html) walks you
 through Docker Compose step by step, and
-[Install with Cargo](https://code19m.github.io/oneloop/install-cargo.html)
-covers the binary. For anything beyond trying oneloop on your own computer, put
-it behind HTTPS; see
+[Install from source](https://code19m.github.io/oneloop/install-from-source.html)
+covers running the binary without Docker. For anything beyond trying oneloop on
+your own computer, put it behind HTTPS; see
 [HTTPS and reverse proxy](https://code19m.github.io/oneloop/reverse-proxy.html).
 
 ## Documentation

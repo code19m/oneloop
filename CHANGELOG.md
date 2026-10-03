@@ -38,9 +38,11 @@ report what you find.
 
 ### Distribution
 
-- Cargo: `cargo install oneloop --locked --version 0.1.0-rc.1`
 - Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.1`, for linux/amd64 and
   linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.1 --locked`.
+  oneloop is not published to crates.io.
 - A database created by a build from before this release upgrades with
   `oneloop db migrate --backup-dir <directory>`.
 

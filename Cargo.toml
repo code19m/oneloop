@@ -7,20 +7,8 @@ license = "MIT"
 description = "Lightweight, self-hosted task management for small teams, in a single binary"
 repository = "https://github.com/code19m/oneloop"
 homepage = "https://code19m.github.io/oneloop/"
-documentation = "https://code19m.github.io/oneloop/"
-readme = "README.md"
-keywords = ["tasks", "collaboration", "self-hosted", "mcp"]
-categories = ["web-programming::http-server", "command-line-utilities"]
-# Only what the build and the embedded web client need, plus license notices.
-include = [
-    "/src/**", "!/src/**/tests.rs", "/migrations/**", "/build.rs", "/Cargo.lock",
-    "/frontend/index.html", "/frontend/src/**", "/frontend/views/**",
-    "/frontend/styles/**", "/frontend/icons/**", "/frontend/vendor/**",
-    "!/frontend/vendor/**/*.md", "!/frontend/vendor/**/*.json",
-    "!/frontend/vendor/github-markdown-css/*.css", "!/frontend/vendor/cdn-assets/*.css",
-    "!/frontend/vendor/katex/fonts/*.ttf", "!/frontend/vendor/katex/fonts/*.woff",
-    "!**/.DS_Store", "/LICENSE", "/README.md", "/THIRD_PARTY_NOTICES.md",
-]
+# Distributed as a Docker image and from source; never published to a registry.
+publish = false
 build = "build.rs"
 # All integration tests live in one crate so Cargo links a single test binary.
 autotests = false

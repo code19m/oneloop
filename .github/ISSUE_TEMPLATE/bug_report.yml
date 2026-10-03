@@ -16,7 +16,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Operating system and architecture, browser, how you installed oneloop (cargo install or Docker) and your reverse proxy, if any.
+      description: Operating system and architecture, browser, how you installed oneloop (Docker or from source) and your reverse proxy, if any.
     validations:
       required: true
   - type: textarea

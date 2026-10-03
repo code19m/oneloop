@@ -150,28 +150,9 @@ jobs:
             case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $platform" >&2; exit 1 ;; esac
           done
 
-  crate:
-    name: crate
-    needs: [metadata, manifest]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install 1.92.0 --profile minimal
-      # A release candidate becomes a crates.io pre-release, installed only with --version.
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
-
   github-release:
     name: GitHub release
-    needs: [metadata, crate]
+    needs: [metadata, manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

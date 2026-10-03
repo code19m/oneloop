@@ -102,7 +102,7 @@ oneloop uses each visitor's IP address to slow down repeated failed sign-ins and
 
 | oneloop runs | The proxy runs | Set `ONELOOP_TRUSTED_PROXIES` to |
 | --- | --- | --- |
-| From Cargo | On the same machine | `127.0.0.1` |
+| From source | On the same machine | `127.0.0.1` |
 | In Docker, from the quick start | On the host | The Docker network's gateway, shown by the command below |
 | Anywhere | On another machine | That machine's IP address |
 

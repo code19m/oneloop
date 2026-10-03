@@ -67,10 +67,6 @@ jobs:
       # Also runs benches/workload.rs once with its small fixture as a harness check.
       - name: Rust tests
         run: cargo test --locked --all-targets
-      - name: Crate contents
-        run: node scripts/check-package.mjs
-      - name: Package from the packaged sources
-        run: cargo package --locked
 
   macos:
     name: macos

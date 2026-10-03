@@ -2,13 +2,13 @@
 
 This page shows how to back up and restore oneloop, how to upgrade it safely, and how to go back if an upgrade goes wrong.
 
-Examples come in pairs. **Cargo** uses the data directory `/var/lib/oneloop/data`; run those commands as the account that runs oneloop, with the same environment. **Docker** uses the quick start's `compose.yaml`.
+Examples come in pairs. **From source** uses the data directory `/var/lib/oneloop/data`; run those commands as the account that runs oneloop, with the same environment. **Docker** uses the quick start's `compose.yaml`.
 
 ## Back up
 
 A backup is a complete, verified copy of the database, attachments and avatars. oneloop keeps running while it's made; uploads may pause for a moment.
 
-Cargo:
+From source:
 
 ```sh
 oneloop backup create /var/backups/oneloop/2026-09-28
@@ -88,7 +88,7 @@ If a restore is interrupted, oneloop refuses to use that directory. Empty it com
 
 Stable releases look like `0.1.0`. Release candidates, like `0.1.0-rc.1`, let you try the next version early.
 
-- `cargo install oneloop --locked` installs the newest stable release. A release candidate needs `--version 0.1.0-rc.1`.
+- From source, install the release's tag, such as `--tag v0.1.0` or `--tag v0.1.0-rc.1`.
 - The Docker tags `latest` and `0.1` follow stable releases only. Release candidates get only their exact tag.
 - In production, pin an exact version, such as `ghcr.io/code19m/oneloop:0.1.0`.
 
@@ -100,7 +100,7 @@ oneloop never changes its database on startup. After installing a new version, y
 2. Stop oneloop.
 3. Install the new version:
    ```sh
-   cargo install oneloop --locked --version 0.1.0
+   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0 --locked
    sudo install ~/.cargo/bin/oneloop /usr/local/bin/oneloop
    ```
 4. Migrate, then check:

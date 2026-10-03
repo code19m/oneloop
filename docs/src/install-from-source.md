@@ -1,18 +1,18 @@
-# Install with Cargo
+# Install from source
 
-This page gets oneloop running from a `cargo install`, without Docker.
+This page builds oneloop from its source code with Cargo and runs it without Docker.
 
 You need Linux or macOS, Rust 1.92 or newer, and a C compiler, because oneloop builds its own copy of SQLite.
 
 ## Install and start
 
-1. Install the binary:
+1. Build and install the binary from a release tag:
 
    ```sh
-   cargo install oneloop --locked --version 0.1.0-rc.1
+   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.1 --locked
    ```
 
-   Cargo installs release candidates only when you name the version. Once a stable version is out, `cargo install oneloop --locked` picks the newest one. To try unreleased code, run `cargo install --git https://github.com/code19m/oneloop --locked`.
+   Cargo downloads that release's source, builds it in a few minutes and installs `oneloop` into `~/.cargo/bin`. Pick a tag from the [releases](https://github.com/code19m/oneloop/releases). Without `--tag`, you get the latest unreleased code from `main`.
 
 2. Choose where oneloop keeps its data and the address you'll open it at:
 

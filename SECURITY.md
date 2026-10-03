@@ -16,7 +16,7 @@ advisory if you'd like.
 Please include:
 
 - the oneloop version (`oneloop --version`) and how you run it: Docker or
-  Cargo, operating system, reverse proxy and browser;
+  from source, operating system, reverse proxy and browser;
 - which account and permissions the attack needs, if any;
 - the steps to reproduce, with what you expected and what happened;
 - the impact as you see it.

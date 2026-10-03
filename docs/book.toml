@@ -15,3 +15,6 @@ no-section-label = true
 
 [output.html.search]
 enable = true
+
+[output.html.redirect]
+"/install-cargo.html" = "install-from-source.html"
