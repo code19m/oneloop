@@ -103,12 +103,25 @@ test('a delayed task destination cannot reopen after the user returns to Board',
     await page.evaluate(key => { location.hash = `#/task/${key}`; }, secondary.task.taskKey);
     await reads.started;
     await page.locator('.nav-item[title="Board"]').click();
+    await expect(page).toHaveURL(/#\/board$/);
     await reads.release();
     await expect(page).toHaveURL(/#\/board$/);
     await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
     await expect(page.locator('.task-page')).toHaveCount(0);
     await expect(page).toHaveTitle(/Board · .* · oneloop/);
   } finally { await reads.release(); }
+});
+
+test('a sidebar click still navigates when a render lands between press and release', async ({ page, instance }) => {
+  await openApp(page, instance);
+  const board = await page.locator('.nav-item[title="Board"]').boundingBox();
+  await page.mouse.move(board.x + board.width / 2, board.y + board.height / 2);
+  await page.mouse.down();
+  // Background work, such as the route-loading indicator, renders at any moment.
+  await page.evaluate(() => window.App.refresh());
+  await page.mouse.up();
+  await expect(page).toHaveURL(/#\/board$/);
+  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
 });
 
 test('keyboard menus, refresh focus and titles stay contextual across navigation', async ({ page, instance }) => {

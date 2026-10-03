@@ -2114,7 +2114,8 @@
     const u = me();
     const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
     const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?'<button class="btn primary" onclick="App.openModal(\'project\')">Create project</button>':''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" onclick="App.nav('board')">Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
-    setHTML(document.getElementById('app'),`
+    const appRoot = document.getElementById('app'), shell = document.createElement('template');
+    setHTML(shell,`
       <a class="skip-link" href="#main">Skip to content</a>
       <div class="side-scrim" onclick="App.toggleSidebar(false)"></div>
       <nav class="sidebar" aria-label="Main navigation" ${window.innerWidth <= 900 && !state.sideOpen ? 'inert' : ''}>
@@ -2136,6 +2137,18 @@
       </div>
       <div id="overlay-root" style="display:contents">${state.peek ? renderPeek() : ''}${renderModal()}${renderMenu()}</div>
       `);
+    // Browsers drop a click when the pressed element leaves the document before
+    // mouseup, even if it returns. So a render, such as the route-loading
+    // indicator, must not detach an unchanged sidebar: replace only the nodes
+    // around it, keeping its listeners and focus.
+    const oldSidebar = appRoot.querySelector(':scope > .sidebar'), newSidebar = [...shell.content.children].find(node => node.classList.contains('sidebar'));
+    const keptSidebar = !!oldSidebar && !!newSidebar && oldSidebar.isEqualNode(newSidebar);
+    if (keptSidebar) {
+      const nodes = [...shell.content.childNodes], at = nodes.indexOf(newSidebar);
+      for (const node of [...appRoot.childNodes]) if (node !== oldSidebar) node.remove();
+      oldSidebar.before(...nodes.slice(0, at));
+      oldSidebar.after(...nodes.slice(at + 1));
+    } else appRoot.replaceChildren(shell.content);
 
     document.querySelector('.skip-link')?.addEventListener('click', event => { event.preventDefault(); document.getElementById('main')?.focus(); });
     const appEl = document.getElementById('app');
@@ -2143,7 +2156,7 @@
     appEl.classList.toggle('rail', !!state.rail);
     const mb = document.querySelector('.menu-btn');
     if (mb) mb.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); App.toggleSidebar(); });
-    if (TOUCH) {
+    if (TOUCH && !keptSidebar) {
       const sb = document.querySelector('.sidebar');
       if (sb) sb.addEventListener('click', (e) => {
         if (state.rail && window.innerWidth > 900 && !e.target.closest('.nav-item, .me-chip, .switcher-btn')) App.toggleSidebar(false);

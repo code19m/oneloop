@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A sidebar click is no longer lost when the page redraws at the same moment,
+  for example while a task from another project is loading.
+
 ## [0.1.0-rc.1] - 2026-09-28
 
 The first public release candidate. It's ready for small teams to try; please

@@ -18,6 +18,16 @@ test('document titles follow the view and the account menu keeps unsaved profile
   t.A.nav('board');assert.equal(t.d.title,'Board · Birch Grove · oneloop');t.D.session=null;t.A.refresh();assert.equal(t.d.title,'oneloop');
 });
 
+test('renders keep an unchanged sidebar, so a click that spans one still lands', () => {
+  const t=boot('roadmap'),sidebar=t.d.querySelector('.sidebar'),board=sidebar.querySelector('.nav-item[title="Board"]');
+  board.focus();t.A.refresh();
+  assert.equal(t.d.querySelector('.sidebar'),sidebar,'an unchanged sidebar is kept');
+  assert.equal(t.d.activeElement,board,'focus stays on the same control');
+  t.A.nav('board');
+  assert.notEqual(t.d.querySelector('.sidebar'),sidebar,'a changed sidebar is replaced');
+  assert(t.d.querySelector('.sidebar .nav-item[title="Board"]').classList.contains('on'));
+});
+
 test('Roadmap refreshes keep focus on the focused epic or milestone', () => {
   const t=boot('roadmap');
   for(const selector of ['[data-epic]','[data-milestone]']){
