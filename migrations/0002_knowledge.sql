@@ -24,7 +24,10 @@ CREATE TABLE knowledge_sources (
     created_at INTEGER NOT NULL,
     updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     updated_at INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0)
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+    -- A new random value on every connect and update. Sync results and search
+    -- indexes for another generation are stale.
+    generation TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE knowledge_deploy_keys (

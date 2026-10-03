@@ -112,6 +112,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | --- | --- |
 | Folder | 5,000 files and 100 MiB in total; a larger folder doesn't sync |
 | File | Files over 10 MiB are left out |
+| Sync disk use | 300 MiB for Git's copy of the folder and its files, left-out files included; a larger folder doesn't sync |
 | File path | 1,024 bytes |
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |

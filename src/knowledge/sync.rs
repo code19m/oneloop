@@ -5,6 +5,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 
@@ -26,7 +27,7 @@ use crate::{
 use super::{
     git::{Credentials, Failure, Snapshot, SyncError},
     secrets::Purpose,
-    service::KnowledgeService,
+    service::{Inner, KnowledgeService},
     source::{GitUrl, Transport},
 };
 
@@ -45,7 +46,7 @@ struct Due {
     token_ciphertext: Option<Vec<u8>>,
     deploy_key_ciphertext: Option<Vec<u8>>,
     commit: Option<String>,
-    revision: i64,
+    generation: String,
 }
 
 enum Fetched {
@@ -53,16 +54,29 @@ enum Fetched {
     Changed(Snapshot),
 }
 
-/// Removes the project from the running set when its sync ends or is cancelled.
-struct Running<'a> {
-    service: &'a KnowledgeService,
+/// Marks a project as syncing until its sync ends or is cancelled.
+struct Running {
+    inner: Arc<Inner>,
     project_id: String,
 }
 
-impl Drop for Running<'_> {
+impl Running {
+    fn claim(inner: &Arc<Inner>, project_id: &str) -> Option<Self> {
+        let claimed = inner
+            .syncing
+            .lock()
+            .expect("sync set lock")
+            .insert(project_id.to_owned());
+        claimed.then(|| Self {
+            inner: inner.clone(),
+            project_id: project_id.to_owned(),
+        })
+    }
+}
+
+impl Drop for Running {
     fn drop(&mut self) {
-        self.service
-            .inner
+        self.inner
             .syncing
             .lock()
             .expect("sync set lock")
@@ -71,29 +85,57 @@ impl Drop for Running<'_> {
 }
 
 impl KnowledgeService {
-    /// Runs until shutdown. Commands wake the worker so a new connection or a
-    /// retry starts at once.
+    /// Runs until shutdown, with a few syncs at once. A free slot takes the
+    /// next due source, and commands wake the worker, so a new connection or a
+    /// retry never waits for unrelated syncs to finish.
     pub fn spawn_worker(&self, mut shutdown: watch::Receiver<bool>) -> JoinHandle<()> {
         let service = self.clone();
         tokio::spawn(async move {
             if let Err(error) = service.inner.git.clear_work_root() {
                 tracing::warn!(%error, "could not remove old knowledge working copies");
             }
+            // Dropping the set on shutdown cancels running syncs and stops their git.
+            let mut running = JoinSet::new();
             loop {
                 if *shutdown.borrow() {
                     break;
                 }
-                tokio::select! {
-                    _ = service.sync_due() => {}
-                    _ = shutdown.changed() => break,
-                }
+                service.start_due(&mut running).await;
                 tokio::select! {
                     _ = service.inner.wake.notified() => {}
                     _ = tokio::time::sleep(POLL) => {}
+                    Some(result) = running.join_next(), if !running.is_empty() => {
+                        if let Err(error) = result {
+                            tracing::error!(%error, "knowledge sync task failed");
+                        }
+                    }
                     _ = shutdown.changed() => break,
                 }
             }
         })
+    }
+
+    /// Start due syncs in the free slots of `running`.
+    async fn start_due(&self, running: &mut JoinSet<()>) {
+        let free = CONCURRENT_SYNCS.saturating_sub(running.len());
+        if free == 0 {
+            return;
+        }
+        let due = match self.due_projects().await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::warn!(%error, "could not list knowledge sources to sync");
+                return;
+            }
+        };
+        for claim in due
+            .iter()
+            .filter_map(|project_id| Running::claim(&self.inner, project_id))
+            .take(free)
+        {
+            let service = self.clone();
+            running.spawn(async move { service.sync_project(claim).await });
+        }
     }
 
     /// Syncs every source that is due and returns how many ran. Exposed for
@@ -107,21 +149,11 @@ impl KnowledgeService {
                 return 0;
             }
         };
-        let mut queue = due.into_iter();
-        let mut running = JoinSet::new();
         let mut finished = 0;
-        loop {
-            while running.len() < CONCURRENT_SYNCS {
-                let Some(project_id) = queue.next() else {
-                    break;
-                };
-                let service = self.clone();
-                running.spawn(async move { service.sync_project(project_id).await });
-            }
-            match running.join_next().await {
-                Some(Ok(())) => finished += 1,
-                Some(Err(error)) => tracing::error!(%error, "knowledge sync task failed"),
-                None => break,
+        for project_id in due {
+            if let Some(claim) = Running::claim(&self.inner, &project_id) {
+                self.sync_project(claim).await;
+                finished += 1;
             }
         }
         finished
@@ -150,20 +182,8 @@ impl KnowledgeService {
             .await
     }
 
-    async fn sync_project(&self, project_id: String) {
-        if !self
-            .inner
-            .syncing
-            .lock()
-            .expect("sync set lock")
-            .insert(project_id.clone())
-        {
-            return;
-        }
-        let _running = Running {
-            service: self,
-            project_id: project_id.clone(),
-        };
+    async fn sync_project(&self, claim: Running) {
+        let project_id = claim.project_id.clone();
         let started = match unix_now() {
             Ok(now) => now,
             Err(error) => {
@@ -179,7 +199,7 @@ impl KnowledgeService {
                 return;
             }
         };
-        let revision = due.revision;
+        let generation = due.generation.clone();
         let result = self.fetch(&project_id, due).await;
         if let Err(error) = &result {
             tracing::warn!(
@@ -190,7 +210,7 @@ impl KnowledgeService {
             );
         }
         if let Err(error) = self
-            .record(project_id.clone(), revision, started, result)
+            .record(project_id.clone(), generation, started, result)
             .await
         {
             tracing::warn!(%error, project_id, "could not store the knowledge sync result");
@@ -205,7 +225,7 @@ impl KnowledgeService {
                 Ok(connection
                     .query_row(
                         "SELECT s.url,s.branch,s.folder,s.token_ciphertext,k.private_key_ciphertext,
-                                s.commit_id,s.revision
+                                s.commit_id,s.generation
                          FROM knowledge_sources s
                          LEFT JOIN knowledge_deploy_keys k ON k.project_id=s.project_id
                          WHERE s.project_id=?1",
@@ -218,7 +238,7 @@ impl KnowledgeService {
                                 token_ciphertext: row.get(3)?,
                                 deploy_key_ciphertext: row.get(4)?,
                                 commit: row.get(5)?,
-                                revision: row.get(6)?,
+                                generation: row.get(6)?,
                             })
                         },
                     )
@@ -307,10 +327,12 @@ impl KnowledgeService {
         let available = fs4::available_space(self.inner.db.layout().root()).map_err(|error| {
             SyncError::new(Failure::Failed, format!("check free space: {error}"))
         })?;
+        let limits = self.inner.limits;
         let needed = self
             .inner
             .disk_min_free_bytes
-            .saturating_add(self.inner.limits.max_total_bytes.saturating_mul(3));
+            .saturating_add(limits.max_download_bytes)
+            .saturating_add(limits.max_total_bytes);
         if available < needed {
             return Err(SyncError::new(
                 Failure::StorageFull,
@@ -320,12 +342,13 @@ impl KnowledgeService {
         Ok(())
     }
 
-    /// Store the outcome unless an administrator changed the source meanwhile;
-    /// that change already asked for another sync.
+    /// Store the outcome unless an administrator changed, disconnected or
+    /// reconnected the source meanwhile; that change already asked for another
+    /// sync.
     async fn record(
         &self,
         project_id: String,
-        revision: i64,
+        generation: String,
         started: i64,
         result: Result<Fetched, SyncError>,
     ) -> AppResult<()> {
@@ -333,17 +356,18 @@ impl KnowledgeService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let current: Option<(i64, String, Option<String>)> = tx
+                let current: Option<(String, i64, String, Option<String>)> = tx
                     .query_row(
-                        "SELECT revision,state,error_code FROM knowledge_sources WHERE project_id=?1",
+                        "SELECT generation,revision,state,error_code FROM knowledge_sources
+                         WHERE project_id=?1",
                         [&project_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .optional()?;
-                let Some((current_revision, state, error_code)) = current else {
+                let Some((current_generation, revision, state, error_code)) = current else {
                     return Ok(());
                 };
-                if current_revision != revision {
+                if current_generation != generation {
                     return Ok(());
                 }
                 // A request made while this sync ran gets a sync of its own.
@@ -463,4 +487,63 @@ fn store_files(
         )?;
     }
     Ok(snapshot.files.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Db, knowledge::git::SnapshotFile};
+
+    fn snapshot() -> Fetched {
+        Fetched::Changed(Snapshot {
+            commit: "a".repeat(40),
+            committed_at: 100,
+            files: vec![SnapshotFile {
+                path: "README.md".to_owned(),
+                changed_at: None,
+                content: b"# Old folder".to_vec(),
+            }],
+            skipped: 0,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_sync_result_for_an_earlier_connection_is_dropped() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        db.run(|connection| {
+            connection.execute_batch(
+                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1);
+                 INSERT INTO knowledge_sources(project_id,url,branch,folder,state,created_at,updated_at,generation)
+                 VALUES('p1','https://git.example.test/docs.git','main','docs','pending',1,1,'current');",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let service = KnowledgeService::new(db.clone(), 0);
+        let stored = || {
+            db.run(|connection| {
+                Ok(connection.query_row(
+                    "SELECT (SELECT count(*) FROM knowledge_files),state FROM knowledge_sources",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )?)
+            })
+        };
+
+        // Disconnect and connect again keep the revision but not the generation.
+        service
+            .record("p1".to_owned(), "earlier".to_owned(), 1, Ok(snapshot()))
+            .await
+            .unwrap();
+        assert_eq!(stored().await.unwrap(), (0, "pending".to_owned()));
+
+        service
+            .record("p1".to_owned(), "current".to_owned(), 1, Ok(snapshot()))
+            .await
+            .unwrap();
+        assert_eq!(stored().await.unwrap(), (1, "ready".to_owned()));
+    }
 }

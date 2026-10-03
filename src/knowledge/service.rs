@@ -24,7 +24,7 @@ use crate::{
 };
 
 use super::{
-    MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
+    MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
     git::{Git, Limits},
     markdown,
     search::{Content, Index, Results},
@@ -60,12 +60,15 @@ pub(super) struct Inner {
     pub(super) syncing: Mutex<HashSet<String>>,
     /// Search indexes and outlines, most recently used last.
     catalogs: Mutex<Vec<Arc<Catalog>>>,
+    /// Indexes are built one at a time; a request that waited finds the result.
+    builds: tokio::sync::Mutex<()>,
 }
 
 /// What search and MCP need from one synced commit, built on first use.
 struct Catalog {
     project_id: String,
-    commit: String,
+    /// The source generation and commit it was built from.
+    key: String,
     index: Index,
     outlines: HashMap<String, Outline>,
 }
@@ -341,10 +344,12 @@ impl KnowledgeService {
                     max_files: MAX_FILES,
                     max_file_bytes: MAX_FILE_BYTES,
                     max_total_bytes: MAX_TOTAL_BYTES,
+                    max_download_bytes: MAX_DOWNLOAD_BYTES,
                 },
                 wake: Notify::new(),
                 syncing: Mutex::new(HashSet::new()),
                 catalogs: Mutex::new(Vec::new()),
+                builds: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -716,36 +721,47 @@ impl KnowledgeService {
             result.note = Some("This file is not text. Open it in oneloop to view or download it.");
             return Ok(result);
         }
-        let text = self.text(actor, project_id, &file.path).await?;
-        let mut content = text.as_str();
-        if file.kind == Some(PreviewKind::Markdown) {
-            let sections = markdown::sections(&text);
-            result.title = markdown::title(&sections);
-            result.headings = sections
-                .iter()
-                .filter_map(|section| section.heading.as_ref())
-                .filter(|heading| heading.level <= 3)
-                .take(FILE_HEADINGS_MAX)
-                .map(|heading| format!("{} {}", "#".repeat(heading.level.into()), heading.text))
-                .collect();
-            if let Some(query) = section.map(str::trim).filter(|value| !value.is_empty()) {
-                content = markdown::section_source(&text, &sections, query).ok_or(
-                    AppError::NotFound {
-                        resource: "section",
-                    },
-                )?;
-                result.section = Some(query.to_owned());
-            }
-        } else if section.is_some() {
+        let markdown_file = file.kind == Some(PreviewKind::Markdown);
+        if section.is_some() && !markdown_file {
             return Err(AppError::validation(
                 "section",
                 "applies to Markdown files only",
             ));
         }
-        let (content, truncated) = cut(content, FILE_TEXT_CHARS_MAX);
-        result.content = Some(content);
-        result.truncated = truncated;
-        Ok(result)
+        let text = self.text(actor, project_id, &file.path).await?;
+        let query = section
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        // A file can hold megabytes of Markdown: parse it off the async workers.
+        tokio::task::spawn_blocking(move || {
+            let mut content = text.as_str();
+            if markdown_file {
+                let sections = markdown::sections(&text);
+                result.title = markdown::title(&sections);
+                result.headings = sections
+                    .iter()
+                    .filter_map(|section| section.heading.as_ref())
+                    .filter(|heading| heading.level <= 3)
+                    .take(FILE_HEADINGS_MAX)
+                    .map(|heading| format!("{} {}", "#".repeat(heading.level.into()), heading.text))
+                    .collect();
+                if let Some(query) = query {
+                    content = markdown::section_source(&text, &sections, &query).ok_or(
+                        AppError::NotFound {
+                            resource: "section",
+                        },
+                    )?;
+                    result.section = Some(query);
+                }
+            }
+            let (content, truncated) = cut(content, FILE_TEXT_CHARS_MAX);
+            result.content = Some(content);
+            result.truncated = truncated;
+            Ok(result)
+        })
+        .await
+        .map_err(|error| AppError::internal(format!("knowledge reader failed: {error}")))?
     }
 
     /// A text file's full content, read after the caller is authorized.
@@ -757,54 +773,17 @@ impl KnowledgeService {
     }
 
     async fn catalog(&self, actor: &Actor, project_id: &str) -> AppResult<Option<Arc<Catalog>>> {
-        enum Loaded {
-            Empty,
-            Cached(Arc<Catalog>),
-            Files(String, Vec<(String, Option<PreviewKind>, Option<Vec<u8>>)>),
-        }
-        let actor = actor.clone();
-        let project = project_id.to_owned();
-        let inner = self.inner.clone();
-        let loaded = self
-            .inner
-            .db
-            .snapshot(move |connection| {
-                authorize_read(connection, &actor, &project)?;
-                let commit: Option<String> = connection
-                    .query_row(
-                        "SELECT commit_id FROM knowledge_sources WHERE project_id=?1",
-                        [&project],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-                let Some(commit) = commit else {
-                    return Ok(Loaded::Empty);
-                };
-                if let Some(found) = inner.cached(&project, &commit) {
-                    return Ok(Loaded::Cached(found));
-                }
-                let mut statement = connection.prepare(
-                    "SELECT path,preview_kind,
-                            CASE WHEN preview_kind IN ('markdown','text') AND size<=?2 THEN content END
-                     FROM knowledge_files WHERE project_id=?1 ORDER BY path",
-                )?;
-                let files = statement
-                    .query_map(params![project, INDEXED_FILE_BYTES], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref()),
-                            row.get::<_, Option<Vec<u8>>>(2)?,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Loaded::Files(commit, files))
-            })
-            .await?;
-        let (commit, files) = match loaded {
+        match self.read_catalog(actor, project_id, false).await? {
             Loaded::Empty => return Ok(None),
             Loaded::Cached(catalog) => return Ok(Some(catalog)),
-            Loaded::Files(commit, files) => (commit, files),
+            Loaded::Missing | Loaded::Files(..) => {}
+        }
+        let _build = self.inner.builds.lock().await;
+        let (key, files) = match self.read_catalog(actor, project_id, true).await? {
+            Loaded::Empty => return Ok(None),
+            Loaded::Cached(catalog) => return Ok(Some(catalog)),
+            Loaded::Files(key, files) => (key, files),
+            Loaded::Missing => unreachable!("files were requested"),
         };
         let project_id = project_id.to_owned();
         let catalog = tokio::task::spawn_blocking(move || {
@@ -843,7 +822,7 @@ impl KnowledgeService {
             }));
             Arc::new(Catalog {
                 project_id,
-                commit,
+                key,
                 index,
                 outlines,
             })
@@ -853,14 +832,72 @@ impl KnowledgeService {
         self.inner.remember(catalog.clone());
         Ok(Some(catalog))
     }
+
+    /// The cached catalog for the current source, or the files to build one.
+    async fn read_catalog(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        files: bool,
+    ) -> AppResult<Loaded> {
+        let actor = actor.clone();
+        let project = project_id.to_owned();
+        let inner = self.inner.clone();
+        self.inner
+            .db
+            .snapshot(move |connection| {
+                authorize_read(connection, &actor, &project)?;
+                let source: Option<(Option<String>, String)> = connection
+                    .query_row(
+                        "SELECT commit_id,generation FROM knowledge_sources WHERE project_id=?1",
+                        [&project],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let Some((Some(commit), generation)) = source else {
+                    return Ok(Loaded::Empty);
+                };
+                let key = format!("{generation}:{commit}");
+                if let Some(found) = inner.cached(&project, &key) {
+                    return Ok(Loaded::Cached(found));
+                }
+                if !files {
+                    return Ok(Loaded::Missing);
+                }
+                let mut statement = connection.prepare(
+                    "SELECT path,preview_kind,
+                            CASE WHEN preview_kind IN ('markdown','text') AND size<=?2 THEN content END
+                     FROM knowledge_files WHERE project_id=?1 ORDER BY path",
+                )?;
+                let files = statement
+                    .query_map(params![project, INDEXED_FILE_BYTES], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref()),
+                            row.get::<_, Option<Vec<u8>>>(2)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Loaded::Files(key, files))
+            })
+            .await
+    }
+}
+
+enum Loaded {
+    Empty,
+    Cached(Arc<Catalog>),
+    /// Not cached, and the files were not requested.
+    Missing,
+    Files(String, Vec<(String, Option<PreviewKind>, Option<Vec<u8>>)>),
 }
 
 impl Inner {
-    fn cached(&self, project_id: &str, commit: &str) -> Option<Arc<Catalog>> {
+    fn cached(&self, project_id: &str, key: &str) -> Option<Arc<Catalog>> {
         let mut catalogs = self.catalogs.lock().expect("catalog cache lock");
         let position = catalogs
             .iter()
-            .position(|catalog| catalog.project_id == project_id && catalog.commit == commit)?;
+            .position(|catalog| catalog.project_id == project_id && catalog.key == key)?;
         let catalog = catalogs.remove(position);
         catalogs.push(catalog.clone());
         Some(catalog)
@@ -981,8 +1018,8 @@ fn connect(
     }
     tx.execute(
         "INSERT INTO knowledge_sources
-         (project_id,url,branch,folder,token_ciphertext,state,requested_at,created_by,created_at,updated_by,updated_at)
-         VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?6,?7,?6)",
+         (project_id,url,branch,folder,token_ciphertext,state,requested_at,created_by,created_at,updated_by,updated_at,generation)
+         VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?6,?7,?6,?8)",
         params![
             input.project_id,
             place.url.as_str(),
@@ -990,7 +1027,8 @@ fn connect(
             place.folder,
             token_ciphertext,
             now,
-            actor.user_id
+            actor.user_id,
+            uuid::Uuid::now_v7().to_string()
         ],
     )?;
     events.push(record_activity_tx(
@@ -1033,6 +1071,18 @@ fn update(
     }
     let place = location(inner, &input.url, &input.branch, &input.folder)?;
     let https = place.url.transport() == Transport::Https;
+    let previous_url = GitUrl::parse(&before.url, true)?;
+    // A saved token only ever goes to the host it was entered for.
+    if input.token_action == TokenAction::Keep
+        && before.token_ciphertext.is_some()
+        && https
+        && place.url.origin() != previous_url.origin()
+    {
+        return Err(AppError::validation(
+            "token",
+            "belongs to the previous host; replace or remove it",
+        ));
+    }
     let token = match input.token_action {
         TokenAction::Replace => {
             let value = input.token.as_deref().unwrap_or_default();
@@ -1054,7 +1104,6 @@ fn update(
         TokenAction::Keep if https => before.token_ciphertext.clone(),
         TokenAction::Keep | TokenAction::Remove => None,
     };
-    let previous_url = GitUrl::parse(&before.url, true)?;
     let moved = place.url.as_str() != before.url
         || place.branch != before.branch
         || place.folder != before.folder;
@@ -1072,7 +1121,7 @@ fn update(
     }
     tx.execute(
         "UPDATE knowledge_sources SET url=?2,branch=?3,folder=?4,token_ciphertext=?5,requested_at=?6,
-         updated_by=?7,updated_at=?6,revision=revision+1 WHERE project_id=?1",
+         updated_by=?7,updated_at=?6,revision=revision+1,generation=?8 WHERE project_id=?1",
         params![
             input.project_id,
             place.url.as_str(),
@@ -1080,9 +1129,11 @@ fn update(
             place.folder,
             token,
             now,
-            actor.user_id
+            actor.user_id,
+            uuid::Uuid::now_v7().to_string()
         ],
     )?;
+    inner.forget(&input.project_id);
     if moved {
         // Files from the old location never show under the new one.
         tx.execute(

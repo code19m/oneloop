@@ -210,6 +210,39 @@ test('the connection dialog sends the access the URL needs and keeps a saved tok
   assert.equal(t.state.commands.filter(([operation]) => operation === 'knowledge.deploy-key.create').length, 1);
 });
 
+test('a public repository saves without a token, and a saved token never follows the URL to another host', async () => {
+  const source = { url: 'https://git.example.test/docs.git', repository: 'git.example.test/docs', branch: 'main', folder: 'docs', state: 'ready', hasToken: false, deployKey: null, revision: 2 };
+  const t = fixture({ page: 'settings', view: { ...handbook(), source } });
+  await painted(t);
+  const open = () => { t.state.context.modal = { type: 'knowledge' }; t.d.getElementById('overlay').innerHTML = `<div class="modal">${t.controller.modalHtml()}</div>`; return t.d.querySelector('form[data-knowledge-form]'); };
+  const submit = async (form) => { form.dispatchEvent(new t.w.Event('submit', { bubbles: true, cancelable: true })); await settle(); };
+  let form = open();
+  await submit(form);
+  assert.equal(t.state.commands.length, 0, 'an unchanged public connection saves nothing');
+  form = open();
+  form.elements.branch.value = 'release';
+  await submit(form);
+  assert.deepEqual(t.state.commands.at(-1), ['knowledge.update', { projectId: 'p1', url: 'https://git.example.test/docs.git', branch: 'release', folder: 'docs', tokenAction: 'keep' }, { expectedRevision: 2 }]);
+
+  t.state.view = { ...handbook(), source: { ...source, hasToken: true, revision: 3 } };
+  await painted(t);
+  form = open();
+  form.elements.url.value = 'https://git.example.test/team/handbook.git';
+  await submit(form);
+  assert.deepEqual(t.state.commands.at(-1)[1], { projectId: 'p1', url: 'https://git.example.test/team/handbook.git', branch: 'main', folder: 'docs', tokenAction: 'keep' }, 'the same host keeps the token');
+  const sent = t.state.commands.length;
+  form = open();
+  form.elements.url.value = 'https://git.other.test/docs.git';
+  await submit(form);
+  assert.equal(t.state.commands.length, sent, 'nothing is sent with the old token');
+  assert.deepEqual(t.state.fieldErrors.at(-1), ['token', 'The saved token is for the previous host. Enter a new token or remove it.']);
+  assert.equal(form.elements.tokenAction.value, 'replace');
+  assert.equal(form.querySelector('.knowledge-secret-edit').hidden, false);
+  form.elements.token.value = 'other-token';
+  await submit(form);
+  assert.deepEqual(t.state.commands.at(-1)[1], { projectId: 'p1', url: 'https://git.other.test/docs.git', branch: 'main', folder: 'docs', tokenAction: 'replace', token: 'other-token' });
+});
+
 test('a reload while the dialog is open keeps what the administrator typed', async () => {
   const source = { url: 'https://git.example.test/docs.git', repository: 'git.example.test/docs', branch: 'main', folder: 'docs', state: 'ready', hasToken: false, deployKey: null, revision: 2 };
   const t = fixture({ page: 'settings', view: { ...handbook(), source } });

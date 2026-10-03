@@ -711,6 +711,49 @@ async fn changing_the_location_clears_files_and_missing_branches_and_folders_fai
 }
 
 #[tokio::test]
+async fn search_never_returns_files_from_a_previous_folder() {
+    let fixture = Fixture::new().await;
+    let repository = handbook();
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.connect",
+            json!({"projectId": "p1", "url": repository.url(), "branch": "main", "folder": ""}),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    fixture.state.knowledge.sync_due().await;
+    let search = || async {
+        body_json(
+            fixture
+                .get(
+                    &fixture.member,
+                    "/api/projects/p1/knowledge/search?q=shared",
+                )
+                .await,
+        )
+        .await
+    };
+    assert_eq!(search().await["documents"][0]["path"], "other/secret.md");
+
+    // The same commit, a narrower folder.
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.update",
+            json!({"projectId": "p1", "url": repository.url(), "branch": "main", "folder": "docs", "tokenAction": "keep"}),
+            Some(1),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    fixture.state.knowledge.sync_due().await;
+    let results = search().await;
+    assert_eq!(results["hitCount"], 0, "{results}");
+    assert_eq!(results["fileCount"], 0, "{results}");
+}
+
+#[tokio::test]
 async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
     let fixture = Fixture::new().await;
     let token = "glpat-private-token-0123456789";
@@ -770,12 +813,40 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         StatusCode::BAD_REQUEST,
         "an empty replacement is refused"
     );
+    // A saved token only ever goes to the host it was entered for.
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.update",
+            update("https://git.attacker.test/team/docs.git", "keep", None),
+            Some(1),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("token"), "{body}");
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.update",
+            update(
+                "https://reader@git.example.test/team/handbook.git",
+                "keep",
+                None,
+            ),
+            Some(1),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["entities"][0]["hasToken"], true,
+        "the same host keeps it"
+    );
     let (status, body) = fixture
         .command(
             &fixture.admin,
             "knowledge.update",
             update(https, "remove", None),
-            Some(1),
+            Some(2),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -787,7 +858,7 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
             &fixture.admin,
             "knowledge.update",
             update(ssh, "replace", Some(token)),
-            Some(2),
+            Some(3),
         )
         .await;
     assert_eq!(
@@ -800,7 +871,7 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
             &fixture.admin,
             "knowledge.update",
             update(ssh, "keep", None),
-            Some(2),
+            Some(3),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -841,7 +912,7 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
             &fixture.member,
             "knowledge.disconnect",
             json!({"projectId": "p1"}),
-            Some(3),
+            Some(4),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -850,7 +921,7 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
             &fixture.admin,
             "knowledge.disconnect",
             json!({"projectId": "p1"}),
-            Some(3),
+            Some(4),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");

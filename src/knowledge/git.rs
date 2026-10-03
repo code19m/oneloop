@@ -21,6 +21,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TIMEOUT: Duration = Duration::from_secs(300);
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(60);
 const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
+/// How often a download's working copy is measured against its budget.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 const ERROR_OUTPUT_LIMIT: u64 = 64 * 1024;
 const PATH_MAX: usize = 1_024;
 /// `GIT_CONFIG_COUNT` arrived in Git 2.31.
@@ -60,6 +62,7 @@ pub(crate) enum Failure {
     GitUnavailable,
     AuthFailed,
     NotFound,
+    Moved,
     BranchNotFound,
     FolderNotFound,
     Unreachable,
@@ -78,6 +81,7 @@ impl Failure {
             Self::GitUnavailable => "git_unavailable",
             Self::AuthFailed => "auth_failed",
             Self::NotFound => "repository_not_found",
+            Self::Moved => "repository_moved",
             Self::BranchNotFound => "branch_not_found",
             Self::FolderNotFound => "folder_not_found",
             Self::Unreachable => "host_unreachable",
@@ -113,6 +117,8 @@ pub(crate) struct Limits {
     pub(crate) max_files: usize,
     pub(crate) max_file_bytes: u64,
     pub(crate) max_total_bytes: u64,
+    /// Bytes a sync may write to its working copy, oversized files included.
+    pub(crate) max_download_bytes: u64,
 }
 
 pub(crate) struct Snapshot {
@@ -205,6 +211,7 @@ impl Git {
                     "ls-remote",
                     "--heads",
                     "--refs",
+                    "--",
                     &url.fetch_url(),
                     &reference,
                 ],
@@ -237,22 +244,28 @@ impl Git {
         self.require_version(&session, deadline).await?;
         let repository = session.root.join("repository");
         let repository_arg = repository.to_string_lossy().into_owned();
-        self.run(
-            &session,
-            &[
-                "clone",
-                "--quiet",
-                "--no-checkout",
-                "--filter=blob:none",
-                "--depth=1",
-                "--single-branch",
-                "--no-tags",
-                "--branch",
-                branch,
-                &url.fetch_url(),
-                &repository_arg,
-            ],
-            deadline,
+        let budget = limits.max_download_bytes;
+        within(
+            &session.root,
+            budget,
+            self.run(
+                &session,
+                &[
+                    "clone",
+                    "--quiet",
+                    "--no-checkout",
+                    "--filter=blob:none",
+                    "--depth=1",
+                    "--single-branch",
+                    "--no-tags",
+                    "--branch",
+                    branch,
+                    "--",
+                    &url.fetch_url(),
+                    &repository_arg,
+                ],
+                deadline,
+            ),
         )
         .await?;
 
@@ -313,10 +326,14 @@ impl Git {
             .map_err(|error| {
                 SyncError::new(Failure::Failed, format!("write sparse checkout: {error}"))
             })?;
-        self.run(
-            &session,
-            &in_repository(&repository_arg, &["reset", "--quiet", "--hard", "HEAD"]),
-            deadline,
+        within(
+            &session.root,
+            budget,
+            self.run(
+                &session,
+                &in_repository(&repository_arg, &["reset", "--quiet", "--hard", "HEAD"]),
+                deadline,
+            ),
         )
         .await?;
 
@@ -335,10 +352,14 @@ impl Git {
         let deepened = history_depth > 1 && partial && {
             let history_deadline = deadline.min(Instant::now() + HISTORY_TIMEOUT);
             let deepen = format!("--deepen={}", history_depth - 1);
-            self.output(
-                &session,
-                &in_repository(&repository_arg, &["fetch", "--quiet", &deepen, "origin"]),
-                history_deadline,
+            within(
+                &session.root,
+                budget,
+                self.output(
+                    &session,
+                    &in_repository(&repository_arg, &["fetch", "--quiet", &deepen, "origin"]),
+                    history_deadline,
+                ),
             )
             .await
             .is_ok_and(|output| output.success)
@@ -502,8 +523,10 @@ impl Git {
         if let (Credentials::Token { username, token }, Some(origin)) =
             (session.credentials, &session.origin)
         {
-            // Scoped to the repository's host, so a redirect elsewhere never
-            // receives the token.
+            // The header is scoped to the repository's host, but Git keeps
+            // sending it after a redirect to another host. So a sync that
+            // carries a token never follows redirects.
+            settings.push(("http.followRedirects".to_owned(), "false".into()));
             let pair = Zeroizing::new(format!("{username}:{}", token.as_str()));
             settings.push((
                 format!("http.{origin}.extraHeader"),
@@ -603,6 +626,46 @@ impl Git {
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
+}
+
+/// Run `work`, stopping it once the working copy holds more than `budget`
+/// bytes. Folders of large files, and hosts that ignore partial-clone
+/// filters, would otherwise fill the data disk before the time limit.
+async fn within<T>(
+    root: &Path,
+    budget: u64,
+    work: impl Future<Output = Result<T, SyncError>>,
+) -> Result<T, SyncError> {
+    let root = root.to_path_buf();
+    let watch = async move {
+        loop {
+            tokio::time::sleep(WATCH_INTERVAL).await;
+            let root = root.clone();
+            let size = tokio::task::spawn_blocking(move || tree_size(&root))
+                .await
+                .unwrap_or(0);
+            if size > budget {
+                return size;
+            }
+        }
+    };
+    tokio::select! {
+        result = work => result,
+        size = watch => Err(SyncError::new(
+            Failure::TooLarge,
+            format!("the download reached {size} bytes; the limit is {budget}"),
+        )),
+    }
+}
+
+fn tree_size(root: &Path) -> u64 {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(std::fs::Metadata::is_file)
+        .map(|metadata| metadata.len())
+        .sum()
 }
 
 fn in_repository<'a>(repository: &'a str, arguments: &[&'a str]) -> Vec<&'a str> {
@@ -785,6 +848,8 @@ fn classify(stderr: &str) -> Failure {
         "self-signed certificate",
     ]) {
         Failure::Certificate
+    } else if text.contains("the requested url returned error: 30") {
+        Failure::Moved
     } else if any(&[
         "remote branch",
         "couldn't find remote ref",
@@ -960,6 +1025,10 @@ mod tests {
             ),
             ("Host key verification failed.", Failure::HostKey),
             (
+                "fatal: unable to access 'https://h/old.git/': The requested URL returned error: 301",
+                Failure::Moved,
+            ),
+            (
                 "error: cannot run ssh: No such file or directory",
                 Failure::GitUnavailable,
             ),
@@ -967,6 +1036,25 @@ mod tests {
         ] {
             assert_eq!(classify(stderr), failure, "{stderr}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn downloads_stop_once_the_working_copy_passes_the_budget() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        let write = |bytes: usize| std::fs::write(root.path().join("pack"), vec![0; bytes]);
+
+        let small = within(root.path(), 100, async {
+            write(100).unwrap();
+            tokio::time::sleep(WATCH_INTERVAL * 4).await;
+            Ok(7)
+        });
+        assert_eq!(small.await.unwrap(), 7);
+
+        let large = within(root.path(), 100, async {
+            write(101).unwrap();
+            std::future::pending::<Result<(), SyncError>>().await
+        });
+        assert_eq!(large.await.unwrap_err().failure, Failure::TooLarge);
     }
 
     #[test]

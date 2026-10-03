@@ -140,7 +140,8 @@ export const FAILURES = Object.freeze({
   host_unreachable: 'The repository host couldn’t be reached.',
   certificate_untrusted: 'The server doesn’t trust the host’s HTTPS certificate.',
   host_key_changed: 'The host’s SSH key changed since the first sync.',
-  too_large: 'The folder has more than 5,000 files or 100 MB.',
+  repository_moved: 'The repository moved to another address. Use its new URL.',
+  too_large: 'The folder is too large to sync. Choose a smaller folder or remove large files.',
   timeout: 'The sync took too long.',
   storage_full: 'The server is low on disk space.',
   credentials_unavailable: 'The saved credentials can’t be read. Enter them again.',
@@ -148,6 +149,12 @@ export const FAILURES = Object.freeze({
 });
 
 export const failureText = (/** @type {string|null|undefined} */ code) => (code && FAILURES[/** @type {keyof typeof FAILURES} */ (code)]) || FAILURES.sync_failed;
+
+/** The scheme, host and port of an HTTPS URL, or null for other URLs. A saved token works only there. */
+export function originOf(/** @type {string} */ value) {
+  if (transportOf(value) !== 'https') return null;
+  try { return new URL(String(value).trim()).origin; } catch { return null; }
+}
 
 /** Recognize the URL forms the server accepts, to choose the access field. */
 export function transportOf(/** @type {string} */ value) {

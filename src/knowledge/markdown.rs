@@ -218,19 +218,24 @@ fn setext_level(line: &str, next: &str) -> Option<u8> {
 pub(crate) fn inline_text(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let chars: Vec<char> = value.chars().collect();
+    let mut closers = Closers::new(&chars);
     let mut index = 0;
     while index < chars.len() {
         let c = chars[index];
         match c {
             '!' if chars.get(index + 1) == Some(&'[') => index += 1,
             '[' => {
-                if let Some(close) = find(&chars, index + 1, ']') {
+                if let Some(close) = closers.next(index + 1, ']') {
                     out.extend(&chars[index + 1..close]);
                     index = close + 1;
                     if chars.get(index) == Some(&'(') {
-                        index = find(&chars, index + 1, ')').map_or(chars.len(), |end| end + 1);
+                        index = closers
+                            .next(index + 1, ')')
+                            .map_or(chars.len(), |end| end + 1);
                     } else if chars.get(index) == Some(&'[') {
-                        index = find(&chars, index + 1, ']').map_or(chars.len(), |end| end + 1);
+                        index = closers
+                            .next(index + 1, ']')
+                            .map_or(chars.len(), |end| end + 1);
                     }
                     continue;
                 }
@@ -238,7 +243,7 @@ pub(crate) fn inline_text(value: &str) -> String {
                 index += 1;
             }
             '<' => {
-                let end = find(&chars, index + 1, '>');
+                let end = closers.next(index + 1, '>');
                 match end {
                     Some(end)
                         if chars
@@ -277,12 +282,47 @@ pub(crate) fn inline_text(value: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn find(chars: &[char], from: usize, target: char) -> Option<usize> {
-    chars
-        .get(from..)?
-        .iter()
-        .position(|c| *c == target)
-        .map(|offset| from + offset)
+/// The next closing character at or after a position. Each answer is
+/// remembered, and the scan only moves forward, so a line full of unclosed
+/// brackets still takes linear time.
+struct Closers<'a> {
+    chars: &'a [char],
+    memo: Vec<(char, usize, Option<usize>)>,
+    #[cfg(test)]
+    scanned: usize,
+}
+
+impl<'a> Closers<'a> {
+    fn new(chars: &'a [char]) -> Self {
+        Self {
+            chars,
+            memo: Vec::with_capacity(3),
+            #[cfg(test)]
+            scanned: 0,
+        }
+    }
+
+    fn next(&mut self, from: usize, target: char) -> Option<usize> {
+        if let Some((_, start, found)) = self.memo.iter().find(|(c, ..)| *c == target)
+            && *start <= from
+            && found.is_none_or(|at| at >= from)
+        {
+            return *found;
+        }
+        let found = self
+            .chars
+            .get(from..)?
+            .iter()
+            .position(|c| *c == target)
+            .map(|offset| from + offset);
+        #[cfg(test)]
+        {
+            self.scanned += found.map_or(self.chars.len(), |at| at + 1) - from;
+        }
+        self.memo.retain(|(c, ..)| *c != target);
+        self.memo.push((target, from, found));
+        found
+    }
 }
 
 fn word_edge(chars: &[char], index: usize) -> bool {
@@ -397,6 +437,33 @@ mod tests {
             "tag https://example.com"
         );
         assert_eq!(inline_text(r"\*literal\*"), "*literal*");
+    }
+
+    #[test]
+    fn unclosed_brackets_are_scanned_once() {
+        for line in [
+            "<".repeat(10_000),
+            "[".repeat(10_000),
+            "x>[y](".repeat(2_000),
+        ] {
+            let chars: Vec<char> = line.chars().collect();
+            let mut closers = Closers::new(&chars);
+            for index in 0..chars.len() {
+                for target in [']', ')', '>'] {
+                    closers.next(index, target);
+                }
+            }
+            assert!(
+                closers.scanned <= 3 * (chars.len() + 1),
+                "{}",
+                closers.scanned
+            );
+        }
+        assert_eq!(inline_text(&"<".repeat(1_000)).len(), 1_000);
+        assert_eq!(
+            inline_text("[a](b) and 2 < 3 [e] <https://f.test>"),
+            "a and 2 < 3 e https://f.test"
+        );
     }
 
     #[test]

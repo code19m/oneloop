@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  failureText, folderEntries, highlight, iconKind, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms, transportOf,
+  failureText, folderEntries, highlight, iconKind, originOf, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms, transportOf,
 } from '../../../../src/features/knowledge/model.js';
 
 const esc = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -60,6 +60,10 @@ test('file shapes, transports and failure reasons have plain names', () => {
   assert.equal(transportOf('ssh://git@host:2222/docs.git'), 'ssh');
   assert.equal(transportOf('https://host/docs.git'), 'https');
   assert.equal(transportOf('http://host/docs.git'), null);
+  assert.equal(originOf('https://reader@Git.Example.test:443/team/docs.git'), 'https://git.example.test');
+  assert.equal(originOf('https://git.example.test:8443/docs.git'), 'https://git.example.test:8443');
+  assert.equal(originOf('git@git.example.test:team/docs.git'), null);
+  assert.match(failureText('repository_moved'), /new URL/);
   assert.match(failureText('auth_failed'), /refused/);
   assert.equal(failureText('unknown_code'), failureText('sync_failed'));
 });

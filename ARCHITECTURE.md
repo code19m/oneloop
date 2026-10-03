@@ -174,7 +174,8 @@ and an update here.
   secret appears in logs or audit payloads. The one exception is a credential
   oneloop itself presents to another server: a Knowledge access token or deploy
   key can't be hashed, so it is encrypted with the instance key in
-  `keys/knowledge.key`, bound to its project, and never returned by any API.
+  `keys/knowledge.key`, bound to its project, sent only to the host it was
+  entered for, and never returned by any API.
 - **User input never becomes a path.** Stored files use generated keys, and
   original file names are metadata only.
 - **One server per data directory.** A lock file enforces it; maintenance

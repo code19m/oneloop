@@ -11,7 +11,7 @@
 import { actionErrorFeedback } from '../../app/action-feedback.js';
 import {
   baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, headingSlug, highlight,
-  iconKind, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
+  iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
   transportOf,
 } from './model.js';
 
@@ -54,12 +54,14 @@ const fileMark = (/** @type {string} */ path, folder = false) => {
   return `<span class="knowledge-file-mark" data-file-kind="${kind}" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${SHAPES[/** @type {keyof typeof SHAPES} */ (kind)]}</svg></span>`;
 };
 
+const MOVED_TOKEN = 'The saved token is for the previous host. Enter a new token or remove it.';
+
 /** Field errors the dialog shows, phrased for the form rather than the API. */
 const FIELD_ERRORS = Object.freeze({
   url: (/** @type {string} */ message) => /password/i.test(message) ? 'Put the password in Access token, not in the URL.' : /plain HTTP/i.test(message) ? 'Use HTTPS or SSH. Plain HTTP isn’t supported.' : 'Enter an HTTPS or SSH Git URL.',
   branch: () => 'Enter a valid branch name.',
   folder: () => 'Use a folder inside the repository.',
-  token: (/** @type {string} */ message) => /HTTPS/.test(message) ? 'Tokens work only with HTTPS URLs.' : /new token/i.test(message) ? 'Enter the new token.' : 'Use one line of visible characters.',
+  token: (/** @type {string} */ message) => /HTTPS/.test(message) ? 'Tokens work only with HTTPS URLs.' : /previous host/i.test(message) ? MOVED_TOKEN : /new token/i.test(message) ? 'Enter the new token.' : 'Use one line of visible characters.',
 });
 
 /**
@@ -520,7 +522,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const label = (/** @type {string} */ id, /** @type {string} */ text, hint = '') => `<div class="knowledge-field-label"><label for="${id}">${text}</label>${hint ? `<span>${hint}</span>` : ''}</div>`;
     const token = saved
       ? `<div class="knowledge-secret" data-token-state="keep"><span class="knowledge-secret-value">${icon('lock', 14)}<span data-token-label>Token saved</span></span><span class="knowledge-secret-actions"><button type="button" class="btn quiet" data-knowledge-action="token" data-state="replace">Replace</button><button type="button" class="btn quiet" data-knowledge-action="token" data-state="remove">Remove</button><button type="button" class="btn quiet" data-knowledge-action="token" data-state="keep" data-token-undo hidden>Undo</button></span></div><div class="knowledge-secret-edit" hidden><input class="ctl" id="knowledge-token" name="token" type="password" autocomplete="new-password" placeholder="New token"><button type="button" class="btn quiet" data-knowledge-action="token" data-state="keep">Undo</button></div><input type="hidden" name="tokenAction" value="keep">`
-      : `<input class="ctl" id="knowledge-token" name="token" type="password" autocomplete="new-password"><input type="hidden" name="tokenAction" value="${connected ? 'replace' : 'set'}">`;
+      : `<input class="ctl" id="knowledge-token" name="token" type="password" autocomplete="new-password"><input type="hidden" name="tokenAction" value="set">`;
     const key = source?.deployKey ?? '';
     return `<h2>${connected ? 'Edit repository' : 'Connect repository'}</h2>
       <form novalidate class="knowledge-form" data-knowledge-form>
@@ -578,6 +580,8 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (!branch) return fieldError(form, 'branch', 'Enter a valid branch name.');
     if (folder.split('/').includes('..')) return fieldError(form, 'folder', 'Use a folder inside the repository.');
     if (transport === 'https' && source?.hasToken && tokenAction === 'replace' && !token) return fieldError(form, 'token', 'Enter the new token.');
+    // A saved token is sent only to the host it was entered for.
+    if (transport === 'https' && source?.hasToken && tokenAction === 'keep' && originOf(url) !== originOf(source.url)) { setTokenState(form, 'replace'); return fieldError(form, 'token', MOVED_TOKEN); }
     let operation, payload, options = {};
     if (!source) {
       operation = 'knowledge.connect';

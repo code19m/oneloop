@@ -1419,9 +1419,9 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
     db.run(|connection| {
         connection.execute_batch(
             "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1);
-             INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at)
+             INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at,generation)
              VALUES('project-1','https://git.example.test/team/docs.git','main','docs','ready',
-                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,1,1);",
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,1,1,'g1');",
         )?;
         for (path, kind, media, content) in [
             (

@@ -188,7 +188,8 @@ includes both. Without Docker, install them on the server, for example with
   server's Git settings, credential helpers and hooks, never asks for a
   password, and speaks only HTTPS and SSH.
 - **Credentials.** Access tokens and deploy keys are encrypted with
-  `keys/knowledge.key` in the data directory. Backups include it.
+  `keys/knowledge.key` in the data directory. Backups include it. A token goes
+  only to its repository's host; with a token, Git doesn't follow redirects.
 - **SSH host keys.** oneloop trusts a host's key on the first connection and
   keeps it in `keys/knowledge_known_hosts`.
 

@@ -108,7 +108,9 @@ impl GitUrl {
     fn scp_like(raw: &str) -> Option<Self> {
         let (authority, path) = raw.split_once(':')?;
         let (user, host) = authority.split_once('@')?;
+        // Neither part may start with `-`, which Git or SSH would read as an option.
         let valid_user = !user.is_empty()
+            && !user.starts_with('-')
             && user
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
@@ -342,6 +344,8 @@ mod tests {
             "ext::sh -c touch% /tmp/pwned",
             "-uhttps://git.example.com/docs.git",
             "git@-oProxyCommand=x:docs.git",
+            "-oProxyCommand=x@host:docs.git",
+            "-u@host:docs.git",
             "git@host:-docs.git",
             "/srv/docs.git",
             "C:\\docs",

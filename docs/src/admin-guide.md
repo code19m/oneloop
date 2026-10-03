@@ -114,6 +114,9 @@ URL decides how oneloop signs in:
   the URL.
 - A saved token is never shown again. **Manage connection** offers **Replace**
   and **Remove**.
+- A saved token goes only to the host it was entered for. If you move the URL
+  to another host, enter a new token or remove it. With a token, oneloop
+  doesn't follow redirects, so if the repository moves, enter its new URL.
 - On the first SSH connection, oneloop remembers the host's key. If the key
   changes later, syncs fail until you check why; see
   [Troubleshooting](troubleshooting.md#knowledge-sync).
@@ -127,8 +130,10 @@ When you change the URL, branch or folder, the old files disappear and the new
 ones appear after the next sync. **Disconnect** removes the synced files, the
 token and the deploy key from oneloop. The repository itself is never changed.
 
-Files larger than 10 MB are left out. A folder with more than 5,000 files or
-100 MB in total doesn't sync; see [Limits](reference.md#limits).
+Files larger than 10 MB are left out, but a sync still downloads them. A
+folder doesn't sync if it has more than 5,000 files or 100 MB of files to show,
+or if a sync would need more than 300 MB of disk; see
+[Limits](reference.md#limits).
 
 ## Storage
 

@@ -25,3 +25,6 @@ pub use service::{
 pub const MAX_FILES: usize = 5_000;
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+/// Disk one sync may use for its working copy. It holds the folder twice, as
+/// Git's packed copy and as files, including files it then leaves out.
+pub const MAX_DOWNLOAD_BYTES: u64 = 300 * 1024 * 1024;
