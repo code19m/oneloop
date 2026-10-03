@@ -136,16 +136,7 @@ impl FileService {
                 resource: "preview",
             });
         }
-        let permit = HTML_PREVIEW_PERMITS
-            .acquire()
-            .await
-            .map_err(|_| AppError::Unavailable("preview worker is shutting down".into()))?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            sanitize_html_preview(&bytes)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("preview worker failed: {error}")))
+        sanitized_html_preview(bytes).await
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -171,6 +171,31 @@ When oneloop gets `SIGTERM` or Ctrl+C, it stops taking new connections and
 gives open requests up to 30 seconds to finish. When it is back, browsers
 reconnect by themselves. Nobody has to sign in again.
 
+## Knowledge base connections
+
+To sync [Knowledge](admin-guide.md#knowledge-base) folders, oneloop runs the
+`git` program, version 2.31 or later, and `ssh` for SSH URLs. The Docker image
+includes both. Without Docker, install them on the server, for example with
+`apt install git openssh-client`.
+
+- **Network.** The server needs outgoing HTTPS, or SSH (port 22 or the one in
+  the URL), to your Git hosts. oneloop passes `HTTPS_PROXY`, `HTTP_PROXY`,
+  `ALL_PROXY` and `NO_PROXY` to Git.
+- **Private certificate authorities.** Set `GIT_SSL_CAINFO` (a file) or
+  `GIT_SSL_CAPATH` (a folder) for the oneloop service. oneloop also passes
+  `SSL_CERT_FILE` and `SSL_CERT_DIR`.
+- **Isolation.** Git runs with an empty configuration of its own. It ignores the
+  server's Git settings, credential helpers and hooks, never asks for a
+  password, and speaks only HTTPS and SSH.
+- **Credentials.** Access tokens and deploy keys are encrypted with
+  `keys/knowledge.key` in the data directory. Backups include it. A token goes
+  only to its repository's host; with a token, Git doesn't follow redirects.
+- **SSH host keys.** oneloop trusts a host's key on the first connection and
+  keeps it in `keys/knowledge_known_hosts`.
+
+The example systemd unit already allows this. With your own sandbox, allow the
+service to run `git` and `ssh` and to open outgoing connections.
+
 ## Security checklist
 
 - Serve oneloop only over HTTPS, and keep the redirect from HTTP to HTTPS.
@@ -180,9 +205,9 @@ reconnect by themselves. Nobody has to sign in again.
 - Keep oneloop's security headers. They protect sign-in and isolate uploaded
   files.
 - Run oneloop under its own system account, and run maintenance commands as
-  that account. The data directory holds password hashes, private files and
-  signing keys. oneloop makes it readable only by its owner, and it warns at
-  startup if others can read it.
+  that account. The data directory holds password hashes, private files,
+  signing keys and the key that encrypts Knowledge credentials. oneloop makes
+  it readable only by its owner, and it warns at startup if others can read it.
 - Keep backups and logs private. Backups contain everything, and logs contain
   usernames and IP addresses.
 - Install new releases, because security fixes come in new versions.
@@ -195,8 +220,9 @@ oneloop also protects you by itself:
 - It answers only requests for its own host name, and accepts changes only from
   its own pages.
 - It slows down repeated failed sign-ins, for each account and each address.
-- It never runs uploaded files on the server. Downloads are always saved as
-  files, HTML previews run in a sandbox, and Markdown is cleaned before display.
+- It never runs uploaded or synced files on the server. Downloads are always
+  saved as files, HTML previews run in a sandbox, and Markdown is cleaned
+  before display.
 
 Report security problems privately, as described in
 [SECURITY.md](https://github.com/code19m/oneloop/blob/main/SECURITY.md).

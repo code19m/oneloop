@@ -35,7 +35,7 @@ for (const theme of ['light', 'dark']) {
     await expect(page.getByRole('dialog')).toBeVisible();
     await scan(page, 'Pool');
     await page.keyboard.press('Escape');
-    for (const route of ['roadmap', `task/${instance.projects[0].task.taskKey}`, 'inbox', 'settings']) {
+    for (const route of ['roadmap', `task/${instance.projects[0].task.taskKey}`, 'knowledge', 'inbox', 'settings']) {
       await page.evaluate(value => { location.hash = `#/${value}`; }, route);
       await expect.poll(() => page.evaluate(() => App.context().view)).toBe(route.startsWith('task/') ? 'task' : route);
       await scan(page, route);

@@ -29,6 +29,8 @@ server or in one container.
   previews.
 - **Inbox**: one private list of mentions, replies, assignments and unblocked
   tasks.
+- **Knowledge**: read your team's guides, rules and decisions from a folder of
+  any Git repository, with previews and one search over names and text.
 - **Live updates**: everyone sees changes without reloading the page.
 - **AI assistants**: connect Claude Code, Codex or another MCP client, with the
   access you choose.

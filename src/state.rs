@@ -6,6 +6,7 @@ use crate::{
     collaboration::{CollaborationRuntime, CollaborationService},
     domain::DomainService,
     files::FileService,
+    knowledge::KnowledgeService,
 };
 
 /// Shared service configuration for browser handlers, MCP tools and workers.
@@ -18,6 +19,7 @@ pub struct AppState {
     pub files: FileService,
     pub collaboration: CollaborationService,
     pub collaboration_runtime: CollaborationRuntime,
+    pub knowledge: KnowledgeService,
 }
 
 impl AppState {
@@ -32,6 +34,7 @@ impl AppState {
             ),
             collaboration: CollaborationService::new(db.clone()),
             collaboration_runtime: CollaborationRuntime::new(db.clone()),
+            knowledge: KnowledgeService::new(db.clone(), config.disk_min_free_bytes),
             config: Arc::new(config),
             db,
         }

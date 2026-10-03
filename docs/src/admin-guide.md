@@ -11,14 +11,14 @@ with read-only access. Tick **Roadmap** or **Board** to let them change things.
 
 | Action | Member | + Roadmap | + Board | Admin |
 | --- | --- | --- | --- | --- |
-| See the project's Roadmap, Board, tasks, files and Team Pool | Yes | Yes | Yes | Every project |
+| See the project's Roadmap, Board, tasks, files, Team Pool and Knowledge | Yes | Yes | Yes | Every project |
 | Comment, reply and mention people | Yes | Yes | Yes | Every project |
 | Edit or delete comments | Own | Own | Own | Any |
 | Use their private My Pool | Yes | Yes | Yes | Yes |
 | Be assigned tasks | Yes | Yes | Yes | Where also a member |
 | Change tracks, epics and milestones | No | Yes | No | Yes |
 | Create, move, block and delete tasks, upload files, change the Team Pool | No | No | Yes | Yes |
-| Manage projects, members, users and storage | No | No | No | Yes |
+| Manage projects, members, the knowledge base, users and storage | No | No | No | Yes |
 
 People don't see projects they aren't members of. Changes apply at once, also
 to their connected AI assistants.
@@ -81,6 +81,59 @@ it.
 To delete a project, open its **Settings**, choose **Delete project** and type
 the project's name. This deletes all of the project's work and files, and you
 can't undo it. The last project can't be deleted.
+
+## Knowledge base
+
+Each project can show one folder of a Git repository as its
+[Knowledge](user-guide.md#knowledge). oneloop only reads the repository; people
+change the files in Git, with the review your team already uses.
+
+1. Open the project's **Settings** and choose **Connect repository** under
+   **Knowledge base**.
+2. Enter the **Repository URL**, the **Branch** and the **Folder**. Leave
+   **Folder** empty to show the whole repository.
+3. Give oneloop read access, as described below, and choose **Connect**.
+
+The first sync starts at once. After that, oneloop checks the branch every
+minute and downloads the folder again only when it has changed.
+
+Any Git host works: GitLab, GitHub, Gitea, Bitbucket or your own server. The
+URL decides how oneloop signs in:
+
+| URL | Example | Access |
+| --- | --- | --- |
+| HTTPS | `https://git.example.com/team/docs.git` | An **Access token** with read-only access to the repository. Leave it empty for a public repository. |
+| SSH | `git@git.example.com:team/docs.git` or `ssh://git@git.example.com:2222/team/docs.git` | A **Deploy key**. oneloop creates one for the project and shows it in the dialog. Add it to the repository as a read-only deploy key. |
+
+- Create a token that can only read this repository, such as a GitLab project
+  access token with `read_repository`, or a GitHub fine-grained token with
+  read access to contents.
+- oneloop sends the token with the username `oneloop`. If your host needs a
+  particular username, put it in the URL, such as
+  `https://x-token-auth@bitbucket.org/team/docs.git`. Never put a password in
+  the URL.
+- A saved token is never shown again. **Manage connection** offers **Replace**
+  and **Remove**.
+- A saved token goes only to the host it was entered for. If you move the URL
+  to another host, enter a new token or remove it. With a token, oneloop
+  doesn't follow redirects, so if the repository moves, enter its new URL.
+- On the first SSH connection, oneloop remembers the host's key. If the key
+  changes later, syncs fail until you check why; see
+  [Troubleshooting](troubleshooting.md#knowledge-sync).
+
+**Settings** shows the repository, the branch and folder, and when the last
+sync succeeded. If a sync fails, it also shows the reason, and oneloop tries
+again every 5 minutes. People keep reading the last synced files. To try at
+once, choose **Retry sync** on the Knowledge page.
+
+When you change the URL, branch or folder, the old files disappear and the new
+ones appear after the next sync. **Disconnect** removes the synced files, the
+token and the deploy key from oneloop. The repository itself is never changed.
+
+Files larger than 10 MB are left out, but a sync still downloads them. A
+folder doesn't sync if it has more than 5,000 files or 100 MB of files to show,
+or if a sync would need more than 300 MB of disk; see
+[Limits](reference.md#limits).
 
 ## Storage
 

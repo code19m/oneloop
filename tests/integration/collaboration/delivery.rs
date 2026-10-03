@@ -1195,20 +1195,22 @@ async fn supervisor_stops_other_workers_on_unexpected_exit_or_panic() {
         } = seeded_project().await;
         let runtime = CollaborationRuntime::new(db);
         let mut closed = runtime.shutdown_receiver();
-        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let (stop, stopped) = tokio::sync::watch::channel(false);
         let outbox = tokio::spawn(async move {
             assert!(!panic, "injected worker panic");
             Ok(())
         });
-        let files = tokio::spawn(async move {
+        let waiter = |mut stopped: tokio::sync::watch::Receiver<bool>| async move {
             while !*stopped.borrow_and_update() {
                 if stopped.changed().await.is_err() {
                     break;
                 }
             }
-        });
+        };
+        let files = tokio::spawn(waiter(stopped.clone()));
+        let knowledge = tokio::spawn(waiter(stopped));
         assert!(
-            oneloop::runtime::supervise_workers(outbox, files, stop, runtime)
+            oneloop::runtime::supervise_workers(outbox, files, knowledge, stop, runtime)
                 .await
                 .is_err()
         );

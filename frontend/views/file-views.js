@@ -1,4 +1,4 @@
-/* Attachment views. HTML runs only in an opaque-origin sandbox; originals stay unchanged. */
+/* Attachment and Knowledge views. HTML runs only in an opaque-origin sandbox; originals stay unchanged. */
 (() => {
   const remote=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}};
   const embedded=value=>/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(value||'');
@@ -76,7 +76,7 @@
     if(!mermaidLoad)mermaidLoad=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=mermaidURL.href;script.onload=()=>window.mermaid?resolve(window.mermaid):reject(new Error('Diagram renderer unavailable'));script.onerror=()=>{script.remove();mermaidLoad=null;reject(new Error('Diagram renderer unavailable'));};document.head.append(script);});
     return mermaidLoad;
   }
-  function renderDiagrams(article){
+  function renderDiagrams(article,context){
     for(const code of article.querySelectorAll('pre code.language-mermaid')){
       const source=code.textContent,pre=code.parentElement,figure=document.createElement('figure');figure.className='markdown-diagram';figure.setAttribute('aria-busy','true');
       const status=document.createElement('span');status.className='markdown-diagram-status';status.textContent='Rendering diagram…';figure.append(status);pre.replaceWith(figure);
@@ -86,7 +86,7 @@
         if(!figure.isConnected)return;
         try{
           const mermaid=await loadMermaid();if(!figure.isConnected)return;
-          mermaid.initialize({startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',flowchart:{htmlLabels:false},htmlLabels:false,
+          mermaid.initialize({startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
             secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
           const {svg}=await mermaid.render('attachment-diagram-'+(++diagramSequence),source);
           if(!figure.isConnected)return;
@@ -97,13 +97,17 @@
       });
     }
   }
-  function markdown(host,file,text,truncated){
+  /**
+   * Render Markdown. A Knowledge `context` resolves relative links and images
+   * inside its folder and themes diagrams; attachments have no context.
+   */
+  function markdown(host,file,text,truncated,context={}){
     const ui=shell(host,'Markdown',text,truncated);ui.view.classList.add('markdown-scroll');ui.view.tabIndex=0;ui.view.setAttribute('aria-label','Rendered Markdown');
-    if(readyFor(text)){renderMarkdown(ui,text);return;}
+    if(readyFor(text)){renderMarkdown(ui,text,context);return;}
     const load=()=>{
       UIHTML(ui.view,'<p class="preview-unavailable" role="status">Loading Markdown preview…</p>');
       const active=()=>ui.view.isConnected&&!ui.view.closest('[inert],[data-motion-exiting]');
-      loadMarkdown(text).then(()=>{if(active())renderMarkdown(ui,text);}).catch(()=>{
+      loadMarkdown(text).then(()=>{if(active())renderMarkdown(ui,text,context);}).catch(()=>{
         if(!active())return;
         const notice=document.createElement('div');notice.className='preview-unavailable';notice.setAttribute('role','alert');
         const copy=document.createElement('p');copy.textContent='Markdown preview could not load. Use Source or download the file.';
@@ -113,7 +117,7 @@
     };
     load();
   }
-  function renderMarkdown(ui,text){
+  function renderMarkdown(ui,text,context){
     if(!window.marked||!window.DOMPurify){UIHTML(ui.view,'<p class="preview-unavailable">Markdown preview could not load. Use Source or download the file.</p>');return;}
     const maths=[];
     const mathPlaceholder=token=>{const index=maths.push({text:token.text,display:!!token.displayMode})-1;return `<${token.displayMode?'div':'span'} data-md-math="${index}"></${token.displayMode?'div':'span'}>`;};
@@ -141,12 +145,12 @@
       fragment.querySelectorAll('[aria-describedby]').forEach(el=>{const ids=el.getAttribute('aria-describedby').split(/\s+/).filter(id=>id.startsWith('footnote-')).map(id=>'md-'+id);if(ids.length)el.setAttribute('aria-describedby',ids.join(' '));else el.removeAttribute('aria-describedby');});
       fragment.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(heading=>{if(heading.id)return;const base=heading.textContent.toLowerCase().replace(/[^\p{L}\p{N}\p{M}_\-\s]/gu,'').replace(/\s/g,'-'),n=slugs.get(base)||0;slugs.set(base,n+1);heading.id='md-'+base+(n?'-'+n:'');});
       fragment.querySelectorAll('input').forEach(el=>{if(el.type!=='checkbox'){el.remove();return;}el.disabled=true;el.classList.add('task-list-item-checkbox');el.closest('li')?.classList.add('task-list-item');});
-      fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){link.href='#md-'+href.slice(1);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}});
-      fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'';if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
+      fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){link.href='#md-'+href.slice(1);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}});
+      fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'',local=context.resolveImage?.(src);if(typeof local==='string'&&local.startsWith('/api/')){img.setAttribute('src',local);img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
       fragment.querySelectorAll('pre code').forEach(code=>{const lang=[...code.classList].find(c=>c.startsWith('language-'))?.slice(9);if(window.hljs&&lang&&hljs.getLanguage(lang)){try{UIHTML(code,hljs.highlight(code.textContent,{language:lang,ignoreIllegals:true}).value);code.classList.add('hljs');}catch{}}});
       const article=document.createElement('article');article.className='markdown-body';article.append(fragment);ui.view.replaceChildren(article);ui.view.scrollTop=scroll;
       article.querySelectorAll('[data-md-math]').forEach(el=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!window.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
-      renderDiagrams(article);
+      renderDiagrams(article,context);
     };
     ui.view.onclick=event=>{const link=event.target.closest('a');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#md-')){event.preventDefault();const target=[...ui.view.querySelectorAll('[id]')].find(el=>el.id===href.slice(1));if(target){ui.view.scrollTo({top:ui.view.scrollTop+target.getBoundingClientRect().top-ui.view.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});}}};
     render();
@@ -183,5 +187,12 @@
 
   // The frame can request dismissal only. Never expose app data or commands over messages.
   window.addEventListener('message',event=>{const frame=document.querySelector('.file-dialog .html-preview');if(frame&&event.source===frame.contentWindow&&event.data?.type==='oneloop-preview-escape')document.querySelector('[data-file-close]')?.click();});
-  window.FileViews={markdown,html};
+  /** Plain text, with JSON indented when the whole file is present. */
+  function text(host,file,value,truncated){
+    host.replaceChildren();let shown=value;
+    if(String(file.name).toLowerCase().endsWith('.json')&&!truncated){try{shown=JSON.stringify(JSON.parse(value),null,2);}catch{}}
+    const pre=document.createElement('pre');pre.className='file-source-text';pre.tabIndex=0;pre.textContent=shown;host.append(pre);
+    if(truncated){const note=document.createElement('p');note.className='access-note';note.textContent='Preview truncated to 200 KB. Download the full file.';host.prepend(note);}
+  }
+  window.FileViews={markdown,html,text};
 })();

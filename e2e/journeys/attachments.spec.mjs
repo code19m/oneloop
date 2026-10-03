@@ -43,7 +43,7 @@ test('every page, theme, icon and preview type loads from the embedded assets', 
   await openApp(page, instance);
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => Theme.set(theme), theme);
-    for (const route of ['board', 'roadmap', 'inbox', 'storage', 'profile', 'users', 'settings']) {
+    for (const route of ['board', 'roadmap', 'knowledge', 'inbox', 'storage', 'profile', 'users', 'settings']) {
       await page.evaluate(route => App.nav(route), route);
       await expect(page.locator('.topbar h1')).toBeVisible();
       await expect(page.locator('.page-error')).toHaveCount(0);
