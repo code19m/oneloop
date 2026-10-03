@@ -20,6 +20,8 @@ All notable changes to oneloop are recorded here. The format follows
 - Page titles no longer show a focus ring after a refresh or a page change.
 - A card dropped in another column now settles there directly, instead of
   flying back to its old place first.
+- "Try again in … seconds" after too many sign-in attempts now counts down,
+  and says when you can try again.
 
 ## [0.1.0-rc.1] - 2026-09-28
 
