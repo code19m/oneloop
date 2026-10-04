@@ -106,6 +106,9 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
+Text and Markdown previews require valid text throughout the file. Binary
+files stay download-only, including files named `.md` or `.markdown`.
+
 **Knowledge**
 
 | Limit | Value |

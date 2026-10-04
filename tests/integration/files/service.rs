@@ -678,18 +678,24 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let mut disguised_binary = vec![b'a'; 1024 * 1024 + 32];
-    *disguised_binary.last_mut().unwrap() = 0;
-    let binary = upload(
-        &service,
-        &fixture.manager,
-        "binary-tail",
+    *disguised_binary.last_mut().unwrap() = 0xff;
+    for name in [
         "looks-readable.txt",
-        &disguised_binary,
-        false,
-    )
-    .await;
-    assert_eq!(binary.preview_kind, None);
-    assert_eq!(binary.source_url, None);
+        "looks-readable.md",
+        "looks-readable.markdown",
+    ] {
+        let binary = upload(
+            &service,
+            &fixture.manager,
+            name,
+            name,
+            &disguised_binary,
+            false,
+        )
+        .await;
+        assert_eq!(binary.preview_kind, None);
+        assert_eq!(binary.source_url, None);
+    }
 
     let mut large_html = b"<!doctype html><p>safe</p>".to_vec();
     large_html.resize(1024 * 1024 + 1, b' ');
@@ -954,23 +960,25 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
 async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let binary = upload(
-        &service,
-        &fixture.manager,
-        "binary-text",
-        "broken.txt",
-        &[0xff, 0xfe, 0, 1],
-        false,
-    )
-    .await;
-    assert_eq!(binary.media_type, "application/octet-stream");
-    assert_eq!(binary.preview_kind, None);
-    assert!(
-        service
-            .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
-            .await
-            .is_err()
-    );
+    for name in ["broken.txt", "broken.md", "broken.markdown"] {
+        let binary = upload(
+            &service,
+            &fixture.manager,
+            name,
+            name,
+            &[0xff, 0xfe, 0, 1],
+            false,
+        )
+        .await;
+        assert_eq!(binary.media_type, "application/octet-stream");
+        assert_eq!(binary.preview_kind, None);
+        assert!(
+            service
+                .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
+                .await
+                .is_err()
+        );
+    }
 
     let pixels = [255_u8, 0, 0, 255];
     let mut png = Vec::new();

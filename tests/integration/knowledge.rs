@@ -382,8 +382,35 @@ async fn administrators_connect_a_folder_and_members_read_its_files() {
 async fn files_follow_the_attachment_safety_rules() {
     let fixture = Fixture::new().await;
     let repository = handbook();
+    repository.write("docs/binary.md", &[0xff, 0xfe, 0, 1]);
+    repository.commit(SECOND);
     fixture.connect(&repository).await;
     fixture.state.knowledge.sync_due().await;
+
+    let actor = fixture
+        .state
+        .auth
+        .authenticate_session(fixture.member.split_once('=').unwrap().1, false)
+        .await
+        .unwrap();
+    let binary = fixture
+        .state
+        .knowledge
+        .read_text(&actor, "p1", "binary.md", None)
+        .await
+        .unwrap();
+    assert!(binary.content.is_none() && binary.kind.is_none());
+    assert!(binary.note.unwrap().contains("not text"));
+    assert_eq!(
+        fixture
+            .get(
+                &fixture.member,
+                "/api/projects/p1/knowledge/text?path=binary.md"
+            )
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
     let response = fixture
         .get(
