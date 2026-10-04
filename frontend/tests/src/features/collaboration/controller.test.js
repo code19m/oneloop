@@ -40,6 +40,18 @@ function fixture(overrides={}){
   return {controller,data,transport,app,facade,events,pages,saved,inboxes,commandCalls,apiCalls,listeners,published};
 }
 
+for(const kind of ['reconcile','activity.changed'])test(`live ${kind} refreshes the project list without a selected project`,async()=>{
+  useMockedClock();
+  const reloads=[];
+  const t=fixture({data:{projects:[]},app:{context:()=>({view:'no-projects',projectId:null})},transport:{reload:async options=>{reloads.push(options);return {stale:false};}}});
+  try{
+    const hint=kind==='reconcile'?{}:{projectId:'first-project',entityType:'membership',entityId:'new-member',entityRevision:1};
+    for(let i=0;i<3;i++)t.events.listeners[kind==='reconcile'?'reconcile':'hint']({data:JSON.stringify({kind,...hint})});
+    await delay(90);
+    assert.equal(reloads.length,1);assert.equal(reloads[0].background,true);assert.equal(reloads[0].viewOnly,false);
+  }finally{t.controller.dispose();}
+});
+
 test('maps opaque server entities, second timestamps and UTF-16 mention ranges exactly once',()=>{
   const text='Hi 👋 @bob';
   assert.deepEqual(mentionsToWire(text,[{id:'u2',label:'bob',start:6,end:10}]),[{kind:'user',userId:'u2',startOffset:6,endOffset:10,label:'@bob'}]);

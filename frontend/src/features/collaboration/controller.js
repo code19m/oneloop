@@ -380,7 +380,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const accessChange=['project','membership'].includes(hint.entityType);
       if(['inbox','profile','users','storage','settings'].includes(context.view)&&!accessChange)return;
     }
-    if(context.projectId&&(kind==='activity.changed'||kind==='reconcile')){
+    if(kind==='activity.changed'||kind==='reconcile'){
       scheduleProjectReconcile(context.projectId,{full:kind==='reconcile'||metadataChange,hint:{...hint,kind}});
     }
   }
