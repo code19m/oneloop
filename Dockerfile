@@ -17,7 +17,7 @@ LABEL org.opencontainers.image.title="oneloop" \
       org.opencontainers.image.documentation="https://code19m.github.io/oneloop/" \
       org.opencontainers.image.licenses="MIT"
 # Git and the SSH client sync Knowledge folders from repository hosts.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata git openssh-client \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata git openssh-client tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 oneloop \
     && useradd --uid 10001 --gid oneloop --no-create-home --home-dir /data oneloop \
@@ -28,5 +28,6 @@ ENV ONELOOP_DATA_DIR=/data ONELOOP_LISTEN=0.0.0.0:8080
 USER 10001:10001
 VOLUME /data
 EXPOSE 8080
-ENTRYPOINT ["oneloop"]
+# Reap orphaned Git helpers, forward signals and preserve oneloop's exit code.
+ENTRYPOINT ["/usr/bin/tini", "--", "oneloop"]
 CMD ["serve"]
