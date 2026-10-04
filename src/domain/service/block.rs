@@ -194,11 +194,14 @@ pub(super) fn update_block_reason(
         params![reason, input.block_id],
     )?;
     let notified = previous_block_recipients(tx, &input.block_id)?;
+    for owner in &notified {
+        crate::collaboration::enqueue_inbox_change_tx(tx, owner, now)?;
+    }
     let direct: Vec<String> = mentions
         .iter()
         .filter(|mention| mention.kind == MentionKind::User)
         .filter_map(|mention| mention.user_id.clone())
-        .filter(|id| !notified.contains(id) && id != &actor.user_id)
+        .filter(|id| !notified.contains(id) && !retained.contains(id) && id != &actor.user_id)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -222,16 +225,23 @@ pub(super) fn update_block_reason(
     let has_everyone = mentions
         .iter()
         .any(|mention| mention.kind == MentionKind::Everyone);
-    let had_everyone: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM notification_events WHERE block_id=?1
+    let had_everyone: bool = old_mentions
+        .iter()
+        .any(|mention| mention.kind == MentionKind::Everyone)
+        || tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM notification_events WHERE block_id=?1
          AND json_extract(payload_json,'$.broadcast')=1)",
-        [&input.block_id],
-        |row| row.get(0),
-    )?;
+            [&input.block_id],
+            |row| row.get(0),
+        )?;
     if has_everyone && !had_everyone {
         let mut everyone = active_project_members(tx, &before.project_id)?;
-        everyone
-            .retain(|id| id != &actor.user_id && !notified.contains(id) && !direct.contains(id));
+        everyone.retain(|id| {
+            id != &actor.user_id
+                && !notified.contains(id)
+                && !retained.contains(id)
+                && !direct.contains(id)
+        });
         notify(
             tx,
             actor,

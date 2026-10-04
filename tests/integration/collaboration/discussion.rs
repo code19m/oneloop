@@ -78,6 +78,234 @@ async fn drain(runtime: &CollaborationRuntime) {
 }
 
 #[tokio::test]
+async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one_snapshot() {
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+    type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+    fn trace(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event
+            && sql.contains("FROM comment_mentions")
+            && let Some((entered, release)) = GATE.lock().unwrap().take()
+        {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    let mut pages = Vec::new();
+    for exact in [false, true] {
+        let f = Fixture::new().await;
+        let service = f.service();
+        let mentions =
+            json!([{"kind":"user","userId":"bob","startOffset":0,"endOffset":4,"label":"@Bob"}]);
+        let root = service
+            .execute(
+                &f.alice,
+                command(
+                    "discussion.comment.create",
+                    json!({"taskId":"task","content":"@Bob old","mentions":mentions}),
+                    "root",
+                    None,
+                ),
+            )
+            .await
+            .unwrap()
+            .entities[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let reply = service.execute(&f.alice, command("discussion.comment.create",
+            json!({"taskId":"task","replyToId":root,"content":"@Bob old","mentions":mentions}), "reply", None,
+        )).await.unwrap().entities[0]["id"].as_str().unwrap().to_owned();
+        let reader = Db::open_with_pool_size(f._root.path(), 1).unwrap();
+        reader
+            .run(|conn| {
+                conn.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *GATE.lock().unwrap() = Some((entered_tx, release_rx));
+        let actor = f.alice.clone();
+        let reply_id = reply.clone();
+        let read = tokio::spawn(async move {
+            let reader = CollaborationService::new(reader);
+            if exact {
+                reader.comment_context(&actor, "task", &reply_id).await
+            } else {
+                reader.comments(&actor, "task", None, Some(1)).await
+            }
+        });
+        tokio::task::spawn_blocking(move || {
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        for id in [&root, &reply] {
+            service.execute(&f.alice, command("discussion.comment.edit",
+                json!({"commentId":id,"content":"prefix @Alice updated","mentions":[{
+                    "kind":"user","userId":"alice","startOffset":7,"endOffset":13,"label":"@Alice"
+                }]}), id, Some(1),
+            )).await.unwrap();
+        }
+        service
+            .execute(
+                &f.alice,
+                command(
+                    "discussion.comment.create",
+                    json!({"taskId":"task","replyToId":root,"content":"New reply"}),
+                    "new-reply",
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        release_tx.send(()).unwrap();
+        pages.push((exact, root, read.await.unwrap().unwrap()));
+    }
+    for (exact, root, page) in pages {
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.context.len(), 1);
+        for comment in page.items.iter().chain(&page.context) {
+            assert_eq!(comment.content.as_deref(), Some("@Bob old"));
+            assert_eq!(comment.revision, 1);
+            assert_eq!(comment.mentions[0].label, "@Bob", "exact={exact}");
+            assert_eq!(comment.mentions[0].end_offset, 4);
+        }
+        assert_eq!(page.reply_counts[&root], 1, "exact={exact}");
+    }
+}
+
+#[tokio::test]
+async fn comment_edits_retain_departed_mentions_but_reject_new_selections() {
+    for deactivate in [false, true] {
+        let f = Fixture::new().await;
+        let service = f.service();
+        let mentions =
+            json!([{"kind":"user","userId":"bob","startOffset":0,"endOffset":4,"label":"@Bob"}]);
+        let id = service
+            .execute(
+                &f.alice,
+                command(
+                    "discussion.comment.create",
+                    json!({"taskId":"task","content":"@Bob old","mentions":mentions}),
+                    "retained-create",
+                    None,
+                ),
+            )
+            .await
+            .unwrap()
+            .entities[0]["id"]
+            .clone();
+        f.db.transaction(move |tx| {
+            if deactivate {
+                tx.execute(
+                    "UPDATE users SET is_active=0 WHERE id IN ('bob','carol')",
+                    [],
+                )?;
+            } else {
+                tx.execute(
+                    "DELETE FROM project_memberships WHERE user_id IN ('bob','carol')",
+                    [],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let edited = service
+            .execute(
+                &f.alice,
+                command(
+                    "discussion.comment.edit",
+                    json!({"commentId":id,"content":"@Bob corrected","mentions":mentions}),
+                    "retained-edit",
+                    Some(1),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(edited.entities[0]["mentions"], mentions);
+        assert_eq!(edited.entities[0]["revision"], 2);
+        let error = service.execute(&f.alice, command("discussion.comment.edit",
+            json!({"commentId":id,"content":"@Carol new","mentions":[{
+                "kind":"user","userId":"carol","startOffset":0,"endOffset":6,"label":"@Carol"
+            }]}), "new-departed-mention", Some(2),
+        )).await.unwrap_err();
+        assert!(matches!(error, AppError::Validation { field, .. } if field == "mentions"));
+        let runtime = CollaborationRuntime::new(f.db.clone());
+        drain(&runtime).await;
+        let delivered =
+            f.db.run(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM notification_recipients WHERE delivered_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(delivered, 0);
+    }
+}
+
+#[tokio::test]
+async fn moderator_edits_notify_new_mentions_without_notifying_retained_self_mentions() {
+    let f = Fixture::new().await;
+    f.db.transaction(|tx| {
+        tx.execute("UPDATE users SET is_admin=1 WHERE id='bob'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let service = f.service();
+    let mut mentions =
+        json!([{"kind":"user","userId":"alice","startOffset":0,"endOffset":6,"label":"@Alice"}]);
+    let id = service
+        .execute(
+            &f.alice,
+            command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"@Alice old","mentions":mentions}),
+                "self-create",
+                None,
+            ),
+        )
+        .await
+        .unwrap()
+        .entities[0]["id"]
+        .clone();
+    mentions.as_array_mut().unwrap().push(
+        json!({"kind":"user","userId":"carol","startOffset":7,"endOffset":13,"label":"@Carol"}),
+    );
+    service
+        .execute(
+            &f.bob,
+            command(
+                "discussion.comment.edit",
+                json!({"commentId":id,"content":"@Alice @Carol corrected","mentions":mentions}),
+                "moderator-edit",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let recipients =
+        f.db.run(|conn| {
+            Ok(conn
+                .prepare("SELECT user_id FROM notification_recipients ORDER BY user_id")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(recipients, ["carol"]);
+}
+
+#[tokio::test]
 async fn selected_utf16_mentions_notify_once_and_deleted_roots_preserve_replies() {
     let fixture = Fixture::new().await;
     let service = fixture.service();

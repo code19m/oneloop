@@ -109,7 +109,7 @@ pub(super) fn inbox_bulk_change(
     })
 }
 
-pub(super) fn enqueue_inbox_change_tx(
+pub(crate) fn enqueue_inbox_change_tx(
     tx: &Transaction<'_>,
     owner_id: &str,
     now: i64,
