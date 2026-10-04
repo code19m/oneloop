@@ -287,16 +287,43 @@ async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
     let (directory, app, token) = fixture().await;
     let db = Db::open(directory.path()).unwrap();
     let before = unix_now().unwrap() - 3600;
+    let idle_before = before + 86400;
     db.run(move |connection| {
-        connection.execute("UPDATE sessions SET last_activity_at=?1", [before])?;
+        connection.execute("UPDATE sessions SET last_activity_at=?1,idle_expires_at=?2", [before,idle_before])?;
+        connection.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('knowledge','Knowledge','KNO',1,1)", [])?;
+        for (path, kind, media_type, content) in [
+            ("page.html", "html", "text/html", b"<h1>Hello</h1>".as_slice()),
+            ("image.png", "image", "image/png", b"image".as_slice()),
+        ] {
+            connection.execute("INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content) VALUES('knowledge',?1,?2,?3,?4,'abc',1,?5)",
+                rusqlite::params![path,content.len() as i64,media_type,kind,content])?;
+        }
         Ok(())
     })
     .await
     .unwrap();
-    for (path, destination) in [
-        ("/api/users/missing/avatar", None),
-        ("/api/attachments/missing/content", Some("image")),
-        ("/api/attachments/missing/preview/html", Some("iframe")),
+    for (path, destination, status) in [
+        ("/api/users/missing/avatar", None, StatusCode::NOT_FOUND),
+        (
+            "/api/attachments/missing/content",
+            Some("image"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/api/attachments/missing/preview/html",
+            Some("iframe"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/api/projects/knowledge/knowledge/preview/html?path=page.html&reload=1",
+            Some("iframe"),
+            StatusCode::OK,
+        ),
+        (
+            "/api/projects/knowledge/knowledge/content?path=image.png",
+            Some("image"),
+            StatusCode::OK,
+        ),
     ] {
         let mut request = Request::builder()
             .uri(path)
@@ -309,18 +336,18 @@ async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), status, "{path}");
         let last = db
             .run(|connection| {
-                Ok(
-                    connection.query_row("SELECT last_activity_at FROM sessions", [], |row| {
-                        row.get::<_, i64>(0)
-                    })?,
-                )
+                Ok(connection.query_row(
+                    "SELECT last_activity_at,idle_expires_at FROM sessions",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )?)
             })
             .await
             .unwrap();
-        assert_eq!(last, before, "passive fetch {path}");
+        assert_eq!(last, (before, idle_before), "passive fetch {path}");
     }
     let response = app
         .oneshot(

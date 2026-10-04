@@ -148,7 +148,7 @@ Some emoji count as two characters.
 | Full name | 80 characters |
 | Password | At least 5 characters |
 | Sessions per account | 10; sign out of one to sign in somewhere new |
-| Session length | Ends after 7 days without use, and after 30 days at most |
+| Session length | Ends after 7 days without use, and after 30 days at most; automatic image and HTML previews do not extend it |
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
 | Failed sign-ins | Within 15 minutes, delays start after 5 failures for one account/address pair, 20 failures from one address across accounts, or 15 failures for one account across addresses. Delays start at 30 seconds and double, up to 15 minutes for pair/address limits or 60 seconds for the account limit. |
 

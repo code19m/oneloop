@@ -93,7 +93,8 @@ pub async fn require_actor(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD
     ) && ((path.starts_with("/api/users/") && path.ends_with("/avatar"))
-        || (path.starts_with("/api/attachments/")
+        || ((path.starts_with("/api/attachments/")
+            || (path.starts_with("/api/projects/") && path.contains("/knowledge/")))
             && matches!(destination, Some("image" | "iframe"))));
     let meaningful = path != "/api/events"
         && !passive_resource
