@@ -166,10 +166,8 @@ read-only Board.
   `code` or a quote, is plain text.
 - **@everyone** notifies all active members of the project except you. You can
   use it once a minute in each project.
-- When you edit a comment or block reason, only people you newly mention can
-  get a notification. People already notified by that comment or block reason
-  are not notified again. You can keep mentions of people who have left or
-  become inactive.
+- When you edit a comment or block reason, only people you newly mention get a
+  notification. Mentions of people who have left stay.
 
 ## Inbox
 
