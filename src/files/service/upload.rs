@@ -49,12 +49,7 @@ impl FileService {
 
         self.store.ensure_directories().await?;
         let mut capacity = self.prepare_capacity().await?;
-        let deficit = maintenance::disk_floor_deficit(
-            self.disk_min_free_bytes,
-            self.store.available_space()?,
-            capacity.unwritten_reserved_bytes,
-            claimed_size,
-        );
+        let deficit = self.disk.deficit(claimed_size)?;
         if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
             capacity = self.capacity_usage().await?;
         }
@@ -79,7 +74,9 @@ impl FileService {
         let pending_actor = actor.clone();
         let reservation_task = tokio::spawn(async move {
             let _maintenance_gate = service.acquire_file_maintenance_gate().await?;
-            service.check_reserved_disk_floor(claimed_size).await?;
+            let disk = service.disk.reserve(claimed_size)?;
+            disk.keep_until_removed(staging_path.clone());
+            disk.keep_until_removed(service.store.file_path(&storage_key)?);
             let outcome = service
                 .db
                 .transaction(move |tx| {
@@ -161,6 +158,7 @@ impl FileService {
                 ReserveOutcome::Replay(value) => Ok(UploadStart::Replayed(value)),
                 ReserveOutcome::Reserved(project_id, idempotency_id) => {
                     let mut pending = PendingAttachmentUpload {
+                        disk: Some(disk),
                         service: service.clone(),
                         actor: pending_actor,
                         reservation_id,
@@ -243,6 +241,7 @@ impl PendingAttachmentUpload {
             .ok_or_else(|| AppError::internal("upload staging file is unavailable"))?;
         let data_lease = self.service.db.acquire_data_lease().await?;
         let finalizer = FinalizeAttachmentUpload {
+            disk: self.disk.take(),
             service: self.service.clone(),
             actor: self.actor.clone(),
             data_lease,
@@ -266,15 +265,22 @@ impl PendingAttachmentUpload {
     }
 
     pub async fn abort(mut self) -> AppResult<()> {
-        drop(self.file.take());
         let data_lease = self.service.db.acquire_data_lease().await?;
+        let file = self.file.take();
         let service = self.service.clone();
         let reservation_id = self.reservation_id.clone();
         let idempotency_id = self.idempotency_id.clone();
         let storage_key = self.storage_key.clone();
         let staging_path = self.staging_path.clone();
+        let disk = self.disk.take();
         self.finished = true;
         tokio::spawn(async move {
+            let _disk = disk;
+            if let Some(mut file) = file {
+                // Tokio may still be writing on a blocking worker. Finish that
+                // write before unlinking and releasing its disk reservation.
+                let _ = file.flush().await;
+            }
             service
                 .cleanup_upload_attempt(
                     &reservation_id,
@@ -300,9 +306,14 @@ impl Drop for PendingAttachmentUpload {
         let idempotency_id = self.idempotency_id.clone();
         let storage_key = self.storage_key.clone();
         let staging_path = self.staging_path.clone();
-        drop(self.file.take());
+        let disk = self.disk.take();
+        let file = self.file.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
+                let _disk = disk;
+                if let Some(mut file) = file {
+                    let _ = file.flush().await;
+                }
                 let Ok(data_lease) = service.db.acquire_data_lease().await else {
                     return;
                 };
@@ -504,7 +515,12 @@ async fn finalize_attachment_upload(
     .await;
     drop(maintenance_gate);
     match result {
-        Ok(view) => Ok(view),
+        Ok(view) => {
+            if let Some(disk) = upload.disk.take() {
+                disk.published();
+            }
+            Ok(view)
+        }
         Err(error) => {
             log_cleanup_failure(
                 upload

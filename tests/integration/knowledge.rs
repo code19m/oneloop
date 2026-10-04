@@ -64,7 +64,7 @@ impl Repository {
         self.git(&["commit", "--quiet", "--message", "Change"], time);
     }
 
-    fn git(&self, arguments: &[&str], time: i64) {
+    fn git(&self, arguments: &[&str], time: i64) -> Vec<u8> {
         let date = format!("{time} +0000");
         let output = Command::new("git")
             .current_dir(self.path())
@@ -83,6 +83,50 @@ impl Repository {
             "git {arguments:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        output.stdout
+    }
+}
+
+#[tokio::test]
+async fn case_colliding_paths_keep_their_own_git_blob_contents() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.git(&["config", "core.ignorecase", "false"], FIRST);
+    for (name, content) in [
+        ("README.md", "First unique bytes"),
+        ("Readme.md", "Second unique bytes"),
+    ] {
+        repository.write("blob-input", content.as_bytes());
+        let blob = repository.git(&["hash-object", "-w", "blob-input"], FIRST);
+        let blob = String::from_utf8(blob).unwrap();
+        repository.git(
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{},docs/{name}", blob.trim()),
+            ],
+            FIRST,
+        );
+    }
+    repository.git(
+        &["commit", "--quiet", "--message", "Case-sensitive tree"],
+        FIRST,
+    );
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    for (name, content) in [
+        ("README.md", "First unique bytes"),
+        ("Readme.md", "Second unique bytes"),
+    ] {
+        let response = fixture
+            .get(
+                &fixture.member,
+                &format!("/api/projects/p1/knowledge/download?path={name}"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_bytes(response).await, content.as_bytes());
     }
 }
 

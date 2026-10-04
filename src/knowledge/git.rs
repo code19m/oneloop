@@ -20,6 +20,7 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use super::source::GitUrl;
+use crate::files::disk::DiskReservation;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TIMEOUT: Duration = Duration::from_secs(300);
@@ -125,6 +126,11 @@ pub(crate) struct Limits {
     pub(crate) max_download_bytes: u64,
 }
 
+pub(crate) struct SnapshotOptions {
+    pub(crate) limits: Limits,
+    pub(crate) history_depth: u32,
+}
+
 pub(crate) struct Snapshot {
     pub(crate) commit: String,
     /// Commit time of the branch tip.
@@ -151,6 +157,7 @@ pub(crate) struct Git {
 
 /// One run's private directory, credentials and the host a token may reach.
 struct Session<'a> {
+    disk: Option<DiskReservation>,
     root: PathBuf,
     home: PathBuf,
     global_config: PathBuf,
@@ -166,10 +173,35 @@ impl Drop for Session<'_> {
         // A working copy can hold thousands of files; remove it off the
         // async workers when a runtime is there.
         let root = std::mem::take(&mut self.root);
+        if root.as_os_str().is_empty() {
+            return;
+        }
+        let disk = self.disk.take();
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn_blocking(move || std::fs::remove_dir_all(root))),
+            Ok(runtime) => drop(runtime.spawn_blocking(move || {
+                let _disk = disk;
+                std::fs::remove_dir_all(root)
+            })),
             Err(_) => drop(std::fs::remove_dir_all(root)),
         }
+    }
+}
+
+impl Session<'_> {
+    async fn cleanup(mut self) -> Result<(), SyncError> {
+        let root = self.root.clone();
+        let disk = self.disk.clone();
+        tokio::task::spawn_blocking(move || {
+            let _disk = disk;
+            std::fs::remove_dir_all(root)
+        })
+        .await
+        .map_err(|error| SyncError::new(Failure::Failed, format!("remove working copy: {error}")))?
+        .map_err(|error| {
+            SyncError::new(Failure::Failed, format!("remove working copy: {error}"))
+        })?;
+        self.root.clear();
+        Ok(())
     }
 }
 
@@ -183,19 +215,34 @@ struct Output {
 /// and `index-pack`, share its process group, and outlive it when only `git`
 /// is killed. So a time limit, the size watchdog or a changed source stops the
 /// whole group.
-struct GitProcess(Child);
+struct GitProcess {
+    child: Option<Child>,
+    disk: Option<DiskReservation>,
+}
 
 impl Drop for GitProcess {
     fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
         // Until Git is waited for, its process ID can't be reused, so the
         // group is still Git's own.
         #[cfg(unix)]
-        if let Some(pid) = self
-            .0
+        if let Some(pid) = child
             .id()
             .and_then(|id| rustix::process::Pid::from_raw(i32::try_from(id).ok()?))
         {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        if child.id().is_some() {
+            let _ = child.start_kill();
+            let disk = self.disk.take();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _disk = disk;
+                    let _ = child.wait().await;
+                });
+            }
         }
     }
 }
@@ -224,9 +271,10 @@ impl Git {
         url: &GitUrl,
         branch: &str,
         credentials: &Credentials,
+        reservation: DiskReservation,
     ) -> Result<String, SyncError> {
         let deadline = Instant::now() + CHECK_TIMEOUT;
-        let session = self.session(url, credentials)?;
+        let session = self.session(url, credentials, Some(reservation))?;
         self.require_version(&session, deadline).await?;
         let reference = format!("refs/heads/{branch}");
         let listing = self
@@ -261,11 +309,15 @@ impl Git {
         branch: &str,
         folder: &str,
         credentials: &Credentials,
-        limits: Limits,
-        history_depth: u32,
+        options: SnapshotOptions,
+        reservation: DiskReservation,
     ) -> Result<Snapshot, SyncError> {
+        let SnapshotOptions {
+            limits,
+            history_depth,
+        } = options;
         let deadline = Instant::now() + SYNC_TIMEOUT;
-        let session = self.session(url, credentials)?;
+        let session = self.session(url, credentials, Some(reservation))?;
         self.require_version(&session, deadline).await?;
         let repository = session.root.join("repository");
         let repository_arg = repository.to_string_lossy().into_owned();
@@ -377,7 +429,7 @@ impl Git {
         let deepened = history_depth > 1 && partial && {
             let history_deadline = deadline.min(Instant::now() + HISTORY_TIMEOUT);
             let deepen = format!("--deepen={}", history_depth - 1);
-            within(
+            let result = within(
                 &session.root,
                 budget,
                 self.output(
@@ -386,8 +438,11 @@ impl Git {
                     history_deadline,
                 ),
             )
-            .await
-            .is_ok_and(|output| output.success)
+            .await;
+            match result {
+                Err(error) if error.failure == Failure::TooLarge => return Err(error),
+                result => result.is_ok_and(|output| output.success),
+            }
         };
         let mut changed_at = HashMap::new();
         if deepened || history_depth <= 1 {
@@ -417,15 +472,40 @@ impl Git {
         let mut files = Vec::with_capacity(selected.len());
         let mut skipped = 0;
         let mut total = 0u64;
-        for (repository_path, path) in selected {
-            let location = repository.join(&repository_path);
-            let Some(content) = read_regular_file(&location, limits.max_file_bytes)
-                .await
-                .map_err(|detail| SyncError::new(Failure::Failed, detail))?
-            else {
+        for (repository_path, path, blob) in selected {
+            // A checkout can alias distinct Git paths on a case-insensitive
+            // volume. Only the tree's object ID identifies the file's bytes.
+            let size = within(
+                &session.root,
+                budget,
+                self.run(
+                    &session,
+                    &in_repository(&repository_arg, &["cat-file", "-s", &blob]),
+                    deadline,
+                ),
+            )
+            .await?;
+            let size = std::str::from_utf8(&size)
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .ok_or_else(|| SyncError::new(Failure::Failed, "invalid Git blob size"))?;
+            if size > limits.max_file_bytes {
                 skipped += 1;
                 continue;
-            };
+            }
+            let content = within(
+                &session.root,
+                budget,
+                self.run(
+                    &session,
+                    &in_repository(&repository_arg, &["cat-file", "blob", &blob]),
+                    deadline,
+                ),
+            )
+            .await?;
+            if content.len() as u64 != size {
+                return Err(SyncError::new(Failure::Failed, "Git blob size changed"));
+            }
             total += content.len() as u64;
             if total > limits.max_total_bytes {
                 return Err(SyncError::new(
@@ -439,6 +519,8 @@ impl Git {
                 content,
             });
         }
+        // Release temporary bytes before SQLite can write both WAL and data pages.
+        session.cleanup().await?;
         Ok(Snapshot {
             commit,
             committed_at,
@@ -467,12 +549,17 @@ impl Git {
         &self,
         url: &GitUrl,
         credentials: &'a Credentials,
+        disk: Option<DiskReservation>,
     ) -> Result<Session<'a>, SyncError> {
         let io = |error: std::io::Error| {
             SyncError::new(Failure::Failed, format!("prepare working copy: {error}"))
         };
         let root = self.work_root.join(uuid::Uuid::now_v7().to_string());
+        if let Some(disk) = &disk {
+            disk.keep_until_removed(root.clone());
+        }
         let session = Session {
+            disk,
             home: root.join("home"),
             global_config: root.join("gitconfig"),
             hooks: root.join("hooks"),
@@ -603,15 +690,19 @@ impl Git {
     ) -> Result<Output, SyncError> {
         let mut command = self.command(session);
         command.args(arguments);
-        let mut child = GitProcess(command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                SyncError::new(Failure::GitUnavailable, "the git program is not installed")
-            } else {
-                SyncError::new(Failure::Failed, format!("start git: {error}"))
-            }
-        })?);
-        let mut stdout = child.0.stdout.take().expect("piped stdout");
-        let mut stderr = child.0.stderr.take().expect("piped stderr");
+        let mut child = GitProcess {
+            disk: session.disk.clone(),
+            child: Some(command.spawn().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    SyncError::new(Failure::GitUnavailable, "the git program is not installed")
+                } else {
+                    SyncError::new(Failure::Failed, format!("start git: {error}"))
+                }
+            })?),
+        };
+        let process = child.child.as_mut().expect("running git");
+        let mut stdout = process.stdout.take().expect("piped stdout");
+        let mut stderr = process.stderr.take().expect("piped stderr");
         let run = async {
             let out = async {
                 let mut buffer = Vec::new();
@@ -632,8 +723,12 @@ impl Git {
                 tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await?;
                 Ok::<_, std::io::Error>(buffer)
             };
-            let (out, err, status) = tokio::join!(out, err, child.0.wait());
-            Ok::<_, std::io::Error>((out?, err?, status?))
+            // Keep the parent's PID reserved until helpers close both pipes.
+            // Cancellation can still kill its group after the parent exits.
+            let (out, err) = tokio::join!(out, err);
+            let (out, err) = (out?, err?);
+            let status = process.wait().await?;
+            Ok::<_, std::io::Error>((out, err, status))
         };
         let (stdout, stderr, status) = tokio::time::timeout_at(deadline, run)
             .await
@@ -663,11 +758,11 @@ async fn within<T>(
     budget: u64,
     work: impl Future<Output = Result<T, SyncError>>,
 ) -> Result<T, SyncError> {
-    let root = root.to_path_buf();
+    let watched_root = root.to_path_buf();
     let watch = async move {
         loop {
             tokio::time::sleep(WATCH_INTERVAL).await;
-            let root = root.clone();
+            let root = watched_root.clone();
             let size = tokio::task::spawn_blocking(move || tree_size(&root))
                 .await
                 .unwrap_or(0);
@@ -677,7 +772,14 @@ async fn within<T>(
         }
     };
     tokio::select! {
-        result = work => result,
+        result = work => {
+            let root = root.to_path_buf();
+            let size = tokio::task::spawn_blocking(move || tree_size(&root)).await
+                .map_err(|error| SyncError::new(Failure::Failed, format!("measure working copy: {error}")))?;
+            if size > budget {
+                Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
+            } else { result }
+        },
         size = watch => Err(SyncError::new(
             Failure::TooLarge,
             format!("the download reached {size} bytes; the limit is {budget}"),
@@ -707,7 +809,7 @@ fn select_files(
     listing: &[u8],
     folder: &str,
     max_files: usize,
-) -> Result<Vec<(String, String)>, SyncError> {
+) -> Result<Vec<(String, String, String)>, SyncError> {
     let prefix = if folder.is_empty() {
         String::new()
     } else {
@@ -729,6 +831,9 @@ fn select_files(
         if !matches!(mode, "100644" | "100755") {
             continue;
         }
+        let Some(blob) = fields.next().filter(|value| is_object_id(value)) else {
+            continue;
+        };
         let Ok(repository_path) = std::str::from_utf8(&record[tab + 1..]) else {
             continue;
         };
@@ -744,7 +849,11 @@ fn select_files(
                 "the folder has more files than the limit",
             ));
         }
-        files.push((repository_path.to_owned(), relative.to_owned()));
+        files.push((
+            repository_path.to_owned(),
+            relative.to_owned(),
+            blob.to_owned(),
+        ));
     }
     Ok(files)
 }
@@ -804,28 +913,6 @@ fn parse_version(output: &str) -> Option<(u32, u32)> {
         .take_while(char::is_ascii_digit)
         .collect();
     Some((major, minor.parse().ok()?))
-}
-
-/// The file's bytes, or `None` when it is larger than `limit`.
-async fn read_regular_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
-    let metadata = tokio::fs::symlink_metadata(path)
-        .await
-        .map_err(|error| format!("read checked-out file: {error}"))?;
-    if !metadata.is_file() {
-        return Err("a checked-out path is not a regular file".to_owned());
-    }
-    if metadata.len() > limit {
-        return Ok(None);
-    }
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| format!("read checked-out file: {error}"))?;
-    let mut content = Vec::with_capacity(metadata.len() as usize);
-    file.take(limit + 1)
-        .read_to_end(&mut content)
-        .await
-        .map_err(|error| format!("read checked-out file: {error}"))?;
-    Ok((content.len() as u64 <= limit).then_some(content))
 }
 
 fn write_private(path: &Path, content: &[u8]) -> std::io::Result<()> {
@@ -936,6 +1023,84 @@ fn summary(stderr: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_after_git_exits_kills_pipe_holding_helpers_and_reaps_git() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        let git = Git::new(
+            root.path().join("work"),
+            root.path().join("known_hosts"),
+            false,
+        );
+        let url = GitUrl::parse("https://git.example.test/docs.git", false).unwrap();
+        let session = git.session(&url, &Credentials::None, None).unwrap();
+        let helper = session.root.join("helper");
+        let parent = session.root.join("parent");
+        let alias = format!(
+            "alias.probe=!sleep 60 & echo $! > {}; echo $PPID > {}",
+            shell_quote(&helper),
+            shell_quote(&parent)
+        );
+        let args = ["-c", &alias, "probe"];
+        let mut run =
+            Box::pin(git.output(&session, &args, Instant::now() + Duration::from_secs(60)));
+        async fn state(pid: u32) -> String {
+            String::from_utf8(
+                Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output()
+                    .await
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+        }
+        let ready = async {
+            loop {
+                if let (Ok(a), Ok(b)) = (
+                    tokio::fs::read_to_string(&helper).await,
+                    tokio::fs::read_to_string(&parent).await,
+                ) && let (Ok(helper), Ok(parent)) =
+                    (a.trim().parse::<u32>(), b.trim().parse::<u32>())
+                {
+                    let status = state(parent).await;
+                    if status.trim().is_empty() || status.trim().starts_with('Z') {
+                        break (helper, parent);
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let (helper_pid, parent_pid) = tokio::select! {
+            result = &mut run => panic!("helper should keep the pipes open: {}", result.is_ok()),
+            result = tokio::time::timeout(Duration::from_secs(10), ready) => result.unwrap(),
+        };
+        // Dropping the future must stop the group even though Git already exited.
+        drop(run);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let helper = state(helper_pid).await;
+                if (helper.trim().is_empty() || helper.trim().starts_with('Z'))
+                    && state(parent_pid).await.trim().is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        // Also clean up on the pre-fix failure.
+        let _ = Command::new("kill")
+            .args(["-KILL", &helper_pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        assert!(
+            stopped.is_ok(),
+            "the helper must stop and the Git parent must be reaped"
+        );
+    }
+
     fn listing(entries: &[(&str, &str, &str)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for (mode, kind, path) in entries {
@@ -963,8 +1128,16 @@ mod tests {
         assert_eq!(
             selected,
             [
-                ("docs/README.md".to_owned(), "README.md".to_owned()),
-                ("docs/tools/run.sh".to_owned(), "tools/run.sh".to_owned())
+                (
+                    "docs/README.md".to_owned(),
+                    "README.md".to_owned(),
+                    format!("{:040x}", 1)
+                ),
+                (
+                    "docs/tools/run.sh".to_owned(),
+                    "tools/run.sh".to_owned(),
+                    format!("{:040x}", 1)
+                )
             ]
         );
     }
@@ -1082,6 +1255,12 @@ mod tests {
             std::future::pending::<Result<(), SyncError>>().await
         });
         assert_eq!(large.await.unwrap_err().failure, Failure::TooLarge);
+
+        let fast = within(root.path(), 100, async {
+            write(101).unwrap();
+            Ok(())
+        });
+        assert_eq!(fast.await.unwrap_err().failure, Failure::TooLarge);
     }
 
     #[test]

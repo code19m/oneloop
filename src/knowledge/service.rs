@@ -55,6 +55,7 @@ pub(super) struct Inner {
     pub(super) keys: PathBuf,
     pub(super) allow_file: bool,
     pub(super) disk_min_free_bytes: u64,
+    pub(super) disk: crate::files::disk::DiskAdmission,
     pub(super) limits: Limits,
     pub(super) wake: Notify,
     /// Projects whose sync is running in this process, each with the token
@@ -330,6 +331,7 @@ impl KnowledgeService {
 
     fn build(db: Db, disk_min_free_bytes: u64, allow_file: bool) -> Self {
         let keys = db.layout().keys();
+        let disk = crate::files::disk::DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
         let git = Git::new(
             db.layout().root().join("knowledge"),
             keys.join("knowledge_known_hosts"),
@@ -342,6 +344,7 @@ impl KnowledgeService {
                 keys,
                 allow_file,
                 disk_min_free_bytes,
+                disk,
                 limits: Limits {
                     max_files: MAX_FILES,
                     max_file_bytes: MAX_FILE_BYTES,

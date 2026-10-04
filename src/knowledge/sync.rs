@@ -23,10 +23,11 @@ use crate::{
     AppResult,
     auth::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
+    files::disk::DiskReservation,
 };
 
 use super::{
-    git::{Credentials, Failure, Snapshot, SyncError},
+    git::{Credentials, Failure, Snapshot, SnapshotOptions, SyncError},
     secrets::Purpose,
     service::{Inner, KnowledgeService},
     source::{GitUrl, Transport},
@@ -206,13 +207,20 @@ impl KnowledgeService {
         };
         let generation = due.generation.clone();
         // Dropping a stopped download ends git and removes its working copy.
-        let result = tokio::select! {
-            biased;
-            () = claim.stop.cancelled() => {
-                tracing::info!(project_id, "knowledge sync stopped; the source changed");
-                return;
+        let reservation = self.require_space();
+        let (result, reservation) = match reservation {
+            Ok(reservation) => {
+                let result = tokio::select! {
+                    biased;
+                    () = claim.stop.cancelled() => {
+                        tracing::info!(project_id, "knowledge sync stopped; the source changed");
+                        return;
+                    }
+                    result = self.fetch(&project_id, due, reservation.clone()) => result,
+                };
+                (result, Some(reservation))
             }
-            result = self.fetch(&project_id, due) => result,
+            Err(error) => (Err(error), None),
         };
         if let Err(error) = &result {
             tracing::warn!(
@@ -223,7 +231,7 @@ impl KnowledgeService {
             );
         }
         if let Err(error) = self
-            .record(project_id.clone(), generation, started, result)
+            .record(project_id.clone(), generation, started, result, reservation)
             .await
         {
             tracing::warn!(%error, project_id, "could not store the knowledge sync result");
@@ -260,16 +268,22 @@ impl KnowledgeService {
             .await
     }
 
-    async fn fetch(&self, project_id: &str, due: Due) -> Result<Fetched, SyncError> {
+    async fn fetch(
+        &self,
+        project_id: &str,
+        due: Due,
+        reservation: DiskReservation,
+    ) -> Result<Fetched, SyncError> {
         let url = GitUrl::parse(&due.url, self.inner.allow_file)
             .map_err(|error| SyncError::new(Failure::Failed, error.to_string()))?;
         let credentials = self.credentials(project_id, &url, &due)?;
         let git = &self.inner.git;
-        let head = git.remote_head(&url, &due.branch, &credentials).await?;
+        let head = git
+            .remote_head(&url, &due.branch, &credentials, reservation.clone())
+            .await?;
         if due.commit.as_deref() == Some(head.as_str()) {
             return Ok(Fetched::Unchanged);
         }
-        self.require_space()?;
         let depth = if due.commit.is_none() {
             FIRST_HISTORY_DEPTH
         } else {
@@ -281,8 +295,11 @@ impl KnowledgeService {
                 &due.branch,
                 &due.folder,
                 &credentials,
-                self.inner.limits,
-                depth,
+                SnapshotOptions {
+                    limits: self.inner.limits,
+                    history_depth: depth,
+                },
+                reservation,
             )
             .await?;
         Ok(Fetched::Changed(snapshot))
@@ -336,23 +353,31 @@ impl KnowledgeService {
 
     /// A sync briefly holds the folder twice, in its working copy and in the
     /// database, on top of the configured free-space reserve.
-    fn require_space(&self) -> Result<(), SyncError> {
-        let available = fs4::available_space(self.inner.db.layout().root()).map_err(|error| {
-            SyncError::new(Failure::Failed, format!("check free space: {error}"))
-        })?;
+    fn require_space(&self) -> Result<DiskReservation, SyncError> {
         let limits = self.inner.limits;
-        let needed = self
-            .inner
-            .disk_min_free_bytes
-            .saturating_add(limits.max_download_bytes)
-            .saturating_add(limits.max_total_bytes);
-        if available < needed {
-            return Err(SyncError::new(
-                Failure::StorageFull,
-                format!("{available} bytes free; {needed} needed"),
-            ));
-        }
-        Ok(())
+        self.inner
+            .disk
+            .reserve(
+                limits
+                    .max_download_bytes
+                    .saturating_add(limits.max_total_bytes),
+            )
+            .map_err(|error| {
+                SyncError::new(
+                    if matches!(
+                        error,
+                        crate::AppError::Rule {
+                            kind: crate::error::RuleKind::StorageFull,
+                            ..
+                        }
+                    ) {
+                        Failure::StorageFull
+                    } else {
+                        Failure::Failed
+                    },
+                    error.to_string(),
+                )
+            })
     }
 
     /// Store the outcome unless an administrator changed, disconnected or
@@ -364,6 +389,7 @@ impl KnowledgeService {
         generation: String,
         started: i64,
         result: Result<Fetched, SyncError>,
+        reservation: Option<DiskReservation>,
     ) -> AppResult<()> {
         self.inner
             .db
@@ -378,10 +404,10 @@ impl KnowledgeService {
                     )
                     .optional()?;
                 let Some((current_generation, revision, state, error_code)) = current else {
-                    return Ok(());
+                    return Ok(reservation);
                 };
                 if current_generation != generation {
-                    return Ok(());
+                    return Ok(reservation);
                 }
                 // A request made while this sync ran gets a sync of its own.
                 let finished = "attempted_at=?2,
@@ -396,7 +422,7 @@ impl KnowledgeService {
                             params![project_id, now, started],
                         )?;
                         if state == "ready" {
-                            return Ok(());
+                            return Ok(reservation);
                         }
                         ("knowledge.synced", json!({}))
                     }
@@ -428,7 +454,7 @@ impl KnowledgeService {
                             params![project_id, now, started, code],
                         )?;
                         if state == "failed" && error_code.as_deref() == Some(code) {
-                            return Ok(());
+                            return Ok(reservation);
                         }
                         ("knowledge.sync_failed", json!({"reason": code}))
                     }
@@ -449,9 +475,10 @@ impl KnowledgeService {
                     },
                     now,
                 )?;
-                Ok(())
+                Ok(reservation)
             })
             .await
+            .map(|_| ())
     }
 }
 
@@ -565,6 +592,76 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
+        let (_root, db, _) = fixture("https://git.example.test/docs.git").await;
+        db.run(|c| {
+            c.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
+                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('epic','p1','track','Epic','2026-01-01',0,1,1);
+                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('task','p1','epic',1,'ONE-001','Task','planning',0,1,1);")?;
+            Ok(())
+        }).await.unwrap();
+        let free = fs4::available_space(db.layout().root()).unwrap();
+        let floor = free - 420 * 1024 * 1024;
+        let service = KnowledgeService::new(db.clone(), floor);
+        let files = crate::files::FileService::new(db, 100 * 1024 * 1024, floor);
+        let actor = Actor {
+            user_id: "admin".into(),
+            username: "admin".into(),
+            display_name: "Admin".into(),
+            is_admin: true,
+            must_change_password: false,
+            authenticated_at: 1,
+            source: ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let first = tokio::spawn({
+            let service = service.clone();
+            async move {
+                let reservation = service.require_space().unwrap();
+                started.send(()).unwrap();
+                released.await.unwrap();
+                drop(reservation);
+            }
+        });
+        ready.await.unwrap();
+        let another = service.require_space();
+        let upload = files
+            .begin_attachment_upload(
+                &actor,
+                "task",
+                "data.bin",
+                crate::files::MAX_ATTACHMENT_BYTES,
+                false,
+                "competing",
+            )
+            .await;
+        release.send(()).unwrap();
+        first.await.unwrap();
+        let blocked_upload = matches!(
+            upload,
+            Err(crate::AppError::Rule {
+                kind: crate::error::RuleKind::StorageFull,
+                ..
+            })
+        );
+        if let Ok(crate::files::UploadStart::Pending(upload)) = upload {
+            upload.abort().await.unwrap();
+        }
+        assert!(
+            another.is_err(),
+            "a second sync must not spend the first sync's reservation"
+        );
+        assert!(blocked_upload, "uploads share the sync's reservation");
+        assert!(
+            service.require_space().is_ok(),
+            "completion releases the reservation"
+        );
+    }
+
     fn command(operation: &str, payload: Value, revision: Option<i64>) -> KnowledgeCommand {
         KnowledgeCommand {
             operation: operation.to_owned(),
@@ -580,13 +677,25 @@ mod tests {
 
         // Disconnect and connect again keep the revision but not the generation.
         service
-            .record("p1".to_owned(), "earlier".to_owned(), 1, Ok(snapshot()))
+            .record(
+                "p1".to_owned(),
+                "earlier".to_owned(),
+                1,
+                Ok(snapshot()),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(stored(&db).await.0, 0);
 
         service
-            .record("p1".to_owned(), "current".to_owned(), 1, Ok(snapshot()))
+            .record(
+                "p1".to_owned(),
+                "current".to_owned(),
+                1,
+                Ok(snapshot()),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(stored(&db).await.0, 1);

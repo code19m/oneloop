@@ -10,6 +10,7 @@ pub use read::ReadMode;
 mod upload;
 
 use super::BlobState;
+use super::disk::{DiskAdmission, DiskReservation};
 use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
 use std::{
     collections::{HashMap, HashSet},
@@ -58,7 +59,7 @@ pub struct FileService {
     db: Db,
     store: FileStore,
     storage_limit_bytes: u64,
-    disk_min_free_bytes: u64,
+    disk: DiskAdmission,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -77,6 +78,7 @@ pub enum UploadStart {
 }
 
 pub struct PendingAttachmentUpload {
+    disk: Option<DiskReservation>,
     service: FileService,
     actor: Actor,
     reservation_id: String,
@@ -96,6 +98,7 @@ pub struct PendingAttachmentUpload {
 }
 
 struct FinalizeAttachmentUpload {
+    disk: Option<DiskReservation>,
     service: FileService,
     actor: Actor,
     data_lease: DataLease,
@@ -210,7 +213,6 @@ struct CapacityUsage {
     staging_bytes: u64,
     preview_bytes: u64,
     unreserved_staging_bytes: u64,
-    unwritten_reserved_bytes: u64,
 }
 
 struct DeleteActivityContext {
@@ -278,11 +280,12 @@ impl CapacityUsage {
 impl FileService {
     pub fn new(db: Db, storage_limit_bytes: u64, disk_min_free_bytes: u64) -> Self {
         let store = FileStore::new(db.layout().clone());
+        let disk = DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
         Self {
             db,
             store,
             storage_limit_bytes,
-            disk_min_free_bytes,
+            disk,
         }
     }
 
