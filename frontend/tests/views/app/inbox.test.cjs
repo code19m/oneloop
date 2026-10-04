@@ -1,7 +1,35 @@
 // views/app.js: the Inbox page and its notification states.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installCollaborationController } = require('../../../src/features/collaboration/controller.js');
+const { createLegacyData, hydrateLegacyData } = require('../../../src/data/projection-store.js');
+
+test('Inbox renders its actor, time and read state through reads and full or scoped bootstraps',async()=>{
+ const notice={id:'n1',eventType:'task.assigned',actorUserId:'robin',projectId:'p1',taskId:'task-1',taskKey:'BIR-079',taskTitle:'Review',destinationAvailable:true,createdAt:1700000000,readAt:null,archivedAt:null};
+ const bootstrap={session:{userId:'taylorwu'},users:[{id:'taylorwu',displayName:'Taylor',isAdmin:true,isActive:true},{id:'robin',displayName:'Robin',isActive:true}],projects:[{id:'p1',name:'Project',taskPrefix:'BIR',revision:1}],notifications:[notice],inboxUnreadCount:1};
+ const listeners=[];let controller;
+ const t=bootApp({route:'inbox',prepare(D,w){
+  const session=D.session;Object.assign(D,createLegacyData(),{session});
+  hydrateLegacyData(D,bootstrap);
+  const transport={data:D,api:{inbox:async()=>({items:[notice],nextCursor:null,unreadCount:1,filteredCount:1})},commands:{},subscribe(listener){listeners.push(listener);return()=>{};}};
+  w.OneloopTransport=transport;controller=installCollaborationController({transport,eventSourceFactory:()=>({addEventListener(){},close(){}})});w.OneloopCollaboration=controller;
+ }});
+ const rendered=(time,read)=>{
+  const row=t.d.querySelector('[data-notification-id="n1"]');assert(row);
+  assert.equal(row.querySelector('.inbox-event strong').textContent,'Robin');
+  assert.equal(row.querySelector('time').getAttribute('datetime'),time);
+  assert.equal(row.classList.contains('read'),read);
+  assert.equal(row.querySelector('.inbox-task-title').textContent,'Review');
+ };
+ try{
+  await settle();rendered('2023-11-14T22:13:20.000Z',false);
+  for(const projection of [{...bootstrap,notifications:[{...notice,createdAt:1700000002,readAt:1700000001}]},{...bootstrap,view:'metadata'},{...bootstrap,view:'metadata'}]){
+   hydrateLegacyData(t.D,projection);for(const listener of listeners)listener({type:'bootstrap',projection});t.A.refresh();
+   rendered('2023-11-14T22:13:22.000Z',true);
+  }
+ }finally{controller.dispose();}
+});
 
 const sampleScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'];
 /** The sample Inbox projection, optionally with stored collaboration state. */

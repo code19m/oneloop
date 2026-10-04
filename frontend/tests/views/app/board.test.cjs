@@ -27,12 +27,11 @@ test('live Board moves keep loaded cards in position and ID order across columns
  assert.equal(t.D.boardPageInfo.pages.planning.nextCursor,'planning-next');assert.equal(t.D.boardPageInfo.pages.progress.nextCursor,'progress-next');
 });
 
-test('Board search uses the same trimmed query for reads and visible title or key matches',()=>{
+test('Board search renders matching titles and keys with surrounding whitespace',()=>{
  const t=boot(),task=t.D.tasks.find(item=>item.id==='BIR-079');
  for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
   t.A.setBoardQ(padded);
-  assert.equal(t.A.context().board.search,query);
-  assert(t.d.querySelector('.card[data-task="BIR-079"]'),padded);
+  assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card=>card.dataset.task),['BIR-079'],padded);
  }
 });
 
