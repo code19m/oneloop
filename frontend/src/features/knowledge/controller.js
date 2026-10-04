@@ -9,6 +9,7 @@
  */
 
 import { actionErrorFeedback } from '../../app/action-feedback.js';
+import { completeForm } from '../../app/form-feedback.js';
 import {
   baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, headingSlug, highlight,
   iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
@@ -17,7 +18,7 @@ import {
 
 /** @typedef {import('./model.js').KnowledgeFile} KnowledgeFile */
 /** @typedef {{state:string,syncing:boolean,folder:string|null,checkedAt:number|null,skippedFiles:number,files:KnowledgeFile[],source?:any}} KnowledgeView */
-/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,version:number,unpainted:boolean}} Cached */
+/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,version:number,unpainted:boolean,stale:boolean,refreshPending:boolean}} Cached */
 
 const POLL_MS = 3000;
 const SEARCH_DELAY_MS = 120;
@@ -110,30 +111,37 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   // ---------- data ----------
 
   /** Load (or reload) one project's Knowledge view and repaint what shows it. */
-  function load(/** @type {string} */ projectId, { background = false } = {}) {
-    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, version: 0, unpainted: false };
+  function load(/** @type {string} */ projectId, { background = false, invalidate = false } = {}) {
+    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, version: 0, unpainted: false, stale: false, refreshPending: false };
     cache.set(projectId, entry);
-    if (entry.promise) return entry.promise;
+    if (entry.promise) { if (invalidate) entry.refreshPending = true; return entry.promise; }
+    entry.stale = false;
     entry.promise = api.request(`/api/projects/${encodeURIComponent(projectId)}/knowledge`, { background })
       .then((/** @type {KnowledgeView} */ data) => {
+        if (cache.get(projectId) !== entry) return;
         const json = JSON.stringify(data);
         entry.error = null;
         if (json !== entry.json) { entry.data = data; entry.json = json; entry.version++; entry.unpainted = true; }
         if (entry.unpainted) repaint(projectId);
       })
       .catch((/** @type {any} */ error) => {
-        if (error?.code === 'aborted') return;
+        if (error?.code === 'aborted' || cache.get(projectId) !== entry) return;
         entry.error = error;
         if (!entry.data) repaint(projectId);
       })
-      .finally(() => { entry.promise = null; schedulePoll(); });
+      .finally(() => {
+        entry.promise = null;
+        if (cache.get(projectId) !== entry) return;
+        if (entry.refreshPending) { entry.refreshPending = false; void load(projectId, { background: true }); }
+        else schedulePoll();
+      });
     return entry.promise;
   }
 
   function repaint(/** @type {string} */ projectId) {
     const current = context(), entry = cache.get(projectId);
     if (current.projectId !== projectId || !['knowledge', 'settings'].includes(current.view)) return;
-    if (current.modal?.type === 'knowledge') {
+    if (current.modal) {
       // A repaint would reset the dialog, so only fill a deploy key it waits
       // for; the page behind it repaints on a later read.
       const key = viewOf(projectId)?.source?.deployKey;
@@ -155,16 +163,21 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   }
 
   runtime.subscribe((/** @type {any} */ change) => {
+    if (change?.type === 'sse' && change.kind === 'reconcile') {
+      for (const entry of cache.values()) entry.stale = true;
+      const current = context();
+      if (current.projectId && ['knowledge', 'settings'].includes(current.view)) void load(current.projectId, { background: true, invalidate: true });
+    }
     if (change?.type === 'sse' && change.entityType === 'knowledge_source') {
       const projectId = change.projectId ?? context().projectId;
-      if (projectId && cache.has(projectId)) void load(projectId, { background: true });
+      if (projectId && cache.has(projectId)) void load(projectId, { background: true, invalidate: true });
     }
     if (change?.type === 'auth') { cache.clear(); recents.clear(); texts.clear(); }
   });
   documentObject.addEventListener('visibilitychange', () => {
     if (documentObject.visibilityState !== 'visible') return;
     const current = context();
-    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && cache.has(current.projectId)) void load(current.projectId, { background: true });
+    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && cache.has(current.projectId)) void load(current.projectId, { background: true, invalidate: true });
   });
 
   // ---------- page ----------
@@ -491,7 +504,8 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     } else if (preserved?.node && preserved.node !== fresh) disposePreviews(preserved.node);
     preserved = null;
     for (const [host, dispose] of previews) if (!host.isConnected) { try { dispose(); } catch {} previews.delete(host); }
-    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && !cache.get(current.projectId)?.data && !cache.get(current.projectId)?.error) void load(current.projectId);
+    const entry = cache.get(current.projectId);
+    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && (entry?.stale || !entry?.data && !entry?.error)) void load(current.projectId);
     if (current.view !== 'knowledge') { schedulePoll(); return; }
     for (const host of documentObject.querySelectorAll('[data-knowledge-preview]')) mountPreview(host);
     if (!documentObject.querySelector('[data-knowledge-preview]')) revealSection();
@@ -606,9 +620,9 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       if (!feedback.silent) toast(feedback.message || errorText(error), 'error');
       return;
     }
-    app()?.closeOverlays?.();
     toast(source ? 'Knowledge base saved' : 'Repository connected');
     cache.delete(projectId);
+    if (!completeForm(form, () => app()?.closeOverlays?.())) { void load(projectId, { background: true }); return; }
     S.mode = 'tree'; S.path = ''; S.section = '';
     const target = routeHash(projectId);
     if (windowObject.location.hash === target) { app()?.refresh?.(); void load(projectId); }
@@ -618,12 +632,13 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   function disconnect() {
     const projectId = context().projectId, source = viewOf(projectId)?.source;
     if (!projectId || !source || !isAdmin()) return;
+    const form = documentObject.querySelector('form[data-knowledge-form]');
     app()?.confirm?.({
       title: 'Disconnect repository?',
       text: 'Knowledge will be hidden in oneloop until a repository is connected again. The repository and its history stay untouched.',
       action: 'Disconnect',
       confirm: () => runtime.commands.execute('knowledge.disconnect', { projectId }, { expectedRevision: source.revision })
-        .then(() => { app()?.closeOverlays?.(); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); app()?.refresh?.(); })
+        .then(() => { completeForm(form, () => app()?.closeOverlays?.()); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); repaint(projectId); })
         .catch((/** @type {unknown} */ error) => toast(errorText(error), 'error')),
     });
   }
