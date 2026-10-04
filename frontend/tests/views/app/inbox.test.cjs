@@ -121,7 +121,8 @@ test('the Inbox page shows load states and updates in place without losing focus
 });
 
 test('large Inbox appends retain rows/focus without clones or row layout; reconciliation changes only affected rows', () => {
-  const fixtureNow=Date.now();
+  // Noon in the fixture's Asia/Tashkent zone keeps all 1,050 notices, one a second, on one day.
+  const fixtureNow=Date.UTC(2026,0,15,7);
   const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopTransport={};w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};});
   const notice=(index)=>({id:'scale-'+index,actorId:'robin',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:fixtureNow-index*1000,readAt:null,archivedAt:null,destinationAvailable:true});
   t.D.notifications=Array.from({length:1000},(_,index)=>notice(index));
@@ -138,7 +139,7 @@ test('large Inbox appends retain rows/focus without clones or row layout; reconc
   assert.equal(t.d.querySelector('[data-notification-id]'),first);assert.equal(t.d.activeElement,open);
   assert.equal(clones,0);assert.equal(rects,0);assert.equal(more.disabled,false);
   const unchanged=t.d.querySelectorAll('.inbox-row')[500],unchangedOpen=unchanged.querySelector('.inbox-open');
-  t.D.notifications[0].readAt=Date.now();t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:1050,unreadCount:1049});
+  t.D.notifications[0].readAt=fixtureNow;t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:1050,unreadCount:1049});
   assert.equal(t.d.querySelectorAll('.inbox-row')[500],unchanged);assert.equal(unchanged.querySelector('.inbox-open'),unchangedOpen);
   assert.ok(first.classList.contains('read'));assert.equal(rects,0);assert.ok(clones<10,'no per-row clones on a single-row state update');
 });
