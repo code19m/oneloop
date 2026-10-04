@@ -1428,7 +1428,7 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
                 "README.md",
                 Some("markdown"),
                 "text/plain",
-                &b"# Handbook\n\nWelcome aboard.\n\n## Setup\n\nInstall the tools.\n\n### Details\n\nUse the script.\n\n## Releases\n\nShip weekly.\n"[..],
+                &b"# Handbook\n\nWelcome aboard.\n\n## Setup\n\nInstall the tools.\n\n### Details\n\nUse the script.\n\n## Setup\n\nInstall the second kit.\n\n### Details\n\nSecond instructions.\n\n## Releases\n\nShip weekly.\n"[..],
             ),
             ("guides/onboarding.md", Some("markdown"), "text/plain", &b"# Joining\n\n## First day\n\nMeet the team.\n"[..]),
             ("diagram.png", Some("image"), "image/png", &b"\x89PNG\r\n\x1a\n"[..]),
@@ -1466,7 +1466,7 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
     let readme = &overview["files"][0];
     assert_eq!(readme["path"], "README.md");
     assert_eq!(readme["title"], "Handbook");
-    assert_eq!(readme["sections"], json!(["Setup", "Releases"]));
+    assert_eq!(readme["sections"], json!(["Setup", "Setup", "Releases"]));
     let image = &overview["files"][1];
     assert_eq!(image["path"], "diagram.png");
     assert!(image.get("title").is_none() && image.get("sections").is_none());
@@ -1501,8 +1501,36 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
     assert!(!content.contains("Releases"));
     assert_eq!(
         section["headings"],
-        json!(["# Handbook", "## Setup", "### Details", "## Releases"])
+        json!([
+            "# Handbook",
+            "## Setup",
+            "### Details",
+            "## Setup",
+            "### Details",
+            "## Releases"
+        ])
     );
+    for anchor in ["setup-1", "#md-setup-1"] {
+        let second = tool_value(
+            &mcp.call(
+                "read_knowledge_file",
+                json!({"projectId":"project-1", "path":"README.md", "section":anchor}),
+            )
+            .await,
+        );
+        assert_eq!(
+            second["content"],
+            "## Setup\n\nInstall the second kit.\n\n### Details\n\nSecond instructions.\n\n"
+        );
+    }
+    let second_hit = tool_value(
+        &mcp.call(
+            "search_knowledge",
+            json!({"projectId":"project-1", "query":"second kit"}),
+        )
+        .await,
+    );
+    assert_eq!(second_hit["documents"][0]["hits"][0]["section"], "setup-1");
     let binary = tool_value(
         &mcp.call(
             "read_knowledge_file",

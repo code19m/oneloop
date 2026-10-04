@@ -39,6 +39,7 @@ struct Entry {
     /// Section heading, or `Line N` for plain text files. Documents that start
     /// with text use their title or file name.
     heading: String,
+    section: Option<String>,
     heading_lower: String,
     text: String,
     text_lower: String,
@@ -70,10 +71,11 @@ impl Index {
                     sections
                         .into_iter()
                         .map(|section| {
-                            let heading = section
-                                .heading
-                                .map_or_else(|| title.clone(), |heading| heading.text);
-                            Entry::new(heading, section.text)
+                            let (heading, anchor) = section.heading.map_or_else(
+                                || (title.clone(), None),
+                                |heading| (heading.text, Some(heading.anchor)),
+                            );
+                            Entry::new(heading, section.text, anchor)
                         })
                         .collect()
                 }
@@ -83,7 +85,7 @@ impl Index {
                     .enumerate()
                     .filter(|(_, line)| !line.trim().is_empty())
                     .map(|(number, line)| {
-                        Entry::new(format!("Line {}", number + 1), line.trim().to_owned())
+                        Entry::new(format!("Line {}", number + 1), line.trim().to_owned(), None)
                     })
                     .collect(),
                 Content::None => Vec::new(),
@@ -100,7 +102,10 @@ impl Index {
             + documents
                 .iter()
                 .flat_map(|document| &document.entries)
-                .map(|entry| (entry.heading.len() + entry.text.len()) * 2)
+                .map(|entry| {
+                    (entry.heading.len() + entry.text.len()) * 2
+                        + entry.section.as_ref().map_or(0, String::len)
+                })
                 .sum::<usize>();
         Self {
             names,
@@ -180,6 +185,7 @@ impl Index {
                         .take(HITS_PER_DOCUMENT_MAX)
                         .map(|(_, entry)| Hit {
                             heading: entry.heading.clone(),
+                            section: entry.section.clone(),
                             snippet: snippet(&entry.text, &entry.text_lower, &words),
                         })
                         .collect(),
@@ -225,11 +231,12 @@ impl Name {
 }
 
 impl Entry {
-    fn new(heading: String, text: String) -> Self {
+    fn new(heading: String, text: String, section: Option<String>) -> Self {
         Self {
             heading_lower: heading.to_lowercase(),
             text_lower: text.to_lowercase(),
             heading,
+            section,
             text,
         }
     }
@@ -266,6 +273,8 @@ pub struct DocumentHits {
 #[serde(rename_all = "camelCase")]
 pub struct Hit {
     pub heading: String,
+    /// The browser's heading anchor without its `md-` prefix.
+    pub section: Option<String>,
     pub snippet: String,
 }
 
@@ -393,6 +402,7 @@ mod tests {
             results.documents[0].hits[0],
             Hit {
                 heading: "Line 3".into(),
+                section: None,
                 snippet: "\"timezone\": \"Asia/Tashkent\"".into()
             }
         );
@@ -407,6 +417,19 @@ mod tests {
         )]);
         assert_eq!(index.search("текст").hit_count, 1);
         assert_eq!(index.search("o‘zbekcha").hit_count, 1);
+    }
+
+    #[test]
+    fn repeated_headings_keep_the_section_that_contains_the_hit() {
+        let index = Index::build([(
+            "guide.md",
+            Content::Markdown(
+                "# Guide\n\n## Checklist\n\nFirst steps.\n\n## Checklist\n\nSecond steps.\n",
+            ),
+        )]);
+        let result = serde_json::to_value(index.search("second")).unwrap();
+        assert_eq!(result["documents"][0]["hits"][0]["heading"], "Checklist");
+        assert_eq!(result["documents"][0]["hits"][0]["section"], "checklist-1");
     }
 
     #[test]

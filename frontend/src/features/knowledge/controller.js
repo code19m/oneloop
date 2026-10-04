@@ -10,7 +10,7 @@
 
 import { actionErrorFeedback } from '../../app/action-feedback.js';
 import {
-  baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, headingSlug, highlight,
+  baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, highlight,
   iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
   transportOf,
 } from './model.js';
@@ -258,7 +258,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   function documentHits(/** @type {string} */ projectId, /** @type {any} */ doc, /** @type {number} */ limit, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) {
     const shown = doc.hits.slice(0, limit), rest = doc.total - shown.length;
     const sections = shown.map((/** @type {any} */ hit) => {
-      const section = /^Line \d+$/.test(hit.heading) ? '' : headingSlug(hit.heading);
+      const section = hit.section ?? '';
       return `<a class="knowledge-hit knowledge-hit--text" href="${esc(routeHash(projectId, 'blob', doc.path, section))}" data-knowledge-hit><span class="knowledge-hit-heading">${highlight(hit.heading, words, esc)}</span><span class="knowledge-hit-snippet">${highlight(hit.snippet, words, esc)}</span></a>`;
     }).join('');
     const more = rest > 0 ? (S.scope === 'all' && doc.hits.length > shown.length

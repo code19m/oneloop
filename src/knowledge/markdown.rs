@@ -5,6 +5,7 @@
 pub(crate) struct Heading {
     pub(crate) level: u8,
     pub(crate) text: String,
+    pub(crate) anchor: String,
 }
 
 /// Text under one heading, down to the next heading of any level. The first
@@ -55,6 +56,7 @@ pub(crate) fn sections(source: &str) -> Vec<Section> {
             setext.map(|level| Heading {
                 level,
                 text: inline_text(line.trim()),
+                anchor: String::new(),
             })
         });
         if let Some(heading) = heading {
@@ -85,6 +87,20 @@ pub(crate) fn sections(source: &str) -> Vec<Section> {
     if current.heading.is_some() || !current.text.is_empty() {
         sections.push(current);
     }
+    let mut occurrences = std::collections::HashMap::new();
+    for heading in sections
+        .iter_mut()
+        .filter_map(|section| section.heading.as_mut())
+    {
+        let base = slug(&heading.text);
+        let count = occurrences.entry(base.clone()).or_insert(0);
+        heading.anchor = if *count == 0 {
+            base
+        } else {
+            format!("{base}-{count}")
+        };
+        *count += 1;
+    }
     sections
 }
 
@@ -107,11 +123,21 @@ pub(crate) fn section_source<'a>(
 ) -> Option<&'a str> {
     let wanted = query.trim().trim_start_matches('#').trim();
     let lowered = wanted.to_lowercase();
-    let position = sections.iter().position(|section| {
-        section.heading.as_ref().is_some_and(|heading| {
-            heading.text.to_lowercase() == lowered || slug(&heading.text) == lowered
+    let position = sections
+        .iter()
+        .position(|section| {
+            section.heading.as_ref().is_some_and(|heading| {
+                heading.anchor == lowered || format!("md-{}", heading.anchor) == lowered
+            })
         })
-    })?;
+        .or_else(|| {
+            sections.iter().position(|section| {
+                section
+                    .heading
+                    .as_ref()
+                    .is_some_and(|heading| heading.text.to_lowercase() == lowered)
+            })
+        })?;
     let level = sections[position].heading.as_ref()?.level;
     let end = sections[position + 1..]
         .iter()
@@ -190,6 +216,7 @@ fn atx_heading(line: &str) -> Option<Heading> {
     Some(Heading {
         level: level as u8,
         text: inline_text(text),
+        anchor: String::new(),
     })
 }
 

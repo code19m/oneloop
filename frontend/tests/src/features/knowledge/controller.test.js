@@ -114,7 +114,7 @@ test('search shows escaped names and sections, and Escape restores the page', as
   await painted(t);
   t.state.search = {
     files: [{ path: 'guides/<img src=x onerror=alert(1)>.md', folder: false }],
-    documents: [{ path: 'guides/onboarding.md', total: 1, hits: [{ heading: 'First day', snippet: 'Meet the <team> on the first day.' }] }],
+    documents: [{ path: 'guides/onboarding.md', total: 1, hits: [{ heading: 'First day', section: 'first-day-1', snippet: 'Meet the <team> on the first day.' }] }],
     fileCount: 1, hitCount: 1,
   };
   const input = t.d.querySelector('[data-knowledge-search]');
@@ -128,7 +128,7 @@ test('search shows escaped names and sections, and Escape restores the page', as
   assert.equal(finder.querySelectorAll('img').length, 0, 'names are text');
   assert.deepEqual([...finder.querySelectorAll('.knowledge-scope button')].map((tab) => tab.textContent), ['All2', 'Files1', 'Content1']);
   const section = finder.querySelector('.knowledge-hit--text');
-  assert.equal(section.getAttribute('href'), '#/knowledge/p1/blob/guides/onboarding.md?section=first-day');
+  assert.equal(section.getAttribute('href'), '#/knowledge/p1/blob/guides/onboarding.md?section=first-day-1');
   assert.equal(section.querySelector('mark').textContent, 'First');
   assert.match(section.querySelector('.knowledge-hit-snippet').innerHTML, /&lt;team&gt;/);
   input.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
