@@ -9,10 +9,10 @@ All notable changes to oneloop are recorded here. The format follows
 ### Added
 
 - **Knowledge**: each project can show one folder of a Git repository as a
-  read-only knowledge base, with folder pages, README files, inline previews,
-  full view and one search over names and text. Admins connect it in project
-  Settings, from any Git host, over HTTPS with an access token or over SSH with
-  a deploy key. oneloop checks the branch every minute.
+  read-only knowledge base, with README files, inline previews and one search
+  over names and text. Admins connect it in the project's Settings, from any
+  Git host, over HTTPS with an access token or over SSH with a deploy key.
+  oneloop checks the branch every minute.
 - MCP tools `read_knowledge_overview`, `read_knowledge_file` and
   `search_knowledge` let assistants read the knowledge base.
 

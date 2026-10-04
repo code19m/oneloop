@@ -21,7 +21,7 @@ service manager can load them for it.
 | `ONELOOP_DATA_DIR` | `./data` | The folder for the database, uploaded files and internal keys. A relative path starts from the working directory. It must be on a local disk; NFS and SMB aren't supported. The Docker image sets `/data`. |
 | `ONELOOP_TIMEZONE` | `UTC` | Your team's timezone. See [Timezone](#timezone). |
 | `ONELOOP_STORAGE_LIMIT` | `10GiB` | Space for uploaded files, their previews and unfinished uploads. See [Storage](#storage). |
-| `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload, and postpones a Knowledge sync, that would leave less free disk space than this. |
+| `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload that would leave less free disk space than this. A Knowledge sync needs more; see [Limits](#limits). |
 | `ONELOOP_TRUSTED_PROXIES` | Empty (trust none) | IP addresses or CIDR ranges of your reverse proxies, separated by commas. Only these may send the visitor's address in `X-Forwarded-For`. See [Trusted proxy](production.md#trusted-proxy). |
 | `ONELOOP_LOG_LEVEL` | `info` | How much to log: `error`, `warn`, `info`, `debug` or `trace`. |
 
@@ -110,9 +110,10 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 
 | Limit | Value |
 | --- | --- |
-| Folder | 5,000 files and 100 MiB in total; a larger folder doesn't sync |
+| Folder | 5,000 files and 100 MiB of files to show; a larger folder doesn't sync |
 | File | Files over 10 MiB are left out |
-| Sync disk use | 300 MiB for Git's copy of the folder and its files, left-out files included; a larger folder doesn't sync |
+| Sync disk use | 300 MiB for the folder's files and Git's copy of them, files left out included; a larger folder doesn't sync |
+| Free disk space | A download needs 400 MiB free on top of `ONELOOP_DISK_MIN_FREE` |
 | File path | 1,024 bytes |
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |

@@ -173,23 +173,21 @@ reconnect by themselves. Nobody has to sign in again.
 
 ## Knowledge base connections
 
-To sync [Knowledge](admin-guide.md#knowledge-base) folders, oneloop runs the
-`git` program, version 2.31 or later, and `ssh` for SSH URLs. The Docker image
-includes both. Without Docker, install them on the server, for example with
-`apt install git openssh-client`.
+To sync [knowledge bases](admin-guide.md#knowledge-base), oneloop runs `git`
+2.31 or later, and `ssh` for SSH URLs. The Docker image includes both. On other
+servers, install them, for example with `apt install git openssh-client`.
 
-- **Network.** The server needs outgoing HTTPS, or SSH (port 22 or the one in
-  the URL), to your Git hosts. oneloop passes `HTTPS_PROXY`, `HTTP_PROXY`,
+- **Network.** The server needs outgoing HTTPS, or SSH on port 22 or the port in
+  the URL, to your Git hosts. oneloop passes `HTTPS_PROXY`, `HTTP_PROXY`,
   `ALL_PROXY` and `NO_PROXY` to Git.
 - **Private certificate authorities.** Set `GIT_SSL_CAINFO` (a file) or
   `GIT_SSL_CAPATH` (a folder) for the oneloop service. oneloop also passes
   `SSL_CERT_FILE` and `SSL_CERT_DIR`.
-- **Isolation.** Git runs with an empty configuration of its own. It ignores the
-  server's Git settings, credential helpers and hooks, never asks for a
+- **Isolation.** Git runs with an empty configuration of its own: it ignores
+  the server's Git settings, credential helpers and hooks, never asks for a
   password, and speaks only HTTPS and SSH.
 - **Credentials.** Access tokens and deploy keys are encrypted with
-  `keys/knowledge.key` in the data directory. Backups include it. A token goes
-  only to its repository's host; with a token, Git doesn't follow redirects.
+  `keys/knowledge.key` in the data directory, which backups include.
 - **SSH host keys.** oneloop trusts a host's key on the first connection and
   keeps it in `keys/knowledge_known_hosts`.
 

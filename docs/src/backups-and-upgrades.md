@@ -7,10 +7,9 @@ account that runs oneloop, with the same environment.
 ## Back up
 
 A backup is a complete, verified copy of the database, all uploaded files and
-oneloop's keys. It includes the synced Knowledge files and the key that
-encrypts their access tokens and deploy keys, so a restored instance can sync
-again. oneloop keeps running while you make it; uploads may pause for a
-moment.
+oneloop's keys, including the key that encrypts knowledge base credentials, so
+a restored instance can still sync. oneloop keeps running while you make it;
+uploads may pause for a moment.
 
 ```sh
 oneloop backup create /var/backups/oneloop/2026-09-28

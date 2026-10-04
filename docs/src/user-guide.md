@@ -127,31 +127,29 @@ itself.
 
 ## Knowledge
 
-**Knowledge** in the sidebar shows your team's guides, product rules and
-decisions. They come from one folder of a Git repository, which an admin
-connects in the project's **Settings**. Knowledge is read-only and stands on
-its own: it doesn't link to tasks or epics. To change a file, change it in Git;
-oneloop shows the change within about a minute.
+**Knowledge** in the sidebar opens the project's **Knowledge base**: your
+team's guides, product rules and decisions, from one folder of a Git repository
+that an admin connects. It is read-only and stands on its own, without links to
+tasks or epics. To change a file, change it in Git; oneloop shows the change
+within about a minute.
 
-- Open folders and files from the list. A folder's **README.md** appears below
-  its list, and **Updated** is when a file last changed in Git.
-- oneloop shows Markdown (with tables, math and Mermaid diagrams), text, code,
-  HTML pages, images and PDFs inside the page. A link from one Markdown file to
-  another file in the folder opens it here, and images from the folder appear
-  in the text. Other files can only be downloaded.
-- **Full view** opens a file in the same viewer as task files. **Download**
-  saves the original.
-- Hover over a heading and choose **#** to copy a link to that section.
+- A folder's **README.md** appears below its list of files. **Updated** is when
+  a file last changed in Git.
+- Files that oneloop previews [on tasks](#files) open inside the page; other
+  files can only be downloaded. **Full view** opens the same viewer as task
+  files.
+- Relative links in Markdown open the linked file or folder here, and relative
+  images appear in the text.
+- To copy a link to part of a document, hover over a heading and choose
+  **#**.
 
-Search with the field at the top, or press `/`. One search covers file and
-folder names and the text of Markdown and text files; images, PDFs and HTML
-pages are found by name. Every word must match, in any order and letter case.
-**All**, **Files** and **Content** narrow the results. Use the arrow keys and
-Enter to open a result, and Esc to close the search.
+Search with the field at the top, or press `/`. It looks at file and folder
+names, and at the text of Markdown and text files. Every word must match, in
+any order and letter case. Use the arrow keys and Enter to open a result, and
+Esc to close the search.
 
-If oneloop can't reach the repository, the page says **Knowledge may be out of
-date** and keeps showing the files from the last successful sync. Admins can
-choose **Retry sync**.
+When a sync fails, the page shows **Knowledge may be out of date** and keeps the
+files from the last successful sync. Admins can choose **Retry sync**.
 
 ## Comments and mentions
 
