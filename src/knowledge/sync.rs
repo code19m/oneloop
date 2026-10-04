@@ -602,19 +602,44 @@ mod tests {
         })
     }
 
+    async fn stalled_git_host() -> tokio::net::TcpListener {
+        let mut host = None;
+        for port in 18730..18740 {
+            if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                host = Some(listener);
+                break;
+            }
+        }
+        host.expect("a free test port in 18730–18739")
+    }
+
     #[tokio::test]
     async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
-        let (_root, db, _) = fixture("https://git.example.test/docs.git").await;
+        let host = stalled_git_host().await;
+        let url = format!(
+            "https://127.0.0.1:{}/docs.git",
+            host.local_addr().unwrap().port()
+        );
+        let (_root, db, _) = fixture(&url).await;
         db.run(|c| {
             c.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
                 INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('epic','p1','track','Epic','2026-01-01',0,1,1);
                 INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('task','p1','epic',1,'ONE-001','Task','planning',0,1,1);")?;
             Ok(())
         }).await.unwrap();
+        let second_url = url.clone();
+        db.run(move |c| {
+            c.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p2','Two','TWO',1,1)", [])?;
+            c.execute("INSERT INTO knowledge_sources(project_id,url,branch,folder,state,requested_at,created_at,updated_at,generation) VALUES('p2',?1,'main','docs','pending',1,1,1,'second')", [second_url])?;
+            Ok(())
+        }).await.unwrap();
         let free = fs4::available_space(db.layout().root()).unwrap();
-        let floor = free - 420 * 1024 * 1024;
-        let service = KnowledgeService::new(db.clone(), floor);
-        let files = crate::files::FileService::new(db, 100 * 1024 * 1024, floor);
+        let mut service = KnowledgeService::new(db.clone(), 0);
+        let inner = Arc::get_mut(&mut service.inner).unwrap();
+        inner.limits.max_download_bytes = free / 4 * 3 - inner.limits.max_total_bytes;
+        // Large margins tolerate unrelated disk activity. The upload service
+        // uses a higher floor because attachment requests are limited to 25 MiB.
+        let files = crate::files::FileService::new(db.clone(), 100 * 1024 * 1024, free / 2);
         let actor = Actor {
             user_id: "admin".into(),
             username: "admin".into(),
@@ -626,19 +651,20 @@ mod tests {
                 session_id: "session".into(),
             },
         };
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let first = tokio::spawn({
-            let service = service.clone();
-            async move {
-                let reservation = service.require_space().unwrap();
-                started.send(()).unwrap();
-                released.await.unwrap();
-                drop(reservation);
+        let (shutdown, stop) = watch::channel(false);
+        let worker = service.spawn_worker(stop);
+        // The real worker and real Git process are now blocked at the host.
+        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(10), host.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let rejected: i64 = db.run(|c| Ok(c.query_row("SELECT count(*) FROM knowledge_sources WHERE error_code='storage_full'", [], |r| r.get(0))?)).await.unwrap();
+                if rejected == 1 { break; }
+                tokio::task::yield_now().await;
             }
-        });
-        ready.await.unwrap();
-        let another = service.require_space();
+        }).await.unwrap();
         let upload = files
             .begin_attachment_upload(
                 &actor,
@@ -649,9 +675,7 @@ mod tests {
                 "competing",
             )
             .await;
-        release.send(()).unwrap();
-        first.await.unwrap();
-        let blocked_upload = matches!(
+        let blocked = matches!(
             upload,
             Err(crate::AppError::Rule {
                 kind: crate::error::RuleKind::StorageFull,
@@ -661,15 +685,44 @@ mod tests {
         if let Ok(crate::files::UploadStart::Pending(upload)) = upload {
             upload.abort().await.unwrap();
         }
+        shutdown.send(true).unwrap();
+        worker.await.unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            connection.read_to_end(&mut Vec::new()),
+        )
+        .await
+        .unwrap();
         assert!(
-            another.is_err(),
-            "a second sync must not spend the first sync's reservation"
+            blocked,
+            "the upload must account for the worker's reservation"
         );
-        assert!(blocked_upload, "uploads share the sync's reservation");
-        assert!(
-            service.require_space().is_ok(),
-            "completion releases the reservation"
-        );
+        // Cleanup and parent reaping may finish after the worker is cancelled.
+        let upload = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match files
+                    .begin_attachment_upload(
+                        &actor,
+                        "task",
+                        "data.bin",
+                        crate::files::MAX_ATTACHMENT_BYTES,
+                        false,
+                        "competing",
+                    )
+                    .await
+                {
+                    Ok(crate::files::UploadStart::Pending(upload)) => break upload,
+                    Err(crate::AppError::Rule {
+                        kind: crate::error::RuleKind::StorageFull,
+                        ..
+                    }) => tokio::task::yield_now().await,
+                    _ => panic!("unexpected upload admission result"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        upload.abort().await.unwrap();
     }
 
     fn command(operation: &str, payload: Value, revision: Option<i64>) -> KnowledgeCommand {
@@ -714,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_sync_ends_git_records_nothing_and_frees_the_project() {
         // A host that accepts the connection and never answers.
-        let host = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = stalled_git_host().await;
         let port = host.local_addr().unwrap().port();
         let (_root, db, service) = fixture(&format!("https://127.0.0.1:{port}/docs.git")).await;
         let claim = Running::claim(&service.inner, "p1").unwrap();
