@@ -886,6 +886,51 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
 }
 
 #[tokio::test]
+async fn project_deletion_invalidates_unexchanged_codes_that_selected_it() {
+    let (_dir, db, app, session, user) = fixture().await;
+    add_old_project(&db, user).await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize_with(
+        &app,
+        &session,
+        &client,
+        &["project_read"],
+        &["project-1", "project-2"],
+    )
+    .await;
+    let kept_client = register(&app).await;
+    let (kept_code, kept_verifier) = authorize_with(
+        &app,
+        &session,
+        &kept_client,
+        &["project_read"],
+        &["project-1"],
+    )
+    .await;
+
+    delete_old_project(&app, &db).await;
+    let exchanged = app
+        .clone()
+        .oneshot(form(
+            "/oauth/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", &client),
+                ("code", &code),
+                ("redirect_uri", "http://127.0.0.1:49152/callback"),
+                ("code_verifier", &verifier),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(exchanged.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(exchanged).await["error"], "invalid_grant");
+    // A code that never selected the deleted project still connects.
+    issue(&app, &kept_client, &kept_code, &kept_verifier).await;
+}
+
+#[tokio::test]
 async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
     let (_dir, db, app, session, _user) = fixture().await;
     let idle_client = register(&app).await;
