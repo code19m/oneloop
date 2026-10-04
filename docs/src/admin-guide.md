@@ -35,6 +35,9 @@ oneloop. Add everyone else in the app:
    the person privately. They choose their own password when they first sign
    in.
 
+If you close **New user** before creation finishes, find the account in
+**Users** and reset its password to get a new temporary password.
+
 Usernames have 3 to 32 lowercase letters, digits, dots, underscores or hyphens,
 and they can't be changed later. Passwords need at least 5 characters. Ask
 people, especially admins, to use long passphrases.
@@ -47,6 +50,9 @@ You can also create accounts on the server with
 1. Select the project and open **Settings** in the sidebar.
 2. Under **Project access**, pick a person in **Add member**.
 3. Tick **Roadmap**, **Board** or both.
+
+**Add member** searches the accounts loaded so far. **Load more users** adds
+the next page of accounts, in username order, to the picker and its search.
 
 To remove someone, choose **Remove from project** (×) on their row. You can't
 remove a person while they have open tasks in the project, so reassign those

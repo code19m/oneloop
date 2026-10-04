@@ -1,7 +1,7 @@
 // @ts-check
 
 import {
-  appendBoardTasks, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
+  appendBoardTasks, compareTaskOrder, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
   setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts, wireStatus,
 } from './projection-store.js';
 import {mapActivity} from './activity-mapper.js';
@@ -75,7 +75,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
         const status=view&&({in_progress:'progress',in_review:'review'}[view.status]??view.status);
         const page=boardState.pages[status];
         const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
-        const edge=Math.max(-Infinity,...loaded.map(item=>item.order??0));
+        const edge=loaded.sort(compareTaskOrder).at(-1);
         const parent=view&&data.epics.find(item=>item.id===view.epicId);
         const matches=view&&view.projectId===projectId&&
           (!common.search||view.title.toLowerCase().includes(common.search.toLowerCase())||view.taskKey.toLowerCase().includes(common.search.toLowerCase()))&&
@@ -83,7 +83,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
           (!common.epicIds.length||common.epicIds.includes(view.epicId))&&
           (!(common.assigneeIds.length||common.noAssignee)||view.assigneeIds.some(id=>common.assigneeIds.includes(id))||common.noAssignee&&!view.assigneeIds.length)&&
           (!common.blocked||!!view.activeBlock);
-        if(matches&&page&&(!page.nextCursor||view.position<=edge))appendBoardTasks(data,[view]);
+        if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id},edge)<=0))appendBoardTasks(data,[view]);
         else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
       }
       const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked};

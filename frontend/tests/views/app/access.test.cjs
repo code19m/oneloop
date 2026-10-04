@@ -1,7 +1,27 @@
 // views/app.js: project access, users, settings, profile and storage administration.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
+
+test('Settings can page through the directory and add an eligible account from a later page',async()=>{
+ const t=bootApp({route:'settings',prepare(D){D.users=D.users.filter(user=>user.id===D.session.userId);D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
+ const requests=[],commands=[];
+ const api={users:async({afterUsername})=>{
+  requests.push(afterUsername);
+  return afterUsername?{users:[{id:'last',username:'zulu',displayName:'Zulu',isActive:true,isAdmin:false,revision:1}],nextCursor:null}:{users:Array.from({length:50},(_,i)=>({id:`u${i}`,username:`account${i}`,displayName:`Account ${i}`,isActive:false,isAdmin:false,revision:1})),nextCursor:'account49'};
+ }};
+ const bridge=installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ await bridge.loadCurrentRoute();
+ const more=[...t.d.querySelectorAll('button')].find(button=>button.textContent==='Load more users');assert(more,'Settings exposes the next account page even if the first has no eligible users');
+ assert(!t.d.querySelector('.settings').textContent.includes('No users to add'),'a partial directory is not exhaustive');
+ t.A.loadMoreUsers();await settle();
+ assert.deepEqual(requests,[undefined,'account49']);
+ const trigger=t.d.getElementById('select-addMember');t.A.popSelect({preventDefault(){},currentTarget:trigger},'addMember');
+ const search=t.d.querySelector('.pop-search');search.value='Zulu';search.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+ t.d.querySelector('.pop-opt').click();await settle();
+ assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
+});
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {

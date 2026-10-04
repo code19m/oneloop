@@ -1556,7 +1556,8 @@
         ${matching.length>memberWindow.limit?'<button type="button" class="btn quiet" data-more-members>Load more members</button>':''}
         <div style="margin-top:12px;width:260px">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
           ? selectHtml('addMember', { label:'Add member', value: '', placeholder: 'Add member…', search: true, options: candidates.map((u) => ({ v: u.id, l: `${u.name} · ${userHandle(u)}` })), pick: (v) => App.addMember(v) })
-          : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
+          : D.adminUsers?.nextCursor ? '' : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
+        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users onclick="App.loadMoreUsers()" ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
         ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
       </div>
       ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
@@ -1742,14 +1743,21 @@
     let cursor = list.firstElementChild;
     items.forEach((item) => {
       let row = list.querySelector(`[data-pool-item="${UIEscape(item.id)}"]`);
-      if (row && item.id === completeItemId) {
-        const editedHere = !!row.querySelector('.pool-description-editor')?.contains(document.activeElement);
+      if (row) {
+        const editor=row.querySelector('.pool-description-editor');
+        const editedHere = !!editor?.contains(document.activeElement);
         const template = document.createElement('template'); setHTML(template,poolRowHtml(item));
         const fresh = template.content.firstElementChild;
-        row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
-        row.querySelector('.pool-description-editor')?.remove();
-        if (editedHere) row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});
-        row = list.querySelector(`[data-pool-item="${UIEscape(item.id)}"]`);
+        const actions=element=>[...element.querySelectorAll('.act > button')].map(button=>button.className).join('|');
+        const sameActions=row.className===fresh.className&&actions(row)===actions(fresh);
+        row.className=fresh.className;
+        if(sameActions)patchBoardRow(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
+        else row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
+        if(item.id===completeItemId){editor?.remove();if(editedHere)row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});}
+        else if(editor){
+          row.querySelector('.pool-note-toggle')?.setAttribute('aria-expanded','true');
+          const reader=editor.querySelector('.pool-note-read');if(reader){reader.textContent=item.desc||'';reader.setAttribute('aria-label',`Description for ${item.title}`);}
+        }
       }
       if (!row) { const template = document.createElement('template'); setHTML(template,poolRowHtml(item)); row = template.content.firstElementChild; }
       if (row !== cursor) list.insertBefore(row, cursor);
@@ -2400,6 +2408,7 @@
     refreshUsers({loadingOnly=false}={}) {
       if (loadingOnly) {
         document.querySelector(state.view==='settings'?'.member-access-list':'.content .settings')?.setAttribute('aria-busy', String(!!D.adminUsers?.loading));
+        document.querySelectorAll('[data-more-users]').forEach(button=>button.disabled=!!D.adminUsers?.loading);
         return;
       }
       if (state.view === 'settings') {
@@ -2472,7 +2481,7 @@
       column.querySelector('.col-head .mono').textContent=template.content.querySelector('.col-head .mono').textContent;
       boardSnapshots.set(board,boardSnapshot());
     },
-    acceptMoreUsers() { state.usersLimit+=50;render(); },
+    acceptMoreUsers() { if(state.view==='settings'){App.refreshUsers();return;}state.usersLimit+=50;render(); },
     nav(v) { window.Recovery?.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') window.OneloopKnowledge?.route(v, state.projectId); setLocalHash('#/' + v); render(); },
     require(permission) {
       if (hasPermission(permission)) return true;
@@ -3549,7 +3558,7 @@
     // filters
     setBoardQ(v,event) {
       cancelBoardSearch();
-      state.boardQ = v;
+      state.boardQ = v.trim();
       if (event?.isComposing) return;
       if (!event || !v) { applyBoardFilters(); return; }
       const projectId=state.projectId, sessionId=D.session?.id;
