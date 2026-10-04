@@ -160,6 +160,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
         .map_err(|error| AppError::Unavailable(format!("cannot listen on {listen}: {error}")))?;
     let (shutdown, signal) = tokio::sync::watch::channel(false);
     let worker = application.collaboration.spawn_worker(signal.clone());
+    let knowledge_worker = application.knowledge.spawn_worker(signal.clone());
     let files_worker = crate::runtime::spawn_file_maintenance(application.files, signal);
     tracing::info!(
         sqlite_version = rusqlite::version(),
@@ -182,6 +183,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let supervision = crate::runtime::supervise_workers(
         worker,
         files_worker,
+        knowledge_worker,
         shutdown.clone(),
         application.collaboration,
     );

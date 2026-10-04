@@ -162,6 +162,7 @@
 
   // ---------- icons ----------
   const I = {
+    knowledge: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 3.6C6 2.4 3.6 2.3 1.75 3v10c1.85-.7 4.25-.6 6.25.6 2-1.2 4.4-1.3 6.25-.6V3c-1.85-.7-4.25-.6-6.25.6Z"/><path d="M8 3.6v10"/></svg>',
     note: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 1.5h-7v13h11v-9l-4-4Z M9.5 1.5v4h4M5 8h6M5 11h4"/></svg>',
     blocked: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="m4 4 8 8"/></svg>',
 
@@ -1395,14 +1396,14 @@
   function documentTitle() {
     if(!D.session||!me()?.active||me()?.mustChange)return 'oneloop';
     if(window.Recovery?.pageError||['forbidden','notfound','no-projects'].includes(state.view))return 'oneloop';
-    const names={board:'Board',roadmap:'Roadmap',inbox:'Inbox',profile:'Profile',users:'Users',settings:'Settings',storage:'Storage'};
+    const names={board:'Board',roadmap:'Roadmap',knowledge:'Knowledge base',inbox:'Inbox',profile:'Profile',users:'Users',settings:'Settings',storage:'Storage'};
     if(state.view==='task'){
       const task=taskById(state.taskId);
       if(!task||!canReadTask(task))return 'oneloop';
       return `${task.id} · ${task.title} · oneloop`;
     }
     const label=names[state.view];if(!label)return 'oneloop';
-    const p=['board','roadmap','settings'].includes(state.view)?project():null;
+    const p=['board','roadmap','knowledge','settings'].includes(state.view)?project():null;
     return `${label}${p&&canReadProject(p.id)?` · ${p.name}`:''} · oneloop`;
   }
   function updateDocumentTitle(){const title=documentTitle();if(document.title!==title)document.title=title;}
@@ -1558,6 +1559,7 @@
           : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
         ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
       </div>
+      ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
       <div class="section" style="border-color:color-mix(in srgb,var(--err) 25%,transparent)">
         <h2 style="color:var(--err)">Danger zone</h2>
         <button class="btn danger" onclick="App.deleteProject()">Delete project</button>
@@ -1866,6 +1868,8 @@
       </div>
       <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} onkeydown="App.poolKey(event)"><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" onclick="App.togglePoolDescription()">${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" onkeydown="App.poolDescriptionKey(event)"></textarea><div class="pool-description-actions"><button type="button" class="btn primary" onclick="App.addPoolItem()">Add item</button></div></div></div></div>
       <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?'<button class="btn quiet pool-load-more" onclick="App.loadMorePool()">Load more</button>':''}</div></div>`;
+    } else if (m.type === 'knowledge') {
+      body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
       body = `<h2>${esc(m.title)}</h2><div class="sub">${m.text}</div>
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
@@ -1964,6 +1968,7 @@
   // ---------- shell ----------
   const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span><strong>${value}</strong></span>`;
   function renderTopbar() {
+    if (state.view === 'knowledge') return window.OneloopKnowledge?.topbar() || '<h1>Knowledge base</h1>';
     if (state.view === 'notfound') return awaitingServerTask() ? '<h1>Task</h1>' : '<h1>Page not found</h1>';
     if (state.view === 'no-projects') return '<h1>Projects</h1>';
     if (state.view === 'forbidden') return '<h1>Access denied</h1>';
@@ -2086,6 +2091,7 @@
   }
   function renderContent() {
     if(state.view!=='board'||!D.session)cancelBoardSearch();
+    window.OneloopKnowledge?.beforeRender();
     const oldModalElement = document.querySelector('#overlay-root > .modal-wrap .modal');
     const oldPeekElement = document.querySelector('#overlay-root > .peek');
     const oldModal = !!oldModalElement, oldPeek = !!oldPeekElement;
@@ -2111,13 +2117,13 @@
     if(state.modal&&!canReadProject(state.projectId)&&!['user','project','temppw'].includes(state.modal.type))state.modal=null;
     if (!visibleProjects().find((p) => p.id === state.projectId)) state.projectId = (visibleProjects()[0] || {}).id;
     if (['settings','users','storage'].includes(state.view) && !isAdmin()) state.view = 'forbidden';
-    if(!project()&&['roadmap','board','settings'].includes(state.view))state.view='no-projects';
+    if(!project()&&['roadmap','board','knowledge','settings'].includes(state.view))state.view='no-projects';
     updateDocumentTitle();
     const c = counts();
     const p = project() || {name:'No projects'};
     const u = me();
     const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-    const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?'<button class="btn primary" onclick="App.openModal(\'project\')">Create project</button>':''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" onclick="App.nav('board')">Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
+    const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?'<button class="btn primary" onclick="App.openModal(\'project\')">Create project</button>':''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" onclick="App.nav('board')">Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
     const appRoot = document.getElementById('app'), shell = document.createElement('template');
     setHTML(shell,`
       <a class="skip-link" href="#main">Skip to content</a>
@@ -2129,6 +2135,7 @@
         <div class="nav">
           <button class="nav-item ${state.view === 'roadmap' ? 'on' : ''}" ${state.view === 'roadmap' ? 'aria-current="page"' : ''} onclick="App.nav('roadmap')" title="Roadmap">${I.roadmap}<span class="lbl">Roadmap</span></button>
           <button class="nav-item ${state.view === 'board' || state.view === 'task' ? 'on' : ''}" ${state.view === 'board' || state.view === 'task' ? 'aria-current="page"' : ''} onclick="App.nav('board')" title="Board">${I.board}<span class="lbl">Board</span><span class="end lbl mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${c.open}</span></button>
+          <button class="nav-item ${state.view === 'knowledge' ? 'on' : ''}" ${state.view === 'knowledge' ? 'aria-current="page"' : ''} onclick="App.nav('knowledge')" title="Knowledge">${I.knowledge}<span class="lbl">Knowledge</span></button>
           ${isAdmin() ? `<button class="nav-item ${state.view === 'settings' ? 'on' : ''}" onclick="App.nav('settings')" title="Settings">${I.settings}<span class="lbl">Settings</span></button>` : ''}
         </div>
         <div class="sidebar-bottom"><div class="profile-area"><button class="me-chip" onclick="App.userMenu(event)" title="${esc(u.name)}" aria-controls="action-menu" aria-expanded="${!!state.menu?.version}">${avatarHtml(u.id, 20)}
@@ -2172,6 +2179,7 @@
     mountDescription();
     if (state.view === 'task') window.Uploads?.mount(state.taskId);
     if (state.view === 'roadmap' && !error) mountRoadmap();
+    window.OneloopKnowledge?.mount();
     finishRenderMotion(renderMotion);
     if (state.menu) placeMenu();
     collaboration?.mount();
@@ -2431,7 +2439,7 @@
         if(state.modal===modal)App.toast('Could not copy. Select the password and copy it manually.','error');
       }
     },
-    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;render(); },
+    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
     // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
     refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
     refreshRoadmap({zoom=false}={}) {
@@ -2465,7 +2473,7 @@
       boardSnapshots.set(board,boardSnapshot());
     },
     acceptMoreUsers() { state.usersLimit+=50;render(); },
-    nav(v) { window.Recovery?.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; setLocalHash('#/' + v); render(); },
+    nav(v) { window.Recovery?.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') window.OneloopKnowledge?.route(v, state.projectId); setLocalHash('#/' + v); render(); },
     require(permission) {
       if (hasPermission(permission)) return true;
       App.toast(`${permission === 'manage_roadmap' ? 'Roadmap' : 'Board'}: read only`, 'info');
@@ -2868,7 +2876,7 @@
       if(targetProject&&!canReadProject(targetProject))return;
       if (['epic', 'milestone', 'track'].includes(type) && !App.require('manage_roadmap')) return;
       if (type === 'task' && !App.require('manage_board')) return;
-      if (['project', 'user'].includes(type) && !isAdmin()) return;
+      if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
       state.sideOpen = false;
       state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') { App._poolScroll = {}; App._focusPool = true; } renderOverlays();
       if(type==='pool'&&bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.open',{}).catch(bootWindow.OneloopRuntime.report);
@@ -3657,6 +3665,14 @@
       state.projectId=track.projectId;state.view=canReadTask(task)?'task':'forbidden';state.taskId=task.id;return;
     }
     state.taskId=null;
+    if(route==='knowledge'||/^knowledge[/?]/.test(route)){
+      const projectId=window.OneloopKnowledge?.route(route,state.projectId);
+      if(projectId&&projectId!==state.projectId){
+        if(!visibleProjects().some(project=>project.id===projectId)){state.view='notfound';return;}
+        state.projectId=projectId;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;
+      }
+      state.view='knowledge';return;
+    }
     state.view=['roadmap','board','settings','profile','users','inbox','storage'].includes(route)?route:'notfound';
   }
   window.addEventListener('hashchange',(event)=>{

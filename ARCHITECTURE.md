@@ -18,9 +18,10 @@ tokio) that provides:
   `/oauth`.
 
 Everything the instance knows lives in one data directory: the SQLite database
-`oneloop.sqlite3` in WAL mode, file bytes under `files/`, and working
-directories for uploads and previews. The other commands (`db migrate`, `user`,
-`backup`) open that directory directly, with no server involved.
+`oneloop.sqlite3` in WAL mode, file bytes under `files/`, keys under `keys/`,
+and working directories for uploads, previews and Git syncs. The other commands
+(`db migrate`, `user`, `backup`) open that directory directly, with no server
+involved.
 
 A browser action and an MCP tool call take the same path:
 
@@ -30,13 +31,13 @@ browser ── /api ──▶ http::*      ─┐
 AI client ─ /mcp ──▶ mcp::tools  ─┘            └─▶ FileStore (data directory)
 ```
 
-The services are `DomainService`, `CollaborationService`, `FileService` and
-`AuthService`. Every write is one SQLite transaction that checks access,
-validates input, compares the expected revision, records the idempotency
-receipt, changes the data, appends audit activity and adds a message to the
-outbox. After it commits, `CollaborationRuntime` delivers the outbox: it
-creates Inbox notifications and sends small hints over SSE, and clients then
-fetch what changed.
+The services are `DomainService`, `CollaborationService`, `FileService`,
+`KnowledgeService` and `AuthService`. Every write is one SQLite transaction
+that checks access, validates input, compares the expected revision, records
+the idempotency receipt, changes the data, appends audit activity and adds a
+message to the outbox. After it commits, `CollaborationRuntime` delivers the
+outbox: it creates Inbox notifications and sends small hints over SSE, and
+clients then fetch what changed.
 
 ## Codemap
 
@@ -71,11 +72,22 @@ fetch what changed.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews, read leases and crash recovery. `FileStore`
   owns the bytes on disk.
+- `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
+  project, read-only. Its commands manage the source, and each connect or
+  change starts a new source generation; results from an older one are
+  dropped. A background worker in `sync` checks each branch every minute and
+  stores the folder's files in SQLite; a change or disconnect stops the
+  project's running sync. `git` runs the `git` program with a private home and
+  configuration, only over HTTPS and SSH, without prompts or hooks, within time
+  and size limits, and in its own process group, so a stop also ends Git's
+  helpers. `search` and `markdown` index Markdown sections for search and MCP,
+  and `secrets` encrypts access tokens and deploy keys.
 - `http/`: thin axum adapters. `commands` is `POST /api/commands`, the one
-  endpoint for every browser write. `domain`, `collaboration`, `files` and
-  `auth` serve reads and file transfers. `security` checks host and origin,
-  resolves client addresses through trusted proxies and sets headers. `assets`
-  serves the embedded client. `server` bounds connections and shutdown.
+  endpoint for every browser write. `domain`, `collaboration`, `files`,
+  `knowledge` and `auth` serve reads and file transfers. `security` checks host
+  and origin, resolves client addresses through trusted proxies and sets
+  headers. `assets` serves the embedded client. `server` bounds connections and
+  shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, and `mod.rs` wires the transport
   and file transfer endpoints.
@@ -148,10 +160,11 @@ and an update here.
   it belongs. Administration never goes through MCP.
 - **Private data stays private, even from admins.** My Pool items and Inbox
   items are visible only to the person they belong to.
-- **Uploaded HTML is never same-origin.** Previews are served with a
-  `Content-Security-Policy: sandbox` that omits `allow-same-origin`, so preview
-  scripts run in an opaque origin and can't read cookies or call the API.
-  Downloads are `application/octet-stream` with `nosniff`.
+- **Uploaded and synced HTML is never same-origin.** Previews of attachments
+  and Knowledge files are served with a `Content-Security-Policy: sandbox`
+  that omits `allow-same-origin`, so preview scripts run in an opaque origin
+  and can't read cookies or call the API. Downloads are
+  `application/octet-stream` with `nosniff`.
 - **A write and its record commit together.** Data, audit activity and outbox
   messages share one transaction. Nothing reaches clients that was not
   committed.
@@ -162,7 +175,11 @@ and an update here.
   an idempotency key, and edits carry the revision they were based on.
 - **Secrets are stored only as hashes.** Passwords use Argon2id; session
   tokens, app tokens and transfer tickets are stored as SHA-256 hashes. No
-  secret appears in logs or audit payloads.
+  secret appears in logs or audit payloads. The one exception is a credential
+  oneloop itself presents to another server: a Knowledge access token or deploy
+  key can't be hashed, so it is encrypted with the instance key in
+  `keys/knowledge.key`, bound to its project, sent only to the host it was
+  entered for, and never returned by any API.
 - **User input never becomes a path.** Stored files use generated keys, and
   original file names are metadata only.
 - **One server per data directory.** A lock file enforces it; maintenance

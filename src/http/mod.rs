@@ -4,6 +4,7 @@ pub(crate) mod collaboration;
 pub(crate) mod commands;
 pub mod domain;
 pub(crate) mod files;
+pub(crate) mod knowledge;
 pub mod security;
 
 pub(crate) mod server;

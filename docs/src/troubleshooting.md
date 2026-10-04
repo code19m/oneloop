@@ -60,3 +60,26 @@ usernames, IP addresses and file paths, so keep them private.
 | Large uploads fail with HTTP 413 | The proxy's limit for request bodies is too small. | Allow at least 27 MB (in nginx, `client_max_body_size 27m`). |
 | Uploads fail with "There is not enough storage for this file" | The storage limit is reached, or free disk space is below `ONELOOP_DISK_MIN_FREE`. | On the **Storage** page, clean up temporary files. Or delete files, or raise the limit. |
 | An admin forgot their password | No other admin can reset it. | Run `oneloop user passwd <username>` on the server. |
+
+## Knowledge sync
+
+When a sync fails, the project's **Settings** shows the reason under
+**Knowledge base**, and the log has a `knowledge sync failed` line with Git's
+own message. People keep reading the last synced files.
+
+| Settings shows | What to do |
+| --- | --- |
+| The server can't run Git 2.31 or later, or SSH. | Install Git 2.31 or later and an OpenSSH client. The Docker image has both. |
+| The repository refused the access token or deploy key. | Check that the token is still valid and can read the repository, or that the deploy key is added to it. To change the token, use **Manage connection**. |
+| The repository wasn't found, or the credentials can't read it. | Check the URL. Many hosts answer "not found" when the credentials can't read a private repository. |
+| The repository moved to another address. Use its new URL. | Enter the new URL with **Manage connection**. If it's on another host, also enter a token for that host. |
+| The branch wasn't found in the repository. | Check the branch name, including its letter case. |
+| The folder wasn't found on the branch. | Check the folder. It starts at the repository root, and letter case matters. |
+| The repository host couldn't be reached. | Check DNS and firewalls from the server. Behind a proxy, see [Knowledge base connections](production.md#knowledge-base-connections). |
+| The server doesn't trust the host's HTTPS certificate. | For a private certificate authority, set `GIT_SSL_CAINFO` for the oneloop service; see [Knowledge base connections](production.md#knowledge-base-connections). |
+| The host's SSH key changed since the first sync. | Ask the host's admin whether the key really changed. If it did, delete the host's line from `keys/knowledge_known_hosts` in the data directory; the next sync trusts the new key. |
+| The folder is too large to sync. Choose a smaller folder or remove large files. | Choose a smaller folder, or move large files out of it. Files left out for their size still count toward a sync's disk use; see [Limits](reference.md#limits). |
+| The sync took too long. | Check the connection to the host, then choose **Retry sync**. |
+| The server is low on disk space. | Free some disk space; see [Limits](reference.md#limits) for what a sync needs. |
+| The saved credentials can't be read. Enter them again. | `keys/knowledge.key` is missing or was replaced, for example when a database was copied without its `keys` folder. Replace the token, or disconnect and connect again for a new deploy key. |
+| The sync failed. The server log has details. | Read the `knowledge sync failed` line in the log. |

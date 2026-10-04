@@ -304,7 +304,8 @@ fn every_legacy_prefix_converts_atomically_to_equivalent_baseline() {
                 .contains("run `oneloop db migrate")
         );
         convert_legacy(&mut old, version as i64).unwrap();
-        ensure_current_schema(&old).unwrap();
+        // Conversion ends at the baseline; later migrations then run as usual.
+        assert_eq!(inspect_schema_version(&old).unwrap(), MIGRATIONS[0].version);
         assert_eq!(schema_snapshot(&old), expected, "legacy version {version}");
         assert_eq!(
             old.query_row("SELECT status FROM tasks", [], |r| r.get::<_, String>(0))

@@ -21,7 +21,7 @@ service manager can load them for it.
 | `ONELOOP_DATA_DIR` | `./data` | The folder for the database, uploaded files and internal keys. A relative path starts from the working directory. It must be on a local disk; NFS and SMB aren't supported. The Docker image sets `/data`. |
 | `ONELOOP_TIMEZONE` | `UTC` | Your team's timezone. See [Timezone](#timezone). |
 | `ONELOOP_STORAGE_LIMIT` | `10GiB` | Space for uploaded files, their previews and unfinished uploads. See [Storage](#storage). |
-| `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload that would leave less free disk space than this. |
+| `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload that would leave less free disk space than this. A Knowledge sync needs more; see [Limits](#limits). |
 | `ONELOOP_TRUSTED_PROXIES` | Empty (trust none) | IP addresses or CIDR ranges of your reverse proxies, separated by commas. Only these may send the visitor's address in `X-Forwarded-For`. See [Trusted proxy](production.md#trusted-proxy). |
 | `ONELOOP_LOG_LEVEL` | `info` | How much to log: `error`, `warn`, `info`, `debug` or `trace`. |
 
@@ -44,7 +44,8 @@ which means UTC−07 (the sign is reversed).
 ### Storage
 
 The storage limit covers uploaded files (attachments and avatars), their
-previews and unfinished uploads. The database doesn't count.
+previews and unfinished uploads. The database doesn't count, and neither do
+Knowledge files, which oneloop keeps in the database.
 
 When usage reaches 80% of the limit, oneloop removes temporary attachments that
 nobody has opened for 24 hours, until usage is back at 70%. It never removes
@@ -105,6 +106,19 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
+**Knowledge**
+
+| Limit | Value |
+| --- | --- |
+| Folder | 5,000 files and 100 MiB of files to show; a larger folder doesn't sync |
+| File | Files over 10 MiB are left out |
+| Sync disk use | 300 MiB for the folder's files and Git's copy of them, files left out included; a larger folder doesn't sync |
+| Free disk space | A download needs 400 MiB free on top of `ONELOOP_DISK_MIN_FREE` |
+| File path | 1,024 bytes |
+| Sync | Checks the branch every minute; after a failure, every 5 minutes |
+| Sync time | A check stops after 30 seconds, a download after 5 minutes |
+| Search | 8 words and 200 characters |
+
 **Text**
 
 | Limit | Value |
@@ -150,6 +164,8 @@ Some emoji count as two characters.
 | File tickets | Work once and expire after 5 minutes |
 | Items per page | 50 (100 for comments, activity and the Inbox) |
 | Retry keys | Remembered for 24 hours |
+| Knowledge overview | 200 files, and 20,000 characters of the README |
+| Knowledge file | 100,000 characters |
 
 **Server**
 

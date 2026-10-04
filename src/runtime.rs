@@ -50,38 +50,45 @@ pub fn spawn_file_maintenance(
 }
 
 /// A dead worker is a server failure: close streams, drain HTTP and let the
-/// service manager restart the process. Both handles are always joined.
+/// service manager restart the process. Every handle is always joined.
 pub async fn supervise_workers(
     mut outbox: JoinHandle<AppResult<()>>,
     mut files: JoinHandle<()>,
+    mut knowledge: JoinHandle<()>,
     shutdown: watch::Sender<bool>,
     collaboration: crate::collaboration::CollaborationRuntime,
 ) -> AppResult<()> {
     let mut stopped = shutdown.subscribe();
-    let result = tokio::select! {
+    let failure = tokio::select! {
         biased;
         _ = async {
             while !*stopped.borrow_and_update() {
                 if stopped.changed().await.is_err() { break; }
             }
         } => None,
-        result = &mut outbox => Some((true, format!("outbox worker ended unexpectedly: {result:?}"))),
-        result = &mut files => Some((false, format!("file maintenance worker ended unexpectedly: {result:?}"))),
+        result = &mut outbox => Some(("outbox", format!("{result:?}"))),
+        result = &mut files => Some(("file maintenance", format!("{result:?}"))),
+        result = &mut knowledge => Some(("knowledge sync", format!("{result:?}"))),
     };
     shutdown.send_replace(true);
     collaboration.shutdown();
-    if let Some((outbox_finished, detail)) = result {
+    if let Some((worker, result)) = failure {
+        let detail = format!("{worker} worker ended unexpectedly: {result}");
         tracing::error!(%detail, "background worker failed; stopping server");
-        if outbox_finished {
-            let _ = files.await;
-        } else {
-            let _ = outbox.await;
+        // The finished handle must not be polled again.
+        match worker {
+            "outbox" => drop(tokio::join!(files, knowledge)),
+            "file maintenance" => drop(tokio::join!(outbox, knowledge)),
+            _ => drop(tokio::join!(outbox, files)),
         }
         return Err(crate::AppError::internal(detail));
     }
-    let (outbox, files) = tokio::join!(outbox, files);
+    let (outbox, files, knowledge) = tokio::join!(outbox, files, knowledge);
     outbox
         .map_err(|error| crate::AppError::internal(format!("outbox worker failed: {error}")))??;
     files.map_err(|error| crate::AppError::internal(format!("file worker failed: {error}")))?;
+    knowledge.map_err(|error| {
+        crate::AppError::internal(format!("knowledge sync worker failed: {error}"))
+    })?;
     Ok(())
 }

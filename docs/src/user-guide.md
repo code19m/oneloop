@@ -125,6 +125,32 @@ Mark a file **Temporary** if oneloop may remove it when storage runs low. A
 removed file then shows **Cleaned up**. oneloop never removes other files by
 itself.
 
+## Knowledge
+
+**Knowledge** in the sidebar opens the project's **Knowledge base**: your
+team's guides, product rules and decisions, from one folder of a Git repository
+that an admin connects. It is read-only and stands on its own, without links to
+tasks or epics. To change a file, change it in Git; oneloop shows the change
+within about a minute.
+
+- A folder's **README.md** appears below its list of files. **Updated** is when
+  a file last changed in Git.
+- Files that oneloop previews [on tasks](#files) open inside the page; other
+  files can only be downloaded. **Full view** opens the same viewer as task
+  files.
+- Relative links in Markdown open the linked file or folder here, and relative
+  images appear in the text.
+- To copy a link to part of a document, hover over a heading and choose
+  **#**.
+
+Search with the field at the top, or press `/`. It looks at file and folder
+names, and at the text of Markdown and text files. Every word must match, in
+any order and letter case. Use the arrow keys and Enter to open a result, and
+Esc to close the search.
+
+When a sync fails, the page shows **Knowledge may be out of date** and keeps the
+files from the last successful sync. Admins can choose **Retry sync**.
+
 ## Comments and mentions
 
 Write a comment under the task's activity and press Enter to send it.

@@ -185,12 +185,14 @@ export const test = base.extend({
     try { await use(template); } finally { await rm(template.directory, { recursive: true, force: true }); }
   }, { scope: 'worker', timeout: 30_000 }],
   instanceTimeZone: ['UTC', { option: true }],
-  instance: [async ({ playwright, browserErrors, instanceTimeZone, instanceTemplate: template }, use, testInfo) => {
+  /** Extra environment for the server, such as a test certificate authority. */
+  instanceEnvironment: [{}, { option: true }],
+  instance: [async ({ playwright, browserErrors, instanceTimeZone, instanceEnvironment, instanceTemplate: template }, use, testInfo) => {
     const directory = await mkdtemp(join(scratch, 'instance-'));
     let server, api, writer;
     try {
       await cp(template.directory, directory, { recursive: true });
-      const served = await serve(directory, testInfo.parallelIndex, { ONELOOP_TIMEZONE: instanceTimeZone });
+      const served = await serve(directory, testInfo.parallelIndex, { ...instanceEnvironment, ONELOOP_TIMEZONE: instanceTimeZone });
       server = served.server;
       const { url } = served;
       api = await playwright.request.newContext({ baseURL: url, extraHTTPHeaders: { Origin: url }, storageState: template.apiState });

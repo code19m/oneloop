@@ -350,3 +350,37 @@ test('PDF previews redraw only on width changes, zoom and paging, and stop when 
   // the real timers that were started before the clock was mocked.
   t.mock.timers.reset();
 });
+
+test('read-only collections open in the file dialog with their path and date, never retention controls', async () => {
+  const t = bootApp({ route: 'board' });
+  let readable = true;
+  const file = { id: 'knowledge:p1:guides/setup.md:v1', name: 'setup.md', path: 'docs/guides/setup.md', size: 12, updatedAt: 1_700_000_000, previewKind: 'image', state: 'available', url: 'blob:knowledge', contentUrl: 'blob:knowledge', downloadUrl: '/api/projects/p1/knowledge/download?path=guides%2Fsetup.md' };
+  t.w.Uploads.previewCollection([file], file.id, () => readable);
+  const dialog = t.d.querySelector('.file-dialog');
+  assert(dialog, 'the dialog opens');
+  const details = dialog.querySelector('.file-info dl').textContent;
+  assert.match(details, /Path.*docs\/guides\/setup\.md/s);
+  assert.match(details, /Updated/);
+  assert.doesNotMatch(details, /Uploaded by|Retention/);
+  assert.equal(dialog.querySelector('[data-file-download]').getAttribute('href'), file.downloadUrl);
+  assert(dialog.querySelector('.file-navigation').hidden);
+  readable = false;
+  t.w.Uploads.validateAccess();
+  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting]) .file-dialog'), null, 'losing access closes it');
+  t.w.Uploads.previewCollection([file], file.id, () => false);
+  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting])'), null, 'an unreadable collection never opens');
+});
+
+test('inline image previews work outside the dialog and stop when disposed', async () => {
+  const t = bootApp({ route: 'board' });
+  const host = t.d.createElement('div'), tools = t.d.createElement('div');
+  t.d.body.append(tools, host);
+  const dispose = t.w.Uploads.mountInlinePreview(host, { id: 'inline-image', name: 'logo.png', size: 10, previewKind: 'image', url: 'blob:logo' }, tools);
+  assert.equal(host.querySelector('img').getAttribute('src'), 'blob:logo');
+  assert(tools.querySelector('.image-controls'), 'zoom controls move to the page header');
+  assert.equal(t.d.querySelector('.file-dialog'), null);
+  tools.querySelector('[data-image-in]').click();
+  assert.equal(tools.querySelector('[data-image-out]').disabled, false);
+  dispose();
+  assert.equal(typeof dispose, 'function');
+});

@@ -1203,6 +1203,29 @@ fn find_tag_end(
 }
 
 static HTML_PREVIEW_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// Sanitize HTML for the sandboxed preview frame, at most two files at once.
+pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>> {
+    let permit = HTML_PREVIEW_PERMITS
+        .acquire()
+        .await
+        .map_err(|_| AppError::Unavailable("preview worker is shutting down".into()))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        sanitize_html_preview(&bytes)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("preview worker failed: {error}")))
+}
+
+/// The media type and preview kind of complete file contents, decided as for
+/// uploads: by content first, with the name only choosing among text formats.
+pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<PreviewKind>) {
+    let media = detect::detected_media_type(bytes, detect::detect_preview(name, bytes));
+    let preview = preview_kind_from_metadata(name, &media)
+        .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
+    (media, preview)
+}
 static AVATAR_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {

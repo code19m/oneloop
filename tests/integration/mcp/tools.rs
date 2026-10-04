@@ -1412,3 +1412,130 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
         Err(oneloop::AppError::Forbidden)
     ));
 }
+
+#[tokio::test]
+async fn knowledge_tools_read_the_overview_files_and_search() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    db.run(|connection| {
+        connection.execute_batch(
+            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1);
+             INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at,generation)
+             VALUES('project-1','https://git.example.test/team/docs.git','main','docs','ready',
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,1,1,'g1');",
+        )?;
+        for (path, kind, media, content) in [
+            (
+                "README.md",
+                Some("markdown"),
+                "text/plain",
+                &b"# Handbook\n\nWelcome aboard.\n\n## Setup\n\nInstall the tools.\n\n### Details\n\nUse the script.\n\n## Releases\n\nShip weekly.\n"[..],
+            ),
+            ("guides/onboarding.md", Some("markdown"), "text/plain", &b"# Joining\n\n## First day\n\nMeet the team.\n"[..]),
+            ("diagram.png", Some("image"), "image/png", &b"\x89PNG\r\n\x1a\n"[..]),
+        ] {
+            connection.execute(
+                "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                 VALUES('project-1',?1,?2,?3,?4,?5,50,?6)",
+                rusqlite::params![path, content.len() as i64, media, kind, format!("checksum-{path}"), content],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = register(&app).await;
+    let (code, verifier) =
+        authorize_with(&app, &session, &client, &["project_read"], &["project-1"]).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let mut mcp =
+        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+
+    let overview = tool_value(
+        &mcp.call("read_knowledge_overview", json!({"projectId": "project-1"}))
+            .await,
+    );
+    assert_eq!(overview["state"], "ready");
+    assert_eq!(overview["readme"]["path"], "README.md");
+    assert!(
+        overview["readme"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Welcome aboard.")
+    );
+    assert_eq!(overview["fileCount"], 3);
+    let readme = &overview["files"][0];
+    assert_eq!(readme["path"], "README.md");
+    assert_eq!(readme["title"], "Handbook");
+    assert_eq!(readme["sections"], json!(["Setup", "Releases"]));
+    let image = &overview["files"][1];
+    assert_eq!(image["path"], "diagram.png");
+    assert!(image.get("title").is_none() && image.get("sections").is_none());
+
+    let guides = tool_value(
+        &mcp.call(
+            "read_knowledge_overview",
+            json!({"projectId": "project-1", "folder": "guides"}),
+        )
+        .await,
+    );
+    assert!(guides.get("readme").is_none());
+    assert_eq!(guides["files"][0]["path"], "guides/onboarding.md");
+    assert_tool_error(
+        &mcp.call(
+            "read_knowledge_overview",
+            json!({"projectId": "project-1", "folder": "missing"}),
+        )
+        .await,
+        "not_found",
+    );
+
+    let section = tool_value(
+        &mcp.call(
+            "read_knowledge_file",
+            json!({"projectId": "project-1", "path": "README.md", "section": "setup"}),
+        )
+        .await,
+    );
+    let content = section["content"].as_str().unwrap();
+    assert!(content.starts_with("## Setup") && content.contains("### Details"));
+    assert!(!content.contains("Releases"));
+    assert_eq!(
+        section["headings"],
+        json!(["# Handbook", "## Setup", "### Details", "## Releases"])
+    );
+    let binary = tool_value(
+        &mcp.call(
+            "read_knowledge_file",
+            json!({"projectId": "project-1", "path": "diagram.png"}),
+        )
+        .await,
+    );
+    assert!(binary.get("content").is_none());
+    assert!(binary["note"].as_str().unwrap().contains("not text"));
+    assert_tool_error(
+        &mcp.call(
+            "read_knowledge_file",
+            json!({"projectId": "project-1", "path": "../secret.md"}),
+        )
+        .await,
+        "not_found",
+    );
+
+    let search = tool_value(
+        &mcp.call(
+            "search_knowledge",
+            json!({"projectId": "project-1", "query": "install tools"}),
+        )
+        .await,
+    );
+    assert_eq!(search["documents"][0]["path"], "README.md");
+    assert_eq!(search["documents"][0]["hits"][0]["heading"], "Setup");
+    assert_tool_error(
+        &mcp.call(
+            "search_knowledge",
+            json!({"projectId": "project-2", "query": "install"}),
+        )
+        .await,
+        "not_found",
+    );
+}

@@ -192,3 +192,40 @@ test('server HTML previews keep Source usable without parsing, and local srcdoc 
   w.FileViews.html(host, { name: 'demo.html', size: 20 }, '<h1>Demo</h1><iframe src="bad"></iframe>'); assert.equal(parses, 1); assert(!host.querySelector('iframe').srcdoc.includes('<iframe'));
   host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click(); host.querySelector('[data-view-preview]').click(); assert.equal(parses, 1);
 });
+
+/** File views with the Markdown libraries present, outside the app. */
+function directPreviews() {
+  const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  w.matchMedia = () => ({ matches: true });
+  for (const name of ['motion', ...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index', 'file-views']) w.eval(source(name));
+  return { w, d: w.document, host: w.document.getElementById('host') };
+}
+
+test('a Knowledge context links relative files and shows relative images; attachments keep them inert', () => {
+  const text = ['[Guide](guides/setup.md#install)', '[Missing](missing.md)', '[Unsafe](javascript:alert(1))', '![Logo](assets/logo.png)', '![Other](other.png)'].join('\n\n');
+  const context = {
+    resolveLink: href => href === 'guides/setup.md#install' ? '#/knowledge/p1/blob/guides/setup.md?section=install' : href === 'missing.md' ? 'https://example.invalid/not-a-route' : null,
+    resolveImage: src => src === 'assets/logo.png' ? '/api/projects/p1/knowledge/content?path=assets%2Flogo.png' : null,
+  };
+  const { w, d, host } = directPreviews();
+  w.FileViews.markdown(host, { name: 'README.md', size: text.length }, text, false, context);
+  const links = [...d.querySelectorAll('.markdown-body a')];
+  assert.equal(links[0].getAttribute('href'), '#/knowledge/p1/blob/guides/setup.md?section=install');
+  assert.equal(links[0].getAttribute('target'), null);
+  assert(!links[1].hasAttribute('href'), 'only Knowledge routes are accepted from the context');
+  assert(!d.querySelector('a[href^="javascript:"]'));
+  assert.equal(d.querySelector('.markdown-body img').getAttribute('src'), '/api/projects/p1/knowledge/content?path=assets%2Flogo.png');
+  assert.match(d.querySelector('.markdown-image-placeholder').textContent, /Other/);
+  w.FileViews.markdown(host, { name: 'README.md', size: text.length }, text, false);
+  assert(!d.querySelector('.markdown-body a[href^="#/knowledge"]'));
+  assert(!d.querySelector('.markdown-body img'));
+});
+
+test('plain text previews indent whole JSON files and say when they are cut', () => {
+  const { w, host } = directPreviews();
+  w.FileViews.text(host, { name: 'config.json' }, '{"a":[1,2]}', false);
+  assert.equal(host.querySelector('pre').textContent, '{\n  "a": [\n    1,\n    2\n  ]\n}');
+  w.FileViews.text(host, { name: 'config.json' }, '{"a":', true);
+  assert.equal(host.querySelector('pre').textContent, '{"a":');
+  assert.match(host.querySelector('.access-note').textContent, /truncated to 200 KB/);
+});

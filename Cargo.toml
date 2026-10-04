@@ -16,9 +16,11 @@ autotests = false
 argon2 = { version = "0.6", features = ["getrandom"] }
 axum = { version = "0.8", features = ["http1", "json", "tokio", "multipart"] }
 base64 = "0.23"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
 chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["fast", "zeroize"] }
 fs4 = { version = "1.1", default-features = false }
 getrandom = "0.4"
 hex = "0.4"
@@ -37,7 +39,7 @@ serde_path_to_error = "0.1"
 serde_urlencoded = "0.7"
 sha2 = "0.11"
 thiserror = "2.0"
-tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "fs", "io-util", "process"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
@@ -45,6 +47,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.18", features = ["serde", "v7"] }
 walkdir = "2.5"
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["process"] }
 
 [build-dependencies]
 sha2 = "0.10"

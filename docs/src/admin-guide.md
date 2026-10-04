@@ -11,14 +11,14 @@ with read-only access. Tick **Roadmap** or **Board** to let them change things.
 
 | Action | Member | + Roadmap | + Board | Admin |
 | --- | --- | --- | --- | --- |
-| See the project's Roadmap, Board, tasks, files and Team Pool | Yes | Yes | Yes | Every project |
+| See the project's Roadmap, Board, tasks, files, Team Pool and Knowledge | Yes | Yes | Yes | Every project |
 | Comment, reply and mention people | Yes | Yes | Yes | Every project |
 | Edit or delete comments | Own | Own | Own | Any |
 | Use their private My Pool | Yes | Yes | Yes | Yes |
 | Be assigned tasks | Yes | Yes | Yes | Where also a member |
 | Change tracks, epics and milestones | No | Yes | No | Yes |
 | Create, move, block and delete tasks, upload files, change the Team Pool | No | No | Yes | Yes |
-| Manage projects, members, users and storage | No | No | No | Yes |
+| Manage projects, members, the knowledge base, users and storage | No | No | No | Yes |
 
 People don't see projects they aren't members of. Changes apply at once, also
 to their connected AI assistants.
@@ -81,6 +81,54 @@ it.
 To delete a project, open its **Settings**, choose **Delete project** and type
 the project's name. This deletes all of the project's work and files, and you
 can't undo it. The last project can't be deleted.
+
+## Knowledge base
+
+A project can show one folder of a Git repository as its
+[knowledge base](user-guide.md#knowledge). oneloop only reads the repository:
+people change the files in Git, with the review your team already uses.
+
+Connect one with **Connect repository** under **Knowledge base** in the
+project's **Settings**. Leave **Folder** empty to show the whole repository.
+The first sync starts at once. After that, oneloop checks the branch every
+minute and downloads the folder again only when it has changed.
+
+Any Git host works, such as GitLab, GitHub, Gitea, Bitbucket or your own
+server. The URL decides how oneloop signs in:
+
+| URL | Example | Access |
+| --- | --- | --- |
+| HTTPS | `https://git.example.com/team/docs.git` | An **Access token** that can read the repository. Leave it empty for a public repository. |
+| SSH | `git@git.example.com:team/docs.git`, or `ssh://git@git.example.com:2222/team/docs.git` for another port | A **Deploy key**, which oneloop creates for the project. Add it to the repository as a read-only deploy key. |
+
+- Give the token read access to this repository only, such as a GitLab project
+  access token with `read_repository` or a GitHub fine-grained token with read
+  access to contents.
+- oneloop signs in with the username `oneloop`. If your host needs another one,
+  put it in the URL, such as `https://x-token-auth@bitbucket.org/team/docs.git`.
+  Never put a password in the URL.
+- A saved token is never shown again. **Manage connection** offers **Replace**
+  and **Remove**.
+- A token goes only to the host it was entered for, so a URL on another host
+  needs a new token. With a token, oneloop doesn't follow redirects either: if
+  the repository moves, enter its new URL.
+- On the first SSH connection, oneloop remembers the host's key. If the key
+  changes later, syncs fail until you check why; see
+  [Troubleshooting](troubleshooting.md#knowledge-sync).
+
+If a sync fails, **Settings** shows why, and oneloop tries again every 5
+minutes. People keep reading the last synced files. **Retry sync** on the
+**Knowledge base** page tries at once.
+
+Changing the URL, branch or folder removes the old files at once; the new ones
+appear after the next sync. **Disconnect** removes the files, the token and the
+deploy key from oneloop. Both also stop a sync that is still running, so a new
+connection syncs at once. oneloop never changes the repository, and it can't
+revoke the token or deploy key on your Git host; do that there if nothing else
+uses them.
+
+Files over 10 MB are left out, and a folder over the
+[limits](reference.md#limits) doesn't sync.
 
 ## Storage
 

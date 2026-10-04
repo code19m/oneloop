@@ -16,7 +16,8 @@ LABEL org.opencontainers.image.title="oneloop" \
       org.opencontainers.image.url="https://code19m.github.io/oneloop/" \
       org.opencontainers.image.documentation="https://code19m.github.io/oneloop/" \
       org.opencontainers.image.licenses="MIT"
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+# Git and the SSH client sync Knowledge folders from repository hosts.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata git openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 oneloop \
     && useradd --uid 10001 --gid oneloop --no-create-home --home-dir /data oneloop \

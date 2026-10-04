@@ -18,5 +18,6 @@ mod domain;
 mod errors;
 mod files;
 mod http;
+mod knowledge;
 mod mcp;
 mod runtime;
