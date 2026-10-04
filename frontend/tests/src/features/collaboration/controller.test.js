@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
+import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
-import {installCollaborationController,mapActivity,mapComment,mapInboxItem,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
+import {createLegacyData,hydrateLegacyData} from '../../../../src/data/projection-store.js';
+import {installCollaborationController,mapActivity,mapComment,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
 
 // The controller coalesces live reads with 60 ms timers. Tests that observe
 // that coalescing drive a mocked clock and let promise chains settle between
@@ -45,6 +47,22 @@ test('maps opaque server entities, second timestamps and UTF-16 mention ranges e
   assert.equal(comment.ts,10_000);assert.equal(comment.editedAt,11_000);assert.equal(comment.parentId,'root');assert.equal(comment.mentions[0].label,'bob');
   const inbox=mapInboxItem({id:'n1',eventType:'discussion.mention',actorName:'Bob',actorUserId:'u2',projectId:'p1',taskId:'opaque-task',taskKey:'ONE-101',taskTitle:'Review',destinationAvailable:true,createdAt:12,readAt:null,archivedAt:null});
   assert.equal(inbox.actorId,'u2');assert.equal(inbox.taskId,'opaque-task');assert.equal(inbox.taskKey,'ONE-101');assert.equal(inbox.createdAt,12_000);
+});
+
+test('Inbox data stays mapped through binding, full bootstraps and repeated scoped bootstraps',async()=>{
+  const data=createLegacyData(),notice={id:'n1',eventType:'task.assigned',actorUserId:'u2',createdAt:1700000000,readAt:1700000001,archivedAt:null};
+  const bootstrap={session:{userId:'u1'},notifications:[notice]};
+  hydrateLegacyData(data,bootstrap);
+  assert.equal(data.notifications[0].createdAt,1700000000000);
+  assert.equal(data.notifications[0].actorId,'u2');
+  const t=fixture({data,api:{inbox:async()=>({items:[notice],nextCursor:null,unreadCount:0,filteredCount:1})}});
+  assert.equal(data.notifications[0].createdAt,1700000000000);
+  await t.controller.loadInbox({projects:[],unread:false,archived:false});
+  for(const projection of [{...bootstrap,notifications:[{...notice,createdAt:1700000002}]},{view:'metadata',session:{userId:'u1'}},{view:'metadata',session:{userId:'u1'}}]){
+    hydrateLegacyData(data,projection);for(const listener of t.listeners)listener({type:'bootstrap',projection});
+    assert.equal(data.notifications[0].createdAt,1700000002000);assert.equal(data.notifications[0].readAt,1700000001000);assert.equal(data.notifications[0].actorId,'u2');
+  }
+  t.controller.dispose();
 });
 
 test('task reconciliation uses opaque IDs, server activity and scoped refresh metadata',async()=>{

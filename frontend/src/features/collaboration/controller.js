@@ -5,6 +5,7 @@ import {secondsToMilliseconds} from '../../data/time.js';
 import {refreshPageWindow} from '../../data/page-window.js';
 import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
+import {mapInboxItem} from '../../data/inbox-mapper.js';
 import {actionErrorFeedback} from '../../app/action-feedback.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
@@ -46,37 +47,6 @@ export function mapComment(comment) {
 
 export {mapActivity};
 
-const inboxReason = (eventType) => ({
-  'discussion.mention':'mention', 'discussion.everyone':'everyone', 'discussion.reply':'reply',
-  'task.assigned':'assigned', 'task.blocked':'blocked', 'task.block.mentioned':'block-mention', 'task.block.everyone':'block-everyone', 'task.block.reason.updated':'block-mention',
-  'task.unblocked':'unblocked', 'task.unblocked_and_completed':'unblocked',
-})[eventType] ?? eventType;
-
-/** @param {any} item */
-export function mapInboxItem(item) {
-  return {
-    id: item.id,
-    eventId: item.id,
-    recipientId: null,
-    actorId: item.actorUserId ?? null,
-    actorName: item.actorName ?? null,
-    projectId: item.projectId ?? null,
-    projectName: item.projectName ?? null,
-    taskId: item.taskId ?? null,
-    taskKey: item.taskKey ?? null,
-    taskTitle: item.taskTitle ?? null,
-    commentId: item.commentId ?? null,
-    rootId: null,
-    blockId: item.blockId ?? null,
-    reason: inboxReason(item.eventType),
-    eventType: item.eventType,
-    excerpt: item.excerpt ?? null,
-    destinationAvailable: !!item.destinationAvailable,
-    createdAt: secondsToMilliseconds(item.createdAt),
-    readAt: item.readAt == null ? null : secondsToMilliseconds(item.readAt),
-    archivedAt: item.archivedAt == null ? null : secondsToMilliseconds(item.archivedAt),
-  };
-}
 
 function replace(array, items) { array.splice(0, array.length, ...items); }
 
@@ -87,7 +57,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
 export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected OneloopTransport');
   const data=transport.data;
-  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
+  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentRevision?:(editorId:string,revision:number)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
@@ -241,7 +211,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
             retry:(expectedRevision)=>execute(operation,payload,{expectedRevision,interactionKey:`${operation}:${input.commentId}:${input.interactionId}`}),
             target:{latestValue:(item)=>item.text},myValue:input.text,snapshot:editorSnapshot,
           });
-          if(!resolved.saved)return false;response=resolved.result;
+          if(!resolved.saved){if(resolved.latest)facade?.commentRevision?.(input.editorId,resolved.latest.revision);return false;}response=resolved.result;
         }catch(retryError){report(retryError,true);return false;}
       }else{report(error,true);return false;}
     }
@@ -252,7 +222,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const index=(task.comments??[]).findIndex((item)=>item.id===comment.id);if(index>=0)task.comments.splice(index,1,comment);else (task.comments??=[]).push(comment);
       task.comments.sort(chronological);
       await refreshActivity(task,true);
-      if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,changed:(response.result.events??[]).length>0});
+      if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
       return true;
     }catch(error){report(error,true);return false;}
   }
@@ -451,13 +421,11 @@ export function installCollaborationController({ transport, eventSourceFactory =
     production:true,
     bind(nextApp,nextHooks,nextFacade){
       app=nextApp;facade=nextFacade;sessionKey=currentSession();
-      replace(data.notifications,data.notifications.map((item)=>mapInboxItem(item)));
       if(Number.isFinite(data.inboxUnreadCount))facade?.unreadCount?.(data.inboxUnreadCount);
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
         const next=currentSession();
         if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
         if(change?.type==='bootstrap'){
-          replace(data.notifications,data.notifications.map((item)=>mapInboxItem(item)));
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
         }
       });

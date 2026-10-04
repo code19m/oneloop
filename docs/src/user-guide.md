@@ -92,8 +92,8 @@ Click a card to open the task. Your changes save automatically.
 - **Deadline** is a date. When that day ends in your team's timezone, a task
   that isn't Done shows **Overdue**.
 - **Activity** shows comments and changes in one timeline.
-- If someone else changes a field while you are editing it, oneloop keeps your
-  text and shows theirs next to it. Choose **Use latest** or
+- If someone else changes a task field or comment while you are editing it,
+  oneloop keeps your text and shows theirs next to it. Choose **Use latest** or
   **Keep my changes**.
 - To delete a task, use the **⋯** menu at the top of the page.
 
@@ -157,6 +157,9 @@ files from the last successful sync. Admins can choose **Retry sync**.
 Write a comment under the task's activity and press Enter to send it.
 Shift+Enter starts a new line. Every project member can comment, even with a
 read-only Board.
+
+You can keep typing while a comment is being sent. Its confirmation leaves any
+new unsent text in place.
 
 - **Reply** answers a comment in its thread.
 - You can edit and delete your own comments. Admins can edit and delete any
