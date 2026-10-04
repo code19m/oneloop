@@ -727,6 +727,160 @@ async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
     assert_eq!(revoked, (0, 0));
 }
 
+/// Runs a browser command for a signed-in session and expects it to succeed.
+async fn browser_command(app: &Router, session: &str, command: Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/commands")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::from(command.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// The client IDs that the session's Profile lists under Connected apps.
+async fn connected_app_clients(app: &Router, session: &str) -> Vec<String> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/apps")
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["clientId"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn member_removal_revokes_grants_even_if_re_added_before_next_request() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let pending_client = register(&app).await;
+    let (pending_code, pending_verifier) = authorize(&app, &session, &pending_client).await;
+    let admin = support::add_user(&db, "admin", true).await;
+    let colleague = support::add_user(&db, "colleague", false).await;
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.add","payload":{"projectId":"project-1","userId":colleague.actor.user_id,"manageBoard":false,"manageRoadmap":false},"idempotencyKey":"add-colleague"}),
+    )
+    .await;
+    let colleague_client = register(&app).await;
+    let (code, verifier) = authorize_with(
+        &app,
+        &colleague.token,
+        &colleague_client,
+        &["project_read"],
+        &["project-1"],
+    )
+    .await;
+    let colleague_tokens = issue(&app, &colleague_client, &code, &verifier).await;
+
+    // Both changes land before the member's apps make another request.
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.remove","payload":{"projectId":"project-1","userId":user},"idempotencyKey":"remove-member","expectedRevision":1}),
+    )
+    .await;
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.add","payload":{"projectId":"project-1","userId":user,"manageBoard":true,"manageRoadmap":true},"idempotencyKey":"re-add-member"}),
+    )
+    .await;
+
+    // The removal stored the revocation, so adding the member back revives nothing.
+    assert!(connected_app_clients(&app, &session).await.is_empty());
+    let denied = app
+        .clone()
+        .oneshot(mcp_request(
+            tokens["access_token"].as_str().unwrap(),
+            None,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let refresh_denied = app
+        .clone()
+        .oneshot(refresh_request(
+            &client,
+            tokens["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refresh_denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(refresh_denied).await["error"], "invalid_grant");
+    let exchange_denied = app
+        .clone()
+        .oneshot(code_request(
+            &pending_client,
+            &pending_code,
+            &pending_verifier,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(exchange_denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(exchange_denied).await["error"], "invalid_grant");
+
+    // Another member's app for the same project is untouched.
+    McpClient::connect(&app, colleague_tokens["access_token"].as_str().unwrap()).await;
+    let refreshed = app
+        .clone()
+        .oneshot(refresh_request(
+            &colleague_client,
+            colleague_tokens["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refreshed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_removed_as_member_keeps_their_app() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let promoted = user.clone();
+    db.run(move |connection| {
+        connection.execute("UPDATE users SET is_admin=1 WHERE id=?1", [promoted])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let admin = support::add_user(&db, "admin", true).await;
+
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.remove","payload":{"projectId":"project-1","userId":user},"idempotencyKey":"remove-admin-member","expectedRevision":1}),
+    )
+    .await;
+    // An admin still sees and changes every project, so the app keeps it too.
+    McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
+}
+
 /// Adds a second project, "Old project", with the fixture's user as a member.
 async fn add_old_project(db: &Db, user: String) {
     db.run(move |connection| {
@@ -747,23 +901,12 @@ async fn add_old_project(db: &Db, user: String) {
 /// Deletes "Old project" the way an administrator does in the browser.
 async fn delete_old_project(app: &Router, db: &Db) {
     let admin = support::add_user(db, "admin", true).await;
-    let deleted = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/commands")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::ORIGIN, "http://127.0.0.1:8080")
-                .header(header::COOKIE, format!("oneloop_session={}", admin.token))
-                .body(Body::from(
-                    json!({"operation":"project.delete","payload":{"projectId":"project-2","confirmedName":"Old project"},"idempotencyKey":"delete-old-project","expectedRevision":1}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(deleted.status(), StatusCode::OK);
+    browser_command(
+        app,
+        &admin.token,
+        json!({"operation":"project.delete","payload":{"projectId":"project-2","confirmedName":"Old project"},"idempotencyKey":"delete-old-project","expectedRevision":1}),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -814,26 +957,10 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
     delete_old_project(&app, &db).await;
 
     // The deletion itself stores the revocation; no app request is needed first.
-    let apps = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/apps")
-                .header(header::COOKIE, format!("oneloop_session={session}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(apps.status(), StatusCode::OK);
-    let apps = body_json(apps).await;
-    let listed: Vec<&str> = apps["apps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["clientId"].as_str().unwrap())
-        .collect();
-    assert_eq!(listed, [kept_client.as_str()]);
+    assert_eq!(
+        connected_app_clients(&app, &session).await,
+        [kept_client.as_str()]
+    );
     let upload = app
         .clone()
         .oneshot(
@@ -911,17 +1038,7 @@ async fn project_deletion_invalidates_unexchanged_codes_that_selected_it() {
     delete_old_project(&app, &db).await;
     let exchanged = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client),
-                ("code", &code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                ("code_verifier", &verifier),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(code_request(&client, &code, &verifier))
         .await
         .unwrap();
     assert_eq!(exchanged.status(), StatusCode::BAD_REQUEST);
