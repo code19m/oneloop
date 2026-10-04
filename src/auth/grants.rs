@@ -209,3 +209,33 @@ impl AuthService {
             .await
     }
 }
+
+/// Revoke every connected app that selected a project, with its tokens; its
+/// transfer tickets stop working with it. Authorization codes for the project
+/// that were not exchanged yet are dropped too. Project deletion calls this
+/// before the cascade removes the selection, so an app that also selected
+/// other projects ends too.
+pub(crate) fn revoke_project_app_access(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    now: i64,
+) -> AppResult<()> {
+    tx.execute(
+        "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
+         WHERE revoked_at IS NULL AND id IN
+             (SELECT grant_id FROM mcp_grant_projects WHERE project_id=?2)",
+        rusqlite::params![now, project_id],
+    )?;
+    tx.execute(
+        "UPDATE mcp_tokens SET revoked_at=?1 WHERE revoked_at IS NULL AND grant_id IN
+             (SELECT grant_id FROM mcp_grant_projects WHERE project_id=?2)",
+        rusqlite::params![now, project_id],
+    )?;
+    // Otherwise the exchange fails on the missing project with a server error.
+    tx.execute(
+        "DELETE FROM oauth_authorization_codes WHERE used_at IS NULL
+         AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?1)",
+        [project_id],
+    )?;
+    Ok(())
+}
