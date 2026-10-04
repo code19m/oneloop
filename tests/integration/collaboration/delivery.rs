@@ -568,6 +568,21 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         .await
         .unwrap();
     assert_eq!(archived.filtered_count, 1);
+    for operation in ["inbox.restore", "inbox.archive"] {
+        service
+            .execute(
+                &bob,
+                CollaborationCommand {
+                    operation: operation.into(),
+                    payload: json!({"notificationId":notification_id}),
+                    idempotency_key: format!("before-expiry-{operation}"),
+                    expected_revision: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let expired_id = notification_id.clone();
     db.run(move |connection| {
         connection.execute("UPDATE notification_recipients SET archived_at=?1 WHERE notification_id=?2 AND user_id='bob'",
             rusqlite::params![now() - 91 * 86_400, notification_id])?;
@@ -586,6 +601,47 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         .await
         .unwrap();
     assert_eq!(expired.filtered_count, 0);
+    for purge in [false, true] {
+        if purge {
+            assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
+        }
+        let bootstrap = oneloop::domain::DomainService::new(db.clone(), chrono_tz::UTC)
+            .bootstrap(&bob, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(bootstrap.notifications.len(), 1, "purge={purge}");
+        assert!(
+            bootstrap
+                .notifications
+                .iter()
+                .all(|item| item["id"] != expired_id)
+        );
+        for operation in [
+            "inbox.restore",
+            "inbox.archive",
+            "inbox.markRead",
+            "inbox.markUnread",
+        ] {
+            let error = service
+                .execute(
+                    &bob,
+                    CollaborationCommand {
+                        operation: operation.into(),
+                        payload: json!({"notificationId":expired_id}),
+                        idempotency_key: format!("expired-{purge}-{operation}"),
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                oneloop::AppError::NotFound {
+                    resource: "notification"
+                }
+            ));
+        }
+    }
 }
 
 #[tokio::test]

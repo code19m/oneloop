@@ -1245,6 +1245,7 @@ fn notifications(
     connection: &rusqlite::Connection,
     actor: &Actor,
     limit: usize,
+    archive_cutoff: i64,
 ) -> AppResult<Vec<Value>> {
     let mut s=connection.prepare_cached("SELECT e.id,e.project_id,e.event_type,e.task_id,e.comment_id,e.block_id,e.created_at,
         r.project_name_snapshot,r.task_key_snapshot,r.task_title_snapshot,r.actor_name_snapshot,
@@ -1256,6 +1257,7 @@ fn notifications(
         FROM notification_events e JOIN notification_recipients r ON r.notification_id=e.id
         LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN tasks t ON t.id=e.task_id AND t.project_id=p.id
         WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL
+        AND (r.archived_at IS NULL OR r.archived_at>?5)
         ORDER BY e.created_at DESC,e.id DESC LIMIT ?2")?;
     let rows = s
         .query_map(
@@ -1263,7 +1265,8 @@ fn notifications(
                 actor.user_id,
                 limit as i64,
                 actor.is_admin,
-                actor.mcp_grant_id()
+                actor.mcp_grant_id(),
+                archive_cutoff
             ],
             |r| {
                 Ok((
@@ -1309,10 +1312,15 @@ fn notifications(
     }
     Ok(result)
 }
-fn notification_count(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<i64> {
+fn notification_count(
+    connection: &rusqlite::Connection,
+    actor: &Actor,
+    archive_cutoff: i64,
+) -> AppResult<i64> {
     Ok(connection.query_row(
-        "SELECT COUNT(*) FROM notification_recipients WHERE user_id=?1 AND delivered_at IS NOT NULL",
-        [&actor.user_id],
+        "SELECT COUNT(*) FROM notification_recipients WHERE user_id=?1 AND delivered_at IS NOT NULL
+         AND (archived_at IS NULL OR archived_at>?2)",
+        params![actor.user_id, archive_cutoff],
         |r| r.get(0),
     )?)
 }
@@ -1483,6 +1491,8 @@ fn bootstrap_snapshot(
         });
     }
     let legacy = query.view.is_none();
+    let archive_cutoff =
+        crate::clock::unix_now()?.saturating_sub(crate::collaboration::ARCHIVE_RETENTION_SECONDS);
     let mut result = BootstrapView {
         limits: crate::files::FileLimits::default(),
         time_zone: time_zone.name().into(),
@@ -1501,7 +1511,7 @@ fn bootstrap_snapshot(
         tasks: Vec::new(),
         pool: Vec::new(),
         notifications: if legacy {
-            notifications(connection, &actor, 50)?
+            notifications(connection, &actor, 50, archive_cutoff)?
         } else {
             Vec::new()
         },
@@ -1519,7 +1529,8 @@ fn bootstrap_snapshot(
         page_info: BootstrapPageInfo {
             tasks_truncated: false,
             tasks_next_cursor: None,
-            notifications_truncated: legacy && notification_count(connection, &actor)? > 50,
+            notifications_truncated: legacy
+                && notification_count(connection, &actor, archive_cutoff)? > 50,
         },
         selected_project_id: selected.clone(),
         view: query.view.clone(),

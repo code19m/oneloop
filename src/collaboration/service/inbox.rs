@@ -12,9 +12,15 @@ pub(super) fn inbox_item_change(
         "SELECT EXISTS(SELECT 1 FROM notification_recipients r
          JOIN notification_events n ON n.id=r.notification_id
          WHERE r.notification_id=?1 AND r.user_id=?2 AND r.delivered_at IS NOT NULL
+         AND (r.archived_at IS NULL OR r.archived_at>?4)
          AND (?3 IS NULL OR n.project_id IN
            (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?3)))",
-        params![input.notification_id, actor.user_id, inbox_grant_id(actor)],
+        params![
+            input.notification_id,
+            actor.user_id,
+            inbox_grant_id(actor),
+            now.saturating_sub(ARCHIVE_RETENTION_SECONDS)
+        ],
         |row| row.get(0),
     )?;
     if !exists {

@@ -29,7 +29,7 @@ use super::{
 };
 
 use crate::access::enforce_broadcast_cooldown;
-const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 100;
 const INBOX_FILTER_SQL: &str = "
