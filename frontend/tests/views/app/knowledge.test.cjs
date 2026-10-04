@@ -13,7 +13,7 @@ function boot(route, { admin = true } = {}) {
       w.OneloopKnowledge = {
         route: (value, projectId) => { calls.push(['route', value, projectId]); const named = value.split('/')[1]; return named || projectId; },
         render: (projectId) => { calls.push(['render', projectId]); return `<div class="knowledge-workspace" data-project="${projectId}">Knowledge page</div>`; },
-        topbar: () => '<h1>Knowledge</h1>',
+        topbar: () => '<h1>Knowledge base</h1>',
         beforeRender: () => calls.push(['beforeRender']),
         mount: () => calls.push(['mount']),
         settingsHtml: (projectId) => `<div class="section" id="knowledge-settings">Knowledge base ${projectId}</div>`,
@@ -29,13 +29,13 @@ test('every member can open Knowledge from the sidebar, which routes, renders an
   for (const admin of [true, false]) {
     const t = boot('board', { admin });
     const item = [...t.d.querySelectorAll('.nav-item')].find((button) => button.textContent.includes('Knowledge'));
-    assert(item, 'the nav item is shown');
+    assert.equal(item?.querySelector('.lbl').textContent, 'Knowledge', 'the sidebar keeps the short name');
     t.A.nav('knowledge');
     assert.equal(t.w.location.hash, '#/knowledge');
     assert.deepEqual(t.calls.find(([name]) => name === 'route'), ['route', 'knowledge', 'p1']);
     assert.equal(t.d.querySelector('main .knowledge-workspace').dataset.project, 'p1');
-    assert.equal(t.d.querySelector('.topbar h1').textContent, 'Knowledge');
-    assert.equal(t.d.title, 'Knowledge · Birch Grove · oneloop');
+    assert.equal(t.d.querySelector('.topbar h1').textContent, 'Knowledge base');
+    assert.equal(t.d.title, 'Knowledge base · Birch Grove · oneloop');
     assert.equal(t.d.querySelector('.nav-item.on').getAttribute('aria-current'), 'page');
     assert.ok(t.calls.findIndex(([name]) => name === 'beforeRender') < t.calls.findLastIndex(([name]) => name === 'mount'));
   }

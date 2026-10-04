@@ -1395,7 +1395,7 @@
   function documentTitle() {
     if(!D.session||!me()?.active||me()?.mustChange)return 'oneloop';
     if(window.Recovery?.pageError||['forbidden','notfound','no-projects'].includes(state.view))return 'oneloop';
-    const names={board:'Board',roadmap:'Roadmap',knowledge:'Knowledge',inbox:'Inbox',profile:'Profile',users:'Users',settings:'Settings',storage:'Storage'};
+    const names={board:'Board',roadmap:'Roadmap',knowledge:'Knowledge base',inbox:'Inbox',profile:'Profile',users:'Users',settings:'Settings',storage:'Storage'};
     if(state.view==='task'){
       const task=taskById(state.taskId);
       if(!task||!canReadTask(task))return 'oneloop';
@@ -1964,7 +1964,7 @@
   // ---------- shell ----------
   const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span><strong>${value}</strong></span>`;
   function renderTopbar() {
-    if (state.view === 'knowledge') return window.OneloopKnowledge?.topbar() || '<h1>Knowledge</h1>';
+    if (state.view === 'knowledge') return window.OneloopKnowledge?.topbar() || '<h1>Knowledge base</h1>';
     if (state.view === 'notfound') return awaitingServerTask() ? '<h1>Task</h1>' : '<h1>Page not found</h1>';
     if (state.view === 'no-projects') return '<h1>Projects</h1>';
     if (state.view === 'forbidden') return '<h1>Access denied</h1>';

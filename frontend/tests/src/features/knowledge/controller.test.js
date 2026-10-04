@@ -90,6 +90,11 @@ test('a folder lists folders first with their newest dates and renders its READM
   assert.equal(rendered.context.resolveLink('guides/onboarding.md#first-day'), '#/knowledge/p1/blob/guides/onboarding.md?section=first-day');
   assert.equal(rendered.context.resolveLink('../outside.md'), null);
   assert.equal(t.d.querySelector('[data-knowledge-action="copy-section"]').getAttribute('data-section'), 'setup');
+  assert.equal(t.controller.topbar(), '<h1>Knowledge base</h1>');
+
+  const root = fixture({ view: { ...handbook(), folder: '' } });
+  await painted(root);
+  assert.equal(root.d.querySelector('.knowledge-breadcrumb').textContent, 'Knowledge base', 'the repository root is named after the page');
 });
 
 test('file routes show one file, download-only formats and missing paths', async () => {

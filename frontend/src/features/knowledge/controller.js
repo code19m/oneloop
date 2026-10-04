@@ -227,7 +227,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   const toolbarHtml = () => `<div class="knowledge-toolbar${S.finding ? ' is-searching' : ''}"><label class="knowledge-search">${icon('search')}<input type="search" aria-label="Search knowledge" placeholder="Search knowledge" value="${esc(S.query)}" autocomplete="off" spellcheck="false" ${S.finding ? 'aria-controls="knowledge-results" ' : ''}data-knowledge-search><button type="button" class="knowledge-search-clear" aria-label="Clear search" data-knowledge-action="clear-query">${icon('close', 12)}</button><kbd class="knowledge-search-kbd" aria-hidden="true">/</kbd></label><button type="button" class="btn quiet knowledge-search-cancel" data-knowledge-action="cancel-search">Cancel</button></div>`;
 
   function breadcrumbHtml(/** @type {string} */ projectId, /** @type {KnowledgeView} */ data) {
-    const parts = S.path.split('/').filter(Boolean), root = data.folder ? baseName(data.folder) : 'Knowledge';
+    const parts = S.path.split('/').filter(Boolean), root = data.folder ? baseName(data.folder) : 'Knowledge base';
     const crumbs = parts.map((part, index) => `<span aria-hidden="true">/</span>${index === parts.length - 1 ? `<strong aria-current="page">${esc(part)}</strong>` : `<a href="${esc(routeHash(projectId, 'tree', parts.slice(0, index + 1).join('/')))}">${esc(part)}</a>`}`).join('');
     return `<nav class="knowledge-breadcrumb" aria-label="File path">${parts.length ? `<a href="${esc(routeHash(projectId))}">${esc(root)}</a>` : `<strong aria-current="page">${esc(root)}</strong>`}${crumbs}</nav>`;
   }
@@ -717,8 +717,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   const controller = Object.freeze({
     route,
     render,
-    topbar: () => '<h1>Knowledge</h1>',
-    title: () => 'Knowledge',
+    topbar: () => '<h1>Knowledge base</h1>',
     beforeRender,
     mount,
     settingsHtml,
