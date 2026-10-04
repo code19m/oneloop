@@ -155,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_request_bodies_expire_and_release_capacity() {
-        let listener = TcpListener::bind("127.0.0.1:18710").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let router = Router::new().route(
@@ -205,7 +205,7 @@ mod tests {
                 }
             }),
         );
-        let listener = TcpListener::bind("127.0.0.1:18711").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(serve_with_limits(
@@ -326,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn incomplete_headers_expire_and_release_connection_capacity() {
-        let listener = TcpListener::bind("127.0.0.1:18712").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(serve_with_limits(
@@ -378,7 +378,7 @@ mod tests {
                 }
             }),
         );
-        let listener = TcpListener::bind("127.0.0.1:18713").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(serve(listener, router, async {
