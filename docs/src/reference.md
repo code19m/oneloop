@@ -176,8 +176,8 @@ Some emoji count as two characters.
 
 | Limit | Value |
 | --- | --- |
-| Open connections | 1,024 |
+| Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
 | Request headers | Must arrive within 15 seconds |
-| Request body | 256 KiB for normal requests; 1 MiB for MCP calls |
+| Request body | 256 KiB for normal requests; 1 MiB for MCP calls; a body read ends after 60 seconds without data |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |
