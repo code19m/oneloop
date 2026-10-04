@@ -62,6 +62,16 @@ test('losing membership closes previews, redacts Inbox rows and leaves account p
  t.A.openNotification('retained');assert(!t.d.querySelector('.tp-title'));t.A.nav('roadmap');assert(t.d.querySelector('.page-empty').textContent.includes('No projects available'));t.A.openModal('pool');assert(!t.d.querySelector('.modal'));t.A.nav('profile');assert(t.d.querySelector('[name="name"]'));
 });
 
+for(const [route,page] of [['board','.board .card[data-task="BIR-079"]'],['roadmap','#rmScroll']])test(`a first project replaces the empty ${route} page when it arrives`, () => {
+ const t=withSecretProject('blairq',route,D=>{D.projects[0].members=D.projects[0].members.filter(m=>m.userId!=='blairq');});
+ assert.match(t.d.querySelector('#main').textContent,/No projects available/);
+ // A live reload brings the new membership, then repaints.
+ t.D.projects[0].members.push({userId:'blairq',permissions:['manage_board']});t.A.refresh();
+ assert.doesNotMatch(t.d.querySelector('#main').textContent,/No projects available/);
+ assert(t.d.querySelector(`#main ${page}`));assert.equal(t.d.querySelector('.switcher-btn').getAttribute('aria-label'),'Project: Birch Grove');
+ assert.equal(t.w.location.hash,`#/${route}`);
+});
+
 test('ending the session closes open previews and the task page', () => {
  const t=withSecretProject();t.A.previewAttachment('BIR-079','member-file');assert(t.d.querySelector('.file-dialog'));t.D.session=null;t.A.refresh();assert(!t.d.querySelector('.file-dialog'));assert(!t.d.querySelector('.tp-title'));
 });

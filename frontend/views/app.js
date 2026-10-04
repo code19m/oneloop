@@ -2140,6 +2140,8 @@
     if(state.peek&&!canReadProject(trackById(epicById(state.peek)?.trackId)?.projectId))state.peek=null;
     if(state.modal&&!canReadProject(state.projectId)&&!['user','project','temppw'].includes(state.modal.type))state.modal=null;
     if (!visibleProjects().find((p) => p.id === state.projectId)) state.projectId = (visibleProjects()[0] || {}).id;
+    // The empty page keeps its address, so a first project returns to that page.
+    if (state.view === 'no-projects' && project()) resolveRoute();
     if (['settings','users','storage'].includes(state.view) && !isAdmin()) state.view = 'forbidden';
     if(!project()&&['roadmap','board','knowledge','settings'].includes(state.view))state.view='no-projects';
     updateDocumentTitle();
