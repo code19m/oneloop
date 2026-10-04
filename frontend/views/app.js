@@ -2035,8 +2035,14 @@
 
   let paintedPage=null;
   const pageScope=()=>JSON.stringify([D.session?.id,D.session?.userId,state.view,state.projectId,state.taskId]);
-  let rendering=false,paintedScope=null,backgroundRenderTimer=null,pressedTaskControl=false,pressedControlTimer=null;
+  let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressedTaskControl=false,pressedControlTimer=null;
   const renderScope=()=>JSON.stringify([D.session?.id,D.session?.userId,location.hash,state.view,state.projectId,state.taskId,state.modal?.type,state.modal?.id,state.peek]);
+  // A render rebuilds an open dialog and loses its unsaved fields, so a change
+  // that arrives under one paints when that dialog closes.
+  function refreshAfterDialog(){
+    if(state.modal){dialogPaintOwed=true;return;}
+    render();
+  }
   // Keep live metadata current without removing an active control or overlay.
   function refreshBackground(){
     clearTimeout(backgroundRenderTimer);
@@ -2049,7 +2055,7 @@
   }
   // Snapshot immediately around the DOM swap, never across an awaited read.
   function render(){
-    clearTimeout(backgroundRenderTimer);
+    clearTimeout(backgroundRenderTimer);dialogPaintOwed=false;
     if(!bootWindow.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
     const scope=renderScope(),active=document.activeElement;
     const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
@@ -2878,7 +2884,7 @@
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
     openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}state.peek = id; renderOverlays(); },
-    closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; renderOverlays(); },
+    closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
       const targetProject=id&&(type==='epic'?trackById(epicById(id)?.trackId)?.projectId:type==='track'?trackById(id)?.projectId:type==='milestone'?D.milestones.find(m=>m.id===id)?.projectId:['block','unblock','completeBlocked'].includes(type)?trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId:null);
@@ -3539,6 +3545,7 @@
 
     refresh: render,
     refreshBackground,
+    refreshAfterDialog,
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},

@@ -134,7 +134,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   const reportFor=(scope,options={},current=()=>true)=>(error)=>{if(sessionScope()===scope&&current())report(error,options);};
 
-  function paintCommand(operation){if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();else (app.refreshBackground??app.refresh)();}
+  // A task field save repaints in the background, so it never replaces the
+  // field being edited. Other changes paint at once, or, under a dialog opened
+  // while they ran, when that dialog closes.
+  function paintCommand(operation){
+    if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();
+    else if(operation==='task.update'||operation==='task.move')(app.refreshBackground??app.refresh)();
+    else (app.refreshAfterDialog??app.refresh)();
+  }
 
   function saveField(operation,payload,entity,message,options){
     const scope=sessionScope(),key=`${scope}:${commandInteractionKey(operation,payload,entity)}`;
@@ -429,7 +436,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...base}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
   };
   app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
-  app.reopenEpic=(id)=>{const item=epic(id),drawer=globalThis.document?.querySelector('.peek');if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened',{paint:false,onAccepted:()=>{if(!completeForm(drawer,()=>app.refresh()))(app.refreshBackground??app.refresh)();}}));};
+  app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
   app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be removed.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,'Epic deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
   app.openPeek=(id)=>{if(!epic(id))return;openPeek(id);return fire(reads.epic(id).catch(report));};
   app.loadMoreEpicTasks=(id)=>fire(reads.moreEpicTasks(id).catch(report));

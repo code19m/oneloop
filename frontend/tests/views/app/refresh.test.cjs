@@ -74,6 +74,50 @@ for(const kind of ['track','epic','milestone','unblock','task','project','user']
  }finally{globalThis.FormData=previous;}
 });
 
+for(const [action,mode,opener] of [['Block task','block','.block-task-action'],['Unblock task','unblock','.unblock-action'],['Edit block reason','block','.block-edit-action']])for(const replacement of [false,true])test(`${action} repaints the task page${replacement?' once a dialog opened during the save closes':''}`,async()=>{
+ const t=bootApp({route:'task/BIR-079',prepare(D){
+  const task=D.tasks.find(item=>item.id==='BIR-079');task.internalId='task-1';
+  task.block=action==='Block task'?null:{id:'block-1',reason:'Waiting on vendor',revision:1,by:D.session.userId,at:1700000000000,mentions:[]};
+ }});
+ const previous={document:globalThis.document,FormData:globalThis.FormData,Collab:globalThis.Collab};
+ Object.assign(globalThis,{document:t.d,FormData:t.w.FormData,Collab:t.w.Collab});
+ let release;
+ const accepted=command=>mode==='unblock'?{entityType:'taskBlock',id:'block-1',taskId:'task-1',resolved:true}:{entityType:'taskBlock',id:action==='Block task'?'block-2':'block-1',taskId:'task-1',reason:command.payload.reason,createdBy:t.D.session.userId,createdAt:1700000100,revision:2,mentions:[]};
+ const api={command:command=>new Promise(resolve=>{release=()=>resolve({entities:[accepted(command)],events:[]});})};
+ installViewBridge({app:t.A,data:t.D,api,gateway:createCommandGateway({api,data:t.D}),reads:{counts:async()=>({}),cancel(){}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  t.d.querySelector(`.task-page ${opener}`).focus();t.A.openModal(mode,'BIR-079');
+  const form=t.d.querySelector('.modal form');form.querySelector('[name="reason"]').value=mode==='block'?'Waiting on legal':'';
+  t.A.saveBlock({target:form,preventDefault(){}},'BIR-079',mode);assert(release,'the save started');
+  let draft;
+  if(replacement){t.A.closeOverlays();t.A.openModal('task');draft=t.d.querySelector('.modal [name="title"]');draft.value='Next draft';draft.focus();}
+  release();await settle();await settle();
+  if(replacement){
+   assert.equal(t.d.querySelector('.modal [name="title"]'),draft);assert.equal(draft.value,'Next draft');
+   t.A.closeOverlays();
+  }
+  assert.equal(t.d.querySelector('.modal'),null);
+  const block=t.d.querySelector('.task-page .task-block');
+  if(mode==='unblock')assert.equal(block,null);else assert.equal(block?.querySelector('p')?.textContent,'Waiting on legal');
+ }finally{Object.assign(globalThis,previous);}
+});
+
+test('Edit epic shows the saved title in the drawer it was opened from',async()=>{
+ const t=bootApp({route:'roadmap'}),previous={document:globalThis.document,FormData:globalThis.FormData};
+ Object.assign(globalThis,{document:t.d,FormData:t.w.FormData});
+ t.D.epics.forEach(epic=>epic.projectId=t.D.tracks.find(track=>track.id===epic.trackId).projectId);
+ const epic=t.D.epics.find(item=>item.projectId===t.A.context().projectId&&item.state!=='done');
+ const api={command:async command=>({entities:[{entityType:'epic',id:epic.id,title:command.payload.title,revision:(epic.revision??1)+1}],events:[]})};
+ installViewBridge({app:t.A,data:t.D,api,gateway:createCommandGateway({api,data:t.D}),reads:{epic:async()=>{},cancel(){}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  t.A.openPeek(epic.id);await settle();t.A.openModal('epic',epic.id);
+  const form=t.d.querySelector('.modal form');form.querySelector('[name="title"]').value='Renamed from the drawer';
+  t.A.saveEpic({target:form,preventDefault(){}},epic.id);await settle();await settle();
+  assert.equal(t.d.querySelector('.modal'),null);
+  assert.equal(t.d.querySelector('.peek #peek-title').textContent,'Renamed from the drawer');
+ }finally{Object.assign(globalThis,previous);}
+});
+
 test('a completed epic action cannot dismiss a dialog opened above its still-mounted drawer',async()=>{
  const t=bootApp({route:'roadmap',prepare(D){D.tasks=[];}}),previous=globalThis.document;
  globalThis.document=t.d;
