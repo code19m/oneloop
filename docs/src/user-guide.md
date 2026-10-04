@@ -110,8 +110,8 @@ Mention people in the reason with `@` to notify them. The card then shows a
 
 ### Files
 
-Drop files on a task, or click **browse files**. Any file type is fine, up to
-25 MB per file and 25 files per task. Everyone in the project can open the
+Drop files on a task, or click **browse files**. Any file type is fine, within
+the [file limits](reference.md#limits). Everyone in the project can open the
 files. Comments can't have files.
 
 Click a file to preview it. oneloop shows images, PDFs, Markdown (with tables,
@@ -133,8 +133,9 @@ that an admin connects. It is read-only and stands on its own, without links to
 tasks or epics. To change a file, change it in Git; oneloop shows the change
 within about a minute.
 
-- A folder's **README.md** appears below its list of files. **Updated** is when
-  a file last changed in Git.
+- A folder's **README.md** appears below its list of files. **Updated** is
+  estimated from the Git history oneloop fetched. If that history does not
+  include a file's last change, the date can be newer than the change.
 - Files that oneloop previews [on tasks](#files) open inside the page; other
   files can only be downloaded. **Full view** opens the same viewer as task
   files.
@@ -144,9 +145,9 @@ within about a minute.
   **#**.
 
 Search with the field at the top, or press `/`. It looks at file and folder
-names, and at the text of Markdown and text files. Every word must match, in
-any order and letter case. Use the arrow keys and Enter to open a result, and
-Esc to close the search.
+names, and at the text of Markdown and text files, within the
+[search rules and limits](reference.md#limits). Use the arrow keys and Enter to
+open a result, and Esc to close the search.
 
 When a sync fails, the page shows **Knowledge may be out of date** and keeps the
 files from the last successful sync. Admins can choose **Retry sync**.
@@ -185,8 +186,10 @@ files don't notify anyone.
 
 Click an item to open the task at the right place; this also marks the item
 read. **Archive** puts an item away. You can filter by project or show only
-unread items. **Mark all as read** and **Archive all** act on everything in the
-current view, and you can't undo them. Archived items are deleted after 90 days.
+unread items. **Mark all as read** and **Archive all** affect every item matching
+the current filters, including later pages. There is no bulk undo, but you can
+restore individual items from **Archived** and use **Mark unread**. See
+[retention limits](reference.md#limits) for how long archived items remain.
 
 ## Your account
 
@@ -195,8 +198,8 @@ Click your name at the bottom of the sidebar. The menu has **Profile**,
 
 On your **Profile**:
 
-- Change your avatar (a PNG, JPEG or WebP image up to 5 MB) and your full name.
-  Your username can't change.
+- Change your avatar (PNG, JPEG or WebP) and your full name. See the
+  [file limits](reference.md#limits). Your username can't change.
 - Change your password. This signs out your other sessions and your connected
   apps.
 - **Sessions** lists every browser where you are signed in. You can sign out

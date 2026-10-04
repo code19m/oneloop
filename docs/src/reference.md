@@ -101,7 +101,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | --- | --- |
 | Attachment size | 25 MiB per file |
 | Attachments per task | 25 |
-| Text and Markdown previews | The first 200 KB |
+| Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
 | Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
@@ -118,6 +118,11 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |
 | Search | 8 words and 200 characters |
+| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files |
+
+All query words must occur in the same file or folder path, Markdown section,
+or plain-text line. Matching ignores letter case. Files outside the searchable
+text limits can still be found by name.
 
 **Text**
 
@@ -145,7 +150,7 @@ Some emoji count as two characters.
 | Sessions per account | 10; sign out of one to sign in somewhere new |
 | Session length | Ends after 7 days without use, and after 30 days at most |
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
-| Failed sign-ins | After 5 failures for one account from one address within 15 minutes, you wait 30 seconds, then twice as long each time, up to 15 minutes |
+| Failed sign-ins | Within 15 minutes, delays start after 5 failures for one account/address pair, 20 failures from one address across accounts, or 15 failures for one account across addresses. Delays start at 30 seconds and double, up to 15 minutes for pair/address limits or 60 seconds for the account limit. |
 
 **Collaboration**
 

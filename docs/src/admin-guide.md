@@ -127,8 +127,8 @@ connection syncs at once. oneloop never changes the repository, and it can't
 revoke the token or deploy key on your Git host; do that there if nothing else
 uses them.
 
-Files over 10 MB are left out, and a folder over the
-[limits](reference.md#limits) doesn't sync.
+Files that exceed the [file size limit](reference.md#limits) are left out. A
+folder that exceeds the other limits doesn't sync.
 
 ## Storage
 
