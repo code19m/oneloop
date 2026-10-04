@@ -3,6 +3,33 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
 const { installViewBridge } = require('../../../src/app/view-bridge.js');
+const { createCommandGateway } = require('../../../src/data/command-gateway.js');
+
+for(const replacement of [null,'modal','drawer'])test(`epic reopening updates its own drawer and preserves a replacement ${replacement||'none'}`,async()=>{
+ const t=bootApp({route:'roadmap'}),epic=t.D.epics.find(item=>item.state==='done'&&item.end),previous=globalThis.document;
+ globalThis.document=t.d;let release;
+ const api={command:()=>new Promise(resolve=>{release=resolve;})};
+ const gateway=createCommandGateway({api,data:t.D});
+ installViewBridge({app:t.A,data:t.D,api,gateway,reads:{epic:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  t.A.openPeek(epic.id);await settle();assert.equal(t.d.querySelector('.peek .chip').textContent,'done');
+  t.A.reopenEpic(epic.id);assert(release);
+  let input,drawer;
+  if(replacement){
+   if(replacement==='drawer')t.A.openPeek(t.D.epics.find(item=>item.id!==epic.id).id);
+   drawer=t.d.querySelector('.peek');t.A.openModal('task');input=t.d.querySelector('.modal [name="title"]');
+   input.value='Next draft';input.focus();input.setSelectionRange(2,5);
+  }
+  release({entities:[{entityType:'epic',id:epic.id,state:'planning',revision:(epic.revision??1)+1}],events:[]});await settle();
+  if(replacement){
+   assert.equal(t.d.querySelector('.peek'),drawer);assert.equal(t.d.querySelector('.modal [name="title"]'),input);
+   assert.equal(input.value,'Next draft');assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+  }else{
+   assert.equal(t.d.querySelector('.peek .chip').textContent,'planning');
+   assert.equal(t.d.querySelector('.peek-actions button').textContent,'Mark as done');
+  }
+ }finally{globalThis.document=previous;}
+});
 
 test('selecting another project from a task leaves its route and displays the selected Board',async()=>{
  const t=bootApp({route:'task/BIR-079'}),previous=globalThis.location;
