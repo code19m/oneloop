@@ -395,7 +395,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   async function textOf(/** @type {string} */ projectId, /** @type {KnowledgeFile} */ file) {
     const key = `${projectId}:${file.path}:${file.version ?? ''}`, cached = texts.get(key);
     if (cached) return cached;
-    const response = await fetchImpl(fileUrl(projectId, 'text', file), { credentials: 'same-origin', cache: 'no-cache', redirect: 'error' });
+    const response = await fetchImpl(fileUrl(projectId, 'text', file), { credentials: 'same-origin', cache: 'no-cache', redirect: 'error', headers: { 'X-Oneloop-Background': '1' } });
     if (!response.ok) throw new Error('Preview unavailable');
     const value = { text: new TextDecoder().decode(await response.arrayBuffer()), truncated: file.size > TEXT_LIMIT };
     if (texts.size > 64) texts.delete(texts.keys().next().value);

@@ -215,7 +215,8 @@ On your **Profile**:
 - **Connected apps** lists your AI assistants, and you can revoke them. See
   [AI assistants](mcp.md).
 
-A session ends after 7 days without use, and after 30 days at most.
+A session ends after 7 days without use, and after 30 days at most. Background
+updates do not keep an idle session open.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

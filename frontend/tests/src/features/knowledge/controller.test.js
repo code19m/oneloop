@@ -20,7 +20,7 @@ const handbook = () => ({
 function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 'knowledge' } = {}) {
   const dom = new JSDOM('<main id="main"></main><div id="overlay"></div>', { url: 'http://localhost/#/knowledge', pretendToBeVisual: true });
   const w = dom.window, d = w.document;
-  const state = { context: { view: page, projectId: 'p1', modal: null }, toasts: [], fieldErrors: [], confirmations: [], closed: 0, requests: [], commands: [], markdown: [], view };
+  const state = { context: { view: page, projectId: 'p1', modal: null }, toasts: [], fieldErrors: [], confirmations: [], closed: 0, requests: [], textRequests: [], commands: [], markdown: [], view };
   const listeners = new Set();
   const api = {
     async request(path) {
@@ -51,7 +51,7 @@ function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 
   const controller = installKnowledgeController({
     runtime, getApp: () => app, documentObject: d, windowObject: w,
     setTimer: (callback) => { state.timer = callback; return 1; }, clearTimer: () => { state.timer = null; },
-    fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('# Handbook\n\n## Setup\n').buffer }),
+    fetchImpl: async (url,options) => { state.textRequests.push({url,options}); return { ok: true, arrayBuffer: async () => new TextEncoder().encode('# Handbook\n\n## Setup\n').buffer }; },
   });
   controller.route(route, 'p1');
   function paint() {
@@ -64,6 +64,19 @@ function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 
 }
 
 async function painted(t) { t.paint(); await settle(); await settle(); }
+
+for(const kind of ['markdown','text'])test(`a live Knowledge ${kind} refresh marks the content fetch as background`,async()=>{
+  const view={...handbook(),files:[{path:'README.md',kind,size:40,version:'first'}]};
+  const t=fixture({view});await painted(t);
+  assert.equal(t.state.textRequests.length,1);
+  view.files[0].version='second';
+  for(const listener of t.listeners)listener({type:'sse',kind:'activity.changed',entityType:'knowledge_source',projectId:'p1'});
+  await settle();await settle();
+  assert.equal(t.state.textRequests.length,2);
+  const refreshed=t.state.textRequests[1];
+  assert.equal(refreshed.url,'/api/projects/p1/knowledge/text?path=README.md');
+  assert.equal(new Headers(refreshed.options.headers).get('X-Oneloop-Background'),'1');
+});
 
 test('reconnect refreshes visible Knowledge and invalidates other projects until their next visit',async()=>{
   const t=fixture();
