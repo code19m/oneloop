@@ -239,6 +239,11 @@
  }
  function notifyHint(task){const el=document.querySelector('.comment-notify-hint');if(!el)return;const d=editor(task);el.textContent=d.mentions.some(m=>m.id==='everyone')?`Notify ${members(projectOf(task)).filter(u=>u.id!==me()?.id).length} project members`:'';}
  function capture(){const input=document.getElementById('cmtIn'),task=hooks?.task(input?.closest('[data-comment-task]')?.dataset.commentTask);if(input&&task&&input.closest('[data-comment-task]').dataset.commentOwner===me()?.id&&canComment(task))updateText(task,input.value);const block=document.getElementById('block-reason'),blockedTask=hooks?.task(block?.dataset.blockTask);if(block&&!block.dataset.blockSaved&&blockedTask&&block.dataset.blockOwner===me()?.id&&hooks.canBoard(blockedTask))updateText(blockedTask,block.value,'block');}
+ function currentCommentInput(submitted){
+  capture();
+  const input=document.getElementById('cmtIn');
+  return commentEditor?.editorId===submitted.editorId&&commentEditor?.interactionId===submitted.interactionId&&input?.closest('[data-comment-task]')?.dataset.commentTask===submitted.task.id?input:null;
+ }
  function savedComment(task,c,mode,changed,submitted=null){
   capture();
   if(submitted&&commentEditor?.interactionId!==submitted.interactionId){if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
@@ -273,7 +278,12 @@
      inboxPage(meta){const {items,...state}=meta;inboxMeta={...inboxMeta,...state};inboxBusy(false);if(hooks.view()==='inbox')refreshInbox({...meta,items});else badge();},
      taskPage(taskId,meta){taskPages.set(taskId,meta);const task=hooks.task(taskId);if(!task)return;if(pendingTarget?.commentId){const target=task.comments?.find(c=>c.id===pendingTarget.commentId);if(target?.parentId)expanded.add(target.parentId);}if(mountedTaskId!==task.id)return;const next=feedSnapshotFor(task,meta),sameData=feedSnapshot?.taskId===task.id&&feedSnapshot.data===next.data;if(sameData&&feedSnapshot.meta===next.meta)return;feedSnapshot=next;if(commentMode.mode==='comment'){if(hooks.refreshActivity)hooks.refreshActivity(task.id,sameData);else refreshComments(task);mount(false);}},
      commentSaved(taskId,comment,result){const task=hooks.task(taskId);if(task)savedComment(task,comment,result.mode,result.changed,result);},
-     commentRevision(editorId,revision){if(commentEditor?.editorId===editorId)commentEditor.revision=revision;},
+     commentEditor:currentCommentInput,
+     acceptCommentLatest(submitted,comment){
+      const input=currentCommentInput(submitted);if(!input)return;
+      Object.assign(commentEditor,{text:comment.text,mentions:structured(comment.mentions),revision:comment.revision,interactionId:id('interaction')});
+      input.value=comment.text;closeMentions();feedback('');notifyHint(submitted.task);
+     },
      commentDeleted(taskId){const task=hooks.task(taskId);if(task){refreshComments(task);app.toast('Comment deleted');}},
      canonicalTask(){const active=document.activeElement,editing=commentMode.mode!=='comment'||!!commentEditor?.text||!!blockEditor||active?.matches?.('input,textarea,select,[contenteditable="true"]')||document.querySelector('.modal,.pop');if(hooks.refreshBackground)hooks.refreshBackground();else if(!editing)hooks.refresh();},
      target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},

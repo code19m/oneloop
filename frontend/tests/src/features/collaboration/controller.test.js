@@ -153,7 +153,7 @@ test('comment saves let the gateway compare changed intent instead of blindly re
 test('an edited-comment conflict reviews the canonical value before an explicit latest-revision retry',async()=>{
   const previous=globalThis.OneloopRecovery;let commandCalls=0,reviewed='';
   try{
-    const t=fixture({api:{
+    const t=fixture({facade:{commentEditor:()=>({})},api:{
       comments:async()=>({items:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Latest saved',mentions:[],createdAt:20,editedAt:21,deletedAt:null,revision:3}],nextCursor:null}),
       activity:async()=>({items:[],nextCursor:null}),
     }});

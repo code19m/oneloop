@@ -9,15 +9,80 @@ const { ApiError } = require('../../src/data/api-client.js');
 function productionComments(commands) {
  let controller,transport;
  const comment={id:'comment-1',authorId:'taylorwu',rootId:'comment-1',content:'Original',mentions:[],createdAt:1700000000,revision:1};
+ const comments=[comment,{...comment,id:'comment-2',rootId:'comment-2',content:'Other comment'}];
  const t=boot((D,w)=>{
   D.tasks.find(item=>item.id==='BIR-079').internalId='task-1';
-  transport={data:D,api:{comments:async()=>({items:[{...comment}],nextCursor:null}),activity:async()=>({items:[],nextCursor:null})},commands,subscribe:()=>()=>{}};
+  transport={data:D,api:{comments:async()=>({items:comments.map(item=>({...item})),nextCursor:null}),activity:async()=>({items:[],nextCursor:null})},commands,subscribe:()=>()=>{}};
   w.OneloopTransport=transport;
   controller=installCollaborationController({transport,eventSourceFactory:()=>({addEventListener(){},close(){}})});
   w.OneloopCollaboration=controller;
  });
- return {...t,controller,transport,comment};
+ return {...t,controller,transport,comment,comments};
 }
+
+const conflict=()=>new ApiError('Comment changed; latest revision is 2',{status:409,code:'revision_conflict'});
+const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+const conflictButton=(t,label)=>[...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label);
+
+test('Use latest accepts comment text, mentions and revision when Save changes had focus',async()=>{
+ const requests=[];
+ const t=productionComments({execute:async(_operation,payload,options)=>{
+  requests.push({payload,revision:options.expectedRevision});
+  if(options.expectedRevision!==t.comment.revision)throw conflict();
+  Object.assign(t.comment,{content:payload.content,mentions:payload.mentions,revision:t.comment.revision+1});
+  return {entities:[{...t.comment}],events:[]};
+ }});
+ await settle();const previous=globalThis.OneloopRecovery;globalThis.OneloopRecovery=t.w.Recovery;
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'My draft');
+  const mentions=[{kind:'user',userId:'robin',startOffset:7,endOffset:13,label:'@robin'}];
+  Object.assign(t.comment,{content:'Remote @robin',mentions,revision:2});await t.controller.loadTaskPage('BIR-079');
+  t.d.querySelector('.comment-composer-actions button').focus();t.A.addComment('BIR-079');await settle();
+  const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+  assert.equal(t.d.getElementById('cmtIn').value,'Remote @robin');
+  t.A.addComment('BIR-079');await settle();
+  assert.deepEqual(requests.map(request=>request.revision),[1,2]);
+  assert.equal(requests[1].payload.content,'Remote @robin');assert.deepEqual(Array.from(requests[1].payload.mentions),mentions);
+  assert.equal(t.comment.content,'Remote @robin');
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
+
+for(const phase of ['response','read','choice','latest-read','retry'])for(const newer of phase==='retry'?['editor','typing','session']:['editor','typing'])test(`comment conflict preserves newer ${newer} during ${phase}`,async()=>{
+ const write=deferred(),read=deferred(),retry=deferred(),requests=[];let writes=0;
+ const t=productionComments({execute:(_operation,payload,options)=>{requests.push({payload,options});return ++writes===1?write.promise:retry.promise;}});
+ await settle();const previous=globalThis.OneloopRecovery;globalThis.OneloopRecovery=t.w.Recovery;
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'Submitted c1 draft').focus();t.A.addComment('BIR-079');
+  Object.assign(t.comment,{content:'Remote c1 edit',revision:2});
+  if(phase==='read')t.transport.api.comments=()=>read.promise;
+  if(phase!=='response'){write.reject(conflict());await settle();}
+  if(phase==='latest-read'){
+   t.transport.api.comments=()=>read.promise;
+   const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+  }
+  if(phase==='retry'){const mine=conflictButton(t,'Keep my changes');assert(mine);mine.click();await settle();assert.equal(writes,2);}
+  if(newer!=='typing'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-2');}
+  if(newer==='session'){
+   t.D.session={...t.D.session,id:'next-session'};
+   Object.assign(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1'),{text:'Next session version',revision:10});
+  }
+  const text=newer!=='typing'?'Unsent c2 draft':'Newer c1 typing',input=typeComment(t,text);
+  input.focus();input.setSelectionRange(2,5);input.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+  if(phase==='response')write.reject(conflict());
+  if(phase==='read'||phase==='latest-read')read.resolve({items:t.comments.map(item=>({...item})),nextCursor:null});
+  if(phase==='retry')retry.resolve({entities:[{...t.comment,content:'Submitted c1 draft',revision:3}],events:[]});
+  await settle();await settle();
+  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,text);
+  assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+  assert.equal(t.d.querySelector('[data-recovery-conflict]'),null);
+  assert.equal(writes,phase==='retry'?2:1);
+  if(newer==='session')assert.equal(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1').text,'Next session version');
+  if(phase==='latest-read'){
+   t.A.addComment('BIR-079');assert.equal(requests.at(-1).options.expectedRevision,1,'the older acceptance cannot rebase newer typing');
+   retry.resolve({entities:[{...t.comment,content:text,revision:3}],events:[]});await settle();
+  }
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
 
 test('an open comment edit conflicts against its original revision after a live refresh',async()=>{
  const requests=[],reviews=[];

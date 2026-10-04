@@ -57,7 +57,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
 export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected OneloopTransport');
   const data=transport.data;
-  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentRevision?:(editorId:string,revision:number)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
+  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
@@ -193,28 +193,29 @@ export function installCollaborationController({ transport, eventSourceFactory =
   }
 
   async function performSaveComment(input){
-    const expectedTask=app?.context?.().taskId;
+    const expectedTask=app?.context?.().taskId,expectedSession=currentSession();
     const editing=input.mode==='edit',operation=editing?'discussion.comment.edit':'discussion.comment.create';
     const payload=editing?{commentId:input.commentId,content:input.text,mentions:mentionsToWire(input.text,input.mentions)}:{taskId:input.task.internalId,content:input.text,replyToId:input.mode==='reply'?input.targetId:null,mentions:mentionsToWire(input.text,input.mentions)};
-    const editorSnapshot=globalThis.OneloopRecovery?.captureEditor?.();
-    let response;
+    const isCurrent=()=>currentSession()===expectedSession&&app?.context?.().taskId===expectedTask&&!!facade?.commentEditor?.(input);
+    let response,notifyEditor=true;
     try{
       response=await execute(operation,payload,{expectedRevision:editing?input.revision:undefined,interactionKey:`${operation}:${input.commentId??input.task.internalId}:${input.interactionId}`});
-      if(response.stale)return false;
     }catch(error){
       if(editing&&globalThis.OneloopRecovery?.isRevisionConflict?.(error)){
+        if(!isCurrent())return false;
         try{
           const resolved=await globalThis.OneloopRecovery.resolveConflict({
             error,
-            reloadLatest:()=>readTask(input.task,{background:true}),
+            reloadLatest:()=>readTask(currentTask(input.task.internalId),{background:true}),
             latestEntity:()=>currentTask(input.task.internalId)?.comments?.find((item)=>item.id===input.commentId),
             retry:(expectedRevision)=>execute(operation,payload,{expectedRevision,interactionKey:`${operation}:${input.commentId}:${input.interactionId}`}),
-            target:{latestValue:(item)=>item.text},myValue:input.text,snapshot:editorSnapshot,
+            target:{element:()=>facade?.commentEditor?.(input),latestValue:(item)=>item.text,acceptLatest:(item)=>facade?.acceptCommentLatest?.(input,item)},myValue:input.text,snapshot:false,isCurrent,
           });
-          if(!resolved.saved){if(resolved.latest)facade?.commentRevision?.(input.editorId,resolved.latest.revision);return false;}response=resolved.result;
-        }catch(retryError){report(retryError,true);return false;}
+          if(!resolved.saved)return false;response=resolved.result;notifyEditor=!resolved.stale;
+        }catch(retryError){if(isCurrent())report(retryError,true);return false;}
       }else{report(error,true);return false;}
     }
+    if(response.stale)return false;
     try{
       const entity=(response.result.entities??[]).find((item)=>item&&item.id&&item.authorId);
       if(!entity)throw new Error('The server did not return the saved comment.');
@@ -222,7 +223,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const index=(task.comments??[]).findIndex((item)=>item.id===comment.id);if(index>=0)task.comments.splice(index,1,comment);else (task.comments??=[]).push(comment);
       task.comments.sort(chronological);
       await refreshActivity(task,true);
-      if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
+      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
       return true;
     }catch(error){report(error,true);return false;}
   }

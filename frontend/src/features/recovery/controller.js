@@ -76,9 +76,10 @@ export function restoreOpenEditor(snapshot, doc = document) {
   return active;
 }
 
-/** @param {{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown}} input */
-export function presentDomConflict({target,latestValue,myValue}) {
+/** @param {{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean}} input */
+export function presentDomConflict({target,latestValue,myValue,isCurrent=()=>true,updateTarget=true}) {
   return new Promise((resolve)=>{
+    if(!isCurrent()){resolve('cancelled');return;}
     document.querySelectorAll('.save-feedback[data-recovery-conflict]').forEach((element)=>element.remove());
     const box=document.createElement('div');box.className='save-feedback';box.dataset.recoveryConflict='true';box.setAttribute('role','alert');
     const message=document.createElement('span');
@@ -91,14 +92,16 @@ export function presentDomConflict({target,latestValue,myValue}) {
     const latest=document.createElement('button');latest.type='button';latest.className='btn quiet';latest.textContent='Use latest';
     const mine=document.createElement('button');mine.type='button';mine.className='btn quiet';mine.textContent='Keep my changes';
     box.append(message,expand,latest,mine);
-    const parent=target?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor') ?? document.querySelector('.modal form') ?? document.querySelector('.pool-description-editor form') ?? document.querySelector('.task-page') ?? document.querySelector('.content');
+    const parent=target?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor,.collaboration-composer') ?? document.querySelector('.modal form') ?? document.querySelector('.pool-description-editor form') ?? document.querySelector('.task-page') ?? document.querySelector('.content');
     parent?.append(box);
     if(!parent){resolve('cancelled');return;}
-    const observer=new document.defaultView.MutationObserver(()=>{if(!box.isConnected)finish('cancelled');});
-    const finish=(choice)=>{observer.disconnect();resolve(choice);};
+    const check=()=>{if(!box.isConnected||!isCurrent()){box.remove();finish('cancelled');return false;}return true;};
+    const observer=new document.defaultView.MutationObserver(check);
+    const finish=(choice)=>{if(choice!=='mine'){observer.disconnect();document.removeEventListener('input',check);}resolve(choice);};
     observer.observe(document.body,{childList:true,subtree:true});
-    latest.addEventListener('click',()=>{if(latestValue!==undefined&&target&&'value' in target){target.value=latestValue==null?'':String(latestValue);target.dispatchEvent(new Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
-    mine.addEventListener('click',()=>{if(myValue!==undefined&&target&&'value' in target)target.value=myValue==null?'':String(myValue);mine.disabled=true;latest.disabled=true;message.textContent='Saving your changes…';finish('mine');},{once:true});
+    document.addEventListener('input',check);
+    latest.addEventListener('click',()=>{if(!check())return;if(updateTarget&&latestValue!==undefined&&target&&'value' in target){target.value=latestValue==null?'':String(latestValue);target.dispatchEvent(new Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
+    mine.addEventListener('click',()=>{if(!check())return;if(updateTarget&&myValue!==undefined&&target&&'value' in target)target.value=myValue==null?'':String(myValue);mine.disabled=true;latest.disabled=true;message.textContent='Saving your changes…';finish('mine');},{once:true});
   });
 }
 
@@ -106,7 +109,7 @@ export function presentDomConflict({target,latestValue,myValue}) {
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
@@ -393,24 +396,28 @@ export function createRecoveryController({
     if(error instanceof ApiError&&error.status===401)sessionExpired();
   }
 
-  async function resolveConflict({error,reloadLatest,latestEntity,retry,target=null,myValue,snapshot=null}) {
+  async function resolveConflict({error,reloadLatest,latestEntity,retry,target=null,myValue,snapshot=null,isCurrent=()=>true}) {
     if(!isRevisionConflict(error))return {handled:false};
-    const scope=viewScope();
+    const scope=viewScope(),current=()=>scope===viewScope()&&isCurrent();
+    if(!current())return {handled:true,saved:false};
     snapshot=snapshot??(documentObject?captureOpenEditor(documentObject):null);
     await reloadLatest();
-    if(scope!==viewScope())return {handled:true,saved:false};
+    if(!current())return {handled:true,saved:false};
     const restored=snapshot&&documentObject?restoreOpenEditor(snapshot,documentObject):null;
     const entity=latestEntity();
     if(!entity){pageError='404';renderPreservingEditor();return {handled:true,saved:false};}
     const latestValue=target?.latestValue?.(entity);
-    const chosen=await presentConflict({target:target?.element?.()??restored,latestValue,myValue:myValue??target?.myValue,snapshot});
-    if(chosen==='cancelled'||scope!==viewScope())return {handled:true,saved:false};
+    const chosen=await presentConflict({target:target?.element?.()??restored,latestValue,myValue:myValue??target?.myValue,snapshot,isCurrent:current,updateTarget:!target?.acceptLatest});
+    if(chosen==='cancelled'||!current())return {handled:true,saved:false};
     if(chosen!=='mine'){
       await reloadLatest();
-      return {handled:true,saved:false,latest:latestEntity()};
+      if(!current())return {handled:true,saved:false};
+      const latest=latestEntity();
+      if(latest)target?.acceptLatest?.(latest);
+      return {handled:true,saved:false,latest};
     }
-    try{return {handled:true,saved:true,result:await retry(entity.revision)};}
-    catch(retryError){documentObject?.querySelectorAll?.('.save-feedback[data-recovery-conflict]')?.forEach?.((element)=>element.remove());handleCommandFailure(retryError);throw retryError;}
+    try{const result=await retry(entity.revision);return {handled:true,saved:true,result,stale:!current()};}
+    catch(retryError){if(!current())return {handled:true,saved:false};documentObject?.querySelectorAll?.('.save-feedback[data-recovery-conflict]')?.forEach?.((element)=>element.remove());handleCommandFailure(retryError);throw retryError;}
   }
 
   function errorHtml(code) {
