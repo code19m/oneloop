@@ -6,6 +6,7 @@ mod session;
 mod throttle;
 
 pub use crate::clock::unix_now;
+pub(crate) use grants::revoke_project_app_access;
 pub use token::hash as token_hash;
 pub mod password;
 pub(crate) mod token;

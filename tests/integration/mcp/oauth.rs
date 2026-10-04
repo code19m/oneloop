@@ -727,6 +727,164 @@ async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
     assert_eq!(revoked, (0, 0));
 }
 
+/// Adds a second project, "Old project", with the fixture's user as a member.
+async fn add_old_project(db: &Db, user: String) {
+    db.run(move |connection| {
+        connection.execute(
+            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Old project','OLD',1,1)",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-2',?1,1,1,1,1)",
+            [user],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+/// Deletes "Old project" the way an administrator does in the browser.
+async fn delete_old_project(app: &Router, db: &Db) {
+    let admin = support::add_user(db, "admin", true).await;
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/commands")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header(header::COOKIE, format!("oneloop_session={}", admin.token))
+                .body(Body::from(
+                    json!({"operation":"project.delete","payload":{"projectId":"project-2","confirmedName":"Old project"},"idempotencyKey":"delete-old-project","expectedRevision":1}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn project_deletion_revokes_every_grant_that_selected_it() {
+    let (_dir, db, app, session, user) = fixture().await;
+    add_old_project(&db, user).await;
+    db.run(|connection| {
+        connection.execute_batch(
+            "INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('kept-track','project-1','Track',0,1,1);
+            INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('kept-epic','project-1','kept-track','Epic','2026-01-01',0,1,1);
+            INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('kept-task','project-1','kept-epic',1,'PRJ-001','Kept','planning',0,1,1);",
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // This app also selected the project that stays, so the cascade alone would leave it working.
+    let both_client = register(&app).await;
+    let (code, verifier) = authorize_with(
+        &app,
+        &session,
+        &both_client,
+        &["project_read", "board_manage", "attachments"],
+        &["project-1", "project-2"],
+    )
+    .await;
+    let both = issue(&app, &both_client, &code, &verifier).await;
+    let both_access = both["access_token"].as_str().unwrap().to_owned();
+    let mut mcp = McpClient::connect(&app, both_access.clone()).await;
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId":"kept-task","fileName":"late.txt","sizeBytes":4,"idempotencyKey":"late-upload"}),
+        )
+        .await,
+    );
+    let kept_client = register(&app).await;
+    let (code, verifier) = authorize_with(
+        &app,
+        &session,
+        &kept_client,
+        &["project_read"],
+        &["project-1"],
+    )
+    .await;
+    let kept = issue(&app, &kept_client, &code, &verifier).await;
+
+    delete_old_project(&app, &db).await;
+
+    // The deletion itself stores the revocation; no app request is needed first.
+    let apps = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/apps")
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(apps.status(), StatusCode::OK);
+    let apps = body_json(apps).await;
+    let listed: Vec<&str> = apps["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["clientId"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [kept_client.as_str()]);
+    let upload = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .header(header::CONTENT_LENGTH, 4)
+                .body(Body::from("late"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), StatusCode::UNAUTHORIZED);
+    let denied = app
+        .clone()
+        .oneshot(mcp_request(
+            &both_access,
+            None,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let refresh_denied = app
+        .clone()
+        .oneshot(refresh_request(
+            &both_client,
+            both["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refresh_denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(refresh_denied).await["error"], "invalid_grant");
+
+    // An app that never selected the deleted project keeps working.
+    McpClient::connect(&app, kept["access_token"].as_str().unwrap()).await;
+    let refreshed = app
+        .clone()
+        .oneshot(refresh_request(
+            &kept_client,
+            kept["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refreshed.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
     let (_dir, db, app, session, _user) = fixture().await;
