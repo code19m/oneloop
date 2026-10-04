@@ -5,6 +5,41 @@ const { bootApp, settle } = require('../support/dom.cjs');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
 const { createRecoveryController } = require('../../src/features/recovery/controller.js');
 const { ApiError } = require('../../src/data/api-client.js');
+const { installViewBridge } = require('../../src/app/view-bridge.js');
+
+for(const kind of ['comment','block'])for(const state of ['active','removed','inactive'])for(const retained of [true,false])test(`${kind} editor validates ${retained?'saved':'new'} mentions when the recipient is ${state}`,async()=>{
+ const saves=[];
+ const t=bootApp({route:'task/BIR-079',prepare(D,w){
+  w.OneloopTransport={};w.OneloopCollaboration={bind(){return {saveComment(input){saves.push(input);}};}};
+  const task=D.tasks.find(item=>item.id==='BIR-079');task.internalId='task-1';
+  task.comments=[{id:'retained-comment',who:D.session.userId,ts:1700000000000,text:retained?'@robin original':'Original',revision:1,mentions:retained?[{id:'robin',label:'robin',start:0,end:6}]:[]}];
+  task.block={id:'retained-block',reason:retained?'@robin original':'Original',revision:1,by:D.session.userId,at:1700000000000,mentions:retained?[{kind:'user',userId:'robin',label:'@robin',startOffset:0,endOffset:6}]:[]};
+ }});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079'),project=t.D.projects.find(item=>item.id===t.A.context().projectId);
+ const invalidate=()=>{if(state==='removed')project.members=project.members.filter(member=>member.userId!=='robin');if(state==='inactive')t.D.users.find(user=>user.id==='robin').active=false;};
+ const previousFormData=globalThis.FormData,previousCollab=globalThis.Collab;
+ try{
+  if(kind==='block'){
+   globalThis.FormData=t.w.FormData;globalThis.Collab=t.w.Collab;
+   installViewBridge({app:t.A,data:t.D,api:{},gateway:{execute:async(operation,payload)=>{saves.push({operation,payload});return {entities:[],events:[]};}},reads:{counts:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+  }
+  if(retained)invalidate();
+  if(kind==='comment')t.A.editComment(task.id,'retained-comment');else t.A.openModal('block',task.id);
+  if(!retained){if(kind==='comment')mention(t,'@rob','robin');else pickBlock(t,'@rob','robin');invalidate();}
+  if(kind==='comment')typeComment(t,'@robin corrected');else typeBlock(t,'@robin corrected');
+  if(kind==='comment')t.A.addComment(task.id);else saveBlockForm(t);
+  await settle();
+  const accepted=retained||state==='active';assert.equal(saves.length,accepted?1:0);
+  if(!accepted){assert.match(t.d.querySelector(kind==='comment'?'.comment-feedback':'.block-mention-feedback').textContent,/no longer an active project member/);return;}
+  if(kind==='comment'){
+   assert.equal(saves[0].text,'@robin corrected');assert.equal(saves[0].commentId,'retained-comment');
+   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].mentions)),[{id:'robin',label:'robin',start:0,end:6}]);
+  }else{
+   assert.equal(saves[0].operation,'task.block.update');
+   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].payload)),{blockId:'retained-block',reason:'@robin corrected',mentions:[{kind:'user',userId:'robin',startOffset:0,endOffset:6,label:'@robin'}]});
+  }
+ }finally{globalThis.FormData=previousFormData;globalThis.Collab=previousCollab;}
+});
 
 function productionComments(commands) {
  let controller,transport;

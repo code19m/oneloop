@@ -46,6 +46,7 @@
  const keyFor=(t,c=context())=>JSON.stringify([me()?.id,t.id,c.mode,c.target]);
  function editor(t){const key=keyFor(t);if(commentEditor?.key!==key)commentEditor={key,text:'',mentions:[],editorId:id('editor'),interactionId:id('interaction'),revision:null};return commentEditor;}
  const legacyMentions=tokens=>(tokens||[]).map(token=>Object.hasOwn(token,'start')?token:{id:token.kind==='everyone'?'everyone':token.userId,label:String(token.label||'').replace(/^@/,''),start:token.startOffset,end:token.endOffset});
+ const hasInvalidMention=(mentions,eligible,saved)=>{const retained=new Set(legacyMentions(saved).map(m=>m.id));return mentions.some(m=>m.id!=='everyone'&&!eligible.has(m.id)&&!retained.has(m.id));};
  const wireMentions=(text,tokens)=>(tokens||[]).map(token=>({kind:token.id==='everyone'?'everyone':'user',...(token.id==='everyone'?{}:{userId:token.id}),startOffset:token.start,endOffset:token.end,label:text.slice(token.start,token.end)}));
  function blockInputState(t){const key=JSON.stringify([me()?.id,t.id,t.block?.id||'new']);if(blockEditor?.key!==key)blockEditor={key,text:t.block?.reason||'',mentions:structured(legacyMentions(t.block?.mentions))};return blockEditor;}
  function beforeRender(next){
@@ -64,7 +65,7 @@
  function blockFeedback(message){const el=document.querySelector('.block-mention-feedback');if(el)el.textContent=message;}
  function prepareBlock(t,raw,reason){const d=updateText(t,raw,'block'),eligible=new Set(members(projectOf(t)).map(u=>u.id));
   const selected=validTokens(raw,d.mentions).map(m=>{const start=hooks.clean(raw.slice(0,m.start)+'X',Number.MAX_SAFE_INTEGER).length-1;return {...m,start,end:start+m.label.length+1};});
-  const mentions=validTokens(reason,selected);if(mentions.some(m=>m.id!=='everyone'&&!eligible.has(m.id))){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
+  const mentions=validTokens(reason,selected);if(hasInvalidMention(mentions,eligible,t.block?.mentions)){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
   const broadcast=mentions.some(m=>m.id==='everyone')&&!t.block?.broadcastSent;
   if(broadcast&&Date.now()-(broadcasts[me().id+':'+projectOf(t).id]||0)<60000){blockFeedback('Please wait a minute before mentioning everyone again.');return null;}
   return {mentions:production?wireMentions(reason,mentions):mentions,broadcast};
@@ -252,7 +253,7 @@
  function post(taskId){const task=hooks.task(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(window.Recovery&&!Recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
   const existing=cxt.mode==='edit'?task.comments.find(c=>c.id===cxt.target):null,target=cxt.mode==='reply'?task.comments.find(c=>c.id===cxt.target):null;
   if(cxt.mode==='edit'&&(!existing||existing.deleted||existing.who!==me().id&&!me().admin)||cxt.mode==='reply'&&(!target||target.deleted)){feedback('That comment is no longer available.');return false;}
-  const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(selected.some(m=>m.id!=='everyone'&&!eligible.has(m.id))){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
+  const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(hasInvalidMention(selected,eligible,existing?.mentions)){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
   const fingerprint=(value,tokens)=>sha256(JSON.stringify({text:value,mentions:tokens.map(({start,end,id,label})=>({start,end,id,label}))}));
   const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
   const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
