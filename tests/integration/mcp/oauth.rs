@@ -1103,6 +1103,200 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
 }
 
 #[tokio::test]
+async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
+    for reset in [false, true] {
+        let (_dir, db, app, session, user) = fixture().await;
+        let admin = support::add_user(&db, "administrator", true).await;
+        let client = register(&app).await;
+        let (code, verifier) = authorize(&app, &session, &client).await;
+        let (other_code, other_verifier) = authorize(&app, &admin.token, &client).await;
+        let path = authorization_path(&client, "http://127.0.0.1:49152/callback");
+        let (status, _) = consent_page(&app, &session, &path).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, other_pending) = consent_page(&app, &admin.token, &path).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (path, session, body) = if reset {
+            (
+                format!("/api/users/{user}/reset-password"),
+                &admin.token,
+                json!({}),
+            )
+        } else {
+            (
+                "/api/auth/change-password".into(),
+                &session,
+                json!({
+                    "currentPassword":"test-only-password-012345",
+                    "newPassword":"replacement-test-password"
+                }),
+            )
+        };
+        let changed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header(header::ORIGIN, "http://127.0.0.1:8080")
+                    .header(header::COOKIE, format!("oneloop_session={session}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), StatusCode::OK, "admin reset={reset}");
+
+        let redemption = app
+            .clone()
+            .oneshot(form(
+                "/oauth/token",
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", &client),
+                    ("code", &code),
+                    ("redirect_uri", "http://127.0.0.1:49152/callback"),
+                    ("code_verifier", &verifier),
+                    ("resource", "http://127.0.0.1:8080/mcp"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            redemption.status(),
+            StatusCode::BAD_REQUEST,
+            "admin reset={reset}"
+        );
+        assert_eq!(body_json(redemption).await["error"], "invalid_grant");
+
+        // A reset signs every browser out and requires another password change.
+        // Inspect pending consent here so those separate guards cannot mask it.
+        let pending: i64 = db.run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT COUNT(*) FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
+                [user], |row| row.get(0),
+            )?)
+        }).await.unwrap();
+        assert_eq!(pending, 0, "admin reset={reset}");
+
+        let other_tokens = issue(&app, &client, &other_code, &other_verifier).await;
+        let actor = AuthService::new(db)
+            .authenticate_mcp_access_token(other_tokens["access_token"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(actor.user_id, admin.actor.user_id);
+        let consent = app
+            .clone()
+            .oneshot(consent_submit(
+                &admin.token,
+                &[
+                    ("request_id", request_id(&other_pending)),
+                    ("decision", "allow"),
+                    ("project", "project-1"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(consent.status(), StatusCode::SEE_OTHER);
+    }
+}
+
+#[tokio::test]
+async fn inactive_accounts_cannot_redeem_codes_or_refresh_tokens() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (pending, pending_verifier) = authorize(&app, &session, &client).await;
+    // Only the flag changes, without the revocation an admin's deactivation
+    // adds, so both endpoints must read the account's current state.
+    db.run(move |connection| {
+        connection.execute("UPDATE users SET is_active=0 WHERE id=?1", [user])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    for (grant, request) in [
+        ("code", code_request(&client, &pending, &pending_verifier)),
+        (
+            "refresh",
+            refresh_request(&client, tokens["refresh_token"].as_str().unwrap()),
+        ),
+    ] {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{grant}");
+        assert_eq!(
+            body_json(response).await["error"],
+            "invalid_grant",
+            "{grant}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn deactivation_ends_connections_until_the_app_connects_again() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let admin = support::add_user(&db, "administrator", true).await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let access = tokens["access_token"].as_str().unwrap();
+    let (pending, pending_verifier) = authorize(&app, &session, &client).await;
+    let auth = AuthService::new(db);
+    let set_active = |is_active, expected_revision| {
+        auth.update_account(
+            &admin.actor,
+            &user,
+            oneloop::auth::AccountUpdate {
+                display_name: "Owner".into(),
+                is_admin: false,
+                is_active,
+                expected_revision,
+            },
+        )
+    };
+    let invalid_grant = async |request: Request<Body>| {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["error"], "invalid_grant");
+    };
+
+    set_active(false, 1).await.unwrap();
+    invalid_grant(code_request(&client, &pending, &pending_verifier)).await;
+    invalid_grant(refresh_request(
+        &client,
+        tokens["refresh_token"].as_str().unwrap(),
+    ))
+    .await;
+
+    // Reactivation brings back neither the pending code nor the issued tokens.
+    set_active(true, 2).await.unwrap();
+    invalid_grant(code_request(&client, &pending, &pending_verifier)).await;
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
+    let old = app
+        .clone()
+        .oneshot(mcp_request(access, None, list))
+        .await
+        .unwrap();
+    assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
+    let LoginResult::Authenticated(signed_in) = auth
+        .login(
+            "owner",
+            "test-only-password-012345",
+            SessionMetadata::default(),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a reactivated account signs in again");
+    };
+    let (code, verifier) = authorize(&app, &signed_in.token, &client).await;
+    issue(&app, &client, &code, &verifier).await;
+}
+
+#[tokio::test]
 async fn restored_pending_authorization_code_cannot_mint_credentials() {
     let (dir, db, app, session, _user) = fixture().await;
     let client = register(&app).await;

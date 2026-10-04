@@ -42,6 +42,143 @@ async fn seed_user(db: &Db) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn self_service_writes_recheck_sessions_revoked_after_http_authentication() {
+    use oneloop::auth::{AuthService, LoginResult};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    static READS: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
+    fn authenticated(event: rusqlite::trace::TraceEvent<'_>) {
+        let rusqlite::trace::TraceEvent::Profile(statement, _) = event else {
+            return;
+        };
+        let sql = statement.sql();
+        if sql.starts_with("SELECT s.id,s.user_id,s.authenticated_at")
+            && READS.fetch_add(1, Ordering::SeqCst) == 1
+            && let Some(release) = RELEASE.lock().unwrap().take()
+        {
+            release.send(()).unwrap();
+        }
+    }
+    for mutation in ["profile", "session", "other-sessions", "app"] {
+        let directory = crate::support::data_dir();
+        let db = Db::open_with_pool_size(directory.path(), 2).unwrap();
+        seed_user(&db).await;
+        let auth = AuthService::new(db.clone());
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            let LoginResult::Authenticated(session) = auth
+                .login(
+                    "person",
+                    "correct horse battery staple",
+                    Default::default(),
+                    None,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("session limit")
+            };
+            sessions.push(session);
+        }
+        let current = sessions.remove(0);
+        let other = sessions.remove(0);
+        let user_id = current.actor.user_id.clone();
+        db.transaction(move |tx| {
+            tx.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at) VALUES('grant',?1,'client','Client',1,1,9999999999)", [user_id])?;
+            Ok(())
+        }).await.unwrap();
+        let config = crate::support::config(directory.path(), "https://tasks.example.test", &[]);
+        let app = oneloop::application(AppState::new(config, db.clone())).router;
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        READS.store(0, Ordering::SeqCst);
+        *RELEASE.lock().unwrap() = Some(release);
+        let writer_db = db.clone();
+        let revoked_id = current.actor.session_id().unwrap().to_owned();
+        let writer = tokio::spawn(async move {
+            writer_db
+                .transaction(move |tx| {
+                    entered.send(()).unwrap();
+                    released
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    tx.execute("UPDATE sessions SET revoked_at=1 WHERE id=?1", [revoked_id])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        });
+        waiting.await.unwrap();
+        // The second connection reads the old WAL snapshot. Release the writer
+        // only after both HTTP authentication reads have finished.
+        db.run(|connection| {
+            connection.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                Some(authenticated),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let (method, path, body) = match mutation {
+            "profile" => (
+                "PATCH",
+                "/api/auth/me".to_owned(),
+                r#"{"displayName":"Changed"}"#,
+            ),
+            "session" => (
+                "DELETE",
+                format!("/api/auth/sessions/{}", other.actor.session_id().unwrap()),
+                "",
+            ),
+            "other-sessions" => ("POST", "/api/auth/sessions/revoke-others".to_owned(), ""),
+            _ => ("DELETE", "/api/auth/apps/grant".to_owned(), ""),
+        };
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("origin", "https://tasks.example.test")
+                    .header("content-type", "application/json")
+                    .header(
+                        "cookie",
+                        format!("__Host-oneloop_session={}", current.token),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        writer.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{mutation}");
+        assert!(
+            auth.authenticate_session(&other.token, false).await.is_ok(),
+            "{mutation}"
+        );
+        db.run(|connection| {
+            let (name, revision): (String, i64) =
+                connection.query_row("SELECT display_name,revision FROM users", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+            assert_eq!((name.as_str(), revision), ("Person", 1));
+            let revoked: Option<i64> = connection.query_row(
+                "SELECT revoked_at FROM mcp_grants WHERE id='grant'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(revoked, None);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+}
+
 fn login_request(origin: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
@@ -183,6 +320,85 @@ fn password_request(path: &str, cookie: &str, body: &str) -> Request<Body> {
         .header(header::COOKIE, cookie)
         .body(Body::from(body.to_owned()))
         .unwrap()
+}
+
+#[tokio::test]
+async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
+    let (_root, db, app) = application();
+    let username = "a".repeat(32);
+    let name = username.clone();
+    db.transaction(move |tx| {
+        create_user(
+            tx,
+            NewUser {
+                username: name,
+                display_name: "Person".into(),
+                password: "\0".repeat(8192),
+                is_admin: false,
+                must_change_password: false,
+            },
+            oneloop::auth::unix_now()?,
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut current = "\\u0000".repeat(8192);
+    let mut cookie = String::new();
+    for next in [
+        Some("\\u0001".repeat(16384)),
+        Some("\\u0002".repeat(16384)),
+        Some("\\ud83d\\ude00".repeat(4096)),
+        None,
+    ] {
+        let body = format!(r#"{{"username":"{username}","password":"{current}"}}"#);
+        let response = app
+            .clone()
+            .oneshot(password_request("/api/auth/login", "", &body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        if let Some(next) = next {
+            let body = format!(r#"{{"currentPassword":"{current}","newPassword":"{next}"}}"#);
+            let response = app
+                .clone()
+                .oneshot(password_request(
+                    "/api/auth/change-password",
+                    &cookie,
+                    &body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            current = next;
+        }
+    }
+    for path in ["/api/auth/login", "/api/auth/change-password"] {
+        let oversized = format!("{}x", "😀".repeat(4096));
+        let body = if path.ends_with("login") {
+            serde_json::json!({"username":username,"password":oversized})
+        } else {
+            serde_json::json!({"currentPassword":"😀".repeat(4096),"newPassword":oversized})
+        }
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(password_request(path, &cookie, &body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "validation_failed"
+        );
+    }
 }
 
 #[tokio::test]

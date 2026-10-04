@@ -6,6 +6,8 @@ use argon2::{
 use crate::error::{AppError, AppResult};
 
 const MIN_PASSWORD_CHARACTERS: usize = 5;
+// Preserve passwords that could fit the former 16 KiB sign-in request budget.
+pub(crate) const MAX_PASSWORD_BYTES: usize = 16 * 1024;
 
 fn argon2() -> AppResult<Argon2<'static>> {
     // OWASP's minimum Argon2id profile: 19 MiB, two passes, one lane.
@@ -14,7 +16,18 @@ fn argon2() -> AppResult<Argon2<'static>> {
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
+pub(crate) fn validate_password_size(password: &str) -> AppResult<()> {
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::validation(
+            "password",
+            format!("Use at most {MAX_PASSWORD_BYTES} UTF-8 bytes."),
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_new_password(password: &str) -> AppResult<()> {
+    validate_password_size(password)?;
     if password.chars().take(MIN_PASSWORD_CHARACTERS).count() < MIN_PASSWORD_CHARACTERS {
         return Err(AppError::validation(
             "password",
@@ -33,6 +46,7 @@ pub fn hash_password(password: &str) -> AppResult<String> {
 }
 
 pub fn verify_password(password: &str, encoded: &str) -> AppResult<bool> {
+    validate_password_size(password)?;
     let parsed = PasswordHash::new(encoded)
         .map_err(|error| AppError::Internal(format!("stored password hash is invalid: {error}")))?;
     Ok(argon2()?
@@ -55,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn new_passwords_only_require_five_unicode_characters() {
+    fn new_passwords_require_at_least_five_unicode_characters() {
         for password in ["", "1234", "😀😀😀😀"] {
             assert!(validate_new_password(password).is_err());
         }

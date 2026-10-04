@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     ffi::{OsStr, OsString},
+    fs, io,
     net::{IpAddr, SocketAddr},
     path::{Component, Path, PathBuf},
     str::FromStr,
@@ -292,6 +293,8 @@ pub fn resolve_data_dir(raw: &str) -> AppResult<PathBuf> {
     normalize_path(&absolute)
 }
 
+/// Removes `.` and `..` from an absolute path, so later checks and writes see
+/// the same directory even after missing folders are created.
 pub(crate) fn normalize_path(path: &Path) -> AppResult<PathBuf> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -299,17 +302,35 @@ pub(crate) fn normalize_path(path: &Path) -> AppResult<PathBuf> {
             Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
             Component::RootDir => normalized.push(component.as_os_str()),
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(AppError::Config(
-                        "path escapes its filesystem root".to_owned(),
-                    ));
-                }
-            }
+            Component::ParentDir => normalized = parent_directory(&normalized)?,
             Component::Normal(part) => normalized.push(part),
         }
     }
     Ok(normalized)
+}
+
+/// The directory that `path/..` reaches, resolving symbolic links in `path`
+/// first, as the filesystem does.
+fn parent_directory(path: &Path) -> AppResult<PathBuf> {
+    match path.join("..").canonicalize() {
+        Ok(parent) => Ok(parent),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(path) {
+                // A folder that doesn't exist yet is not a link, so once
+                // created, its `..` is the folder above it.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(path.parent().unwrap_or(path).to_path_buf())
+                }
+                // A broken link's `..` depends on a target that doesn't exist.
+                Ok(_) => Err(AppError::validation(
+                    "path",
+                    format!("`..` follows the broken symbolic link {}", path.display()),
+                )),
+                Err(error) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn invalid_env(variable: &'static str, message: impl Into<String>) -> AppError {

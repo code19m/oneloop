@@ -119,7 +119,8 @@ pub(crate) fn validate_mentions_retaining(
     let boundaries = utf16_boundaries(content);
     let mut previous_end = 0usize;
     let mut everyone_seen = false;
-    for token in &mentions {
+    let mut selected = Vec::with_capacity(mentions.len());
+    for token in mentions {
         if token.start_offset < previous_end || token.end_offset <= token.start_offset {
             return Err(AppError::validation(
                 "mentions",
@@ -143,6 +144,16 @@ pub(crate) fn validate_mentions_retaining(
                 "mentions",
                 "label does not match the selected text range",
             ));
+        }
+        previous_end = token.end_offset;
+        // Match the composer's plain-text contexts, including unfinished code.
+        let before = &content[..start];
+        let line = before.rsplit('\n').next().unwrap_or_default();
+        if before.matches("```").count() % 2 == 1
+            || line.matches('`').count() % 2 == 1
+            || line.trim_start().starts_with('>')
+        {
+            continue;
         }
         match token.kind {
             MentionKind::User => {
@@ -183,9 +194,9 @@ pub(crate) fn validate_mentions_retaining(
                 everyone_seen = true;
             }
         }
-        previous_end = token.end_offset;
+        selected.push(token);
     }
-    Ok(mentions)
+    Ok(selected)
 }
 pub(crate) fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
     let mut result = HashMap::new();
@@ -221,4 +232,43 @@ pub(crate) fn enforce_broadcast_cooldown(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_in_code_and_quotes_are_plain_text() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let tx = connection.transaction().unwrap();
+        for (content, expected) in [
+            ("🙂 @everyone", 1),
+            ("`@everyone`", 0),
+            ("Before `@everyone", 0),
+            ("```\n@everyone\n```", 0),
+            (" > @everyone", 0),
+            (">> @everyone", 0),
+            ("> quote\n@everyone", 1),
+            ("`code` @everyone", 1),
+            ("```\ncode\n```\n@everyone", 1),
+            ("`@everyone` then @everyone", 1),
+        ] {
+            let mentions = content
+                .match_indices("@everyone")
+                .map(|(start, label)| {
+                    let start_offset = content[..start].encode_utf16().count();
+                    MentionToken {
+                        kind: MentionKind::Everyone,
+                        user_id: None,
+                        start_offset,
+                        end_offset: start_offset + label.len(),
+                        label: label.into(),
+                    }
+                })
+                .collect();
+            let selected = validate_mentions(&tx, "project", content, mentions).unwrap();
+            assert_eq!(selected.len(), expected, "{content}");
+        }
+    }
 }

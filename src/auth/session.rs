@@ -289,9 +289,11 @@ impl AuthService {
             ));
         }
         let target = target.to_owned();
+        let actor = actor.clone();
         let user_id = actor.user_id.clone();
         let now = unix_now()?;
         self.db.transaction(move |tx| {
+            refresh_actor_connection(tx, &actor)?;
             let changed = tx.execute(
                 "UPDATE sessions SET revoked_at=?1 WHERE id=?2 AND user_id=?3 AND revoked_at IS NULL",
                 rusqlite::params![now, target, user_id],
@@ -306,9 +308,11 @@ impl AuthService {
     pub async fn revoke_other_sessions(&self, actor: &Actor) -> AppResult<u64> {
         actor.require_ready()?;
         let current = actor.session_id().ok_or(AppError::Forbidden)?.to_owned();
+        let actor = actor.clone();
         let user_id = actor.user_id.clone();
         let now = unix_now()?;
         self.db.transaction(move |tx| {
+            refresh_actor_connection(tx, &actor)?;
             let revoked=tx.execute(
                 "UPDATE sessions SET revoked_at=?1 WHERE user_id=?2 AND id<>?3 AND revoked_at IS NULL",
                 rusqlite::params![now, user_id, current],

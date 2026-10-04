@@ -132,10 +132,12 @@ impl AuthService {
         actor.require_ready()?;
         let display_name = normalize_display_name(display_name)?;
         let saved_name = display_name.clone();
+        let actor_for_tx = actor.clone();
         let user_id = actor.user_id.clone();
         let now = unix_now()?;
         self.db
             .transaction(move |connection| {
+                refresh_actor_connection(connection, &actor_for_tx)?;
                 let changed = connection.execute(
                     "UPDATE users SET display_name=?1,updated_at=?2,revision=revision+1
                  WHERE id=?3 AND is_active=1",

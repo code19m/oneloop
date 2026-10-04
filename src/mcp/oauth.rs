@@ -1668,8 +1668,10 @@ const SELECT_PROJECTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM projects p JOIN u
                      p.deleted_at IS NULL AND u.is_active=1 AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM \
                      project_memberships m WHERE m.project_id=p.id AND m.user_id=u.id)))";
 
-const SELECT_OAUTH_AUTHORIZATION_CODES_2_SQL: &str = "SELECT user_id,client_id,client_name,redirect_uri,resource,projects_json,scopes_json
-             FROM oauth_authorization_codes WHERE code_hash=?1 AND used_at IS NULL AND expires_at>?2";
+// Like refresh, a code needs the account to be active now.
+const SELECT_OAUTH_AUTHORIZATION_CODES_2_SQL: &str = "SELECT c.user_id,c.client_id,c.client_name,c.redirect_uri,c.resource,c.projects_json,c.scopes_json
+             FROM oauth_authorization_codes c JOIN users u ON u.id=c.user_id
+             WHERE c.code_hash=?1 AND c.used_at IS NULL AND c.expires_at>?2 AND u.is_active=1";
 const SELECT_OAUTH_AUTHORIZATION_CODES_3_SQL: &str =
     "SELECT code_challenge FROM oauth_authorization_codes WHERE code_hash=?1";
 const UPDATE_OAUTH_AUTHORIZATION_CODES_SQL: &str = "UPDATE oauth_authorization_codes SET used_at=?1,grant_id=?3 WHERE code_hash=?2 AND used_at IS NULL";

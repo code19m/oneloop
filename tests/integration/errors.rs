@@ -35,7 +35,7 @@ async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_clie
         .with_ansi(false)
         .with_writer(capture.clone())
         .finish();
-    let response = tracing::subscriber::with_default(subscriber, || {
+    let responses = tracing::subscriber::with_default(subscriber, || {
         let span = tracing::info_span!(
             "request",
             method = "POST",
@@ -43,15 +43,68 @@ async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_clie
             request_id = "request-check"
         );
         let _entered = span.enter();
-        AppError::Io("Permission denied while storing a file".into()).into_response()
+        [
+            (
+                AppError::Io("Permission denied while storing a file".into()).into_response(),
+                "Permission denied",
+            ),
+            (
+                AppError::Unavailable(
+                    "data lease is busy at /private/data/.oneloop-data.lock".into(),
+                )
+                .into_response(),
+                "/private/data/.oneloop-data.lock",
+            ),
+        ]
     });
-    let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-    assert!(log.contains("Permission denied"));
     assert!(log.contains("/api/test") && log.contains("request-check"));
-    assert!(log.contains(body["error"]["reference"].as_str().unwrap()));
-    assert!(!String::from_utf8_lossy(&bytes).contains("Permission denied"));
+    for (response, private) in responses {
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(log.contains(private), "{log}");
+        assert!(log.contains(body["error"]["reference"].as_str().unwrap()));
+        assert!(!String::from_utf8_lossy(&bytes).contains(private));
+    }
+}
+
+#[tokio::test]
+async fn busy_data_lease_returns_a_safe_retryable_http_error() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let (root, db) = crate::support::database();
+    let session = crate::support::add_user(&db, "person", false).await;
+    let config = crate::support::config(root.path(), "http://127.0.0.1:18710", &[]);
+    let app = oneloop::application(oneloop::AppState::new(config, db)).router;
+    let lock_path = root.path().join(".oneloop-data.lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/auth/avatar")
+                .header("origin", "http://127.0.0.1:18710")
+                .header("cookie", format!("oneloop_session={}", session.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(lock);
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()["retry-after"], "1");
+    let body = body_text(response).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["error"]["code"], "unavailable");
+    assert!(!body.contains(root.path().to_str().unwrap()), "{body}");
+    assert!(!body.contains(".oneloop-data.lock"), "{body}");
+    let reference = json["error"]["reference"].as_str().unwrap();
+    assert!(uuid::Uuid::parse_str(reference).is_ok());
 }
 
 #[test]

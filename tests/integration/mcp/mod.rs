@@ -463,6 +463,20 @@ fn consent_submit(session: &str, values: &[(&str, &str)]) -> Request<Body> {
     request
 }
 
+fn code_request(client: &str, code: &str, verifier: &str) -> Request<Body> {
+    form(
+        "/oauth/token",
+        &[
+            ("grant_type", "authorization_code"),
+            ("client_id", client),
+            ("code", code),
+            ("redirect_uri", "http://127.0.0.1:49152/callback"),
+            ("code_verifier", verifier),
+            ("resource", "http://127.0.0.1:8080/mcp"),
+        ],
+    )
+}
+
 fn refresh_request(client: &str, token: &str) -> Request<Body> {
     form(
         "/oauth/token",

@@ -306,7 +306,11 @@ async fn database(arguments: DatabaseArgs) -> AppResult<()> {
 fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
     if from_stdin {
         let mut bytes = Vec::new();
-        io::stdin().read_to_end(&mut bytes)?;
+        // Read one byte past the limit plus a possible CRLF, without buffering
+        // an unbounded password from standard input.
+        io::stdin()
+            .take((crate::auth::password::MAX_PASSWORD_BYTES + 3) as u64)
+            .read_to_end(&mut bytes)?;
         if bytes.ends_with(b"\n") {
             bytes.pop();
             if bytes.ends_with(b"\r") {
@@ -319,8 +323,10 @@ fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
                 "standard input must contain exactly one line",
             ));
         }
-        return String::from_utf8(bytes)
-            .map_err(|_| AppError::validation("password", "password must be valid UTF-8"));
+        let password = String::from_utf8(bytes)
+            .map_err(|_| AppError::validation("password", "password must be valid UTF-8"))?;
+        crate::auth::password::validate_password_size(&password)?;
+        return Ok(password);
     }
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(AppError::validation(

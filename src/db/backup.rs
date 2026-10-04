@@ -340,8 +340,7 @@ pub fn restore_backup(
     if target.is_dir() {
         warn_partial_copies(&target);
     }
-    DataLayout::new(&target).ensure_restore_complete()?;
-    ensure_new_or_empty(&target)?;
+    ensure_restore_target(&target)?;
     if backup.starts_with(&target) || target.starts_with(&backup) {
         return Err(AppError::PreconditionFailed(
             "backup source cannot be inside the restore target".to_owned(),
@@ -369,6 +368,8 @@ pub fn restore_backup(
     // directory or mount point. The durable marker prevents partial publication
     // from being mistaken for an initialized instance after a crash.
     super::create_private_directories(&target)?;
+    // Check again: creating directories can change where the path leads.
+    ensure_restore_target(&target)?;
     let marker = target.join(super::RESTORE_MARKER);
     let marker_file = super::private_file_options()
         .write(true)
@@ -797,6 +798,11 @@ fn invalidate_restored_credentials(database_path: &Path) -> AppResult<()> {
     connection.pragma_update(None, "journal_mode", "DELETE")?;
     integrity_check(&connection)?;
     Ok(())
+}
+
+fn ensure_restore_target(target: &Path) -> AppResult<()> {
+    DataLayout::new(target).ensure_restore_complete()?;
+    ensure_new_or_empty(target)
 }
 
 fn ensure_new_or_empty(path: &Path) -> AppResult<()> {

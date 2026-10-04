@@ -24,6 +24,10 @@ use super::security::{
     clear_session_cookie, client_ip, require_canonical_origin, session_cookie, session_token,
 };
 
+// Two passwords can each expand to six JSON bytes per input byte. Leave room
+// for field names, the longest username/display name and session metadata.
+const ACCOUNT_BODY_LIMIT: usize = 2 * 6 * crate::auth::password::MAX_PASSWORD_BYTES + 4096;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
@@ -36,7 +40,7 @@ pub fn router() -> Router<AppState> {
         .route("/sessions/revoke-others", post(revoke_other_sessions))
         .route("/apps", get(connected_apps))
         .route("/apps/{id}", delete(revoke_connected_app))
-        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(DefaultBodyLimit::max(ACCOUNT_BODY_LIMIT))
         .layer(middleware::from_fn(auth_no_store))
 }
 
@@ -45,7 +49,7 @@ pub fn users_router() -> Router<AppState> {
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{id}", patch(update_user))
         .route("/api/users/{id}/reset-password", post(reset_user_password))
-        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(DefaultBodyLimit::max(ACCOUNT_BODY_LIMIT))
         .layer(middleware::from_fn(auth_no_store))
 }
 
@@ -93,7 +97,8 @@ pub async fn require_actor(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD
     ) && ((path.starts_with("/api/users/") && path.ends_with("/avatar"))
-        || (path.starts_with("/api/attachments/")
+        || ((path.starts_with("/api/attachments/")
+            || (path.starts_with("/api/projects/") && path.contains("/knowledge/")))
             && matches!(destination, Some("image" | "iframe"))));
     let meaningful = path != "/api/events"
         && !passive_resource

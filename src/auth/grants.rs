@@ -100,11 +100,13 @@ impl AuthService {
 
     pub async fn revoke_connected_app(&self, actor: &Actor, grant_id: &str) -> AppResult<()> {
         actor.require_ready()?;
+        let actor = actor.clone();
         let user_id = actor.user_id.clone();
         let grant_id = grant_id.to_owned();
         let now = unix_now()?;
         self.db
             .transaction(move |tx| {
+                refresh_actor_connection(tx, &actor)?;
                 let changed = tx.execute(
                     "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
                  WHERE id=?2 AND user_id=?3 AND revoked_at IS NULL",

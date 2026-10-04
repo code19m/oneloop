@@ -55,8 +55,9 @@ pub fn migrate(
     backup_dir: Option<PathBuf>,
 ) -> AppResult<MigrationOutcome> {
     let layout = DataLayout::new(data_dir);
-    layout.ensure_restore_complete()?;
     super::create_private_directories(layout.root())?;
+    // Check after creation: creating directories can change where the path leads.
+    layout.ensure_restore_complete()?;
     let _instance_lock = layout.try_instance_exclusive_lock()?;
     let _lock = layout.open_exclusive_lock()?;
     let existed = layout.database().is_file();
