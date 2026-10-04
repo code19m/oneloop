@@ -410,6 +410,15 @@ fn revoke_all_app_access(tx: &Transaction<'_>, user_id: &str, now: i64) -> AppRe
                 (SELECT id FROM mcp_grants WHERE user_id=?2)",
         rusqlite::params![now, user_id],
     )?;
+    // Unfinished authorizations must not restore access after revocation.
+    tx.execute(
+        "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
+        [user_id],
+    )?;
+    tx.execute(
+        "DELETE FROM oauth_authorization_codes WHERE user_id=?1 AND used_at IS NULL",
+        [user_id],
+    )?;
     Ok(())
 }
 

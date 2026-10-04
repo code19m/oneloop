@@ -117,6 +117,8 @@ oneloop also ends a connection when:
 - a backup is restored;
 - it isn't used for 30 days, or 90 days have passed since you connected it.
 
+After a password change or reset, start any unfinished connection again.
+
 ## Troubleshooting
 
 | Problem | Solution |
