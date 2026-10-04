@@ -883,6 +883,38 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
 }
 
 #[tokio::test]
+async fn inactive_accounts_cannot_redeem_codes_or_refresh_tokens() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (pending, pending_verifier) = authorize(&app, &session, &client).await;
+    // Only the flag changes, without the revocation an admin's deactivation
+    // adds, so both endpoints must read the account's current state.
+    db.run(move |connection| {
+        connection.execute("UPDATE users SET is_active=0 WHERE id=?1", [user])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    for (grant, request) in [
+        ("code", code_request(&client, &pending, &pending_verifier)),
+        (
+            "refresh",
+            refresh_request(&client, tokens["refresh_token"].as_str().unwrap()),
+        ),
+    ] {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{grant}");
+        assert_eq!(
+            body_json(response).await["error"],
+            "invalid_grant",
+            "{grant}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn restored_pending_authorization_code_cannot_mint_credentials() {
     let (dir, db, app, session, _user) = fixture().await;
     let client = register(&app).await;
