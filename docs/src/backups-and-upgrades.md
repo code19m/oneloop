@@ -90,7 +90,7 @@ With Docker, run `docker compose down`, and restore into a new volume:
 ```sh
 docker volume create oneloop-restored
 docker run --rm -v oneloop-restored:/data -v /srv/oneloop-backups:/backups:ro \
-  ghcr.io/code19m/oneloop:0.1.0-rc.1 backup restore /backups/2026-09-28
+  ghcr.io/code19m/oneloop:0.1.0-rc.2 backup restore /backups/2026-09-28
 ```
 
 In `compose.yaml`, change the volume's `name:` to `oneloop-restored`. If the
@@ -142,7 +142,7 @@ Reloading the page loses unsaved text, so people can reload when they are ready.
 
 ### Choose a version
 
-Stable versions look like `0.1.0`. Release candidates, such as `0.1.0-rc.1`,
+Stable versions look like `0.1.0`. Release candidates, such as `0.1.0-rc.2`,
 let you try the next version early.
 
 - The Docker tags `latest` and `0.1` follow stable versions only. A release

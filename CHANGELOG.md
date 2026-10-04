@@ -6,6 +6,19 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-10-04
+
+The second release candidate. It adds a read-only knowledge base to each
+project and fixes several interface bugs.
+
+### Upgrade notes
+
+- Stop oneloop, install the new version, and run
+  `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
+  upgrades the database to schema 2.
+- Knowledge needs Git 2.31 or later and an SSH client on the server. The Docker
+  image now includes both.
+
 ### Added
 
 - **Knowledge**: each project can show one folder of a Git repository as a
@@ -15,12 +28,6 @@ All notable changes to oneloop are recorded here. The format follows
   oneloop checks the branch every minute.
 - MCP tools `read_knowledge_overview`, `read_knowledge_file` and
   `search_knowledge` let assistants read the knowledge base.
-
-### Upgrade notes
-
-- Run `oneloop db migrate`; it upgrades the database to schema 2.
-- Knowledge needs Git 2.31 or later and an SSH client on the server. The Docker
-  image now includes both.
 
 ### Changed
 
@@ -46,6 +53,13 @@ All notable changes to oneloop are recorded here. The format follows
   description, instead of ending at a hard edge.
 - Clicking "Load older activity" is no longer lost when a new comment or
   change arrives at the same moment.
+
+### Distribution
+
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.2`, for linux/amd64 and
+  linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.2 --locked`
 
 ## [0.1.0-rc.1] - 2026-09-28
 
@@ -102,5 +116,6 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.2...HEAD
+[0.1.0-rc.2]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.1...v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/code19m/oneloop/releases/tag/v0.1.0-rc.1
