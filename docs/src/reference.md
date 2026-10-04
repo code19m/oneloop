@@ -146,7 +146,7 @@ Some emoji count as two characters.
 | --- | --- |
 | Username | 3 to 32 lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit |
 | Full name | 80 characters |
-| Password | At least 5 characters; at most 16,384 UTF-8 bytes, for both browser and command-line use |
+| Password | At least 5 characters; at most 16,384 UTF-8 bytes |
 | Sessions per account | 10; sign out of one to sign in somewhere new |
 | Session length | Ends after 7 days without use, and after 30 days at most; automatic image and HTML previews do not extend it |
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
@@ -178,6 +178,6 @@ Some emoji count as two characters.
 | --- | --- |
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
 | Request headers | Must arrive within 15 seconds |
-| Request body | 196 KiB for account requests; 256 KiB for normal requests; 1 MiB for MCP calls; a body read ends after 60 seconds without data |
+| Request body idle time | 60 seconds |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |
