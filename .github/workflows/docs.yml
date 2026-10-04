@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      - "deploy/**"
       - "*.md"
       - "scripts/check-doc-links.mjs"
       - ".github/workflows/docs.yml"
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "deploy/**"
       - "*.md"
       - "scripts/check-doc-links.mjs"
       - ".github/workflows/docs.yml"
