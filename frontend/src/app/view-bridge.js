@@ -26,6 +26,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const sessionScope=()=>`${data.session?.id??''}:${data.session?.userId??''}`;
   let usersAfter=null;
   const assigneeSaves=new Map();
+  const fieldSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
   const pendingPoolCaptures = new WeakSet();
@@ -133,7 +134,39 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   const reportFor=(scope,options={},current=()=>true)=>(error)=>{if(sessionScope()===scope&&current())report(error,options);};
 
+  function paintCommand(operation){if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();else (app.refreshBackground??app.refresh)();}
+
+  function saveField(operation,payload,entity,message,options){
+    const scope=sessionScope(),key=`${scope}:${commandInteractionKey(operation,payload,entity)}`;
+    const pending=fieldSaves.get(key);
+    if(pending){pending.next={payload,options};return pending.promise;}
+    const state={next:{payload,options},promise:null};fieldSaves.set(key,state);
+    state.promise=(async()=>{
+      let result=skipped(),expectedRevision;
+      try{
+        while(state.next){
+          const next=state.next;state.next=null;
+          if(sessionScope()!==scope)return stale();
+          const current=latestEntity(operation,next.payload,entity)??entity;
+          const saved=await execute(operation,next.payload,current,null,{...next.options,coalesce:false,expectedRevision,paint:false});
+          if(saved?.stale)return saved;
+          if(!saved?.skipped)result=saved;
+          // Only advance from our acknowledged write, not a newer live projection.
+          const acknowledged=saved?.entities?.find(item=>item.id===(entity.internalId??entity.id));
+          expectedRevision=acknowledged?.revision??expectedRevision;
+        }
+        if(!result.skipped){
+          if(options.paint!==false&&!result.refreshError)paintCommand(operation);
+          if(message)app.toast(message);
+        }
+        return result;
+      }finally{fieldSaves.delete(key);}
+    })();
+    return state.promise;
+  }
+
   async function execute(operation, payload, entity, message, options = {}) {
+    if(options.coalesce)return saveField(operation,payload,entity,message,options);
     if(isFormRetryPending(options.form)){
       const error=new ApiError('Wait before trying again.',{code:'rate_limited'});
       /** @type {any} */(error).oneloopReported=true;
@@ -148,7 +181,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }
     const interactionKey=options.interactionKey ?? commandInteractionKey(operation,payload,entity);
     const editorSnapshot=recovery?.captureEditor?.();
-    const expectedRevision=options.create?undefined:(recovery?.expectedRevision?.(revisionKey,entity?.revision)??entity?.revision);
+    const expectedRevision=options.create?undefined:(options.expectedRevision??recovery?.expectedRevision?.(revisionKey,entity?.revision)??entity?.revision);
     let result;
     try {
       result = await gateway.execute(operation, payload, {
@@ -214,7 +247,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       }
       if(options.poolScope&&(await reads.pool(context().projectId,options.poolScope))?.stale)return stale(result);
       if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale(result);}
-      if(options.paint!==false){if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();else (app.refreshBackground??app.refresh)();}
+      if(options.paint!==false)paintCommand(operation);
       return result;
     } catch (error) {
       if(sessionScope()!==scope)return stale(result);
@@ -334,14 +367,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.updTask = (id, field, value) => {
     if(app.isRendering?.())return false;
     const item=task(id),form=globalThis.document?.querySelector?.('.task-page');if(!item)return false;
-    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true}).then((result)=>noteTaskSaved(result,item.id)));
+    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
     const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
     if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
     if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
     if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
-    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   };
   app.saveTask = (event) => {
     event.preventDefault();
@@ -442,7 +475,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 
   app.saveProjectNew=(event)=>{const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(form.isConnected===false){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||form.isConnected===false)return;app.selectProject(created.id);}if(sessionScope()===scope)app.nav('roadmap');})));};
-  app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form}));};
+  app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));
   app.setMemberPermission=(userId,permission,enabled,input)=>{
     if(!['manage_roadmap','manage_board'].includes(permission))return false;

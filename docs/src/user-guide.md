@@ -85,7 +85,8 @@ turn it into a task.
 
 ![A task page with an attachment, its activity and comments, and its properties on the right](assets/screenshots/task.png)
 
-Click a card to open the task. Your changes save automatically.
+Click a card to open the task. Your changes save automatically. If you edit a
+field again while it is saving, your latest value saves next.
 
 - **Assignees** can be any project members. They get an Inbox notification when
   you assign them.
