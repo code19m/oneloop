@@ -152,7 +152,7 @@
       article.querySelectorAll('[data-md-math]').forEach(el=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!window.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
       renderDiagrams(article,context);
     };
-    ui.view.onclick=event=>{const link=event.target.closest('a');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#md-')){event.preventDefault();const target=[...ui.view.querySelectorAll('[id]')].find(el=>el.id===href.slice(1));if(target){ui.view.scrollTo({top:ui.view.scrollTop+target.getBoundingClientRect().top-ui.view.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});}}};
+    ui.view.onclick=event=>{const link=event.target.closest('a');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#md-')){event.preventDefault();const target=[...ui.view.querySelectorAll('[id]')].find(el=>el.id===href.slice(1));if(target){const scroller=ui.view.closest('.knowledge-reader')||ui.view;scroller.scrollTo({top:scroller.scrollTop+target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});}}};
     render();
   }
   function html(host,file,text){
