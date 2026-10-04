@@ -13,7 +13,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     time::Instant,
 };
@@ -469,55 +469,19 @@ impl Git {
             }
         }
 
-        let mut files = Vec::with_capacity(selected.len());
-        let mut skipped = 0;
-        let mut total = 0u64;
-        for (repository_path, path, blob) in selected {
-            // A checkout can alias distinct Git paths on a case-insensitive
-            // volume. Only the tree's object ID identifies the file's bytes.
-            let size = within(
-                &session.root,
-                budget,
-                self.run(
-                    &session,
-                    &in_repository(&repository_arg, &["cat-file", "-s", &blob]),
-                    deadline,
-                ),
-            )
-            .await?;
-            let size = std::str::from_utf8(&size)
-                .ok()
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .ok_or_else(|| SyncError::new(Failure::Failed, "invalid Git blob size"))?;
-            if size > limits.max_file_bytes {
-                skipped += 1;
-                continue;
-            }
-            let content = within(
-                &session.root,
-                budget,
-                self.run(
-                    &session,
-                    &in_repository(&repository_arg, &["cat-file", "blob", &blob]),
-                    deadline,
-                ),
-            )
-            .await?;
-            if content.len() as u64 != size {
-                return Err(SyncError::new(Failure::Failed, "Git blob size changed"));
-            }
-            total += content.len() as u64;
-            if total > limits.max_total_bytes {
-                return Err(SyncError::new(
-                    Failure::TooLarge,
-                    "the folder is larger than the limit",
-                ));
-            }
-            files.push(SnapshotFile {
-                changed_at: changed_at.get(&repository_path).copied(),
-                path,
-                content,
-            });
+        let (mut files, skipped) = within(
+            &session.root,
+            budget,
+            self.read_blobs(&session, &repository_arg, selected, limits, deadline),
+        )
+        .await?;
+        for file in &mut files {
+            let repository_path = if folder.is_empty() {
+                file.path.clone()
+            } else {
+                format!("{folder}/{}", file.path)
+            };
+            file.changed_at = changed_at.get(&repository_path).copied();
         }
         // Release temporary bytes before SQLite can write both WAL and data pages.
         session.cleanup().await?;
@@ -665,6 +629,157 @@ impl Git {
         command
     }
 
+    fn spawn(
+        &self,
+        session: &Session<'_>,
+        arguments: &[&str],
+        stdin: Stdio,
+    ) -> Result<GitProcess, SyncError> {
+        let mut command = self.command(session);
+        command.args(arguments).stdin(stdin);
+        tracing::debug!(
+            git_operation = arguments
+                .get(if arguments.first() == Some(&"-C") {
+                    2
+                } else {
+                    0
+                })
+                .copied()
+                .unwrap_or(""),
+            "starting knowledge git command"
+        );
+        Ok(GitProcess {
+            disk: session.disk.clone(),
+            child: Some(command.spawn().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    SyncError::new(Failure::GitUnavailable, "the git program is not installed")
+                } else {
+                    SyncError::new(Failure::Failed, format!("start git: {error}"))
+                }
+            })?),
+        })
+    }
+
+    /// One framed stream, with bounded headers, stored contents and discarded
+    /// oversized blobs. No file path is resolved through the working volume.
+    async fn read_blobs(
+        &self,
+        session: &Session<'_>,
+        repository: &str,
+        selected: Vec<(String, String, String)>,
+        limits: Limits,
+        deadline: Instant,
+    ) -> Result<(Vec<SnapshotFile>, usize), SyncError> {
+        let mut child = self.spawn(
+            session,
+            &in_repository(repository, &["cat-file", "--batch"]),
+            Stdio::piped(),
+        )?;
+        let process = child.child.as_mut().expect("running git");
+        let mut stdin = process.stdin.take().expect("piped stdin");
+        let mut stdout = BufReader::new(process.stdout.take().expect("piped stdout"));
+        let stderr = process.stderr.take().expect("piped stderr");
+        let io = |error: std::io::Error| {
+            SyncError::new(Failure::Failed, format!("read git blobs: {error}"))
+        };
+        // Queue the bounded list while draining output. Waiting for a response
+        // before sending each ID would add one pipe round trip per file.
+        let mut requests = Vec::with_capacity(selected.len() * 65);
+        for (_, _, blob) in &selected {
+            requests.extend_from_slice(blob.as_bytes());
+            requests.push(b'\n');
+        }
+        let send = async {
+            stdin.write_all(&requests).await.map_err(io)?;
+            drop(stdin);
+            Ok::<_, SyncError>(())
+        };
+        let read = async {
+            let mut files = Vec::with_capacity(selected.len());
+            let mut header = Vec::with_capacity(128);
+            let mut received = 0u64;
+            let mut stored = 0u64;
+            let mut skipped = 0;
+            for (_, path, blob) in selected {
+                header.clear();
+                (&mut stdout)
+                    .take(128)
+                    .read_until(b'\n', &mut header)
+                    .await
+                    .map_err(io)?;
+                let fields = std::str::from_utf8(&header)
+                    .ok()
+                    .and_then(|text| text.strip_suffix('\n'))
+                    .map(|line| line.split_whitespace().collect::<Vec<_>>());
+                let size = match fields.as_deref() {
+                    Some([id, "blob", size]) if *id == blob => size.parse::<u64>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| SyncError::new(Failure::Failed, "invalid Git batch header"))?;
+                received = received.saturating_add(size);
+                if received > limits.max_download_bytes {
+                    return Err(SyncError::new(
+                        Failure::TooLarge,
+                        "Git blob stream is larger than the download limit",
+                    ));
+                }
+                if size > limits.max_file_bytes {
+                    let copied =
+                        tokio::io::copy(&mut (&mut stdout).take(size), &mut tokio::io::sink())
+                            .await
+                            .map_err(io)?;
+                    if copied != size {
+                        return Err(SyncError::new(Failure::Failed, "truncated Git blob"));
+                    }
+                    skipped += 1;
+                } else {
+                    stored = stored.saturating_add(size);
+                    if stored > limits.max_total_bytes {
+                        return Err(SyncError::new(
+                            Failure::TooLarge,
+                            "the folder is larger than the limit",
+                        ));
+                    }
+                    let mut content = vec![0; size as usize];
+                    stdout.read_exact(&mut content).await.map_err(io)?;
+                    files.push(SnapshotFile {
+                        path,
+                        content,
+                        changed_at: None,
+                    });
+                }
+                if stdout.read_u8().await.map_err(io)? != b'\n' {
+                    return Err(SyncError::new(
+                        Failure::Failed,
+                        "invalid Git blob terminator",
+                    ));
+                }
+            }
+            if stdout.read(&mut [0]).await.map_err(io)? != 0 {
+                return Err(SyncError::new(
+                    Failure::Failed,
+                    "unexpected Git batch output",
+                ));
+            }
+            Ok((files, skipped))
+        };
+        let run = async {
+            let (files, (), stderr) = tokio::try_join!(read, send, async {
+                drain_output(stderr, ERROR_OUTPUT_LIMIT).await.map_err(io)
+            })?;
+            // As in ordinary commands, drain helpers before reaping their parent.
+            let status = process.wait().await.map_err(io)?;
+            if !status.success() {
+                let stderr = String::from_utf8_lossy(&stderr);
+                return Err(SyncError::new(classify(&stderr), summary(&stderr)));
+            }
+            Ok(files)
+        };
+        tokio::time::timeout_at(deadline, run)
+            .await
+            .map_err(|_| SyncError::new(Failure::Timeout, "git did not finish in time"))?
+    }
+
     async fn run(
         &self,
         session: &Session<'_>,
@@ -688,41 +803,13 @@ impl Git {
         arguments: &[&str],
         deadline: Instant,
     ) -> Result<Output, SyncError> {
-        let mut command = self.command(session);
-        command.args(arguments);
-        let mut child = GitProcess {
-            disk: session.disk.clone(),
-            child: Some(command.spawn().map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    SyncError::new(Failure::GitUnavailable, "the git program is not installed")
-                } else {
-                    SyncError::new(Failure::Failed, format!("start git: {error}"))
-                }
-            })?),
-        };
+        let mut child = self.spawn(session, arguments, Stdio::null())?;
         let process = child.child.as_mut().expect("running git");
         let mut stdout = process.stdout.take().expect("piped stdout");
         let mut stderr = process.stderr.take().expect("piped stderr");
         let run = async {
-            let out = async {
-                let mut buffer = Vec::new();
-                (&mut stdout)
-                    .take(OUTPUT_LIMIT + 1)
-                    .read_to_end(&mut buffer)
-                    .await?;
-                // Keep reading so Git never blocks on a full pipe.
-                tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await?;
-                Ok::<_, std::io::Error>(buffer)
-            };
-            let err = async {
-                let mut buffer = Vec::new();
-                (&mut stderr)
-                    .take(ERROR_OUTPUT_LIMIT)
-                    .read_to_end(&mut buffer)
-                    .await?;
-                tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await?;
-                Ok::<_, std::io::Error>(buffer)
-            };
+            let out = drain_output(&mut stdout, OUTPUT_LIMIT + 1);
+            let err = drain_output(&mut stderr, ERROR_OUTPUT_LIMIT);
             // Keep the parent's PID reserved until helpers close both pipes.
             // Cancellation can still kill its group after the parent exits.
             let (out, err) = tokio::join!(out, err);
@@ -750,6 +837,14 @@ impl Git {
     }
 }
 
+/// Keep only a bounded prefix, but drain the pipe so helpers never block on it.
+async fn drain_output(mut pipe: impl AsyncRead + Unpin, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    (&mut pipe).take(limit).read_to_end(&mut buffer).await?;
+    tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await?;
+    Ok(buffer)
+}
+
 /// Run `work`, stopping it once the working copy holds more than `budget`
 /// bytes. Folders of large files, and hosts that ignore partial-clone
 /// filters, would otherwise fill the data disk before the time limit.
@@ -763,31 +858,41 @@ async fn within<T>(
         loop {
             tokio::time::sleep(WATCH_INTERVAL).await;
             let root = watched_root.clone();
-            let size = tokio::task::spawn_blocking(move || tree_size(&root))
-                .await
-                .unwrap_or(0);
+            let size = measure_working_copy(root, true).await?;
             if size > budget {
-                return size;
+                return Ok::<_, SyncError>(size);
             }
         }
     };
     tokio::select! {
         result = work => {
             let root = root.to_path_buf();
-            let size = tokio::task::spawn_blocking(move || tree_size(&root)).await
-                .map_err(|error| SyncError::new(Failure::Failed, format!("measure working copy: {error}")))?;
+            let size = measure_working_copy(root, false).await?;
             if size > budget {
                 Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
             } else { result }
         },
-        size = watch => Err(SyncError::new(
-            Failure::TooLarge,
-            format!("the download reached {size} bytes; the limit is {budget}"),
-        )),
+        size = watch => {
+            let size = size?;
+            Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
+        },
     }
 }
 
-fn tree_size(root: &Path) -> u64 {
+async fn measure_working_copy(root: PathBuf, watchdog: bool) -> Result<u64, SyncError> {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    tokio::task::spawn_blocking(move || {
+        tracing::dispatcher::with_default(&dispatch, || tree_size(&root, watchdog))
+    })
+    .await
+    .map_err(|error| SyncError::new(Failure::Failed, format!("measure working copy: {error}")))
+}
+
+fn tree_size(root: &Path, watchdog: bool) -> u64 {
+    tracing::debug!(
+        working_copy_check = if watchdog { "watchdog" } else { "phase" },
+        "measuring knowledge working copy"
+    );
     walkdir::WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
@@ -1022,6 +1127,133 @@ fn summary(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reading_many_blobs_uses_bounded_processes_and_phase_walks() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tracing_subscriber::{Layer, prelude::*};
+        #[derive(Clone, Default)]
+        struct Counts {
+            processes: Arc<AtomicUsize>,
+            phases: Arc<AtomicUsize>,
+        }
+        impl<S: tracing::Subscriber> Layer<S> for Counts {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event.metadata().fields().field("git_operation").is_some() {
+                    self.processes.fetch_add(1, Ordering::Relaxed);
+                }
+                struct Check<'a>(&'a AtomicUsize);
+                impl tracing::field::Visit for Check<'_> {
+                    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+                    }
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        if field.name() == "working_copy_check" && value == "phase" {
+                            self.0.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                event.record(&mut Check(&self.phases));
+            }
+        }
+        let root = tempfile::tempdir_in("target").unwrap();
+        let repository = root.path().join("source");
+        std::fs::create_dir(&repository).unwrap();
+        for n in 0..64 {
+            let content = match n {
+                17 => vec![b'x'; 33],
+                18 => Vec::new(),
+                19 => vec![0xff, b'\n', 0, 0xfe],
+                _ => format!("Contents {n}\n").into_bytes(),
+            };
+            std::fs::write(repository.join(format!("{n}.md")), content).unwrap();
+        }
+        for args in [
+            &["init", "--quiet", "--initial-branch=main"][..],
+            &["add", "."],
+            &["commit", "--quiet", "-m", "Files"],
+        ] {
+            let result = std::process::Command::new("git")
+                .current_dir(&repository)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.test",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        let git = Git::new(
+            root.path().join("work"),
+            root.path().join("known_hosts"),
+            true,
+        );
+        let url = GitUrl::parse(&format!("file://{}", repository.display()), true).unwrap();
+        let limits = Limits {
+            max_files: 5000,
+            max_file_bytes: 32,
+            max_total_bytes: 100 * 1024 * 1024,
+            max_download_bytes: 300 * 1024 * 1024,
+        };
+        let reservation = crate::files::disk::DiskAdmission::new(root.path(), 0)
+            .reserve(400 * 1024 * 1024)
+            .unwrap();
+        let counts = Counts::default();
+        let _subscriber =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(counts.clone()));
+        let snapshot = git
+            .snapshot(
+                &url,
+                "main",
+                "",
+                &Credentials::None,
+                SnapshotOptions {
+                    limits,
+                    history_depth: 1,
+                },
+                reservation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.files.len(), 63);
+        assert_eq!(snapshot.skipped, 1);
+        for file in snapshot.files {
+            let expected = match file.path.as_str() {
+                "17.md" => panic!("the oversized file must be skipped"),
+                "18.md" => Vec::new(),
+                "19.md" => vec![0xff, b'\n', 0, 0xfe],
+                _ => format!("Contents {}\n", file.path.trim_end_matches(".md")).into_bytes(),
+            };
+            assert_eq!(file.content, expected, "{}", file.path);
+        }
+        let processes = counts.processes.load(Ordering::Relaxed);
+        let phases = counts.phases.load(Ordering::Relaxed);
+        assert!(
+            (1..=20).contains(&processes),
+            "{processes} Git processes for 64 files"
+        );
+        assert!(
+            (1..=4).contains(&phases),
+            "{phases} full walks outside the watchdog"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
