@@ -18,7 +18,7 @@ service manager can load them for it.
 | --- | --- | --- |
 | `ONELOOP_PUBLIC_URL` | None, required | The address people open, such as `https://tasks.example.com`. oneloop uses it for links, sign-in checks and AI assistant connections. It must use HTTPS, except for `localhost`, `127.0.0.1` and `[::1]`. Include the port if it isn't the standard one. No path, query or credentials. |
 | `ONELOOP_LISTEN` | `127.0.0.1:8080` | The IP address and port to listen on, such as `0.0.0.0:8080` or `[::1]:8080`. Host names don't work here. The Docker image sets `0.0.0.0:8080`. |
-| `ONELOOP_DATA_DIR` | `./data` | The folder for the database, uploaded files and internal keys. A relative path starts from the working directory. A symbolic link followed by `..` uses the linked folder's parent. It must be on a local disk; NFS and SMB aren't supported. The Docker image sets `/data`. |
+| `ONELOOP_DATA_DIR` | `./data` | The folder for the database, uploaded files and internal keys. A relative path starts from the working directory. A symbolic link followed by `..` uses the linked folder's parent, so the link must point to an existing folder. The data folder must be on a local disk; NFS and SMB aren't supported. The Docker image sets `/data`. |
 | `ONELOOP_TIMEZONE` | `UTC` | Your team's timezone. See [Timezone](#timezone). |
 | `ONELOOP_STORAGE_LIMIT` | `10GiB` | Space for uploaded files, their previews and unfinished uploads. See [Storage](#storage). |
 | `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload that would leave less free disk space than this. A Knowledge sync needs more; see [Limits](#limits). |

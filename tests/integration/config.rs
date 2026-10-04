@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
 
 use oneloop::config::{Config, DataConfig};
 
@@ -48,7 +48,11 @@ fn configuration_parses_sizes_proxies_and_paths() {
     .expect("valid custom configuration");
 
     assert_eq!(config.listen, "0.0.0.0:9000".parse::<SocketAddr>().unwrap());
-    assert!(config.data_dir.ends_with(PathBuf::from("instance")));
+    // `var` does not exist, so `..` after it names the folder above it.
+    assert_eq!(
+        config.data_dir,
+        std::env::current_dir().unwrap().join("instance")
+    );
     assert_eq!(config.timezone.name(), "Asia/Tashkent");
     assert_eq!(config.storage_limit_bytes, 12_000_000_000);
     assert_eq!(config.disk_min_free_bytes, 512 * 1024 * 1024);
@@ -95,6 +99,19 @@ fn maintenance_configuration_does_not_require_public_url() {
     let config = DataConfig::from_os_iter(environment(&[("ONELOOP_DATA_DIR", "./state")]))
         .expect("maintenance only needs data path");
     assert!(config.data_dir.is_absolute());
+}
+
+#[cfg(unix)]
+#[test]
+fn data_dir_rejects_parent_component_after_a_broken_symbolic_link() {
+    let root = crate::support::scratch_dir();
+    let link = root.path().join("volume");
+    std::os::unix::fs::symlink(root.path().join("unmounted/volume"), &link).unwrap();
+    let error = DataConfig::from_os_iter([("ONELOOP_DATA_DIR", link.join("../data"))]).unwrap_err();
+    assert!(
+        error.to_string().contains("broken symbolic link"),
+        "{error}"
+    );
 }
 
 #[test]

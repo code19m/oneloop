@@ -284,6 +284,34 @@ fn restore_preserves_preprovisioned_directory_and_rejects_incomplete_publication
             .to_string()
             .contains("incomplete restore")
     );
+    // Creating a missing folder can make a path reach the marked directory.
+    assert!(
+        migrate(parent.join("missing/../volume"), None)
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete restore")
+    );
+}
+
+#[test]
+fn restore_refuses_a_nonempty_target_named_through_a_missing_folder() {
+    let root = support::scratch_dir();
+    let live = root.path().join("live");
+    migrate(&live, None).unwrap();
+    let backup = root.path().join("backup");
+    create_backup(&live, &backup).unwrap();
+    let entries = || {
+        let mut names: Vec<_> = fs::read_dir(&live)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = entries();
+    let error = restore_backup(&backup, root.path().join("missing/../live")).unwrap_err();
+    assert!(error.to_string().contains("not empty"), "{error}");
+    assert_eq!(entries(), before);
 }
 
 #[test]
