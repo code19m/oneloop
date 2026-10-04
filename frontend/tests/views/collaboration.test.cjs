@@ -155,6 +155,26 @@ for(const next of ['typing','reply','edit','reopen'])test(`comment completion pr
  t.controller.dispose();
 });
 
+test('a comment edit typed after Save saves over that acknowledged save',async()=>{
+ const requests=[];let release;
+ const t=productionComments({execute:(_operation,payload,options)=>{
+  requests.push(options.expectedRevision);
+  if(options.expectedRevision!==t.comment.revision)return Promise.reject(conflict());
+  Object.assign(t.comment,{content:payload.content,revision:t.comment.revision+1});
+  const saved={entities:[{...t.comment}],events:[{}]};
+  return requests.length===1?new Promise(resolve=>{release=()=>resolve(saved);}):Promise.resolve(saved);
+ }});
+ await settle();
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'First edit');t.A.addComment('BIR-079');
+  const input=typeComment(t,'First edit, continued');
+  release();await settle();await settle();
+  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'First edit, continued');
+  t.A.addComment('BIR-079');await settle();await settle();
+  assert.deepEqual(requests,[1,2]);assert.equal(t.comment.content,'First edit, continued');
+ }finally{t.controller.dispose();}
+});
+
 /** Boot a task page; `prepare` edits the projection before the views load. */
 function boot(prepare, route = 'task/BIR-079', scenario = '') {
   return bootApp({ route, scenario, fixture: scenario === 'collaboration-demo' ? 'collaboration-demo' : undefined, prepare: prepare || undefined });

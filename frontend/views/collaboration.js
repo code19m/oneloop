@@ -279,6 +279,7 @@
      inboxPage(meta){const {items,...state}=meta;inboxMeta={...inboxMeta,...state};inboxBusy(false);if(hooks.view()==='inbox')refreshInbox({...meta,items});else badge();},
      taskPage(taskId,meta){taskPages.set(taskId,meta);const task=hooks.task(taskId);if(!task)return;if(pendingTarget?.commentId){const target=task.comments?.find(c=>c.id===pendingTarget.commentId);if(target?.parentId)expanded.add(target.parentId);}if(mountedTaskId!==task.id)return;const next=feedSnapshotFor(task,meta),sameData=feedSnapshot?.taskId===task.id&&feedSnapshot.data===next.data;if(sameData&&feedSnapshot.meta===next.meta)return;feedSnapshot=next;if(commentMode.mode==='comment'){if(hooks.refreshActivity)hooks.refreshActivity(task.id,sameData);else refreshComments(task);mount(false);}},
      commentSaved(taskId,comment,result){const task=hooks.task(taskId);if(task)savedComment(task,comment,result.mode,result.changed,result);},
+     commentAcknowledged(submitted,comment){if(commentEditor?.editorId===submitted.editorId&&commentEditor.revision===submitted.revision)commentEditor.revision=comment.revision;},
      commentEditor:currentCommentInput,
      acceptCommentLatest(submitted,comment){
       const input=currentCommentInput(submitted);if(!input)return;
