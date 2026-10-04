@@ -32,8 +32,7 @@ into Claude Code.
 
 ### Codex
 
-Add this to `~/.codex/config.toml`, using your oneloop address. If an `oneloop`
-entry already exists, replace it and remove its `oauth_resource` setting.
+Add this to `~/.codex/config.toml`, using your oneloop address.
 
 ```toml
 [mcp_servers.oneloop]
@@ -57,7 +56,6 @@ codex mcp login oneloop
 ```
 
 Choose projects and capabilities in the browser, then choose **Connect**.
-Codex selects dynamic client registration automatically.
 
 ### Other clients
 
