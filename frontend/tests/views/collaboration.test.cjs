@@ -1,7 +1,59 @@
 // views/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../support/dom.cjs');
+const { bootApp, settle } = require('../support/dom.cjs');
+const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
+const { createRecoveryController } = require('../../src/features/recovery/controller.js');
+const { ApiError } = require('../../src/data/api-client.js');
+
+function productionComments(commands) {
+ let controller,transport;
+ const comment={id:'comment-1',authorId:'taylorwu',rootId:'comment-1',content:'Original',mentions:[],createdAt:1700000000,revision:1};
+ const t=boot((D,w)=>{
+  D.tasks.find(item=>item.id==='BIR-079').internalId='task-1';
+  transport={data:D,api:{comments:async()=>({items:[{...comment}],nextCursor:null}),activity:async()=>({items:[],nextCursor:null})},commands,subscribe:()=>()=>{}};
+  w.OneloopTransport=transport;
+  controller=installCollaborationController({transport,eventSourceFactory:()=>({addEventListener(){},close(){}})});
+  w.OneloopCollaboration=controller;
+ });
+ return {...t,controller,transport,comment};
+}
+
+test('an open comment edit conflicts against its original revision after a live refresh',async()=>{
+ const requests=[],reviews=[];
+ const t=productionComments({execute:async(_operation,payload,options)=>{
+  requests.push(options.expectedRevision);
+  if(options.expectedRevision!==t.comment.revision)throw new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
+  Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
+ }});
+ await settle();
+ const previous=globalThis.OneloopRecovery;
+ globalThis.OneloopRecovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
+  Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
+  t.A.addComment('BIR-079');await settle();
+  assert.deepEqual(requests,[1]);assert.deepEqual(reviews,['Remote edit']);
+  assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
+
+for(const next of ['typing','reply','edit','reopen'])test(`comment completion preserves a newer ${next} draft and focus`,async()=>{
+ let release;
+ const t=productionComments({execute:()=>new Promise(resolve=>{release=resolve;})});
+ await settle();
+ if(next==='reopen')t.A.editComment('BIR-079','comment-1');
+ typeComment(t,'Submitted draft');t.A.addComment('BIR-079');
+ if(next==='reply')t.A.replyComment('BIR-079','comment-1');
+ if(next==='edit')t.A.editComment('BIR-079','comment-1');
+ if(next==='reopen'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-1');}
+ const input=typeComment(t,next==='reopen'?'Submitted draft':'New unsent draft');input.focus();input.setSelectionRange(2,5);
+ release({entities:[{...t.comment,id:'saved',rootId:'saved',content:'Submitted draft'}],events:[{}]});await settle();
+ assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,next==='reopen'?'Submitted draft':'New unsent draft');
+ assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+ assert(t.D.tasks.find(item=>item.id==='BIR-079').comments.some(item=>item.id==='saved'));
+ t.controller.dispose();
+});
 
 /** Boot a task page; `prepare` edits the projection before the views load. */
 function boot(prepare, route = 'task/BIR-079', scenario = '') {

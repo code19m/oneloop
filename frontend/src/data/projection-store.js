@@ -1,6 +1,7 @@
 // @ts-check
 
 import {secondsToMilliseconds} from './time.js';
+import {mapInboxItem} from './inbox-mapper.js';
 
 import {refreshPageWindow} from './page-window.js';
 
@@ -229,7 +230,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   replace(data.tasks, (bootstrap.tasks ?? []).map(view=>retainTaskDetails(sameUser?previousTasks.get(view.id):null,mapTask(view))));
   if(!bootstrap.view)replace(data.pool, (bootstrap.pool ?? []).map(mapPoolItem));
   else replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
-  if(!bootstrap.view)replace(data.notifications, bootstrap.notifications ?? []);
+  if(!bootstrap.view)replace(data.notifications, (bootstrap.notifications ?? []).map(mapInboxItem));
   if(!bootstrap.view)replace(data.browserSessions, (bootstrap.browserSessions ?? []).map((session) => ({
     ...session, userId:session.userId ?? identity?.id ?? identity?.userId,
     device:sessionDeviceLabel(session), browser:sessionBrowserLabel(session), createdAt:secondsToMilliseconds(session.createdAt) ?? session.createdAt,
