@@ -12,8 +12,8 @@ use axum::{
     Router,
     body::Body,
     extract::{ConnectInfo, Request},
-    http::{StatusCode, header},
-    middleware::{self, Next},
+    http::{HeaderValue, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use hyper_util::{
@@ -24,6 +24,8 @@ use hyper_util::{
 use tokio::{io::AsyncWriteExt, net::TcpListener, sync::watch, task::JoinSet};
 use tokio_stream::StreamExt;
 
+use crate::AppError;
+
 const MAX_CONNECTIONS: usize = 1024;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -33,15 +35,7 @@ pub(crate) async fn serve(
     router: Router,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    serve_with_limits(
-        listener,
-        router,
-        shutdown,
-        MAX_CONNECTIONS,
-        HEADER_TIMEOUT,
-        BODY_IDLE_TIMEOUT,
-    )
-    .await
+    serve_with_limits(listener, router, shutdown, MAX_CONNECTIONS, HEADER_TIMEOUT).await
 }
 
 async fn serve_with_limits(
@@ -50,11 +44,7 @@ async fn serve_with_limits(
     shutdown: impl Future<Output = ()>,
     limit: usize,
     header_timeout: Duration,
-    body_idle_timeout: Duration,
 ) -> io::Result<()> {
-    let router = router.layer(middleware::from_fn(move |request, next| {
-        read_body_with_idle_timeout(request, next, body_idle_timeout)
-    }));
     let mut connections = JoinSet::new();
     let (closing, _) = watch::channel(false);
     tokio::pin!(shutdown);
@@ -122,6 +112,12 @@ async fn serve_with_limits(
     Ok(())
 }
 
+/// Ends a request whose body sends no data for a minute. The application
+/// adds this inside its error handling, so the 408 looks like other errors.
+pub(crate) async fn bound_body_idle_time(request: Request, next: Next) -> Response {
+    read_body_with_idle_timeout(request, next, BODY_IDLE_TIMEOUT).await
+}
+
 async fn read_body_with_idle_timeout(request: Request, next: Next, idle: Duration) -> Response {
     let (parts, body) = request.into_parts();
     let expired = Arc::new(AtomicBool::new(false));
@@ -142,7 +138,12 @@ async fn read_body_with_idle_timeout(request: Request, next: Next, idle: Duratio
         .run(Request::from_parts(parts, Body::from_stream(stream)))
         .await;
     if expired.load(Ordering::Relaxed) {
-        (StatusCode::REQUEST_TIMEOUT, [(header::CONNECTION, "close")]).into_response()
+        let mut response = AppError::RequestTimeout.into_response();
+        // The rest of the body is unread, so the connection can't be reused.
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        response
     } else {
         response
     }
@@ -158,10 +159,14 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let router = Router::new().route(
-            "/",
-            axum::routing::post(|body: axum::body::Bytes| async move { body }),
-        );
+        let router = Router::new()
+            .route(
+                "/",
+                axum::routing::post(|body: axum::body::Bytes| async move { body }),
+            )
+            .layer(axum::middleware::from_fn(|request, next| {
+                read_body_with_idle_timeout(request, next, Duration::from_millis(100))
+            }));
         let server = tokio::spawn(serve_with_limits(
             listener,
             router,
@@ -169,7 +174,6 @@ mod tests {
                 let _ = stopped.await;
             },
             1,
-            Duration::from_millis(100),
             Duration::from_millis(100),
         ));
         let mut slow = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -216,7 +220,6 @@ mod tests {
             },
             1,
             Duration::from_secs(15),
-            BODY_IDLE_TIMEOUT,
         ));
         let mut active = tokio::net::TcpStream::connect(address).await.unwrap();
         active
@@ -278,7 +281,7 @@ mod tests {
                     axum::response::Sse::new(events)
                 }),
             )
-            .layer(middleware::from_fn(|request, next| {
+            .layer(axum::middleware::from_fn(|request, next| {
                 read_body_with_idle_timeout(request, next, Duration::from_secs(10))
             }));
         let (chunks, body) = tokio::sync::mpsc::channel(1);
@@ -300,7 +303,7 @@ mod tests {
         }
         drop(chunks);
         let response = upload.await.unwrap().unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(
             axum::body::to_bytes(response.into_body(), 100)
                 .await
@@ -336,7 +339,6 @@ mod tests {
                 let _ = stopped.await;
             },
             1,
-            Duration::from_millis(100),
             Duration::from_millis(100),
         ));
         let mut slow = tokio::net::TcpStream::connect(address).await.unwrap();

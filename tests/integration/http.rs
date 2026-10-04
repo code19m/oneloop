@@ -501,6 +501,41 @@ async fn malformed_requests_have_field_errors_after_origin_and_authentication() 
     }
 }
 
+#[tokio::test]
+async fn stalled_request_bodies_get_the_standard_error_response() {
+    let (_directory, app, _token) = fixture().await;
+    let login = |body| {
+        Request::post("/api/auth/login")
+            .header("Origin", "http://127.0.0.1:8080")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap()
+    };
+    let malformed = app.clone().oneshot(login(Body::from("{"))).await.unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    // The first byte arrives, then the body neither continues nor ends.
+    let first = Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"{"));
+    let stalled =
+        tokio_stream::StreamExt::chain(tokio_stream::iter([first]), tokio_stream::pending());
+    tokio::time::pause();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        app.oneshot(login(Body::from_stream(stalled))),
+    )
+    .await
+    .expect("a stalled body gets a response")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    for name in malformed.headers().keys() {
+        assert!(response.headers().contains_key(name), "missing {name}");
+    }
+    assert_eq!(response.headers()["connection"], "close");
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "request_timeout"
+    );
+}
+
 // Keep this inventory in sync with router declarations. Native OAuth/MCP writes
 // intentionally have their own credential/origin policy, not browser-cookie CSRF.
 const BROWSER_ROUTES: &[(&str, &str, bool)] = &[

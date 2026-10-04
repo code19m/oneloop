@@ -21,6 +21,8 @@ pub enum AppError {
     Validation { field: String, message: String },
     #[error("The request exceeds the size limit")]
     RequestTooLarge,
+    #[error("The request took too long to arrive; try again")]
+    RequestTimeout,
     #[error("authentication is required")]
     Unauthorized,
     #[error("Incorrect username or password.")]
@@ -130,6 +132,7 @@ impl AppError {
             Self::Config(_) => "invalid_configuration",
             Self::Validation { .. } => "validation_failed",
             Self::RequestTooLarge => "request_too_large",
+            Self::RequestTimeout => "request_timeout",
             Self::Unauthorized => "unauthorized",
             Self::InvalidCredentials => "invalid_credentials",
             Self::IncorrectPassword { .. } => "incorrect_password",
@@ -166,6 +169,7 @@ impl AppError {
                 StatusCode::BAD_REQUEST
             }
             Self::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::Unauthorized | Self::InvalidCredentials => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::InvalidOrigin { .. } => StatusCode::FORBIDDEN,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
