@@ -727,6 +727,47 @@ async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
     assert_eq!(revoked, (0, 0));
 }
 
+/// Runs a browser command for a signed-in session and expects it to succeed.
+async fn browser_command(app: &Router, session: &str, command: Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/commands")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::from(command.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// The client IDs that the session's Profile lists under Connected apps.
+async fn connected_app_clients(app: &Router, session: &str) -> Vec<String> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/apps")
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["clientId"].as_str().unwrap().to_owned())
+        .collect()
+}
+
 /// Adds a second project, "Old project", with the fixture's user as a member.
 async fn add_old_project(db: &Db, user: String) {
     db.run(move |connection| {
@@ -747,23 +788,12 @@ async fn add_old_project(db: &Db, user: String) {
 /// Deletes "Old project" the way an administrator does in the browser.
 async fn delete_old_project(app: &Router, db: &Db) {
     let admin = support::add_user(db, "admin", true).await;
-    let deleted = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/commands")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::ORIGIN, "http://127.0.0.1:8080")
-                .header(header::COOKIE, format!("oneloop_session={}", admin.token))
-                .body(Body::from(
-                    json!({"operation":"project.delete","payload":{"projectId":"project-2","confirmedName":"Old project"},"idempotencyKey":"delete-old-project","expectedRevision":1}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(deleted.status(), StatusCode::OK);
+    browser_command(
+        app,
+        &admin.token,
+        json!({"operation":"project.delete","payload":{"projectId":"project-2","confirmedName":"Old project"},"idempotencyKey":"delete-old-project","expectedRevision":1}),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -814,26 +844,10 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
     delete_old_project(&app, &db).await;
 
     // The deletion itself stores the revocation; no app request is needed first.
-    let apps = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/apps")
-                .header(header::COOKIE, format!("oneloop_session={session}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(apps.status(), StatusCode::OK);
-    let apps = body_json(apps).await;
-    let listed: Vec<&str> = apps["apps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["clientId"].as_str().unwrap())
-        .collect();
-    assert_eq!(listed, [kept_client.as_str()]);
+    assert_eq!(
+        connected_app_clients(&app, &session).await,
+        [kept_client.as_str()]
+    );
     let upload = app
         .clone()
         .oneshot(
@@ -911,17 +925,7 @@ async fn project_deletion_invalidates_unexchanged_codes_that_selected_it() {
     delete_old_project(&app, &db).await;
     let exchanged = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client),
-                ("code", &code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                ("code_verifier", &verifier),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(code_request(&client, &code, &verifier))
         .await
         .unwrap();
     assert_eq!(exchanged.status(), StatusCode::BAD_REQUEST);

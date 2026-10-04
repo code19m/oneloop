@@ -378,21 +378,25 @@ async fn authorize_with(
 pub(crate) async fn issue(app: &Router, client: &str, code: &str, verifier: &str) -> Value {
     let response = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", client),
-                ("code", code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                ("code_verifier", verifier),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(code_request(client, code, verifier))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     body_json(response).await
+}
+
+fn code_request(client: &str, code: &str, verifier: &str) -> Request<Body> {
+    form(
+        "/oauth/token",
+        &[
+            ("grant_type", "authorization_code"),
+            ("client_id", client),
+            ("code", code),
+            ("redirect_uri", "http://127.0.0.1:49152/callback"),
+            ("code_verifier", verifier),
+            ("resource", "http://127.0.0.1:8080/mcp"),
+        ],
+    )
 }
 
 async fn scoped_mcp<'a>(
