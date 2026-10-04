@@ -59,7 +59,7 @@ reference.
 
 ## Status
 
-oneloop is at its first release candidate. Small teams can use it, but expect
+oneloop is a release candidate. Small teams can use it, but expect
 some bugs, and read the [changelog](CHANGELOG.md) before you upgrade. It runs on
 Linux and macOS, directly or in Docker. Windows is not supported.
 

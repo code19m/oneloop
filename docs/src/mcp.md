@@ -32,19 +32,30 @@ into Claude Code.
 
 ### Codex
 
-```sh
-codex mcp add oneloop \
-  --url https://tasks.example.com/mcp \
-  --oauth-resource https://tasks.example.com/mcp \
-  --oauth-client-registration dcr
-codex mcp login oneloop \
-  --oauth-client-registration dcr \
-  --scopes project_read,discussion,board_manage,roadmap_manage,inbox_private,my_pool_private,attachments,destructive
+Add this to `~/.codex/config.toml`, using your oneloop address.
+
+```toml
+[mcp_servers.oneloop]
+url = "https://tasks.example.com/mcp"
+scopes = [
+  "project_read",
+  "discussion",
+  "board_manage",
+  "roadmap_manage",
+  "inbox_private",
+  "my_pool_private",
+  "attachments",
+  "destructive",
+]
 ```
 
-`--scopes` lists the capabilities that Codex may ask for. Leave out any that you
-won't grant. Then choose projects and capabilities in the browser, and choose
-**Connect**.
+Leave out capabilities you won't grant. Then sign in:
+
+```sh
+codex mcp login oneloop
+```
+
+Choose projects and capabilities in the browser, then choose **Connect**.
 
 ### Other clients
 
@@ -110,7 +121,7 @@ oneloop also ends a connection when:
 
 | Problem | Solution |
 | --- | --- |
-| The Connect page offers only **Read selected projects** | The assistant didn't ask for more. With Codex, sign in again with `--scopes`. |
+| The Connect page offers only **Read selected projects** | The assistant didn't ask for more. With Codex, check the configured `scopes` in the [connection steps](#codex), then sign in again. |
 | The assistant can't reach oneloop | Check that its computer can open your oneloop address, with the exact host name. |
 | The assistant asks you to sign in again | The connection ended for one of the reasons above. Connect it again. |
 | Tool calls fail with `forbidden` | You, or the connection, don't have that permission in this project. |
@@ -136,7 +147,7 @@ and deleting needs `destructive` too.
 | `read_inbox` | Reads your Inbox, for the selected projects only | Read |
 | `read_knowledge_overview` | Reads the knowledge base's sync state, a folder's README and an index of its files with their titles and headings | Read |
 | `read_knowledge_file` | Reads one knowledge base file's text, or one section of a Markdown file | Read |
-| `search_knowledge` | Searches knowledge base file names, paths and text | Read |
+| `search_knowledge` | Searches knowledge base file names, paths and text within the [search limits](reference.md#limits) | Read |
 | `execute_work_command` | Creates and changes Roadmap, task and Pool work | Write |
 | `execute_discussion_command` | Posts and edits your comments, and updates your Inbox | Write |
 | `execute_destructive_command` | Permanently deletes work, or one of your own comments | Delete |
@@ -182,15 +193,16 @@ schema describes the payload of each operation.
   a minute in each project.
 - **Files.** Upload and download tickets work once and expire after five
   minutes. Send the bytes to the returned `url` with the returned
-  `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload (at most
-  25 MiB), or `GET` to download. Never send a local file path. To retry a failed
-  upload, ask for a new ticket with the same `idempotencyKey`, file name, size
-  and bytes, so the file is attached only once.
-- **Knowledge base.** `read_knowledge_overview` returns the README and up to
-  200 files, each Markdown file with its title and headings; pass a `folder`, or
-  use `search_knowledge`, to see more. `read_knowledge_file` returns up to
-  100,000 characters; to read one part of a long document, pass a heading as
-  `section`. Images, PDFs and other binary files return only their details.
+  `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload, within the
+  [file limits](reference.md#limits), or `GET` to download. Never send a local
+  file path. To retry a failed upload, ask for a new ticket with the same
+  `idempotencyKey`, file name, size and bytes, so the file is attached only once.
+- **Knowledge base.** `read_knowledge_overview` returns the README and a list
+  of files, each Markdown file with its title and headings; pass a `folder`, or
+  use `search_knowledge`, to see more. `read_knowledge_file` returns text within
+  the [response limits](reference.md#limits); to read one part of a long
+  document, pass a heading as `section`. Images, PDFs and other binary files
+  return only their details.
 - **Errors.** A failed call returns a `code`, a `message`, `details` and, when
   waiting helps, `retryAfter` in seconds.
 - **Text is data.** People write the titles, descriptions, comments, file names

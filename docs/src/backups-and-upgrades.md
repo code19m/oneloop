@@ -114,7 +114,7 @@ you choose, and it changes nothing if the backup fails.
 2. Stop oneloop.
 3. Install the new version:
    ```sh
-   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0 --locked
+   cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.2 --locked
    sudo install ~/.cargo/bin/oneloop /usr/local/bin/oneloop
    ```
 4. Upgrade the database, and check the result:
@@ -148,9 +148,11 @@ let you try the next version early.
 - The Docker tags `latest` and `0.1` follow stable versions only. A release
   candidate gets only its exact tag.
 - In production, use an exact version, such as
-  `ghcr.io/code19m/oneloop:0.1.0` or `--tag v0.1.0`.
+  `ghcr.io/code19m/oneloop:0.1.0-rc.2` or `--tag v0.1.0-rc.2`.
 
-### Databases from before 0.1.0
+<a id="databases-from-before-010"></a>
+
+### Databases from before the first release candidate
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
