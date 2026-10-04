@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
 const { installViewBridge } = require('../../../src/app/view-bridge.js');
 const { createCommandGateway } = require('../../../src/data/command-gateway.js');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 for(const replacement of [null,'modal','drawer'])test(`epic reopening updates its own drawer and preserves a replacement ${replacement||'none'}`,async()=>{
  const t=bootApp({route:'roadmap'}),epic=t.D.epics.find(item=>item.state==='done'&&item.end),previous=globalThis.document;
@@ -115,6 +116,33 @@ test('Edit epic shows the saved title in the drawer it was opened from',async()=
   t.A.saveEpic({target:form,preventDefault(){}},epic.id);await settle();await settle();
   assert.equal(t.d.querySelector('.modal'),null);
   assert.equal(t.d.querySelector('.peek #peek-title').textContent,'Renamed from the drawer');
+ }finally{Object.assign(globalThis,previous);}
+});
+
+test('Keep my changes closes an Unblock dialog that its conflict reload re-rendered',async()=>{
+ const t=bootApp({route:'task/BIR-079',prepare(D){
+  const task=D.tasks.find(item=>item.id==='BIR-079');Object.assign(task,{internalId:'task-1',revision:1});
+  task.block={id:'block-1',reason:'Waiting on vendor',revision:1,by:D.session.userId,at:1700000000000,mentions:[]};
+ }});
+ const previous={document:globalThis.document,FormData:globalThis.FormData};
+ Object.assign(globalThis,{document:t.d,FormData:t.w.FormData});
+ // Someone else saved revision 2 after this page loaded revision 1.
+ const task=t.D.tasks.find(item=>item.id==='BIR-079'),expected=[];let revision=2;
+ const gateway={execute:async(_operation,_payload,options)=>{
+  expected.push(options.expectedRevision);
+  if(options.expectedRevision!==revision)throw new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
+  revision=3;Object.assign(task,{block:null,revision});return {entities:[],events:[]};
+ }};
+ // As in production, the task read repaints the page and its open dialog.
+ const reads={task:async()=>{task.revision=revision;t.A.refresh();return {};},counts:async()=>({}),cancel(){}};
+ installViewBridge({app:t.A,data:t.D,api:{},gateway,reads,auth:{},recovery:t.w.Recovery,reloadBootstrap:async()=>({})});
+ try{
+  t.A.openModal('unblock','BIR-079');const form=t.d.querySelector('.modal form');
+  t.A.saveBlock({target:form,preventDefault(){}},'BIR-079','unblock');await settle();await settle();
+  assert.equal(form.isConnected,false,'the reload re-rendered the dialog');
+  const keep=[...t.d.querySelectorAll('.modal [data-recovery-conflict] button')].find(button=>button.textContent==='Keep my changes');
+  assert(keep,'the dialog shows the conflict');keep.click();await settle();await settle();
+  assert.deepEqual(expected,[1,2]);assert.equal(t.d.querySelector('.modal'),null);
  }finally{Object.assign(globalThis,previous);}
 });
 

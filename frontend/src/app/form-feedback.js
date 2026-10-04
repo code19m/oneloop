@@ -4,9 +4,16 @@ import { actionErrorFeedback, formFieldName, retryDelayMs, retryMessage } from '
 
 /** Apply completion effects only while the submitting editor is still open. */
 export function completeForm(form, complete) {
-  if (!form || form.isConnected === false) return false;
+  if (!form) return false;
   const editor = form.closest?.('.modal,.peek');
-  if (editor && editor !== (form.ownerDocument.querySelector('.modal') ?? form.ownerDocument.querySelector('.peek'))) return false;
+  if (!editor) {
+    if (form.isConnected === false) return false;
+  } else {
+    const current = form.ownerDocument.querySelector('.modal') ?? form.ownerDocument.querySelector('.peek');
+    // A re-render replaces the editor's nodes but keeps its open generation.
+    const generation = editor.dataset?.openGeneration;
+    if (current !== editor && !(generation && current?.dataset?.openGeneration === generation)) return false;
+  }
   complete();
   return true;
 }

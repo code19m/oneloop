@@ -290,6 +290,16 @@
       if (before.previous.get(selector) === key) el.style.animation = 'none';
     });
   }
+  // Each opened dialog or drawer gets a generation that its re-renders keep,
+  // so a late save can tell its own dialog from one opened after it.
+  let overlayOpens = 0, peekGeneration = 0;
+  const modalGenerations = new WeakMap();
+  function stampOverlays() {
+    if (state.modal && !modalGenerations.has(state.modal)) modalGenerations.set(state.modal, ++overlayOpens);
+    const modal = document.querySelector('#app .modal'), peek = document.querySelector('#app .peek');
+    if (modal && state.modal) modal.dataset.openGeneration = String(modalGenerations.get(state.modal));
+    if (peek && state.peek) peek.dataset.openGeneration = String(peekGeneration);
+  }
 
   // Notifications live outside #app so renders never restart them or clear entered text.
   const toastQueue = [];
@@ -2100,7 +2110,7 @@
     document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
     document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
     migrateEvents?.();mountDescription();collaboration?.mount();
-    finishRenderMotion(motion,true);if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
+    finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
     paintedScope=renderScope();
   }
   function renderContent() {
@@ -2195,6 +2205,7 @@
     if (state.view === 'roadmap' && !error) mountRoadmap();
     window.OneloopKnowledge?.mount();
     finishRenderMotion(renderMotion);
+    stampOverlays();
     if (state.menu) placeMenu();
     collaboration?.mount();
     syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, oldPeekKey, oldPanelFocus });
@@ -2883,7 +2894,7 @@
       App.roadmapTipKey(ev);
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
-    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}state.peek = id; renderOverlays(); },
+    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; renderOverlays(); },
     closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
@@ -3364,6 +3375,7 @@
       (App._poolScroll ||= {})[state.poolTab] = view.querySelector('.pool-list').scrollTop;
       document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));resetPoolCapture();document.getElementById('poolAdd').value='';
       state.modal = { type: 'task', poolId: id, title: item.title, desc:item.desc||'' };
+      stampOverlays();
       view.hidden = true;
       const editor = document.createElement('div');
       editor.className = 'pool-editor';
@@ -3379,6 +3391,7 @@
       const view = document.querySelector('.pool-view');
       if (!view) return;
       state.modal = { type: 'pool' };
+      stampOverlays();
       view.hidden = false;
       updatePool();
       view.querySelector('.pool-list').scrollTop = App._poolScroll?.[state.poolTab] || 0;
