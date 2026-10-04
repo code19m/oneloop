@@ -34,6 +34,20 @@ for(const kind of ['track','epic','milestone','unblock','task','project','user']
  }finally{globalThis.FormData=previous;}
 });
 
+test('a completed epic action cannot dismiss a dialog opened above its still-mounted drawer',async()=>{
+ const t=bootApp({route:'roadmap',prepare(D){D.tasks=[];}}),previous=globalThis.document;
+ globalThis.document=t.d;
+ let release;
+ installViewBridge({app:t.A,data:t.D,api:{},gateway:{execute:()=>new Promise(resolve=>{release=resolve;})},reads:{epic:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  const epic=t.D.epics.find(item=>item.state!=='done');t.A.openPeek(epic.id);const drawer=t.d.querySelector('.peek');
+  t.A.closeEpic(epic.id);assert(release);t.A.openModal('task');assert(drawer.isConnected);
+  const input=t.d.querySelector('.modal [name="title"]');input.value='Next task draft';input.focus();
+  release({entities:[],events:[]});await settle();
+  assert.equal(t.d.querySelector('.modal [name="title"]'),input);assert.equal(input.value,'Next task draft');assert.equal(t.d.activeElement,input);
+ }finally{globalThis.document=previous;}
+});
+
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
 /** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
 const boot = (route = 'task/BIR-079', prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
