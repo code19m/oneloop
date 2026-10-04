@@ -117,27 +117,34 @@ async fn current_grant_projects(state: &AppState, actor: &Actor) -> AppResult<()
     let now = now()?;
     let current = state
         .db
-        .transaction(move |tx| {
-            if grant_projects_current(tx, &grant_id, &user_id)? {
-                return Ok(true);
-            }
-            tx.execute(
-                "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,\
-                     revision=revision+1 WHERE id=?2",
-                rusqlite::params![now, grant_id],
-            )?;
-            tx.execute(
-                "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE grant_id=?2",
-                rusqlite::params![now, grant_id],
-            )?;
-            Ok(false)
-        })
+        .transaction(move |tx| validate_grant_projects_tx(tx, &grant_id, &user_id, now))
         .await?;
     if current {
         Ok(())
     } else {
         Err(AppError::Unauthorized)
     }
+}
+
+/// Return rejection as data so revocation commits before the caller rejects it.
+fn validate_grant_projects_tx(
+    tx: &rusqlite::Transaction<'_>,
+    grant: &str,
+    user: &str,
+    now: i64,
+) -> AppResult<bool> {
+    if grant_projects_current(tx, grant, user)? {
+        return Ok(true);
+    }
+    tx.execute(
+        "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,revision=revision+1 WHERE id=?2",
+        rusqlite::params![now, grant],
+    )?;
+    tx.execute(
+        "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE grant_id=?2",
+        rusqlite::params![now, grant],
+    )?;
+    Ok(false)
 }
 
 fn grant_projects_current(
@@ -179,12 +186,15 @@ fn unauthorized(state: &AppState, token_presented: bool) -> Response {
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
+    let (scheme, token) = headers
         .get(header::AUTHORIZATION)?
         .to_str()
         .ok()?
-        .strip_prefix("Bearer ")
-        .filter(|v| !v.is_empty())
+        .split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("Bearer")
+        && !token.is_empty()
+        && !token.bytes().any(|b| b.is_ascii_whitespace()))
+    .then_some(token)
 }
 
 struct Transfer {
@@ -204,7 +214,7 @@ async fn claim_transfer(
     let token = bearer(headers).ok_or(AppError::Unauthorized)?;
     let hash = hex::encode(Sha256::digest(token.as_bytes()));
     let now = now()?;
-    state
+    let claimed = state
         .db
         .transaction(move |tx| {
             let row = tx
@@ -239,10 +249,20 @@ async fn claim_transfer(
                     rusqlite::Error::QueryReturnedNoRows => AppError::Unauthorized,
                     other => other.into(),
                 })?;
+            row.1.require_ready()?;
+            if !validate_grant_projects_tx(
+                tx,
+                row.1.mcp_grant_id().ok_or(AppError::Unauthorized)?,
+                &row.1.user_id,
+                now,
+            )? {
+                return Ok(None);
+            }
             tx.execute(UPDATE_MCP_FILE_TRANSFERS_SQL, rusqlite::params![now, hash])?;
-            Ok((row.1, row.0))
+            Ok(Some((row.1, row.0)))
         })
-        .await
+        .await?;
+    claimed.ok_or(AppError::Unauthorized)
 }
 
 async fn upload_file(

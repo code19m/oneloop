@@ -1,6 +1,109 @@
 use super::*;
 
 #[tokio::test]
+async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost() {
+    for direction in ["upload", "download"] {
+        let (_dir, db, app, session, user) = fixture().await;
+        db.run(move |c| {
+            c.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1)", [])?;
+            c.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('project-2',?1,1,1)", [user])?;
+            Ok(())
+        }).await.unwrap();
+        let client = register(&app).await;
+        let (code, verifier) = authorize_with(
+            &app,
+            &session,
+            &client,
+            &[
+                "project_read",
+                "board_manage",
+                "roadmap_manage",
+                "attachments",
+            ],
+            &["project-1", "project-2"],
+        )
+        .await;
+        let tokens = issue(&app, &client, &code, &verifier).await;
+        let mut mcp = McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
+        let task = create_protocol_task(&mut mcp, "project-1", direction).await;
+        let upload = tool_value(&mcp.call("create_attachment_upload", json!({"taskId":task, "fileName":"data.txt", "sizeBytes":4,"idempotencyKey":"transfer"})).await);
+        let ticket = if direction == "download" {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/mcp/files/upload")
+                        .header(
+                            header::AUTHORIZATION,
+                            upload["authorization"].as_str().unwrap(),
+                        )
+                        .body(Body::from("data"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let attachment = body_json(response).await["value"]["id"].clone();
+            tool_value(
+                &mcp.call(
+                    "create_attachment_download",
+                    json!({"attachmentId":attachment}),
+                )
+                .await,
+            )
+        } else {
+            upload
+        };
+        db.run(|c| {
+            c.execute(
+                "DELETE FROM project_memberships WHERE project_id='project-2'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(if direction == "upload" { "PUT" } else { "GET" })
+                    .uri(format!("/mcp/files/{direction}"))
+                    .header(
+                        header::AUTHORIZATION,
+                        ticket["authorization"].as_str().unwrap(),
+                    )
+                    .body(Body::from("data"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{direction}");
+        let counts: (i64, i64, i64, i64) = db
+            .run(|c| {
+                Ok((
+                    c.query_row(
+                        "SELECT count(*) FROM mcp_grants WHERE revoked_at IS NULL",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT count(*) FROM mcp_tokens WHERE revoked_at IS NULL",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row("SELECT count(*) FROM task_attachments", [], |r| r.get(0))?,
+                    c.query_row("SELECT count(*) FROM upload_reservations", [], |r| r.get(0))?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(counts, (0, 0, i64::from(direction == "download"), 0));
+    }
+}
+
+#[tokio::test]
 async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() {
     let (_dir, db, app, session, _user) = fixture().await;
     let member_id = db
