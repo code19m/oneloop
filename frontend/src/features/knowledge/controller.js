@@ -143,10 +143,11 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (current.projectId !== projectId || !['knowledge', 'settings'].includes(current.view)) return;
     if (current.modal) {
       // A repaint would reset the dialog, so only fill a deploy key it waits
-      // for; the page behind it repaints on a later read.
+      // for; the page behind it repaints when the dialog closes.
       const key = viewOf(projectId)?.source?.deployKey;
       const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('form[data-knowledge-form] #knowledge-key'));
       if (input && key && !input.value) input.value = key;
+      app()?.refreshAfterDialog?.();
       return;
     }
     if (entry) entry.unpainted = false;
