@@ -94,6 +94,26 @@ test('reconnect refreshes visible Knowledge and invalidates other projects until
   assert.equal(t.state.requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
 });
 
+test('mounting a stale project during its old Knowledge read fetches exactly one follow-up',async()=>{
+  const t=fixture(),requests=[];let resolveOld,resolveLatest;
+  t.api.request=path=>{
+    requests.push(path);
+    if(path==='/api/projects/p2/knowledge')return new Promise(resolve=>{if(!resolveOld)resolveOld=resolve;else resolveLatest=resolve;});
+    return Promise.resolve(handbook());
+  };
+  const visit=projectId=>{t.state.context.projectId=projectId;t.controller.route('knowledge',projectId);t.paint();};
+  visit('p2');visit('p1');await settle();
+  for(const listener of t.listeners)listener({type:'sse',kind:'reconcile'});
+  await settle();visit('p2');t.paint();t.paint();
+  resolveOld({...handbook(),files:[{path:'old.zip',size:1,version:'old'}]});await settle();
+  assert.equal(requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
+  t.paint();t.paint();
+  resolveLatest({...handbook(),files:[{path:'new.zip',size:2,version:'new'}]});await settle();await settle();
+  assert.match(t.d.querySelector('.knowledge-file-list').textContent,/new.zip/);
+  assert.doesNotMatch(t.d.querySelector('.knowledge-file-list').textContent,/old.zip/);
+  await painted(t);assert.equal(requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
+});
+
 for(const failure of [false,true])test(`Knowledge coalesces hints during a read into one follow-up after ${failure?'failure':'success'}`,async()=>{
   const t=fixture();let resolve,reject,requests=0;
   t.api.request=()=>{requests++;return requests===1?new Promise((yes,no)=>{resolve=yes;reject=no;}):Promise.resolve({...handbook(),files:[{path:'new.zip',size:2,version:'new'}]});};

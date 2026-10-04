@@ -505,7 +505,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     preserved = null;
     for (const [host, dispose] of previews) if (!host.isConnected) { try { dispose(); } catch {} previews.delete(host); }
     const entry = cache.get(current.projectId);
-    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && (entry?.stale || !entry?.data && !entry?.error)) void load(current.projectId);
+    if (current.projectId && ['knowledge', 'settings'].includes(current.view) && (entry?.stale || !entry?.data && !entry?.error)) void load(current.projectId, { invalidate: !!entry?.stale });
     if (current.view !== 'knowledge') { schedulePoll(); return; }
     for (const host of documentObject.querySelectorAll('[data-knowledge-preview]')) mountPreview(host);
     if (!documentObject.querySelector('[data-knowledge-preview]')) revealSection();
