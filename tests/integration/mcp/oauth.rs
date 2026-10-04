@@ -768,6 +768,119 @@ async fn connected_app_clients(app: &Router, session: &str) -> Vec<String> {
         .collect()
 }
 
+#[tokio::test]
+async fn member_removal_revokes_grants_even_if_re_added_before_next_request() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let pending_client = register(&app).await;
+    let (pending_code, pending_verifier) = authorize(&app, &session, &pending_client).await;
+    let admin = support::add_user(&db, "admin", true).await;
+    let colleague = support::add_user(&db, "colleague", false).await;
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.add","payload":{"projectId":"project-1","userId":colleague.actor.user_id,"manageBoard":false,"manageRoadmap":false},"idempotencyKey":"add-colleague"}),
+    )
+    .await;
+    let colleague_client = register(&app).await;
+    let (code, verifier) = authorize_with(
+        &app,
+        &colleague.token,
+        &colleague_client,
+        &["project_read"],
+        &["project-1"],
+    )
+    .await;
+    let colleague_tokens = issue(&app, &colleague_client, &code, &verifier).await;
+
+    // Both changes land before the member's apps make another request.
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.remove","payload":{"projectId":"project-1","userId":user},"idempotencyKey":"remove-member","expectedRevision":1}),
+    )
+    .await;
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.add","payload":{"projectId":"project-1","userId":user,"manageBoard":true,"manageRoadmap":true},"idempotencyKey":"re-add-member"}),
+    )
+    .await;
+
+    // The removal stored the revocation, so adding the member back revives nothing.
+    assert!(connected_app_clients(&app, &session).await.is_empty());
+    let denied = app
+        .clone()
+        .oneshot(mcp_request(
+            tokens["access_token"].as_str().unwrap(),
+            None,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let refresh_denied = app
+        .clone()
+        .oneshot(refresh_request(
+            &client,
+            tokens["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refresh_denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(refresh_denied).await["error"], "invalid_grant");
+    let exchange_denied = app
+        .clone()
+        .oneshot(code_request(
+            &pending_client,
+            &pending_code,
+            &pending_verifier,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(exchange_denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(exchange_denied).await["error"], "invalid_grant");
+
+    // Another member's app for the same project is untouched.
+    McpClient::connect(&app, colleague_tokens["access_token"].as_str().unwrap()).await;
+    let refreshed = app
+        .clone()
+        .oneshot(refresh_request(
+            &colleague_client,
+            colleague_tokens["refresh_token"].as_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refreshed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_removed_as_member_keeps_their_app() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let promoted = user.clone();
+    db.run(move |connection| {
+        connection.execute("UPDATE users SET is_admin=1 WHERE id=?1", [promoted])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let admin = support::add_user(&db, "admin", true).await;
+
+    browser_command(
+        &app,
+        &admin.token,
+        json!({"operation":"membership.remove","payload":{"projectId":"project-1","userId":user},"idempotencyKey":"remove-admin-member","expectedRevision":1}),
+    )
+    .await;
+    // An admin still sees and changes every project, so the app keeps it too.
+    McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
+}
+
 /// Adds a second project, "Old project", with the fixture's user as a member.
 async fn add_old_project(db: &Db, user: String) {
     db.run(move |connection| {

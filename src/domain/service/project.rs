@@ -198,7 +198,7 @@ pub(super) fn delete_project(
     }
     // Revoke every connected app that selected this project, even one that
     // also selected others; the cascade below would erase that selection.
-    crate::auth::revoke_project_app_access(tx, &input.project_id, now)?;
+    crate::auth::revoke_project_app_access(tx, &input.project_id, None, now)?;
     // Audit first: project foreign keys become NULL while immutable snapshots remain.
     let event = activity(
         tx,

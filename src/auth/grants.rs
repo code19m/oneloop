@@ -210,32 +210,37 @@ impl AuthService {
     }
 }
 
-/// Revoke every connected app that selected a project, with its tokens; its
-/// transfer tickets stop working with it. Authorization codes for the project
-/// that were not exchanged yet are dropped too. Project deletion calls this
-/// before the cascade removes the selection, so an app that also selected
-/// other projects ends too.
+/// Revoke the connected apps that selected a project, with their tokens; their
+/// transfer tickets stop working with them. Authorization codes for the project
+/// that were not exchanged yet are dropped too. With a user, only that person's
+/// apps and codes end; without one, everyone's do. Call it in the transaction
+/// that takes the project away, so that an app that also selected other
+/// projects ends too and a later change can't revive it.
 pub(crate) fn revoke_project_app_access(
     tx: &Transaction<'_>,
     project_id: &str,
+    user_id: Option<&str>,
     now: i64,
 ) -> AppResult<()> {
     tx.execute(
         "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
-         WHERE revoked_at IS NULL AND id IN
+         WHERE revoked_at IS NULL AND (?3 IS NULL OR user_id=?3) AND id IN
              (SELECT grant_id FROM mcp_grant_projects WHERE project_id=?2)",
-        rusqlite::params![now, project_id],
+        rusqlite::params![now, project_id, user_id],
     )?;
     tx.execute(
         "UPDATE mcp_tokens SET revoked_at=?1 WHERE revoked_at IS NULL AND grant_id IN
-             (SELECT grant_id FROM mcp_grant_projects WHERE project_id=?2)",
-        rusqlite::params![now, project_id],
+             (SELECT g.id FROM mcp_grants g JOIN mcp_grant_projects gp ON gp.grant_id=g.id
+              WHERE gp.project_id=?2 AND (?3 IS NULL OR g.user_id=?3))",
+        rusqlite::params![now, project_id, user_id],
     )?;
-    // Otherwise the exchange fails on the missing project with a server error.
+    // Exchanging such a code would otherwise connect the app to a project the
+    // person lost, or fail on a deleted project with a server error.
     tx.execute(
         "DELETE FROM oauth_authorization_codes WHERE used_at IS NULL
+         AND (?2 IS NULL OR user_id=?2)
          AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?1)",
-        [project_id],
+        rusqlite::params![project_id, user_id],
     )?;
     Ok(())
 }

@@ -190,6 +190,17 @@ pub(super) fn remove_membership(
         "DELETE FROM project_memberships WHERE project_id=?1 AND user_id=?2 AND revision=?3",
         params![input.project_id, input.user_id, expected],
     )?;
+    // The person's apps lose the project now, not at their next request, so
+    // adding the person back can't revive them. An admin still has every
+    // project, so their apps keep it.
+    let is_admin: bool = tx.query_row(
+        "SELECT is_admin FROM users WHERE id=?1",
+        [&input.user_id],
+        |row| row.get(0),
+    )?;
+    if !is_admin {
+        crate::auth::revoke_project_app_access(tx, &input.project_id, Some(&input.user_id), now)?;
+    }
     crate::collaboration::enqueue_access_change_tx(tx, &input.user_id, now)?;
     let entity = json!({
     "entityType":"membership",
