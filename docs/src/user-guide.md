@@ -152,17 +152,11 @@ open a result, and Esc to close the search.
 When a sync fails, the page shows **Knowledge may be out of date** and keeps the
 files from the last successful sync. Admins can choose **Retry sync**.
 
-After a lost connection returns, Knowledge refreshes to show changes you missed.
-Other projects refresh when you next open them.
-
 ## Comments and mentions
 
 Write a comment under the task's activity and press Enter to send it.
 Shift+Enter starts a new line. Every project member can comment, even with a
 read-only Board.
-
-You can keep typing while a comment is being sent. Its confirmation leaves any
-new unsent text in place.
 
 - **Reply** answers a comment in its thread.
 - You can edit and delete your own comments. Admins can edit and delete any
