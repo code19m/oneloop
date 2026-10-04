@@ -285,6 +285,9 @@ test('profile password success is announced only after completion',async()=>{
 });
 
 test('epic completion describes singular and plural open tasks and retains production dismissal',async()=>{
+  const previous=globalThis.document;
+  globalThis.document={querySelector:()=>({isConnected:true})};
+  try{
   for(const count of [1,2]){
     let dialog;
     const state=fixture({view:'roadmap',projectId:'p1'},{app:{confirm:value=>{dialog=value;}},gateway:{execute:async()=>({entities:[],events:[]})}});
@@ -293,6 +296,7 @@ test('epic completion describes singular and plural open tasks and retains produ
     state.app.closeEpic('e1');assert.equal(dialog.text,count===1?'1 open task stays where it is.':'2 open tasks stay where they are.');
     dialog.confirm();await new Promise(resolve=>setTimeout(resolve,0));assert.equal(state.closed,1);
   }
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
 });
 
 test('admin revision conflict reloads through the affected page and retries with its fresh revision',async()=>{

@@ -120,7 +120,12 @@ export function replaceBoardTasks(data, projectId, taskViews) {
 export function appendBoardTasks(data, taskViews) {
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
   for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
-  replace(data.tasks,[...byId.values()]);return data;
+  replace(data.tasks,[...byId.values()].sort(compareTaskOrder));return data;
+}
+
+/** Match the server's position, then opaque ID ordering within each column. */
+export function compareTaskOrder(left, right) {
+  return left.order-right.order || (left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0);
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {

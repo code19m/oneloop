@@ -1,7 +1,38 @@
 // views/app.js: in-place refreshes keep titles, focus, input and loaded feeds.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
+
+for(const kind of ['track','epic','milestone','unblock','task','project','user'])test(`a late ${kind} save preserves the replacement modal and all its fields`,async()=>{
+ const t=bootApp({route:'roadmap'}),previous=globalThis.FormData;
+ globalThis.FormData=t.w.FormData;
+ let release,writes=0;
+ t.D.epics.forEach(epic=>epic.projectId=t.D.tracks.find(track=>track.id===epic.trackId).projectId);
+ const pending=new Promise(resolve=>{release=resolve;});
+ installViewBridge({app:t.A,data:t.D,api:{updateUser:()=>{writes++;return pending;}},gateway:{execute:()=>{writes++;return pending;}},reads:{cancel(){},counts:async()=>{},board:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  const target=kind==='unblock'?'BIR-079':kind==='user'?'robin':null;
+  t.A.openModal(kind,target);
+  const form=t.d.querySelector('.modal form');assert(form,kind);
+  for(const [name,value] of Object.entries({name:'Saved name',title:'Saved title',start:'2026-10-01',date:'2026-10-02',key:'NEW',trackId:t.D.tracks.find(track=>track.projectId===t.A.context().projectId).id,epicId:t.D.epics.find(epic=>epic.projectId===t.A.context().projectId&&epic.state!=='done').id})){
+   const field=form.querySelector(`[name="${name}"]`);if(field)field.value=value;
+  }
+  const method={track:'saveTrack',epic:'saveEpic',milestone:'saveMilestone',unblock:'saveBlock',task:'saveTask',project:'saveProjectNew',user:'saveUser'}[kind];
+  t.A[method]({target:form,preventDefault(){}},target,kind);
+  assert.equal(writes,1,'the valid form started a save');
+  t.A.closeOverlays();t.A.openModal('task');
+  const next=t.d.querySelector('.modal form'),title=next.querySelector('[name="title"]'),desc=next.querySelector('[name="desc"]');
+  title.value='Unsent next title';desc.value='Unsent next description';desc.focus();desc.setSelectionRange(2,6);
+  release(kind==='user'?{displayName:'Saved name',isActive:true,isAdmin:false,revision:2}:{entities:[],events:[]});await settle();
+  assert.equal(t.d.querySelector('.modal form'),next);assert.equal(title.value,'Unsent next title');assert.equal(desc.value,'Unsent next description');
+  assert.equal(t.d.activeElement,desc);assert.equal(desc.selectionStart,2);assert.equal(desc.selectionEnd,6);
+  if(kind==='track'){
+   t.A.closeOverlays();t.A.openModal('track');const current=t.d.querySelector('.modal form');current.querySelector('[name="name"]').value='Another track';
+   t.A.saveTrack({target:current,preventDefault(){}});await settle();assert.equal(t.d.querySelector('.modal'),null,'completion still closes its own open form');
+  }
+ }finally{globalThis.FormData=previous;}
+});
 
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
 /** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */

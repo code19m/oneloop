@@ -17,6 +17,9 @@ What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
 still comment. See [Permissions](admin-guide.md#permissions).
 
+If you close a dialog during a save, that save can still finish. It leaves any
+new dialog you open afterward intact.
+
 ## Roadmap
 
 ![The Roadmap: tracks on the left, epics as bars on a timeline, milestones as vertical lines and a marker for today](assets/screenshots/roadmap.png)
@@ -69,10 +72,10 @@ a review.
 - **+ Task** creates a task. It needs a title and an epic that isn't Done.
 - Drag a card to change its status or its place in the column. On a touch
   screen, drag it by its **⋯** button. The **⋯** menu can also move it, which
-  works well with a keyboard.
+  works well with a keyboard. Card order is shared across sessions.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
-  filters together show fewer.
+  filters together show fewer. Text search ignores spaces at the start and end.
 
 ### Pool
 
@@ -80,6 +83,9 @@ The **Pool** holds ideas that aren't tasks yet. An idea has a title and an
 optional description. Your **My** Pool is private, even from admins. The
 **Team** Pool is shared with the project. When an idea is ready, click it to
 turn it into a task.
+
+Live updates refresh saved titles and descriptions while keeping a description
+you are still editing.
 
 ## Tasks
 
