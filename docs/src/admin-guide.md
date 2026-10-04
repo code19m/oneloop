@@ -48,6 +48,9 @@ You can also create accounts on the server with
 2. Under **Project access**, pick a person in **Add member**.
 3. Tick **Roadmap**, **Board** or both.
 
+**Add member** searches only loaded accounts; choose **Load more users** to
+search more.
+
 To remove someone, choose **Remove from project** (×) on their row. You can't
 remove a person while they have open tasks in the project, so reassign those
 tasks first.

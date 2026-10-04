@@ -1,7 +1,179 @@
 // views/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../support/dom.cjs');
+const { bootApp, settle } = require('../support/dom.cjs');
+const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
+const { createRecoveryController } = require('../../src/features/recovery/controller.js');
+const { ApiError } = require('../../src/data/api-client.js');
+const { installViewBridge } = require('../../src/app/view-bridge.js');
+
+for(const kind of ['comment','block'])for(const state of ['active','removed','inactive'])for(const retained of [true,false])test(`${kind} editor validates ${retained?'saved':'new'} mentions when the recipient is ${state}`,async()=>{
+ const saves=[];
+ const t=bootApp({route:'task/BIR-079',prepare(D,w){
+  w.OneloopTransport={};w.OneloopCollaboration={bind(){return {saveComment(input){saves.push(input);}};}};
+  const task=D.tasks.find(item=>item.id==='BIR-079');task.internalId='task-1';
+  task.comments=[{id:'retained-comment',who:D.session.userId,ts:1700000000000,text:retained?'@robin original':'Original',revision:1,mentions:retained?[{id:'robin',label:'robin',start:0,end:6}]:[]}];
+  task.block={id:'retained-block',reason:retained?'@robin original':'Original',revision:1,by:D.session.userId,at:1700000000000,mentions:retained?[{kind:'user',userId:'robin',label:'@robin',startOffset:0,endOffset:6}]:[]};
+ }});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079'),project=t.D.projects.find(item=>item.id===t.A.context().projectId);
+ const invalidate=()=>{if(state==='removed')project.members=project.members.filter(member=>member.userId!=='robin');if(state==='inactive')t.D.users.find(user=>user.id==='robin').active=false;};
+ const previousFormData=globalThis.FormData,previousCollab=globalThis.Collab;
+ try{
+  if(kind==='block'){
+   globalThis.FormData=t.w.FormData;globalThis.Collab=t.w.Collab;
+   installViewBridge({app:t.A,data:t.D,api:{},gateway:{execute:async(operation,payload)=>{saves.push({operation,payload});return {entities:[],events:[]};}},reads:{counts:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+  }
+  if(retained)invalidate();
+  if(kind==='comment')t.A.editComment(task.id,'retained-comment');else t.A.openModal('block',task.id);
+  if(!retained){if(kind==='comment')mention(t,'@rob','robin');else pickBlock(t,'@rob','robin');invalidate();}
+  if(kind==='comment')typeComment(t,'@robin corrected');else typeBlock(t,'@robin corrected');
+  if(kind==='comment')t.A.addComment(task.id);else saveBlockForm(t);
+  await settle();
+  const accepted=retained||state==='active';assert.equal(saves.length,accepted?1:0);
+  if(!accepted){assert.match(t.d.querySelector(kind==='comment'?'.comment-feedback':'.block-mention-feedback').textContent,/no longer an active project member/);return;}
+  if(kind==='comment'){
+   assert.equal(saves[0].text,'@robin corrected');assert.equal(saves[0].commentId,'retained-comment');
+   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].mentions)),[{id:'robin',label:'robin',start:0,end:6}]);
+  }else{
+   assert.equal(saves[0].operation,'task.block.update');
+   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].payload)),{blockId:'retained-block',reason:'@robin corrected',mentions:[{kind:'user',userId:'robin',startOffset:0,endOffset:6,label:'@robin'}]});
+  }
+ }finally{globalThis.FormData=previousFormData;globalThis.Collab=previousCollab;}
+});
+
+function productionComments(commands) {
+ let controller,transport;
+ const comment={id:'comment-1',authorId:'taylorwu',rootId:'comment-1',content:'Original',mentions:[],createdAt:1700000000,revision:1};
+ const comments=[comment,{...comment,id:'comment-2',rootId:'comment-2',content:'Other comment'}];
+ const t=boot((D,w)=>{
+  D.tasks.find(item=>item.id==='BIR-079').internalId='task-1';
+  transport={data:D,api:{comments:async()=>({items:comments.map(item=>({...item})),nextCursor:null}),activity:async()=>({items:[],nextCursor:null})},commands,subscribe:()=>()=>{}};
+  w.OneloopTransport=transport;
+  controller=installCollaborationController({transport,eventSourceFactory:()=>({addEventListener(){},close(){}})});
+  w.OneloopCollaboration=controller;
+ });
+ return {...t,controller,transport,comment,comments};
+}
+
+const conflict=()=>new ApiError('Comment changed; latest revision is 2',{status:409,code:'revision_conflict'});
+const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+const conflictButton=(t,label)=>[...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label);
+
+test('Use latest accepts comment text, mentions and revision when Save changes had focus',async()=>{
+ const requests=[];
+ const t=productionComments({execute:async(_operation,payload,options)=>{
+  requests.push({payload,revision:options.expectedRevision});
+  if(options.expectedRevision!==t.comment.revision)throw conflict();
+  Object.assign(t.comment,{content:payload.content,mentions:payload.mentions,revision:t.comment.revision+1});
+  return {entities:[{...t.comment}],events:[]};
+ }});
+ await settle();const previous=globalThis.OneloopRecovery;globalThis.OneloopRecovery=t.w.Recovery;
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'My draft');
+  const mentions=[{kind:'user',userId:'robin',startOffset:7,endOffset:13,label:'@robin'}];
+  Object.assign(t.comment,{content:'Remote @robin',mentions,revision:2});await t.controller.loadTaskPage('BIR-079');
+  t.d.querySelector('.comment-composer-actions button').focus();t.A.addComment('BIR-079');await settle();
+  const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+  assert.equal(t.d.getElementById('cmtIn').value,'Remote @robin');
+  t.A.addComment('BIR-079');await settle();
+  assert.deepEqual(requests.map(request=>request.revision),[1,2]);
+  assert.equal(requests[1].payload.content,'Remote @robin');assert.deepEqual(Array.from(requests[1].payload.mentions),mentions);
+  assert.equal(t.comment.content,'Remote @robin');
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
+
+for(const phase of ['response','read','choice','latest-read','retry'])for(const newer of phase==='retry'?['editor','typing','session']:['editor','typing'])test(`comment conflict preserves newer ${newer} during ${phase}`,async()=>{
+ const write=deferred(),read=deferred(),retry=deferred(),requests=[];let writes=0;
+ const t=productionComments({execute:(_operation,payload,options)=>{requests.push({payload,options});return ++writes===1?write.promise:retry.promise;}});
+ await settle();const previous=globalThis.OneloopRecovery;globalThis.OneloopRecovery=t.w.Recovery;
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'Submitted c1 draft').focus();t.A.addComment('BIR-079');
+  Object.assign(t.comment,{content:'Remote c1 edit',revision:2});
+  if(phase==='read')t.transport.api.comments=()=>read.promise;
+  if(phase!=='response'){write.reject(conflict());await settle();}
+  if(phase==='latest-read'){
+   t.transport.api.comments=()=>read.promise;
+   const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+  }
+  if(phase==='retry'){const mine=conflictButton(t,'Keep my changes');assert(mine);mine.click();await settle();assert.equal(writes,2);}
+  if(newer!=='typing'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-2');}
+  if(newer==='session'){
+   t.D.session={...t.D.session,id:'next-session'};
+   Object.assign(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1'),{text:'Next session version',revision:10});
+  }
+  const text=newer!=='typing'?'Unsent c2 draft':'Newer c1 typing',input=typeComment(t,text);
+  input.focus();input.setSelectionRange(2,5);input.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+  if(phase==='response')write.reject(conflict());
+  if(phase==='read'||phase==='latest-read')read.resolve({items:t.comments.map(item=>({...item})),nextCursor:null});
+  if(phase==='retry')retry.resolve({entities:[{...t.comment,content:'Submitted c1 draft',revision:3}],events:[]});
+  await settle();await settle();
+  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,text);
+  assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+  assert.equal(t.d.querySelector('[data-recovery-conflict]'),null);
+  assert.equal(writes,phase==='retry'?2:1);
+  if(newer==='session')assert.equal(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1').text,'Next session version');
+  if(phase==='latest-read'){
+   t.A.addComment('BIR-079');assert.equal(requests.at(-1).options.expectedRevision,1,'the older acceptance cannot rebase newer typing');
+   retry.resolve({entities:[{...t.comment,content:text,revision:3}],events:[]});await settle();
+  }
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
+
+test('an open comment edit conflicts against its original revision after a live refresh',async()=>{
+ const requests=[],reviews=[];
+ const t=productionComments({execute:async(_operation,payload,options)=>{
+  requests.push(options.expectedRevision);
+  if(options.expectedRevision!==t.comment.revision)throw new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
+  Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
+ }});
+ await settle();
+ const previous=globalThis.OneloopRecovery;
+ globalThis.OneloopRecovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
+  Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
+  t.A.addComment('BIR-079');await settle();
+  assert.deepEqual(requests,[1]);assert.deepEqual(reviews,['Remote edit']);
+  assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
+ }finally{globalThis.OneloopRecovery=previous;t.controller.dispose();}
+});
+
+for(const next of ['typing','reply','edit','reopen'])test(`comment completion preserves a newer ${next} draft and focus`,async()=>{
+ let release;
+ const t=productionComments({execute:()=>new Promise(resolve=>{release=resolve;})});
+ await settle();
+ if(next==='reopen')t.A.editComment('BIR-079','comment-1');
+ typeComment(t,'Submitted draft');t.A.addComment('BIR-079');
+ if(next==='reply')t.A.replyComment('BIR-079','comment-1');
+ if(next==='edit')t.A.editComment('BIR-079','comment-1');
+ if(next==='reopen'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-1');}
+ const input=typeComment(t,next==='reopen'?'Submitted draft':'New unsent draft');input.focus();input.setSelectionRange(2,5);
+ release({entities:[{...t.comment,id:'saved',rootId:'saved',content:'Submitted draft'}],events:[{}]});await settle();
+ assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,next==='reopen'?'Submitted draft':'New unsent draft');
+ assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+ assert(t.D.tasks.find(item=>item.id==='BIR-079').comments.some(item=>item.id==='saved'));
+ t.controller.dispose();
+});
+
+test('a comment edit typed after Save saves over that acknowledged save',async()=>{
+ const requests=[];let release;
+ const t=productionComments({execute:(_operation,payload,options)=>{
+  requests.push(options.expectedRevision);
+  if(options.expectedRevision!==t.comment.revision)return Promise.reject(conflict());
+  Object.assign(t.comment,{content:payload.content,revision:t.comment.revision+1});
+  const saved={entities:[{...t.comment}],events:[{}]};
+  return requests.length===1?new Promise(resolve=>{release=()=>resolve(saved);}):Promise.resolve(saved);
+ }});
+ await settle();
+ try{
+  t.A.editComment('BIR-079','comment-1');typeComment(t,'First edit');t.A.addComment('BIR-079');
+  const input=typeComment(t,'First edit, continued');
+  release();await settle();await settle();
+  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'First edit, continued');
+  t.A.addComment('BIR-079');await settle();await settle();
+  assert.deepEqual(requests,[1,2]);assert.equal(t.comment.content,'First edit, continued');
+ }finally{t.controller.dispose();}
+});
 
 /** Boot a task page; `prepare` edits the projection before the views load. */
 function boot(prepare, route = 'task/BIR-079', scenario = '') {

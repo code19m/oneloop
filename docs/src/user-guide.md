@@ -92,8 +92,8 @@ Click a card to open the task. Your changes save automatically.
 - **Deadline** is a date. When that day ends in your team's timezone, a task
   that isn't Done shows **Overdue**.
 - **Activity** shows comments and changes in one timeline.
-- If someone else changes a field while you are editing it, oneloop keeps your
-  text and shows theirs next to it. Choose **Use latest** or
+- If someone else changes a task field or comment while you are editing it,
+  oneloop keeps your text and shows theirs next to it. Choose **Use latest** or
   **Keep my changes**.
 - To delete a task, use the **⋯** menu at the top of the page.
 
@@ -208,7 +208,8 @@ On your **Profile**:
 - **Connected apps** lists your AI assistants, and you can revoke them. See
   [AI assistants](mcp.md).
 
-A session ends after 7 days without use, and after 30 days at most.
+A session ends after 7 days without use, and after 30 days at most. Background
+updates do not keep an idle session open.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

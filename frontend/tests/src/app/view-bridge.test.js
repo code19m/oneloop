@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {installViewBridge} from '../../../src/app/view-bridge.js';
+import {createCommandGateway} from '../../../src/data/command-gateway.js';
+import {ApiError} from '../../../src/data/api-client.js';
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
@@ -33,6 +35,49 @@ test('a save uses the editor focus revision even after live data advances',async
   state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:2,assignees:[]});
   await state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']});
   assert.equal(options.expectedRevision,1);assert.equal(finished,'task:opaque-1');
+});
+
+for(const [latest,fail] of [['Newest title',false],['Original title',false],['First title',false],['Unsaved title',true]])test(`task autosave coalesces pending titles through the acknowledged revision: ${latest}`,async()=>{
+  let gateway;
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'}, {gateway:{execute:(...args)=>gateway.execute(...args)}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:1,title:'Original title'});
+  const requests=[],pending=[];
+  gateway=createCommandGateway({data:state.data,api:{command:command=>{requests.push(command);return new Promise((resolve,reject)=>pending.push({resolve,reject}));}}});
+  const acknowledge=(index)=>pending[index].resolve({entities:[{entityType:'task',id:'t1',title:requests[index].payload.title,revision:index+2}],events:[]});
+  state.app.updTask('ONE-1','title','First title');
+  state.app.updTask('ONE-1','title','Intermediate title');
+  state.app.updTask('ONE-1','title',latest);
+  assert.equal(requests.length,1);
+  acknowledge(0);await new Promise(setImmediate);
+  if(latest==='First title'){
+    assert.equal(requests.length,1,'a duplicate latest value needs no second write');
+    assert(state.saved.length>0);assert.deepEqual(state.paints,['all']);return;
+  }
+  assert.deepEqual(state.saved,[],'the earlier response must not report the latest value saved');
+  assert.deepEqual(state.paints,[],'an intermediate value must not replace the latest input');
+  assert.equal(requests.length,2);
+  assert.equal(requests[1].payload.title,latest);
+  assert.equal(requests[1].expectedRevision,2);
+  assert.notEqual(requests[0].idempotencyKey,requests[1].idempotencyKey);
+  if(fail)pending[1].reject(new ApiError('Connection lost',{code:'network_error',uncertain:true}));else acknowledge(1);
+  await new Promise(setImmediate);
+  assert.equal(state.data.tasks[0].title,fail?'First title':latest);
+  if(fail){assert.deepEqual(state.saved,[]);assert.equal(state.toasts[0][1],'error');}
+  else{assert(state.saved.length>0);assert.deepEqual(state.toasts,[]);}
+});
+
+test('project autosave keeps the latest name while an earlier name is saving',async()=>{
+  let gateway;
+  const state=fixture({view:'settings',projectId:'p1'}, {gateway:{execute:(...args)=>gateway.execute(...args)}});
+  Object.assign(state.data.projects[0],{revision:1,name:'Original'});
+  const requests=[],pending=[];
+  gateway=createCommandGateway({data:state.data,api:{command:command=>{requests.push(command);return new Promise(resolve=>pending.push(resolve));}}});
+  state.app.updateProjectField({name:'name',value:'First'});
+  state.app.updateProjectField({name:'name',value:'Latest'});
+  pending[0]({entities:[{entityType:'project',id:'p1',name:'First',revision:2}],events:[]});await new Promise(setImmediate);
+  assert.equal(requests.length,2);assert.equal(requests[1].payload.name,'Latest');assert.equal(requests[1].expectedRevision,2);
+  pending[1]({entities:[{entityType:'project',id:'p1',name:'Latest',revision:3}],events:[]});await new Promise(setImmediate);
+  assert.equal(state.data.projects[0].name,'Latest');assert(!state.toasts.some(([,kind])=>kind==='error'));
 });
 
 test('a profile response from an ended session cannot repopulate private access data',async()=>{
@@ -285,6 +330,9 @@ test('profile password success is announced only after completion',async()=>{
 });
 
 test('epic completion describes singular and plural open tasks and retains production dismissal',async()=>{
+  const previous=globalThis.document;
+  globalThis.document={querySelector:()=>({isConnected:true})};
+  try{
   for(const count of [1,2]){
     let dialog;
     const state=fixture({view:'roadmap',projectId:'p1'},{app:{confirm:value=>{dialog=value;}},gateway:{execute:async()=>({entities:[],events:[]})}});
@@ -293,6 +341,7 @@ test('epic completion describes singular and plural open tasks and retains produ
     state.app.closeEpic('e1');assert.equal(dialog.text,count===1?'1 open task stays where it is.':'2 open tasks stay where they are.');
     dialog.confirm();await new Promise(resolve=>setTimeout(resolve,0));assert.equal(state.closed,1);
   }
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
 });
 
 test('admin revision conflict reloads through the affected page and retries with its fresh revision',async()=>{

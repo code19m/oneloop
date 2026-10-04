@@ -1,8 +1,10 @@
 // views/app.js: the Knowledge page's place in the shell. The page itself is
-// src/features/knowledge/controller.js; a recording stand-in takes its place here.
+// src/features/knowledge/controller.js; a recording stand-in takes its place
+// here, except where the shell and the real page must work together.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installKnowledgeController } = require('../../../src/features/knowledge/controller.js');
 
 /** Boot with a stand-in Knowledge controller that records the shell's calls. */
 function boot(route, { admin = true } = {}) {
@@ -69,4 +71,29 @@ test('only administrators see the Knowledge base settings and its connection dia
   const member = boot('knowledge', { admin: false });
   member.A.openModal('knowledge');
   assert.equal(member.d.querySelector('.modal'), null);
+});
+
+test('a Knowledge read that arrives under a dialog repaints the page when the dialog closes', async () => {
+  const source = { repository: 'team/docs', url: 'https://git.example.com/team/docs.git', branch: 'main', folder: 'docs', state: 'pending', syncing: true, hasToken: false, revision: 1 };
+  let knowledge = { state: 'pending', syncing: true, folder: 'docs', checkedAt: null, skippedFiles: 0, files: [], source };
+  const listeners = new Set();
+  const t = bootApp({ route: 'knowledge', beforeScript: (name, w) => {
+    if (name !== 'app') return;
+    installKnowledgeController({
+      runtime: { api: { request: async () => JSON.parse(JSON.stringify(knowledge)) }, data: w.DATA, commands: {}, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } },
+      getApp: () => w.App, documentObject: w.document, windowObject: w, setTimer: () => 0, clearTimer: () => {},
+    });
+  } });
+  await settle(); await settle();
+  assert.match(t.d.querySelector('#main').textContent, /Bringing your knowledge together/);
+  t.A.openModal('knowledge');
+  const branch = t.d.querySelector('.modal [name="branch"]'); branch.value = 'release';
+  // The sync finishes while the dialog is open.
+  knowledge = { ...knowledge, state: 'ready', syncing: false, checkedAt: 1_700_000_000, source: { ...source, state: 'ready', syncing: false }, files: [{ path: 'brand-kit.zip', size: 9, kind: null, updatedAt: 1_700_000_000, version: 'd4' }] };
+  for (const listener of listeners) listener({ type: 'sse', kind: 'activity.changed', entityType: 'knowledge_source', projectId: 'p1' });
+  await settle(); await settle();
+  assert.equal(t.d.querySelector('.modal [name="branch"]'), branch); assert.equal(branch.value, 'release');
+  t.A.closeOverlays();
+  assert.equal(t.d.querySelector('.modal'), null);
+  assert.match(t.d.querySelector('#main').textContent, /brand-kit\.zip/);
 });

@@ -20,7 +20,7 @@ const handbook = () => ({
 function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 'knowledge' } = {}) {
   const dom = new JSDOM('<main id="main"></main><div id="overlay"></div>', { url: 'http://localhost/#/knowledge', pretendToBeVisual: true });
   const w = dom.window, d = w.document;
-  const state = { context: { view: page, projectId: 'p1', modal: null }, toasts: [], fieldErrors: [], confirmations: [], closed: 0, requests: [], commands: [], markdown: [], view };
+  const state = { context: { view: page, projectId: 'p1', modal: null }, toasts: [], fieldErrors: [], confirmations: [], closed: 0, requests: [], textRequests: [], commands: [], markdown: [], view };
   const listeners = new Set();
   const api = {
     async request(path) {
@@ -51,19 +51,91 @@ function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 
   const controller = installKnowledgeController({
     runtime, getApp: () => app, documentObject: d, windowObject: w,
     setTimer: (callback) => { state.timer = callback; return 1; }, clearTimer: () => { state.timer = null; },
-    fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('# Handbook\n\n## Setup\n').buffer }),
+    fetchImpl: async (url,options) => { state.textRequests.push({url,options}); return { ok: true, arrayBuffer: async () => new TextEncoder().encode('# Handbook\n\n## Setup\n').buffer }; },
   });
   controller.route(route, 'p1');
   function paint() {
     controller.beforeRender();
     const main = d.getElementById('main');
-    main.innerHTML = state.context.view === 'knowledge' ? controller.render('p1') : controller.settingsHtml('p1');
+    main.innerHTML = state.context.view === 'knowledge' ? controller.render(state.context.projectId) : controller.settingsHtml(state.context.projectId);
     controller.mount();
   }
-  return { w, d, state, controller, listeners, paint };
+  return { w, d, state, controller, listeners, paint, api, runtime, app };
 }
 
 async function painted(t) { t.paint(); await settle(); await settle(); }
+
+for(const kind of ['markdown','text'])test(`a live Knowledge ${kind} refresh marks the content fetch as background`,async()=>{
+  const view={...handbook(),files:[{path:'README.md',kind,size:40,version:'first'}]};
+  const t=fixture({view});await painted(t);
+  assert.equal(t.state.textRequests.length,1);
+  view.files[0].version='second';
+  for(const listener of t.listeners)listener({type:'sse',kind:'activity.changed',entityType:'knowledge_source',projectId:'p1'});
+  await settle();await settle();
+  assert.equal(t.state.textRequests.length,2);
+  const refreshed=t.state.textRequests[1];
+  assert.equal(refreshed.url,'/api/projects/p1/knowledge/text?path=README.md');
+  assert.equal(new Headers(refreshed.options.headers).get('X-Oneloop-Background'),'1');
+});
+
+test('reconnect refreshes visible Knowledge and invalidates other projects until their next visit',async()=>{
+  const t=fixture();
+  t.state.context.projectId='p2';t.controller.route('knowledge','p2');await painted(t);
+  t.state.context.projectId='p1';t.controller.route('knowledge','p1');await painted(t);
+  t.state.view={...handbook(),files:[{path:'new.zip',size:2,version:'new'}]};
+  for(const listener of t.listeners)listener({type:'sse',kind:'reconcile'});
+  for(const listener of t.listeners)listener({type:'bootstrap',projection:{view:'metadata'}});
+  await painted(t);
+  assert.match(t.d.querySelector('.knowledge-file-list').textContent,/new.zip/);
+  assert.equal(t.state.requests.filter(path=>path==='/api/projects/p1/knowledge').length,2);
+  assert.equal(t.state.requests.filter(path=>path==='/api/projects/p2/knowledge').length,1);
+  t.state.context.projectId='p2';t.controller.route('knowledge','p2');await painted(t);
+  assert.match(t.d.querySelector('.knowledge-file-list').textContent,/new.zip/);
+  assert.equal(t.state.requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
+});
+
+test('mounting a stale project during its old Knowledge read fetches exactly one follow-up',async()=>{
+  const t=fixture(),requests=[];let resolveOld,resolveLatest;
+  t.api.request=path=>{
+    requests.push(path);
+    if(path==='/api/projects/p2/knowledge')return new Promise(resolve=>{if(!resolveOld)resolveOld=resolve;else resolveLatest=resolve;});
+    return Promise.resolve(handbook());
+  };
+  const visit=projectId=>{t.state.context.projectId=projectId;t.controller.route('knowledge',projectId);t.paint();};
+  visit('p2');visit('p1');await settle();
+  for(const listener of t.listeners)listener({type:'sse',kind:'reconcile'});
+  await settle();visit('p2');t.paint();t.paint();
+  resolveOld({...handbook(),files:[{path:'old.zip',size:1,version:'old'}]});await settle();
+  assert.equal(requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
+  t.paint();t.paint();
+  resolveLatest({...handbook(),files:[{path:'new.zip',size:2,version:'new'}]});await settle();await settle();
+  assert.match(t.d.querySelector('.knowledge-file-list').textContent,/new.zip/);
+  assert.doesNotMatch(t.d.querySelector('.knowledge-file-list').textContent,/old.zip/);
+  await painted(t);assert.equal(requests.filter(path=>path==='/api/projects/p2/knowledge').length,2);
+});
+
+for(const failure of [false,true])test(`Knowledge coalesces hints during a read into one follow-up after ${failure?'failure':'success'}`,async()=>{
+  const t=fixture();let resolve,reject,requests=0;
+  t.api.request=()=>{requests++;return requests===1?new Promise((yes,no)=>{resolve=yes;reject=no;}):Promise.resolve({...handbook(),files:[{path:'new.zip',size:2,version:'new'}]});};
+  t.paint();t.paint();assert.equal(requests,1,'repeated mounts share the first read');
+  for(let i=0;i<3;i++)for(const listener of t.listeners)listener({type:'sse',kind:'activity.changed',entityType:'knowledge_source',projectId:'p1'});
+  if(failure)reject(new Error('Read failed'));else resolve(handbook());
+  await settle();await settle();
+  assert.equal(requests,2);assert.match(t.d.querySelector('.knowledge-file-list').textContent,/new.zip/);
+  await painted(t);assert.equal(requests,2,'ordinary mounts do not request another read');
+});
+
+test('a completed Knowledge connection leaves a replacement editor and route intact',async()=>{
+  const t=fixture({page:'settings'});await painted(t);
+  t.state.context.modal={type:'knowledge'};t.d.getElementById('overlay').innerHTML=t.controller.modalHtml();
+  const form=t.d.querySelector('[data-knowledge-form]');form.elements.namedItem('url').value='https://git.example.test/docs.git';
+  let release;t.runtime.commands.execute=()=>new Promise(resolve=>{release=resolve;});
+  form.dispatchEvent(new t.w.Event('submit',{bubbles:true,cancelable:true}));assert(release);
+  t.app.closeOverlays();t.state.context.modal={type:'task'};t.d.getElementById('overlay').innerHTML='<form><textarea>Next draft</textarea></form>';
+  const input=t.d.querySelector('textarea');input.focus();input.setSelectionRange(1,3);const route=t.w.location.hash;
+  release({entities:[],events:[]});await settle();await settle();
+  assert.equal(t.d.querySelector('textarea'),input);assert.equal(input.value,'Next draft');assert.equal(t.d.activeElement,input);assert.equal(t.w.location.hash,route);assert.equal(t.state.closed,1);
+});
 
 test('a project without a source invites administrators to connect and members to ask', async () => {
   for (const admin of [true, false]) {

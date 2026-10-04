@@ -1,7 +1,35 @@
 // views/app.js: the Inbox page and its notification states.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installCollaborationController } = require('../../../src/features/collaboration/controller.js');
+const { createLegacyData, hydrateLegacyData } = require('../../../src/data/projection-store.js');
+
+test('Inbox renders its actor, time and read state through reads and full or scoped bootstraps',async()=>{
+ const notice={id:'n1',eventType:'task.assigned',actorUserId:'robin',projectId:'p1',taskId:'task-1',taskKey:'BIR-079',taskTitle:'Review',destinationAvailable:true,createdAt:1700000000,readAt:null,archivedAt:null};
+ const bootstrap={session:{userId:'taylorwu'},users:[{id:'taylorwu',displayName:'Taylor',isAdmin:true,isActive:true},{id:'robin',displayName:'Robin',isActive:true}],projects:[{id:'p1',name:'Project',taskPrefix:'BIR',revision:1}],notifications:[notice],inboxUnreadCount:1};
+ const listeners=[];let controller;
+ const t=bootApp({route:'inbox',prepare(D,w){
+  const session=D.session;Object.assign(D,createLegacyData(),{session});
+  hydrateLegacyData(D,bootstrap);
+  const transport={data:D,api:{inbox:async()=>({items:[notice],nextCursor:null,unreadCount:1,filteredCount:1})},commands:{},subscribe(listener){listeners.push(listener);return()=>{};}};
+  w.OneloopTransport=transport;controller=installCollaborationController({transport,eventSourceFactory:()=>({addEventListener(){},close(){}})});w.OneloopCollaboration=controller;
+ }});
+ const rendered=(time,read)=>{
+  const row=t.d.querySelector('[data-notification-id="n1"]');assert(row);
+  assert.equal(row.querySelector('.inbox-event strong').textContent,'Robin');
+  assert.equal(row.querySelector('time').getAttribute('datetime'),time);
+  assert.equal(row.classList.contains('read'),read);
+  assert.equal(row.querySelector('.inbox-task-title').textContent,'Review');
+ };
+ try{
+  await settle();rendered('2023-11-14T22:13:20.000Z',false);
+  for(const projection of [{...bootstrap,notifications:[{...notice,createdAt:1700000002,readAt:1700000001}]},{...bootstrap,view:'metadata'},{...bootstrap,view:'metadata'}]){
+   hydrateLegacyData(t.D,projection);for(const listener of listeners)listener({type:'bootstrap',projection});t.A.refresh();
+   rendered('2023-11-14T22:13:22.000Z',true);
+  }
+ }finally{controller.dispose();}
+});
 
 const sampleScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'];
 /** The sample Inbox projection, optionally with stored collaboration state. */
@@ -93,7 +121,8 @@ test('the Inbox page shows load states and updates in place without losing focus
 });
 
 test('large Inbox appends retain rows/focus without clones or row layout; reconciliation changes only affected rows', () => {
-  const fixtureNow=Date.now();
+  // Noon in the fixture's Asia/Tashkent zone keeps all 1,050 notices, one a second, on one day.
+  const fixtureNow=Date.UTC(2026,0,15,7);
   const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopTransport={};w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};});
   const notice=(index)=>({id:'scale-'+index,actorId:'robin',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:fixtureNow-index*1000,readAt:null,archivedAt:null,destinationAvailable:true});
   t.D.notifications=Array.from({length:1000},(_,index)=>notice(index));
@@ -110,7 +139,7 @@ test('large Inbox appends retain rows/focus without clones or row layout; reconc
   assert.equal(t.d.querySelector('[data-notification-id]'),first);assert.equal(t.d.activeElement,open);
   assert.equal(clones,0);assert.equal(rects,0);assert.equal(more.disabled,false);
   const unchanged=t.d.querySelectorAll('.inbox-row')[500],unchangedOpen=unchanged.querySelector('.inbox-open');
-  t.D.notifications[0].readAt=Date.now();t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:1050,unreadCount:1049});
+  t.D.notifications[0].readAt=fixtureNow;t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:1050,unreadCount:1049});
   assert.equal(t.d.querySelectorAll('.inbox-row')[500],unchanged);assert.equal(unchanged.querySelector('.inbox-open'),unchangedOpen);
   assert.ok(first.classList.contains('read'));assert.equal(rects,0);assert.ok(clones<10,'no per-row clones on a single-row state update');
 });

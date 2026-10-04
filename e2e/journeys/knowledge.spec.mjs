@@ -49,6 +49,27 @@ async function connected(instance, gitHost, files = handbook) {
   return { name, projectId };
 }
 
+test('heading links scroll into view in the inline Knowledge reader and full view', async ({ page, instance, gitHost }) => {
+  const guide = '# Guide\n\n[Jump to final section](#final-section)\n\n'
+    + 'A paragraph before the target.\n\n'.repeat(70) + '## Final section\n\nThe destination.\n\n'
+    + 'A paragraph after the target.\n\n'.repeat(20);
+  const { projectId } = await connected(instance, gitHost, { 'docs/guide.md': guide });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await openApp(page, instance, `knowledge/${projectId}/blob/guide.md`);
+  const route = page.url();
+  for (const full of [false, true]) {
+    if (full) await page.getByRole('button', { name: 'Open full view' }).click();
+    const reader = page.locator(full ? '.knowledge-full-view .markdown-scroll' : '.knowledge-reader');
+    const heading = reader.locator('#md-final-section');
+    await expect(heading).toBeAttached();
+    await expect(heading).not.toBeInViewport();
+    await reader.getByRole('link', { name: 'Jump to final section' }).click();
+    await expect(heading).toBeInViewport({ ratio: 1 });
+    await expect(heading).toBeFocused();
+    await expect(page).toHaveURL(route);
+  }
+});
+
 test('an administrator connects a private repository and reads, searches and opens its files', { tag: '@smoke' }, async ({ page, instance, gitHost }) => {
   const url = await gitHost.repository(`private-${randomUUID().slice(0, 8)}`, handbook, { token: 'e2e-access-token' });
   // Scans measure settled colors, as in the accessibility journeys.

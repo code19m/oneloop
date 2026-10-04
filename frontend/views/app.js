@@ -290,6 +290,16 @@
       if (before.previous.get(selector) === key) el.style.animation = 'none';
     });
   }
+  // Each opened dialog or drawer gets a generation that its re-renders keep,
+  // so a late save can tell its own dialog from one opened after it.
+  let overlayOpens = 0, peekGeneration = 0;
+  const modalGenerations = new WeakMap();
+  function stampOverlays() {
+    if (state.modal && !modalGenerations.has(state.modal)) modalGenerations.set(state.modal, ++overlayOpens);
+    const modal = document.querySelector('#app .modal'), peek = document.querySelector('#app .peek');
+    if (modal && state.modal) modal.dataset.openGeneration = String(modalGenerations.get(state.modal));
+    if (peek && state.peek) peek.dataset.openGeneration = String(peekGeneration);
+  }
 
   // Notifications live outside #app so renders never restart them or clear entered text.
   const toastQueue = [];
@@ -1556,7 +1566,8 @@
         ${matching.length>memberWindow.limit?'<button type="button" class="btn quiet" data-more-members>Load more members</button>':''}
         <div style="margin-top:12px;width:260px">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
           ? selectHtml('addMember', { label:'Add member', value: '', placeholder: 'Add member…', search: true, options: candidates.map((u) => ({ v: u.id, l: `${u.name} · ${userHandle(u)}` })), pick: (v) => App.addMember(v) })
-          : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
+          : D.adminUsers?.nextCursor ? '' : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
+        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users onclick="App.loadMoreUsers()" ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
         ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
       </div>
       ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
@@ -1742,14 +1753,21 @@
     let cursor = list.firstElementChild;
     items.forEach((item) => {
       let row = list.querySelector(`[data-pool-item="${UIEscape(item.id)}"]`);
-      if (row && item.id === completeItemId) {
-        const editedHere = !!row.querySelector('.pool-description-editor')?.contains(document.activeElement);
+      if (row) {
+        const editor=row.querySelector('.pool-description-editor');
+        const editedHere = !!editor?.contains(document.activeElement);
         const template = document.createElement('template'); setHTML(template,poolRowHtml(item));
         const fresh = template.content.firstElementChild;
-        row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
-        row.querySelector('.pool-description-editor')?.remove();
-        if (editedHere) row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});
-        row = list.querySelector(`[data-pool-item="${UIEscape(item.id)}"]`);
+        const actions=element=>[...element.querySelectorAll('.act > button')].map(button=>button.className).join('|');
+        const sameActions=row.className===fresh.className&&actions(row)===actions(fresh);
+        row.className=fresh.className;
+        if(sameActions)patchBoardRow(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
+        else row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
+        if(item.id===completeItemId){editor?.remove();if(editedHere)row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});}
+        else if(editor){
+          row.querySelector('.pool-note-toggle')?.setAttribute('aria-expanded','true');
+          const reader=editor.querySelector('.pool-note-read');if(reader){reader.textContent=item.desc||'';reader.setAttribute('aria-label',`Description for ${item.title}`);}
+        }
       }
       if (!row) { const template = document.createElement('template'); setHTML(template,poolRowHtml(item)); row = template.content.firstElementChild; }
       if (row !== cursor) list.insertBefore(row, cursor);
@@ -2027,8 +2045,14 @@
 
   let paintedPage=null;
   const pageScope=()=>JSON.stringify([D.session?.id,D.session?.userId,state.view,state.projectId,state.taskId]);
-  let rendering=false,paintedScope=null,backgroundRenderTimer=null,pressedTaskControl=false,pressedControlTimer=null;
+  let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressedTaskControl=false,pressedControlTimer=null;
   const renderScope=()=>JSON.stringify([D.session?.id,D.session?.userId,location.hash,state.view,state.projectId,state.taskId,state.modal?.type,state.modal?.id,state.peek]);
+  // A render rebuilds an open dialog and loses its unsaved fields, so a change
+  // that arrives under one paints when that dialog closes.
+  function refreshAfterDialog(){
+    if(state.modal){dialogPaintOwed=true;return;}
+    render();
+  }
   // Keep live metadata current without removing an active control or overlay.
   function refreshBackground(){
     clearTimeout(backgroundRenderTimer);
@@ -2041,7 +2065,7 @@
   }
   // Snapshot immediately around the DOM swap, never across an awaited read.
   function render(){
-    clearTimeout(backgroundRenderTimer);
+    clearTimeout(backgroundRenderTimer);dialogPaintOwed=false;
     if(!bootWindow.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
     const scope=renderScope(),active=document.activeElement;
     const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
@@ -2086,7 +2110,7 @@
     document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
     document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
     migrateEvents?.();mountDescription();collaboration?.mount();
-    finishRenderMotion(motion,true);if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
+    finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
     paintedScope=renderScope();
   }
   function renderContent() {
@@ -2116,6 +2140,8 @@
     if(state.peek&&!canReadProject(trackById(epicById(state.peek)?.trackId)?.projectId))state.peek=null;
     if(state.modal&&!canReadProject(state.projectId)&&!['user','project','temppw'].includes(state.modal.type))state.modal=null;
     if (!visibleProjects().find((p) => p.id === state.projectId)) state.projectId = (visibleProjects()[0] || {}).id;
+    // The empty page keeps its address, so a first project returns to that page.
+    if (state.view === 'no-projects' && project()) resolveRoute();
     if (['settings','users','storage'].includes(state.view) && !isAdmin()) state.view = 'forbidden';
     if(!project()&&['roadmap','board','knowledge','settings'].includes(state.view))state.view='no-projects';
     updateDocumentTitle();
@@ -2181,6 +2207,7 @@
     if (state.view === 'roadmap' && !error) mountRoadmap();
     window.OneloopKnowledge?.mount();
     finishRenderMotion(renderMotion);
+    stampOverlays();
     if (state.menu) placeMenu();
     collaboration?.mount();
     syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, oldPeekKey, oldPanelFocus });
@@ -2400,6 +2427,7 @@
     refreshUsers({loadingOnly=false}={}) {
       if (loadingOnly) {
         document.querySelector(state.view==='settings'?'.member-access-list':'.content .settings')?.setAttribute('aria-busy', String(!!D.adminUsers?.loading));
+        document.querySelectorAll('[data-more-users]').forEach(button=>button.disabled=!!D.adminUsers?.loading);
         return;
       }
       if (state.view === 'settings') {
@@ -2439,7 +2467,7 @@
         if(state.modal===modal)App.toast('Could not copy. Select the password and copy it manually.','error');
       }
     },
-    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
+    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
     // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
     refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
     refreshRoadmap({zoom=false}={}) {
@@ -2472,7 +2500,7 @@
       column.querySelector('.col-head .mono').textContent=template.content.querySelector('.col-head .mono').textContent;
       boardSnapshots.set(board,boardSnapshot());
     },
-    acceptMoreUsers() { state.usersLimit+=50;render(); },
+    acceptMoreUsers() { if(state.view==='settings'){App.refreshUsers();return;}state.usersLimit+=50;render(); },
     nav(v) { window.Recovery?.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') window.OneloopKnowledge?.route(v, state.projectId); setLocalHash('#/' + v); render(); },
     require(permission) {
       if (hasPermission(permission)) return true;
@@ -2868,8 +2896,8 @@
       App.roadmapTipKey(ev);
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
-    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}state.peek = id; renderOverlays(); },
-    closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; renderOverlays(); },
+    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; renderOverlays(); },
+    closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
       const targetProject=id&&(type==='epic'?trackById(epicById(id)?.trackId)?.projectId:type==='track'?trackById(id)?.projectId:type==='milestone'?D.milestones.find(m=>m.id===id)?.projectId:['block','unblock','completeBlocked'].includes(type)?trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId:null);
@@ -3349,6 +3377,7 @@
       (App._poolScroll ||= {})[state.poolTab] = view.querySelector('.pool-list').scrollTop;
       document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));resetPoolCapture();document.getElementById('poolAdd').value='';
       state.modal = { type: 'task', poolId: id, title: item.title, desc:item.desc||'' };
+      stampOverlays();
       view.hidden = true;
       const editor = document.createElement('div');
       editor.className = 'pool-editor';
@@ -3364,6 +3393,7 @@
       const view = document.querySelector('.pool-view');
       if (!view) return;
       state.modal = { type: 'pool' };
+      stampOverlays();
       view.hidden = false;
       updatePool();
       view.querySelector('.pool-list').scrollTop = App._poolScroll?.[state.poolTab] || 0;
@@ -3530,6 +3560,7 @@
 
     refresh: render,
     refreshBackground,
+    refreshAfterDialog,
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
@@ -3549,7 +3580,7 @@
     // filters
     setBoardQ(v,event) {
       cancelBoardSearch();
-      state.boardQ = v;
+      state.boardQ = v.trim();
       if (event?.isComposing) return;
       if (!event || !v) { applyBoardFilters(); return; }
       const projectId=state.projectId, sessionId=D.session?.id;

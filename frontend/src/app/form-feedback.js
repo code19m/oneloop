@@ -2,6 +2,22 @@
 
 import { actionErrorFeedback, formFieldName, retryDelayMs, retryMessage } from './action-feedback.js';
 
+/** Apply completion effects only while the submitting editor is still open. */
+export function completeForm(form, complete) {
+  if (!form) return false;
+  const editor = form.closest?.('.modal,.peek');
+  if (!editor) {
+    if (form.isConnected === false) return false;
+  } else {
+    const current = form.ownerDocument.querySelector('.modal') ?? form.ownerDocument.querySelector('.peek');
+    // A re-render replaces the editor's nodes but keeps its open generation.
+    const generation = editor.dataset?.openGeneration;
+    if (current !== editor && !(generation && current?.dataset?.openGeneration === generation)) return false;
+  }
+  complete();
+  return true;
+}
+
 /** @typedef {{until:number,timer:ReturnType<typeof setTimeout>,buttons:Set<any>,error:unknown,text?:string,ticker?:ReturnType<typeof setTimeout>}} RetryGate */
 /** @type {WeakMap<object,RetryGate>} */
 const retryGates = new WeakMap();

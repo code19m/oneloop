@@ -5,6 +5,7 @@ import {secondsToMilliseconds} from '../../data/time.js';
 import {refreshPageWindow} from '../../data/page-window.js';
 import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
+import {mapInboxItem} from '../../data/inbox-mapper.js';
 import {actionErrorFeedback} from '../../app/action-feedback.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
@@ -46,37 +47,6 @@ export function mapComment(comment) {
 
 export {mapActivity};
 
-const inboxReason = (eventType) => ({
-  'discussion.mention':'mention', 'discussion.everyone':'everyone', 'discussion.reply':'reply',
-  'task.assigned':'assigned', 'task.blocked':'blocked', 'task.block.mentioned':'block-mention', 'task.block.everyone':'block-everyone', 'task.block.reason.updated':'block-mention',
-  'task.unblocked':'unblocked', 'task.unblocked_and_completed':'unblocked',
-})[eventType] ?? eventType;
-
-/** @param {any} item */
-export function mapInboxItem(item) {
-  return {
-    id: item.id,
-    eventId: item.id,
-    recipientId: null,
-    actorId: item.actorUserId ?? null,
-    actorName: item.actorName ?? null,
-    projectId: item.projectId ?? null,
-    projectName: item.projectName ?? null,
-    taskId: item.taskId ?? null,
-    taskKey: item.taskKey ?? null,
-    taskTitle: item.taskTitle ?? null,
-    commentId: item.commentId ?? null,
-    rootId: null,
-    blockId: item.blockId ?? null,
-    reason: inboxReason(item.eventType),
-    eventType: item.eventType,
-    excerpt: item.excerpt ?? null,
-    destinationAvailable: !!item.destinationAvailable,
-    createdAt: secondsToMilliseconds(item.createdAt),
-    readAt: item.readAt == null ? null : secondsToMilliseconds(item.readAt),
-    archivedAt: item.archivedAt == null ? null : secondsToMilliseconds(item.archivedAt),
-  };
-}
 
 function replace(array, items) { array.splice(0, array.length, ...items); }
 
@@ -87,7 +57,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
 export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected OneloopTransport');
   const data=transport.data;
-  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
+  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
@@ -223,36 +193,39 @@ export function installCollaborationController({ transport, eventSourceFactory =
   }
 
   async function performSaveComment(input){
-    const expectedTask=app?.context?.().taskId;
+    const expectedTask=app?.context?.().taskId,expectedSession=currentSession();
     const editing=input.mode==='edit',operation=editing?'discussion.comment.edit':'discussion.comment.create';
     const payload=editing?{commentId:input.commentId,content:input.text,mentions:mentionsToWire(input.text,input.mentions)}:{taskId:input.task.internalId,content:input.text,replyToId:input.mode==='reply'?input.targetId:null,mentions:mentionsToWire(input.text,input.mentions)};
-    const editorSnapshot=globalThis.OneloopRecovery?.captureEditor?.();
-    let response;
+    const isCurrent=()=>currentSession()===expectedSession&&app?.context?.().taskId===expectedTask&&!!facade?.commentEditor?.(input);
+    let response,notifyEditor=true;
     try{
       response=await execute(operation,payload,{expectedRevision:editing?input.revision:undefined,interactionKey:`${operation}:${input.commentId??input.task.internalId}:${input.interactionId}`});
-      if(response.stale)return false;
     }catch(error){
       if(editing&&globalThis.OneloopRecovery?.isRevisionConflict?.(error)){
+        if(!isCurrent())return false;
         try{
           const resolved=await globalThis.OneloopRecovery.resolveConflict({
             error,
-            reloadLatest:()=>readTask(input.task,{background:true}),
+            reloadLatest:()=>readTask(currentTask(input.task.internalId),{background:true}),
             latestEntity:()=>currentTask(input.task.internalId)?.comments?.find((item)=>item.id===input.commentId),
             retry:(expectedRevision)=>execute(operation,payload,{expectedRevision,interactionKey:`${operation}:${input.commentId}:${input.interactionId}`}),
-            target:{latestValue:(item)=>item.text},myValue:input.text,snapshot:editorSnapshot,
+            target:{element:()=>facade?.commentEditor?.(input),latestValue:(item)=>item.text,acceptLatest:(item)=>facade?.acceptCommentLatest?.(input,item)},myValue:input.text,snapshot:false,isCurrent,
           });
-          if(!resolved.saved)return false;response=resolved.result;
-        }catch(retryError){report(retryError,true);return false;}
+          if(!resolved.saved)return false;response=resolved.result;notifyEditor=!resolved.stale;
+        }catch(retryError){if(isCurrent())report(retryError,true);return false;}
       }else{report(error,true);return false;}
     }
+    if(response.stale)return false;
     try{
       const entity=(response.result.entities??[]).find((item)=>item&&item.id&&item.authorId);
       if(!entity)throw new Error('The server did not return the saved comment.');
       const comment=mapComment(entity),task=currentTask(input.task.internalId);if(!task)return false;
       const index=(task.comments??[]).findIndex((item)=>item.id===comment.id);if(index>=0)task.comments.splice(index,1,comment);else (task.comments??=[]).push(comment);
       task.comments.sort(chronological);
+      // Typing after Save keeps the editor open; its next save builds on this one.
+      if(editing&&currentSession()===expectedSession)facade?.commentAcknowledged?.(input,comment);
       await refreshActivity(task,true);
-      if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,changed:(response.result.events??[]).length>0});
+      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
       return true;
     }catch(error){report(error,true);return false;}
   }
@@ -410,7 +383,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const accessChange=['project','membership'].includes(hint.entityType);
       if(['inbox','profile','users','storage','settings'].includes(context.view)&&!accessChange)return;
     }
-    if(context.projectId&&(kind==='activity.changed'||kind==='reconcile')){
+    if(kind==='activity.changed'||kind==='reconcile'){
       scheduleProjectReconcile(context.projectId,{full:kind==='reconcile'||metadataChange,hint:{...hint,kind}});
     }
   }
@@ -451,13 +424,11 @@ export function installCollaborationController({ transport, eventSourceFactory =
     production:true,
     bind(nextApp,nextHooks,nextFacade){
       app=nextApp;facade=nextFacade;sessionKey=currentSession();
-      replace(data.notifications,data.notifications.map((item)=>mapInboxItem(item)));
       if(Number.isFinite(data.inboxUnreadCount))facade?.unreadCount?.(data.inboxUnreadCount);
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
         const next=currentSession();
         if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
         if(change?.type==='bootstrap'){
-          replace(data.notifications,data.notifications.map((item)=>mapInboxItem(item)));
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
         }
       });

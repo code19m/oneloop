@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
+import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
-import {installCollaborationController,mapActivity,mapComment,mapInboxItem,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
+import {installCollaborationController,mapActivity,mapComment,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
 
 // The controller coalesces live reads with 60 ms timers. Tests that observe
 // that coalescing drive a mocked clock and let promise chains settle between
@@ -37,6 +38,18 @@ function fixture(overrides={}){
   controller.bind(app,{view:()=>app.context().view},facade);
   return {controller,data,transport,app,facade,events,pages,saved,inboxes,commandCalls,apiCalls,listeners,published};
 }
+
+for(const kind of ['reconcile','activity.changed'])test(`live ${kind} refreshes the project list without a selected project`,async()=>{
+  useMockedClock();
+  const reloads=[];
+  const t=fixture({data:{projects:[]},app:{context:()=>({view:'no-projects',projectId:null})},transport:{reload:async options=>{reloads.push(options);return {stale:false};}}});
+  try{
+    const hint=kind==='reconcile'?{}:{projectId:'first-project',entityType:'membership',entityId:'new-member',entityRevision:1};
+    for(let i=0;i<3;i++)t.events.listeners[kind==='reconcile'?'reconcile':'hint']({data:JSON.stringify({kind,...hint})});
+    await delay(90);
+    assert.equal(reloads.length,1);assert.equal(reloads[0].background,true);assert.equal(reloads[0].viewOnly,false);
+  }finally{t.controller.dispose();}
+});
 
 test('maps opaque server entities, second timestamps and UTF-16 mention ranges exactly once',()=>{
   const text='Hi 👋 @bob';
@@ -123,7 +136,7 @@ test('comment saves let the gateway compare changed intent instead of blindly re
 test('an edited-comment conflict reviews the canonical value before an explicit latest-revision retry',async()=>{
   const previous=globalThis.OneloopRecovery;let commandCalls=0,reviewed='';
   try{
-    const t=fixture({api:{
+    const t=fixture({facade:{commentEditor:()=>({})},api:{
       comments:async()=>({items:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Latest saved',mentions:[],createdAt:20,editedAt:21,deletedAt:null,revision:3}],nextCursor:null}),
       activity:async()=>({items:[],nextCursor:null}),
     }});

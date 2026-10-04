@@ -1,6 +1,7 @@
 // @ts-check
 
 import {secondsToMilliseconds} from './time.js';
+import {mapInboxItem} from './inbox-mapper.js';
 
 import {refreshPageWindow} from './page-window.js';
 
@@ -119,7 +120,12 @@ export function replaceBoardTasks(data, projectId, taskViews) {
 export function appendBoardTasks(data, taskViews) {
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
   for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
-  replace(data.tasks,[...byId.values()]);return data;
+  replace(data.tasks,[...byId.values()].sort(compareTaskOrder));return data;
+}
+
+/** Match the server's position, then opaque ID ordering within each column. */
+export function compareTaskOrder(left, right) {
+  return left.order-right.order || (left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0);
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {
@@ -229,7 +235,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   replace(data.tasks, (bootstrap.tasks ?? []).map(view=>retainTaskDetails(sameUser?previousTasks.get(view.id):null,mapTask(view))));
   if(!bootstrap.view)replace(data.pool, (bootstrap.pool ?? []).map(mapPoolItem));
   else replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
-  if(!bootstrap.view)replace(data.notifications, bootstrap.notifications ?? []);
+  if(!bootstrap.view)replace(data.notifications, (bootstrap.notifications ?? []).map(mapInboxItem));
   if(!bootstrap.view)replace(data.browserSessions, (bootstrap.browserSessions ?? []).map((session) => ({
     ...session, userId:session.userId ?? identity?.id ?? identity?.userId,
     device:sessionDeviceLabel(session), browser:sessionBrowserLabel(session), createdAt:secondsToMilliseconds(session.createdAt) ?? session.createdAt,

@@ -1,7 +1,27 @@
 // views/app.js: project access, users, settings, profile and storage administration.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
+
+test('Settings can page through the directory and add an eligible account from a later page',async()=>{
+ const t=bootApp({route:'settings',prepare(D){D.users=D.users.filter(user=>user.id===D.session.userId);D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
+ const requests=[],commands=[];
+ const api={users:async({afterUsername})=>{
+  requests.push(afterUsername);
+  return afterUsername?{users:[{id:'last',username:'zulu',displayName:'Zulu',isActive:true,isAdmin:false,revision:1}],nextCursor:null}:{users:Array.from({length:50},(_,i)=>({id:`u${i}`,username:`account${i}`,displayName:`Account ${i}`,isActive:false,isAdmin:false,revision:1})),nextCursor:'account49'};
+ }};
+ const bridge=installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ await bridge.loadCurrentRoute();
+ const more=[...t.d.querySelectorAll('button')].find(button=>button.textContent==='Load more users');assert(more,'Settings exposes the next account page even if the first has no eligible users');
+ assert(!t.d.querySelector('.settings').textContent.includes('No users to add'),'a partial directory is not exhaustive');
+ t.A.loadMoreUsers();await settle();
+ assert.deepEqual(requests,[undefined,'account49']);
+ const trigger=t.d.getElementById('select-addMember');t.A.popSelect({preventDefault(){},currentTarget:trigger},'addMember');
+ const search=t.d.querySelector('.pop-search');search.value='Zulu';search.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+ t.d.querySelector('.pop-opt').click();await settle();
+ assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
+});
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
@@ -40,6 +60,16 @@ test('losing membership closes previews, redacts Inbox rows and leaves account p
  t.A.previewAttachment('BIR-079','member-file');t.D.projects[0].members=t.D.projects[0].members.filter(m=>m.userId!=='blairq');t.A.refresh();assert(!t.d.querySelector('.file-dialog'));assert(!t.d.querySelector('.tp-title'));
  t.A.nav('inbox');const page=t.d.querySelector('.inbox-page');assert(page);assert(page.textContent.includes('Task unavailable'));assert(!page.textContent.includes('Birch Grove'));assert(!page.textContent.includes('BIR-079'));assert(!page.textContent.includes('Flexible reading'));
  t.A.openNotification('retained');assert(!t.d.querySelector('.tp-title'));t.A.nav('roadmap');assert(t.d.querySelector('.page-empty').textContent.includes('No projects available'));t.A.openModal('pool');assert(!t.d.querySelector('.modal'));t.A.nav('profile');assert(t.d.querySelector('[name="name"]'));
+});
+
+for(const [route,page] of [['board','.board .card[data-task="BIR-079"]'],['roadmap','#rmScroll']])test(`a first project replaces the empty ${route} page when it arrives`, () => {
+ const t=withSecretProject('blairq',route,D=>{D.projects[0].members=D.projects[0].members.filter(m=>m.userId!=='blairq');});
+ assert.match(t.d.querySelector('#main').textContent,/No projects available/);
+ // A live reload brings the new membership, then repaints.
+ t.D.projects[0].members.push({userId:'blairq',permissions:['manage_board']});t.A.refresh();
+ assert.doesNotMatch(t.d.querySelector('#main').textContent,/No projects available/);
+ assert(t.d.querySelector(`#main ${page}`));assert.equal(t.d.querySelector('.switcher-btn').getAttribute('aria-label'),'Project: Birch Grove');
+ assert.equal(t.w.location.hash,`#/${route}`);
 });
 
 test('ending the session closes open previews and the task page', () => {

@@ -44,8 +44,9 @@
  // Only the currently open editors hold input state; nothing is cached for reopening.
  const context=()=>commentMode;
  const keyFor=(t,c=context())=>JSON.stringify([me()?.id,t.id,c.mode,c.target]);
- function editor(t){const key=keyFor(t);if(commentEditor?.key!==key)commentEditor={key,text:'',mentions:[],interactionId:id('interaction')};return commentEditor;}
+ function editor(t){const key=keyFor(t);if(commentEditor?.key!==key)commentEditor={key,text:'',mentions:[],editorId:id('editor'),interactionId:id('interaction'),revision:null};return commentEditor;}
  const legacyMentions=tokens=>(tokens||[]).map(token=>Object.hasOwn(token,'start')?token:{id:token.kind==='everyone'?'everyone':token.userId,label:String(token.label||'').replace(/^@/,''),start:token.startOffset,end:token.endOffset});
+ const hasInvalidMention=(mentions,eligible,saved)=>{const retained=new Set(legacyMentions(saved).map(m=>m.id));return mentions.some(m=>m.id!=='everyone'&&!eligible.has(m.id)&&!retained.has(m.id));};
  const wireMentions=(text,tokens)=>(tokens||[]).map(token=>({kind:token.id==='everyone'?'everyone':'user',...(token.id==='everyone'?{}:{userId:token.id}),startOffset:token.start,endOffset:token.end,label:text.slice(token.start,token.end)}));
  function blockInputState(t){const key=JSON.stringify([me()?.id,t.id,t.block?.id||'new']);if(blockEditor?.key!==key)blockEditor={key,text:t.block?.reason||'',mentions:structured(legacyMentions(t.block?.mentions))};return blockEditor;}
  function beforeRender(next){
@@ -64,7 +65,7 @@
  function blockFeedback(message){const el=document.querySelector('.block-mention-feedback');if(el)el.textContent=message;}
  function prepareBlock(t,raw,reason){const d=updateText(t,raw,'block'),eligible=new Set(members(projectOf(t)).map(u=>u.id));
   const selected=validTokens(raw,d.mentions).map(m=>{const start=hooks.clean(raw.slice(0,m.start)+'X',Number.MAX_SAFE_INTEGER).length-1;return {...m,start,end:start+m.label.length+1};});
-  const mentions=validTokens(reason,selected);if(mentions.some(m=>m.id!=='everyone'&&!eligible.has(m.id))){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
+  const mentions=validTokens(reason,selected);if(hasInvalidMention(mentions,eligible,t.block?.mentions)){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
   const broadcast=mentions.some(m=>m.id==='everyone')&&!t.block?.broadcastSent;
   if(broadcast&&Date.now()-(broadcasts[me().id+':'+projectOf(t).id]||0)<60000){blockFeedback('Please wait a minute before mentioning everyone again.');return null;}
   return {mentions:production?wireMentions(reason,mentions):mentions,broadcast};
@@ -229,7 +230,7 @@
   const top=Math.max(0,Math.min(panel.scrollHeight-panel.clientHeight,panel.scrollTop+item.top-viewport.top-offset));
   panel.scrollTo?.({top,behavior:UIMotion.reduced()?'auto':'smooth'});
  }
- function setMode(taskId,mode,target){const t=hooks.task(taskId);if(!t||!canComment(t))return;if(commentMode.mode===mode&&commentMode.target===target){const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);return;}capture();const c=t.comments.find(c=>c.id===target);if(target&&(!c||c.deleted))return;if(mode==='edit'&&(c.who!==me().id&&!me().admin))return;commentMode={mode,target};commentEditor=null;if(mode==='edit')Object.assign(editor(t),{text:c.text,mentions:structured(c.mentions)});if(mode==='reply')expanded.add(c.parentId||c.id);else if(c?.parentId)expanded.add(c.parentId);refreshComments(t,true);const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);}
+ function setMode(taskId,mode,target){const t=hooks.task(taskId);if(!t||!canComment(t))return;if(commentMode.mode===mode&&commentMode.target===target){const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);return;}capture();const c=t.comments.find(c=>c.id===target);if(target&&(!c||c.deleted))return;if(mode==='edit'&&(c.who!==me().id&&!me().admin))return;commentMode={mode,target};commentEditor=null;if(mode==='edit')Object.assign(editor(t),{text:c.text,mentions:structured(c.mentions),revision:c.revision});if(mode==='reply')expanded.add(c.parentId||c.id);else if(c?.parentId)expanded.add(c.parentId);refreshComments(t,true);const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);}
  const structured=v=>JSON.parse(JSON.stringify(v||[]));
  function closeMentions(silent=false){const panel=document.querySelector('.mention-picker');if(panel&&!silent)hooks?.exit?.(panel);panel?.remove();const input=mention?.input;input?.removeAttribute('aria-controls');input?.removeAttribute('aria-activedescendant');mention=null;}
  function pickMention(index){if(!mention)return;const {taskId,start,end,options,input,kind}=mention,option=options[index],task=hooks.task(taskId);if(!option||!task||!input?.isConnected)return;const value=input.value.slice(0,start)+'@'+option.label+' '+input.value.slice(end);if(value.length>input.maxLength){(kind==='block'?blockFeedback:feedback)(`The ${kind==='block'?'reason':'comment'} is too long to add this mention.`);closeMentions();return;}const d=updateText(task,value,kind);d.mentions.push({start,end:start+option.label.length+1,id:option.id,label:option.label});input.value=value;const caret=start+option.label.length+2;closeMentions();input.focus();input.setSelectionRange(caret,caret);persist();if(kind==='block')blockHint(task);else notifyHint(task);}
@@ -239,18 +240,25 @@
  }
  function notifyHint(task){const el=document.querySelector('.comment-notify-hint');if(!el)return;const d=editor(task);el.textContent=d.mentions.some(m=>m.id==='everyone')?`Notify ${members(projectOf(task)).filter(u=>u.id!==me()?.id).length} project members`:'';}
  function capture(){const input=document.getElementById('cmtIn'),task=hooks?.task(input?.closest('[data-comment-task]')?.dataset.commentTask);if(input&&task&&input.closest('[data-comment-task]').dataset.commentOwner===me()?.id&&canComment(task))updateText(task,input.value);const block=document.getElementById('block-reason'),blockedTask=hooks?.task(block?.dataset.blockTask);if(block&&!block.dataset.blockSaved&&blockedTask&&block.dataset.blockOwner===me()?.id&&hooks.canBoard(blockedTask))updateText(blockedTask,block.value,'block');}
- function savedComment(task,c,mode,changed){
+ function currentCommentInput(submitted){
+  capture();
+  const input=document.getElementById('cmtIn');
+  return commentEditor?.editorId===submitted.editorId&&commentEditor?.interactionId===submitted.interactionId&&input?.closest('[data-comment-task]')?.dataset.commentTask===submitted.task.id?input:null;
+ }
+ function savedComment(task,c,mode,changed,submitted=null){
+  capture();
+  if(submitted&&commentEditor?.interactionId!==submitted.interactionId){if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
   if(c.parentId)expanded.add(c.parentId);commentEditor=null;commentMode={mode:'comment',target:null};closeMentions();refreshComments(task,true);if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');const focus=mode==='comment'?document.getElementById('cmtIn'):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===c.id);if(focus&&mode!=='comment'){focus.classList.add('comment-save-focus');focus.addEventListener('blur',()=>focus.classList.remove('comment-save-focus'),{once:true});}focus?.focus({preventScroll:true});scrollWithinTask(mode==='comment'?focus?.closest('.collaboration-composer')||focus:focus);
  }
  function post(taskId){const task=hooks.task(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(window.Recovery&&!Recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
   const existing=cxt.mode==='edit'?task.comments.find(c=>c.id===cxt.target):null,target=cxt.mode==='reply'?task.comments.find(c=>c.id===cxt.target):null;
   if(cxt.mode==='edit'&&(!existing||existing.deleted||existing.who!==me().id&&!me().admin)||cxt.mode==='reply'&&(!target||target.deleted)){feedback('That comment is no longer available.');return false;}
-  const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(selected.some(m=>m.id!=='everyone'&&!eligible.has(m.id))){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
+  const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(hasInvalidMention(selected,eligible,existing?.mentions)){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
   const fingerprint=(value,tokens)=>sha256(JSON.stringify({text:value,mentions:tokens.map(({start,end,id,label})=>({start,end,id,label}))}));
   const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
   const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
   if(broadcast&&Date.now()-(broadcasts[rateKey]||0)<60000){feedback('Please wait a minute before mentioning everyone again.');return false;}
-  if(production&&productionApi){productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:existing?.revision,text,mentions:selected,interactionId:d.interactionId});return false;}
+  if(production&&productionApi){productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:d.interactionId});return false;}
   const c=existing||{id:id('comment'),who:me().id,ts:Date.now(),parentId:target?(target.parentId||target.id):null,replyToId:target?.id||null,notifiedRecipients:[]};
   c.text=text;c.mentions=selected;if(existing){if(changed){c.editedAt=Date.now();hooks.log?.(task,'edited a comment',{field:'comment-content:'+c.id,before,after});}}else(task.comments ||= []).push(c);
   const recipients=new Map();if(broadcast){for(const uid of eligible)recipients.set(uid,'everyone');broadcasts[rateKey]=Date.now();c.broadcastSent=true;}if(target)recipients.set(target.who,'reply');for(const m of selected)if(changed&&m.id!=='everyone')recipients.set(m.id,'mention');
@@ -270,7 +278,14 @@
      inboxBusy,
      inboxPage(meta){const {items,...state}=meta;inboxMeta={...inboxMeta,...state};inboxBusy(false);if(hooks.view()==='inbox')refreshInbox({...meta,items});else badge();},
      taskPage(taskId,meta){taskPages.set(taskId,meta);const task=hooks.task(taskId);if(!task)return;if(pendingTarget?.commentId){const target=task.comments?.find(c=>c.id===pendingTarget.commentId);if(target?.parentId)expanded.add(target.parentId);}if(mountedTaskId!==task.id)return;const next=feedSnapshotFor(task,meta),sameData=feedSnapshot?.taskId===task.id&&feedSnapshot.data===next.data;if(sameData&&feedSnapshot.meta===next.meta)return;feedSnapshot=next;if(commentMode.mode==='comment'){if(hooks.refreshActivity)hooks.refreshActivity(task.id,sameData);else refreshComments(task);mount(false);}},
-     commentSaved(taskId,comment,result){const task=hooks.task(taskId);if(task)savedComment(task,comment,result.mode,result.changed);},
+     commentSaved(taskId,comment,result){const task=hooks.task(taskId);if(task)savedComment(task,comment,result.mode,result.changed,result);},
+     commentAcknowledged(submitted,comment){if(commentEditor?.editorId===submitted.editorId&&commentEditor.revision===submitted.revision)commentEditor.revision=comment.revision;},
+     commentEditor:currentCommentInput,
+     acceptCommentLatest(submitted,comment){
+      const input=currentCommentInput(submitted);if(!input)return;
+      Object.assign(commentEditor,{text:comment.text,mentions:structured(comment.mentions),revision:comment.revision,interactionId:id('interaction')});
+      input.value=comment.text;closeMentions();feedback('');notifyHint(submitted.task);
+     },
      commentDeleted(taskId){const task=hooks.task(taskId);if(task){refreshComments(task);app.toast('Comment deleted');}},
      canonicalTask(){const active=document.activeElement,editing=commentMode.mode!=='comment'||!!commentEditor?.text||!!blockEditor||active?.matches?.('input,textarea,select,[contenteditable="true"]')||document.querySelector('.modal,.pop');if(hooks.refreshBackground)hooks.refreshBackground();else if(!editing)hooks.refresh();},
      target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},

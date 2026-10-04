@@ -2,6 +2,52 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp } = require('../../support/dom.cjs');
+const { createReadController } = require('../../../src/data/read-controller.js');
+
+test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
+ const t=boot(),projectId=t.A.context().projectId;
+ t.D.tasks.splice(0);t.D.projectTaskCounts={};
+ const task=(id,position,status='planning')=>({id,taskKey:`BIR-${id}`,projectId,epicId:t.D.epics[0].id,title:id,status,position,revision:1,assigneeIds:[]});
+ const empty={items:[],total:0,nextCursor:null},counts={planning:4,inProgress:4,inReview:0,done:0,blocked:0};
+ let changed;
+ const reads=createReadController({data:t.D,onBoard:()=>t.A.refreshBoard(),api:{
+  boardView:async()=>({planning:{items:[task('a',10),task('b',20),task('c',30)],total:4,nextCursor:'planning-next'},inProgress:{items:[task('d',10,'in_progress'),task('e',30,'in_progress')],total:4,nextCursor:'progress-next'},inReview:empty,done:empty,counts}),
+  task:async()=>changed,counts:async()=>counts,
+ }});
+ await reads.board(projectId);
+ const cards=state=>[...t.d.querySelectorAll(`[data-col="${state}"] .card`)].map(card=>card.dataset.task);
+ changed={...task('c',5),revision:2};await reads.patchBoard(projectId,{},[{entityId:'c'}]);
+ assert.deepEqual(cards('planning'),['BIR-c','BIR-a','BIR-b']);
+ changed={...task('a',20,'in_progress'),revision:2};await reads.patchBoard(projectId,{},[{entityId:'a'}]);
+ assert.deepEqual(cards('progress'),['BIR-d','BIR-a','BIR-e']);assert.deepEqual(cards('planning'),['BIR-c','BIR-b']);
+ changed={...task('d',30,'in_progress'),revision:2};await reads.patchBoard(projectId,{},[{entityId:'d'}]);
+ assert.deepEqual(cards('progress'),['BIR-a','BIR-d','BIR-e']);
+ changed=task('z',30,'in_progress');await reads.patchBoard(projectId,{},[{entityId:'z'}]);
+ assert.deepEqual(cards('progress'),['BIR-a','BIR-d','BIR-e'],'a tied position beyond the loaded ID boundary stays unloaded');
+ assert.equal(t.D.boardPageInfo.pages.planning.nextCursor,'planning-next');assert.equal(t.D.boardPageInfo.pages.progress.nextCursor,'progress-next');
+});
+
+test('Board search renders matching titles and keys with surrounding whitespace',()=>{
+ const t=boot(),task=t.D.tasks.find(item=>item.id==='BIR-079');
+ for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
+  t.A.setBoardQ(padded);
+  assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card=>card.dataset.task),['BIR-079'],padded);
+ }
+});
+
+test('live Pool content patches visible titles, descriptions and labels without losing an active draft',()=>{
+ const t=boot();t.A.openModal('pool');
+ const rows=[...t.d.querySelectorAll('[data-pool-item]')].slice(0,2);assert.equal(rows.length,2);
+ const editing=rows[1],item=t.D.pool.find(item=>item.id===editing.dataset.poolItem);
+ t.A.editPoolDescription({currentTarget:editing.querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);
+ const input=editing.querySelector('textarea');input.value='My unsent description';input.focus();input.setSelectionRange(2,6);
+ for(const row of rows){const current=t.D.pool.find(item=>item.id===row.dataset.poolItem);current.title='Remote title';current.desc='Remote description';current.revision=2;}
+ t.A.refreshPool();
+ for(const row of rows){assert.equal(row.querySelector('.pool-promote').textContent,'Remote title');assert.equal(row.querySelector('.pool-description-preview').textContent,'Remote description');assert.equal(row.querySelector('.pool-delete').getAttribute('aria-label'),'Delete Remote title');}
+ assert.equal(editing.querySelector('textarea'),input);assert.equal(input.value,'My unsent description');assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,6);
+ assert.equal(editing.querySelector('.pool-note-toggle').getAttribute('aria-expanded'),'true');
+ t.A.cancelPoolDescription(item.id);assert.equal(editing.querySelector('.pool-description-preview').textContent,'Remote description');
+});
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
