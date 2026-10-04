@@ -223,12 +223,13 @@ fn project_activity_tx(tx: &Transaction<'_>, context: &ProjectionContext<'_, '_>
             Option<String>,
             Option<String>,
             i64,
+            i64,
             String,
             Option<String>,
         );
         let open: Option<OpenProjection> = tx
             .query_row(
-                "SELECT id,actor_user_id,after_json,before_json,started_at,
+                "SELECT id,actor_user_id,after_json,before_json,started_at,latest_at,
                         visibility,private_owner_user_id
                  FROM activity_projection
                  WHERE entity_type=?1 AND entity_id=?2 AND field_key=?3 AND is_open=1",
@@ -242,13 +243,24 @@ fn project_activity_tx(tx: &Transaction<'_>, context: &ProjectionContext<'_, '_>
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
             .optional()?;
         let can_merge = open.as_ref().is_some_and(
-            |(_, chain_actor, chain_after, _, started_at, chain_visibility, chain_owner)| {
+            |(
+                _,
+                chain_actor,
+                chain_after,
+                _,
+                started_at,
+                latest_at,
+                chain_visibility,
+                chain_owner,
+            )| {
                 chain_actor.as_deref() == context.actor_user_id
+                    && context.now >= *latest_at
                     && context.now.saturating_sub(*started_at) <= CONSOLIDATION_WINDOW_SECONDS
                     && json_equal_field(
                         chain_after.as_deref(),
@@ -260,7 +272,7 @@ fn project_activity_tx(tx: &Transaction<'_>, context: &ProjectionContext<'_, '_>
             },
         );
         if can_merge {
-            let (projection_id, _, _, chain_before, _, _, _) = open.expect("checked");
+            let (projection_id, _, _, chain_before, _, _, _, _) = open.expect("checked");
             let hidden =
                 json_equal_field(chain_before.as_deref(), context.after_json, input.field_key);
             tx.execute(

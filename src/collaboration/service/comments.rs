@@ -61,6 +61,7 @@ pub(super) fn create_comment(
             comment_id: &id,
             content: &content,
             mentions: &mentions,
+            previous_mentions: &[],
             reply_author: reply_author.as_deref(),
             editing: false,
             now,
@@ -113,7 +114,18 @@ pub(super) fn edit_comment(
     }
     ensure_revision(before.revision, expected_revision)?;
     let content = canonical_comment(&input.content)?;
-    let mentions = validate_mentions(tx, &before.project_id, &content, input.mentions)?;
+    let retained: Vec<_> = before
+        .mentions
+        .iter()
+        .filter_map(|token| token.user_id.clone())
+        .collect();
+    let mentions = crate::access::validate_mentions_retaining(
+        tx,
+        &before.project_id,
+        &content,
+        input.mentions,
+        &retained,
+    )?;
     let before_fingerprint = comment_fingerprint(
         before.content.as_deref().unwrap_or_default(),
         &before.mentions,
@@ -153,6 +165,7 @@ pub(super) fn edit_comment(
             comment_id: &input.comment_id,
             content: &content,
             mentions: &mentions,
+            previous_mentions: &before.mentions,
             reply_author: None,
             editing: true,
             now,
@@ -283,7 +296,7 @@ pub(super) fn notify_comment_recipients(
     actor: &Actor,
     context: CommentNotificationContext<'_>,
 ) -> AppResult<()> {
-    let previous: BTreeSet<String> = if context.editing {
+    let mut previous: BTreeSet<String> = if context.editing {
         let mut statement = tx.prepare(
             "SELECT DISTINCT r.user_id FROM notification_recipients r
              JOIN notification_events n ON n.id=r.notification_id WHERE n.comment_id=?1",
@@ -294,6 +307,12 @@ pub(super) fn notify_comment_recipients(
     } else {
         BTreeSet::new()
     };
+    previous.extend(
+        context
+            .previous_mentions
+            .iter()
+            .filter_map(|token| token.user_id.clone()),
+    );
     let mut direct: BTreeSet<String> = context
         .mentions
         .iter()
@@ -302,13 +321,17 @@ pub(super) fn notify_comment_recipients(
         .filter(|id| !previous.contains(id))
         .collect();
     direct.remove(&actor.user_id);
-    let had_everyone = context.editing
-        && tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM notification_events
+    let had_everyone = context
+        .previous_mentions
+        .iter()
+        .any(|token| token.kind == MentionKind::Everyone)
+        || (context.editing
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM notification_events
          WHERE comment_id=?1 AND json_extract(payload_json,'$.broadcast')=1)",
-            [context.comment_id],
-            |row| row.get(0),
-        )?;
+                [context.comment_id],
+                |row| row.get(0),
+            )?);
     let has_everyone = context
         .mentions
         .iter()

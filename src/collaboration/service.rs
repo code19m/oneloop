@@ -3,6 +3,7 @@
 mod comments;
 use comments::*;
 mod inbox;
+pub(crate) use inbox::enqueue_inbox_change_tx;
 use inbox::*;
 
 use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
@@ -28,7 +29,7 @@ use super::{
 };
 
 use crate::access::enforce_broadcast_cooldown;
-const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 100;
 const INBOX_FILTER_SQL: &str = "
@@ -54,6 +55,7 @@ struct CommentNotificationContext<'a> {
     comment_id: &'a str,
     content: &'a str,
     mentions: &'a [MentionToken],
+    previous_mentions: &'a [MentionToken],
     reply_author: Option<&'a str>,
     editing: bool,
     now: i64,
@@ -223,7 +225,7 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
-        self.db.run(move |connection| {
+        self.db.snapshot(move |connection| {
             authorize_actor_connection(connection, &actor, unix_now()?)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
@@ -259,7 +261,7 @@ impl CollaborationService {
         let actor = actor.clone();
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
-        self.db.run(move |connection| {
+        self.db.snapshot(move |connection| {
             authorize_actor_connection(connection, &actor, unix_now()?)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",

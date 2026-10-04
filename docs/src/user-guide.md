@@ -166,7 +166,8 @@ read-only Board.
   `code` or a quote, is plain text.
 - **@everyone** notifies all active members of the project except you. You can
   use it once a minute in each project.
-- When you edit a comment, only people you newly mention get a notification.
+- When you edit a comment or block reason, only people you newly mention get a
+  notification. Mentions of people who have left stay.
 
 ## Inbox
 
@@ -181,7 +182,7 @@ You get a notification when:
 - someone assigns a task to you;
 - a task assigned to you is unblocked.
 
-You never get notifications for your own actions. Status changes, edits and new
+You never get notifications for your own actions. Status changes and new
 files don't notify anyone.
 
 Click an item to open the task at the right place; this also marks the item

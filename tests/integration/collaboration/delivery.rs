@@ -11,6 +11,93 @@ use serde_json::json;
 
 use crate::support::{SeededProject, browser_actor, now, seeded_project};
 
+#[tokio::test]
+async fn backward_clock_steps_split_activity_chains_without_blocking_domain_edits() {
+    let SeededProject {
+        root: _root,
+        db,
+        alice,
+        ..
+    } = seeded_project().await;
+    let actor = alice.clone();
+    db.transaction(move |tx| {
+        tx.execute(
+            "UPDATE project_memberships SET manage_board=1 WHERE user_id='alice'",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE tasks SET title='Before correction',revision=2 WHERE id='task'",
+            [],
+        )?;
+        record_activity_tx(
+            tx,
+            &actor,
+            ActivityInput {
+                project_id: Some("p1"),
+                entity_type: "task",
+                entity_id: "task",
+                task_id: Some("task"),
+                event_type: "task.updated",
+                field_key: Some("title"),
+                before: Some(json!("Task")),
+                after: Some(json!("Before correction")),
+                metadata: json!({}),
+                entity_revision: Some(2),
+            },
+            i64::MAX / 2,
+        )?;
+        // A smaller correction can stay after started_at while preceding latest_at.
+        for (before, after, time) in [("a", "b", 1000), ("b", "c", 1200), ("c", "d", 1100)] {
+            record_activity_tx(
+                tx,
+                &actor,
+                ActivityInput {
+                    project_id: Some("p1"),
+                    entity_type: "task",
+                    entity_id: "task",
+                    task_id: Some("task"),
+                    event_type: "task.updated",
+                    field_key: Some("description"),
+                    before: Some(json!(before)),
+                    after: Some(json!(after)),
+                    metadata: json!({}),
+                    entity_revision: None,
+                },
+                time,
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let domain = oneloop::domain::DomainService::new(db.clone(), chrono_tz::UTC);
+    let updated = domain
+        .execute(
+            &alice,
+            oneloop::domain::CommandEnvelope {
+                operation: oneloop::domain::DomainOperation::UpdateTask,
+                payload: json!({"taskId":"task","title":"After correction"}),
+                idempotency_key: "clock-corrected-edit".into(),
+                expected_revision: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.entities[0]["title"], "After correction");
+    let (raw, projections) = db.run(|conn| {
+        let raw = conn.query_row("SELECT count(*) FROM activity_events", [], |row| row.get::<_, i64>(0))?;
+        let projections = conn.prepare("SELECT field_key,started_at,latest_at FROM activity_projection ORDER BY field_key,started_at")?
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((raw, projections))
+    }).await.unwrap();
+    assert_eq!(raw, 5);
+    assert_eq!(projections.len(), 4);
+    assert_eq!(projections[0], ("description".into(), 1000, 1200));
+    assert_eq!(projections[1], ("description".into(), 1100, 1100));
+    assert_eq!(projections[3], ("title".into(), i64::MAX / 2, i64::MAX / 2));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn competing_workers_claim_an_outbox_message_once() {
     let SeededProject {
@@ -481,6 +568,21 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         .await
         .unwrap();
     assert_eq!(archived.filtered_count, 1);
+    for operation in ["inbox.restore", "inbox.archive"] {
+        service
+            .execute(
+                &bob,
+                CollaborationCommand {
+                    operation: operation.into(),
+                    payload: json!({"notificationId":notification_id}),
+                    idempotency_key: format!("before-expiry-{operation}"),
+                    expected_revision: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let expired_id = notification_id.clone();
     db.run(move |connection| {
         connection.execute("UPDATE notification_recipients SET archived_at=?1 WHERE notification_id=?2 AND user_id='bob'",
             rusqlite::params![now() - 91 * 86_400, notification_id])?;
@@ -499,6 +601,47 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         .await
         .unwrap();
     assert_eq!(expired.filtered_count, 0);
+    for purge in [false, true] {
+        if purge {
+            assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
+        }
+        let bootstrap = oneloop::domain::DomainService::new(db.clone(), chrono_tz::UTC)
+            .bootstrap(&bob, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(bootstrap.notifications.len(), 1, "purge={purge}");
+        assert!(
+            bootstrap
+                .notifications
+                .iter()
+                .all(|item| item["id"] != expired_id)
+        );
+        for operation in [
+            "inbox.restore",
+            "inbox.archive",
+            "inbox.markRead",
+            "inbox.markUnread",
+        ] {
+            let error = service
+                .execute(
+                    &bob,
+                    CollaborationCommand {
+                        operation: operation.into(),
+                        payload: json!({"notificationId":expired_id}),
+                        idempotency_key: format!("expired-{purge}-{operation}"),
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                oneloop::AppError::NotFound {
+                    resource: "notification"
+                }
+            ));
+        }
+    }
 }
 
 #[tokio::test]

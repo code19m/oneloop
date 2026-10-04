@@ -1,6 +1,117 @@
 use super::*;
 
 #[tokio::test]
+async fn block_reason_edits_invalidate_existing_inboxes_even_after_mentions_are_removed() {
+    let f = fixture().await;
+    let task = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Blocked"}),
+                "hint-task",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let mentions =
+        json!([{"kind":"user","userId":"u2","startOffset":0,"endOffset":7,"label":"@Member"}]);
+    let block = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::BlockTask,
+                json!({"taskId":task.entities[0]["id"],"reason":"@Member old","mentions":mentions}),
+                "hint-block",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
+    while runtime.worker().run_once().await.unwrap() {}
+    let mut events = runtime.subscribe();
+    for (revision, reason, mentions) in [
+        (1, "@Member corrected", mentions),
+        (2, "Corrected again", json!([])),
+    ] {
+        f.service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::UpdateBlockReason,
+                    json!({"blockId":block.entities[1]["id"],"reason":reason,"mentions":mentions}),
+                    &format!("hint-edit-{revision}"),
+                    Some(revision),
+                ),
+            )
+            .await
+            .unwrap();
+        while runtime.worker().run_once().await.unwrap() {}
+        let mut hints = Vec::new();
+        while let Ok(hint) = events.try_recv() {
+            if hint.kind == "inbox.changed" {
+                hints.push(hint);
+            }
+        }
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].project_id.is_none());
+        assert_eq!(
+            hints[0].recipient_ids,
+            ["u2".to_owned()].into_iter().collect()
+        );
+        let inbox = CollaborationService::new(f.db.clone())
+            .inbox(&f.member, Default::default(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(inbox.items.len(), 1);
+        assert_eq!(inbox.items[0].excerpt.as_deref(), Some(reason));
+    }
+}
+
+#[tokio::test]
+async fn block_edits_notify_new_mentions_without_notifying_retained_self_mentions() {
+    let f = fixture().await;
+    let task = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Blocked"}),
+                "self-task",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let mut mentions =
+        json!([{"kind":"user","userId":"u1","startOffset":0,"endOffset":8,"label":"@Manager"}]);
+    let block = f.service.execute(&f.manager, command(DomainOperation::BlockTask,
+        json!({"taskId":task.entities[0]["id"],"reason":"@Manager old","mentions":mentions}), "self-block", Some(1),
+    )).await.unwrap();
+    mentions.as_array_mut().unwrap().push(
+        json!({"kind":"user","userId":"u2","startOffset":9,"endOffset":16,"label":"@Member"}),
+    );
+    f.service.execute(&f.admin, command(DomainOperation::UpdateBlockReason,
+        json!({"blockId":block.entities[1]["id"],"reason":"@Manager @Member corrected","mentions":mentions}), "self-edit", Some(1),
+    )).await.unwrap();
+    let recipients =
+        f.db.run(|conn| {
+            Ok(conn
+                .prepare("SELECT user_id FROM notification_recipients ORDER BY user_id")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(recipients, ["u2"]);
+}
+
+#[tokio::test]
 async fn permissions_relationships_past_deadlines_and_idempotency_are_enforced() {
     let f = fixture().await;
     let create = command(

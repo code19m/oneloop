@@ -286,6 +286,45 @@ pub fn validate_backup(path: impl AsRef<Path>) -> AppResult<BackupManifest> {
         )));
     }
     integrity_check(&database)?;
+    // The snapshot defines completeness; a self-consistent manifest alone can
+    // omit an available blob or the key needed to decrypt stored credentials.
+    for blob in referenced_blobs(&database)? {
+        validate_relative_path(&blob.key)?;
+        let path = format!("data/files/{}", blob.key);
+        let entry = manifest
+            .files
+            .binary_search_by(|entry| entry.path.cmp(&path))
+            .ok()
+            .map(|index| &manifest.files[index])
+            .ok_or_else(|| blob.failure("is missing from the backup manifest"))?;
+        if entry.size_bytes != blob.size || entry.sha256 != blob.checksum {
+            return Err(blob.failure("does not match the snapshot's size/checksum"));
+        }
+    }
+    // Pre-Knowledge backups remain valid, including the frozen legacy chain.
+    let has_knowledge: bool = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='knowledge_sources')",
+        [], |row| row.get(0),
+    )?;
+    if has_knowledge {
+        let encrypted_credentials: bool = database.query_row(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_sources WHERE token_ciphertext IS NOT NULL)
+             OR EXISTS(SELECT 1 FROM knowledge_deploy_keys)",
+            [],
+            |row| row.get(0),
+        )?;
+        if encrypted_credentials
+            && !manifest
+                .files
+                .iter()
+                .any(|entry| entry.path == "data/keys/knowledge.key")
+        {
+            return Err(AppError::PreconditionFailed(
+                "backup requires keys/knowledge.key to decrypt stored Knowledge credentials"
+                    .to_owned(),
+            ));
+        }
+    }
     Ok(manifest)
 }
 

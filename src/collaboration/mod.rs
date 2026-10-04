@@ -18,3 +18,4 @@ pub use runtime::{CollaborationRuntime, OutboxWorker};
 pub use service::CollaborationService;
 
 pub(crate) use runtime::enqueue_access_change_tx;
+pub(crate) use service::{ARCHIVE_RETENTION_SECONDS, enqueue_inbox_change_tx};

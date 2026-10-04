@@ -157,7 +157,7 @@ Some emoji count as two characters.
 | Limit | Value |
 | --- | --- |
 | `@everyone` | Once a minute per person in each project |
-| Archived Inbox items | Deleted after 90 days |
+| Archived Inbox items | Removed after 90 days; cannot be restored |
 | Activity | Edits by one person to the same field within 5 minutes show as one entry. History is kept forever. |
 
 **AI assistants**

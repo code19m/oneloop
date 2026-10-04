@@ -1,6 +1,105 @@
 use super::*;
 
 #[tokio::test]
+async fn readded_memberships_reject_updates_and_removals_from_every_previous_revision() {
+    let f = fixture().await;
+    let mut revision = 1;
+    for cycle in 0..2 {
+        let removed = f
+            .service
+            .execute(
+                &f.admin,
+                command(
+                    DomainOperation::RemoveMembership,
+                    json!({"projectId":"p1","userId":"u2"}),
+                    &format!("remove-{cycle}"),
+                    Some(revision),
+                ),
+            )
+            .await
+            .unwrap();
+        let added = f
+            .service
+            .execute(
+                &f.admin,
+                command(
+                    DomainOperation::AddMembership,
+                    json!({"projectId":"p1","userId":"u2"}),
+                    &format!("add-{cycle}"),
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        let next = added.entities[0]["revision"].as_i64().unwrap();
+        assert!(next > removed.entities[0]["revision"].as_i64().unwrap());
+        for stale in 1..next {
+            for operation in [
+                DomainOperation::UpdateMembership,
+                DomainOperation::RemoveMembership,
+            ] {
+                let result = f.service.execute(&f.admin, command(operation,
+                    if operation == DomainOperation::UpdateMembership {
+                        json!({"projectId":"p1","userId":"u2","manageBoard":true,"manageRoadmap":false})
+                    } else { json!({"projectId":"p1","userId":"u2"}) },
+                    &format!("stale-{cycle}-{stale}-{operation:?}"), Some(stale),
+                )).await;
+                assert!(
+                    matches!(result, Err(AppError::RevisionConflict { .. })),
+                    "{result:?}"
+                );
+            }
+        }
+        let updated = f.service.execute(&f.admin, command(DomainOperation::UpdateMembership,
+            json!({"projectId":"p1","userId":"u2","manageBoard":true,"manageRoadmap":false}),
+            &format!("update-{cycle}"), Some(next),
+        )).await.unwrap();
+        revision = updated.entities[0]["revision"].as_i64().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn membership_addition_sends_an_account_addressed_access_hint() {
+    let f = fixture().await;
+    let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
+    let mut events = runtime.subscribe();
+    f.service
+        .execute(
+            &f.admin,
+            command(
+                DomainOperation::AddMembership,
+                json!({"projectId":"p2","userId":"u2"}),
+                "add-project-access",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    while runtime.worker().run_once().await.unwrap() {}
+    let mut hints = Vec::new();
+    while let Ok(hint) = events.try_recv() {
+        if hint.kind == "access.changed" {
+            hints.push(hint);
+        }
+    }
+    assert_eq!(hints.len(), 1);
+    assert!(hints[0].project_id.is_none());
+    assert_eq!(
+        hints[0].recipient_ids,
+        ["u2".to_owned()].into_iter().collect()
+    );
+    assert!(
+        f.service
+            .bootstrap(&f.member, BootstrapQuery::default())
+            .await
+            .unwrap()
+            .projects
+            .iter()
+            .any(|project| project.id == "p2")
+    );
+}
+
+#[tokio::test]
 async fn epic_panel_reads_every_task_and_real_activity_in_bounded_pages() {
     let fixture = fixture().await;
     let now = now();
