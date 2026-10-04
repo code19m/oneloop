@@ -915,6 +915,68 @@ async fn inactive_accounts_cannot_redeem_codes_or_refresh_tokens() {
 }
 
 #[tokio::test]
+async fn deactivation_ends_connections_until_the_app_connects_again() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let admin = support::add_user(&db, "administrator", true).await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let access = tokens["access_token"].as_str().unwrap();
+    let (pending, pending_verifier) = authorize(&app, &session, &client).await;
+    let auth = AuthService::new(db);
+    let set_active = |is_active, expected_revision| {
+        auth.update_account(
+            &admin.actor,
+            &user,
+            oneloop::auth::AccountUpdate {
+                display_name: "Owner".into(),
+                is_admin: false,
+                is_active,
+                expected_revision,
+            },
+        )
+    };
+    let invalid_grant = async |request: Request<Body>| {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["error"], "invalid_grant");
+    };
+
+    set_active(false, 1).await.unwrap();
+    invalid_grant(code_request(&client, &pending, &pending_verifier)).await;
+    invalid_grant(refresh_request(
+        &client,
+        tokens["refresh_token"].as_str().unwrap(),
+    ))
+    .await;
+
+    // Reactivation brings back neither the pending code nor the issued tokens.
+    set_active(true, 2).await.unwrap();
+    invalid_grant(code_request(&client, &pending, &pending_verifier)).await;
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
+    let old = app
+        .clone()
+        .oneshot(mcp_request(access, None, list))
+        .await
+        .unwrap();
+    assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
+    let LoginResult::Authenticated(signed_in) = auth
+        .login(
+            "owner",
+            "test-only-password-012345",
+            SessionMetadata::default(),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a reactivated account signs in again");
+    };
+    let (code, verifier) = authorize(&app, &signed_in.token, &client).await;
+    issue(&app, &client, &code, &verifier).await;
+}
+
+#[tokio::test]
 async fn restored_pending_authorization_code_cannot_mint_credentials() {
     let (dir, db, app, session, _user) = fixture().await;
     let client = register(&app).await;
