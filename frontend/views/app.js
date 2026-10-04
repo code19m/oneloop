@@ -2448,7 +2448,7 @@
         if(state.modal===modal)App.toast('Could not copy. Select the password and copy it manually.','error');
       }
     },
-    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
+    selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
     // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
     refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
     refreshRoadmap({zoom=false}={}) {

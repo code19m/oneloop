@@ -4,6 +4,19 @@ const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
 const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
+test('selecting another project from a task leaves its route and displays the selected Board',async()=>{
+ const t=bootApp({route:'task/BIR-079'}),previous=globalThis.location;
+ globalThis.location=t.w.location;
+ const destination=t.D.projects.find(project=>project.id!==t.A.context().projectId),taskReads=[],boards=[];
+ const bridge=installViewBridge({app:t.A,data:t.D,api:{},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({}),reads:{cancel(){},task:async id=>{taskReads.push(id);return {};},board:async id=>{boards.push(id);return {};},counts:async()=>{}}});
+ try{
+  await bridge.invoke('workspace.select',{projectId:destination.id});
+  assert.equal(t.w.location.hash,'#/board');assert.equal(t.A.context().view,'board');assert.equal(t.A.context().projectId,destination.id);
+  assert.equal(t.d.querySelector('.task-page'),null);assert(t.d.querySelector('.board'));
+  assert.deepEqual(boards,[destination.id]);assert.deepEqual(taskReads,[]);
+ }finally{globalThis.location=previous;}
+});
+
 for(const kind of ['track','epic','milestone','unblock','task','project','user'])test(`a late ${kind} save preserves the replacement modal and all its fields`,async()=>{
  const t=bootApp({route:'roadmap'}),previous=globalThis.FormData;
  globalThis.FormData=t.w.FormData;
