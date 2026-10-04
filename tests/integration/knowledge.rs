@@ -318,6 +318,100 @@ fn cookie(token: &str) -> String {
     format!("__Host-oneloop_session={token}")
 }
 
+#[tokio::test]
+async fn legacy_binary_markdown_is_not_previewed_or_indexed_across_resyncs() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/binary.md", b"legacysecret\xff\xfe\0\x01");
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    fixture
+        .db
+        .run(|c| {
+            c.execute(
+                "UPDATE knowledge_files SET preview_kind='markdown' WHERE path='binary.md'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let actor = fixture
+        .state
+        .auth
+        .authenticate_session(fixture.member.split_once('=').unwrap().1, false)
+        .await
+        .unwrap();
+    for phase in ["upgrade", "unchanged branch", "changed branch"] {
+        if phase == "changed branch" {
+            repository.write("docs/new.txt", b"A new commit.");
+            repository.commit(SECOND);
+        }
+        if phase != "upgrade" {
+            let (status, _) = fixture
+                .command(
+                    &fixture.admin,
+                    "knowledge.sync",
+                    json!({"projectId":"p1"}),
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            fixture.state.knowledge.sync_due().await;
+        }
+        let view = fixture.state.knowledge.view(&actor, "p1").await.unwrap();
+        assert!(
+            view.files
+                .iter()
+                .find(|f| f.path == "binary.md")
+                .unwrap()
+                .kind
+                .is_none(),
+            "{phase}"
+        );
+        let read = fixture
+            .state
+            .knowledge
+            .read_text(&actor, "p1", "binary.md", None)
+            .await
+            .unwrap();
+        assert!(read.content.is_none() && read.kind.is_none(), "{phase}");
+        assert_eq!(
+            fixture
+                .get(
+                    &fixture.member,
+                    "/api/projects/p1/knowledge/text?path=binary.md"
+                )
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let found = fixture
+            .state
+            .knowledge
+            .search(&actor, "p1", "legacysecret")
+            .await
+            .unwrap();
+        assert!(found.documents.is_empty(), "{phase}");
+    }
+    let repaired: Option<String> = fixture
+        .db
+        .run(|c| {
+            Ok(c.query_row(
+                "SELECT preview_kind FROM knowledge_files WHERE path='binary.md'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert!(
+        repaired.is_none(),
+        "a full resync repairs metadata even when bytes are unchanged"
+    );
+}
+
 fn paths(view: &Value) -> Vec<&str> {
     view["files"]
         .as_array()

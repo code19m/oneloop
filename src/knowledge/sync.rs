@@ -500,10 +500,20 @@ fn store_files(
     for file in &snapshot.files {
         kept.insert(file.path.as_str());
         let checksum = hex::encode(Sha256::digest(&file.content));
+        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
         if stored.get(&file.path) == Some(&checksum) {
+            tx.execute(
+                "UPDATE knowledge_files SET media_type=?3,preview_kind=?4
+                 WHERE project_id=?1 AND path=?2 AND (media_type<>?3 OR preview_kind IS NOT ?4)",
+                params![
+                    project_id,
+                    file.path,
+                    media_type,
+                    kind.map(|kind| kind.as_str())
+                ],
+            )?;
             continue;
         }
-        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
         tx.execute(
             "INSERT OR REPLACE INTO knowledge_files
              (project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
