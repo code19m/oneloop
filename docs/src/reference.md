@@ -54,6 +54,8 @@ an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
 Uploads and Knowledge syncs reserve space from the same disk budget before
 starting. A reservation stays in place until publication or temporary-file
 cleanup finishes.
+When a delayed attachment deletion finishes, activity records the person and
+app that requested it.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of

@@ -429,6 +429,123 @@ async fn deletion_is_byte_complete_and_safe_to_replay() {
 }
 
 #[tokio::test]
+async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
+    for via_mcp in [false, true] {
+        let f = Fixture::new().await;
+        let service = f.service(100 * 1024 * 1024);
+        let mut actor = f.manager.clone();
+        if via_mcp {
+            f.db.run(|c| {
+                let now = now();
+                c.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at) VALUES('delete-grant','manager','files-client','Files app',?1,?1,?2,?1)", rusqlite::params![now, now+86400])?;
+                c.execute("INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES('delete-grant','p1')", [])?;
+                for scope in ["project_read", "attachments", "board_manage", "destructive"] {
+                    c.execute("INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES('delete-grant',?1)", [scope])?;
+                }
+                Ok(())
+            }).await.unwrap();
+            actor.source = oneloop::auth::ActorSource::McpGrant {
+                grant_id: "delete-grant".into(),
+            };
+        }
+        let attachment = upload(
+            &service,
+            &f.manager,
+            "pending-file",
+            "pending.txt",
+            b"data",
+            false,
+        )
+        .await;
+        let id = attachment.id.clone();
+        let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
+        let path = service.store().file_path(&key).unwrap();
+        let held = f._root.path().join("held-original");
+        std::fs::rename(&path, &held).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let failed = service
+            .delete_attachment(
+                &actor,
+                &attachment.id,
+                attachment.revision,
+                "pending-delete",
+            )
+            .await;
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(held, &path).unwrap();
+        assert!(matches!(failed, Err(AppError::Unavailable(_))));
+        f.db.run(|c| {
+            c.execute(
+                "UPDATE idempotency_keys SET expires_at=0 WHERE operation='attachment.delete'",
+                [],
+            )?;
+            c.execute("UPDATE file_deletion_jobs SET available_at=0", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        upload(
+            &service,
+            &f.manager,
+            "prune-expired",
+            "another.txt",
+            b"other",
+            false,
+        )
+        .await;
+        let receipts: i64 =
+            f.db.run(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM idempotency_keys WHERE operation='attachment.delete'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipts, 0, "ordinary writes really pruned the receipt");
+        f.db.run(|c| {
+            c.execute(
+                "UPDATE users SET display_name='Renamed' WHERE id='manager'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            service.reconcile().await.unwrap().deletion_jobs_completed,
+            1
+        );
+        assert_eq!(
+            service.reconcile().await.unwrap().deletion_jobs_completed,
+            0
+        );
+        assert!(!path.exists());
+        let id = attachment.id.clone();
+        let (events, projections, outbox, attachments): (i64, i64, i64, i64) = f.db.run(move |c| Ok((
+            c.query_row("SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'", [&id], |r| r.get(0))?,
+            c.query_row("SELECT count(*) FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted'", [&id], |r| r.get(0))?,
+            c.query_row("SELECT count(*) FROM outbox_messages WHERE json_extract(payload_json,'$.activityEventId') IN (SELECT id FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted')", [&id], |r| r.get(0))?,
+            c.query_row("SELECT count(*) FROM task_attachments WHERE id=?1", [&id], |r| r.get(0))?,
+        ))).await.unwrap();
+        assert_eq!((events, projections, outbox, attachments), (1, 1, 1, 0));
+        let id = attachment.id;
+        let provenance: (String, Option<String>, String) = f.db.run(move |c| Ok(c.query_row(
+            "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted') FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'",
+            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?)).await.unwrap();
+        assert_eq!(
+            provenance,
+            (
+                "manager".into(),
+                via_mcp.then(|| "delete-grant".into()),
+                actor.display_name
+            )
+        );
+    }
+}
+
+#[tokio::test]
 async fn retention_and_deletion_require_current_revisions_but_replay_safely() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
@@ -1825,7 +1942,7 @@ async fn concurrent_upload_reservations_protect_the_disk_floor() {
     let f = Fixture::new().await;
     let ordinary = f.service(100 * 1024 * 1024);
     ordinary.store().ensure_directories().await.unwrap();
-    let free = ordinary.store().available_space().unwrap();
+    let free = fs4::available_space(f.db.layout().root()).unwrap();
     let service = FileService::new(
         f.db.clone(),
         100 * 1024 * 1024,

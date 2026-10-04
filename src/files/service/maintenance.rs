@@ -446,7 +446,7 @@ impl FileService {
                     tx.execute(
                         "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
                          VALUES(?1,?2,?3,'cleanup',?4,?4,?5)", params![id,blob,key,now,run_tx])?;
-                    jobs.push((DeletionJob { id, blob_id: blob, storage_key: key, reason: "cleanup".into() }, size));
+                    jobs.push((DeletionJob { id, blob_id: blob, storage_key: key }, size));
                     claimed = claimed.saturating_add(size);
                 }
                 Ok(jobs)
@@ -467,7 +467,7 @@ impl FileService {
                 }
             }
             for path in parents.into_values() {
-                FileStore::sync_parent(path).await?;
+                FileStore::sync_deletion_parent(path).await?;
             }
             let (count, bytes) = self
                 .db
@@ -732,7 +732,6 @@ impl FileService {
                                 id: r.get(0)?,
                                 blob_id: r.get(1)?,
                                 storage_key: r.get(2)?,
-                                reason: r.get(3)?,
                             })
                         })?
                         .collect::<Result<Vec<_>, _>>()?)
@@ -755,7 +754,7 @@ impl FileService {
                 removed.push(job);
             }
             for path in parents.into_values() {
-                FileStore::sync_parent(path).await?;
+                FileStore::sync_deletion_parent(path).await?;
             }
             completed += self
                 .db
