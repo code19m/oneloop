@@ -74,6 +74,43 @@ fn serve_check_accepts_an_uninitialized_data_directory_without_creating_it() {
 
 #[cfg(unix)]
 #[test]
+fn data_paths_follow_symlinks_before_parent_components() {
+    let root = scratch_dir();
+    let actual = root.path().join("actual");
+    let lexical = root.path().join("lexical");
+    std::fs::create_dir_all(actual.join("child")).unwrap();
+    std::fs::create_dir(&lexical).unwrap();
+    std::os::unix::fs::symlink(actual.join("child"), lexical.join("alias")).unwrap();
+    for suffix in ["", "new/instance"] {
+        let supplied = lexical.join("alias/..").join(suffix);
+        let mut expected = actual.canonicalize().unwrap();
+        if !suffix.is_empty() {
+            expected.push(suffix);
+        }
+        ProcessCommand::cargo_bin("oneloop")
+            .unwrap()
+            .env_clear()
+            .env("ONELOOP_DATA_DIR", &supplied)
+            .env("ONELOOP_PUBLIC_URL", "http://127.0.0.1:18710")
+            .args(["serve", "--check"])
+            .assert()
+            .success()
+            .stdout(contains(format!("data {}", expected.display())));
+        assert!(!expected.join("oneloop.sqlite3").exists());
+        ProcessCommand::cargo_bin("oneloop")
+            .unwrap()
+            .env_clear()
+            .env("ONELOOP_DATA_DIR", &supplied)
+            .args(["db", "migrate"])
+            .assert()
+            .success();
+        assert!(expected.join("oneloop.sqlite3").is_file());
+        assert!(!lexical.join(suffix).join("oneloop.sqlite3").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn serve_and_preflight_reject_readonly_database_and_name_the_path() {
     use std::{fs, os::unix::fs::PermissionsExt};
     let root = data_dir();

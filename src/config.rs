@@ -300,10 +300,15 @@ pub(crate) fn normalize_path(path: &Path) -> AppResult<PathBuf> {
             Component::RootDir => normalized.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(AppError::Config(
-                        "path escapes its filesystem root".to_owned(),
-                    ));
+                // Let the filesystem traverse symlinks before resolving `..`.
+                // Preserve a missing suffix so creation still uses OS semantics.
+                let parent = normalized.join("..");
+                match parent.canonicalize() {
+                    Ok(parent) => normalized = parent,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        normalized = parent;
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
             Component::Normal(part) => normalized.push(part),
