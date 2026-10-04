@@ -323,6 +323,85 @@ fn password_request(path: &str, cookie: &str, body: &str) -> Request<Body> {
 }
 
 #[tokio::test]
+async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
+    let (_root, db, app) = application();
+    let username = "a".repeat(32);
+    let name = username.clone();
+    db.transaction(move |tx| {
+        create_user(
+            tx,
+            NewUser {
+                username: name,
+                display_name: "Person".into(),
+                password: "\0".repeat(8192),
+                is_admin: false,
+                must_change_password: false,
+            },
+            oneloop::auth::unix_now()?,
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut current = "\\u0000".repeat(8192);
+    let mut cookie = String::new();
+    for next in [
+        Some("\\u0001".repeat(16384)),
+        Some("\\u0002".repeat(16384)),
+        Some("\\ud83d\\ude00".repeat(4096)),
+        None,
+    ] {
+        let body = format!(r#"{{"username":"{username}","password":"{current}"}}"#);
+        let response = app
+            .clone()
+            .oneshot(password_request("/api/auth/login", "", &body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        if let Some(next) = next {
+            let body = format!(r#"{{"currentPassword":"{current}","newPassword":"{next}"}}"#);
+            let response = app
+                .clone()
+                .oneshot(password_request(
+                    "/api/auth/change-password",
+                    &cookie,
+                    &body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            current = next;
+        }
+    }
+    for path in ["/api/auth/login", "/api/auth/change-password"] {
+        let oversized = format!("{}x", "😀".repeat(4096));
+        let body = if path.ends_with("login") {
+            serde_json::json!({"username":username,"password":oversized})
+        } else {
+            serde_json::json!({"currentPassword":"😀".repeat(4096),"newPassword":oversized})
+        }
+        .to_string();
+        let response = app
+            .clone()
+            .oneshot(password_request(path, &cookie, &body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "validation_failed"
+        );
+    }
+}
+
+#[tokio::test]
 async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire() {
     let (_directory, db, app) = application();
     seed_user(&db).await;

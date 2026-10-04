@@ -681,6 +681,58 @@ async fn cli_creation_reset_and_browser_password_change_share_the_five_character
 }
 
 #[tokio::test]
+async fn cli_creation_and_reset_enforce_the_password_byte_limit() {
+    use assert_cmd::Command;
+    let (directory, db) = database();
+    let command = |args: &[&str], password: &str| {
+        let mut command = Command::cargo_bin("oneloop").unwrap();
+        command
+            .env_clear()
+            .env("ONELOOP_DATA_DIR", directory.path())
+            .args(args)
+            .write_stdin(format!("{password}\n"));
+        command
+    };
+    let maximum = "😀".repeat(4096);
+    let oversized = format!("{maximum}x");
+    command(&["user", "add", "too-long", "--password-stdin"], &oversized)
+        .assert()
+        .code(2);
+    command(
+        &["user", "add", "person", "--admin", "--password-stdin"],
+        &maximum,
+    )
+    .assert()
+    .success();
+    command(
+        &["user", "passwd", "person", "--password-stdin"],
+        &oversized,
+    )
+    .assert()
+    .code(2);
+    let auth = AuthService::new(db);
+    assert!(matches!(
+        auth.login("person", &maximum, Default::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
+    let replacement = "x".repeat(16384);
+    command(
+        &["user", "passwd", "person", "--password-stdin"],
+        &replacement,
+    )
+    .assert()
+    .success();
+    assert!(matches!(
+        auth.login("person", &replacement, Default::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
+}
+
+#[tokio::test]
 async fn password_gates_share_account_delay_across_sessions_and_clear_on_success() {
     let (_directory, db) = database();
     add_user(&db, "confirm", false, false).await;
