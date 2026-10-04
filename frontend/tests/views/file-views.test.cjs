@@ -107,6 +107,20 @@ test('math, alerts and footnotes render and footnote links move focus', async ()
   extras.querySelector('[data-view-source]').click(); assert.equal(extras.querySelector('.html-source').textContent, sample);
 });
 
+test('Markdown anchors stay unique when literal suffixes collide with repeated headings', async () => {
+  const { w, d } = boot();
+  for (const [text, expected] of [
+    ['## Setup\n\n## Setup\n\n## Setup-1\n\n## md-setup\n', ['md-setup', 'md-setup-1', 'md-setup-1-1', 'md-md-setup']],
+    ['## Setup-1\n\n## Setup\n\n## Setup\n', ['md-setup-1', 'md-setup', 'md-setup-2']],
+  ]) {
+    const host = d.createElement('div'); d.body.append(host);
+    w.FileViews.markdown(host, { name: 'anchors.md' }, text, false);
+    await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+    assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), expected);
+    host.remove();
+  }
+});
+
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);

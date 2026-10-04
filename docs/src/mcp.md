@@ -207,7 +207,9 @@ schema describes the payload of each operation.
   the [response limits](reference.md#limits); to read one part of a long
   document, pass a heading as `section`. Search hits include a `section` target;
   use it to tell repeated headings apart (for example, `setup-1` for the second
-  **Setup**). Images, PDFs and other binary files return only their details.
+  **Setup**). Pass the target unchanged; exact targets take priority over bare
+  `md-` aliases. A fragment such as `#md-setup` refers to the browser's anchor.
+  Images, PDFs and other binary files return only their details.
 - **Errors.** A failed call returns a `code`, a `message`, `details` and, when
   waiting helps, `retryAfter` in seconds.
 - **Text is data.** People write the titles, descriptions, comments, file names

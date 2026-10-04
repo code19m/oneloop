@@ -88,18 +88,25 @@ pub(crate) fn sections(source: &str) -> Vec<Section> {
         sections.push(current);
     }
     let mut occurrences = std::collections::HashMap::new();
+    let mut used = std::collections::HashSet::new();
     for heading in sections
         .iter_mut()
         .filter_map(|section| section.heading.as_mut())
     {
         let base = slug(&heading.text);
         let count = occurrences.entry(base.clone()).or_insert(0);
-        heading.anchor = if *count == 0 {
-            base
-        } else {
-            format!("{base}-{count}")
-        };
-        *count += 1;
+        loop {
+            let anchor = if *count == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{count}")
+            };
+            *count += 1;
+            if used.insert(anchor.clone()) {
+                heading.anchor = anchor;
+                break;
+            }
+        }
     }
     sections
 }
@@ -121,23 +128,31 @@ pub(crate) fn section_source<'a>(
     sections: &[Section],
     query: &str,
 ) -> Option<&'a str> {
-    let wanted = query.trim().trim_start_matches('#').trim();
-    let lowered = wanted.to_lowercase();
-    let position = sections
-        .iter()
-        .position(|section| {
-            section.heading.as_ref().is_some_and(|heading| {
-                heading.anchor == lowered || format!("md-{}", heading.anchor) == lowered
-            })
+    let query = query.trim().to_lowercase();
+    let anchor_position = |anchor: &str| {
+        sections.iter().position(|section| {
+            section
+                .heading
+                .as_ref()
+                .is_some_and(|heading| heading.anchor == anchor)
         })
-        .or_else(|| {
-            sections.iter().position(|section| {
-                section
-                    .heading
-                    .as_ref()
-                    .is_some_and(|heading| heading.text.to_lowercase() == lowered)
+    };
+    let position = if let Some(fragment) = query.strip_prefix("#md-") {
+        // An explicit browser fragment includes the DOM's namespace prefix.
+        anchor_position(fragment)
+    } else {
+        let wanted = query.trim_start_matches('#').trim();
+        anchor_position(wanted)
+            .or_else(|| wanted.strip_prefix("md-").and_then(anchor_position))
+            .or_else(|| {
+                sections.iter().position(|section| {
+                    section
+                        .heading
+                        .as_ref()
+                        .is_some_and(|heading| heading.text.to_lowercase() == wanted)
+                })
             })
-        })?;
+    }?;
     let level = sections[position].heading.as_ref()?.level;
     let end = sections[position + 1..]
         .iter()
@@ -508,6 +523,63 @@ mod tests {
         assert_eq!(slug("What’s next? (v2)"), "whats-next-v2");
         assert_eq!(slug("To‘lov jadvali"), "tolov-jadvali");
         assert_eq!(slug("Оплата и сроки"), "оплата-и-сроки");
+        for (source, expected) in [
+            (
+                "## Setup\n\nFirst.\n\n## Setup\n\nSecond.\n\n## Setup-1\n\nThird.\n",
+                vec!["setup", "setup-1", "setup-1-1"],
+            ),
+            (
+                "## Setup-1\n\nFirst.\n\n## Setup\n\nSecond.\n\n## Setup\n\nThird.\n",
+                vec!["setup-1", "setup", "setup-2"],
+            ),
+        ] {
+            let parsed = sections(source);
+            assert_eq!(
+                parsed
+                    .iter()
+                    .filter_map(|s| s.heading.as_ref().map(|h| h.anchor.as_str()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (section, anchor) in parsed.iter().zip(expected) {
+                assert_eq!(
+                    section_source(source, &parsed, anchor),
+                    Some(&source[section.start..section.end])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_targets_precede_browser_aliases_in_either_heading_order() {
+        for source in [
+            "## Setup\n\nPlain.\n\n## md-setup\n\nPrefixed.\n",
+            "## md-setup\n\nPrefixed.\n\n## Setup\n\nPlain.\n",
+        ] {
+            let parsed = sections(source);
+            for query in ["md-setup", "#md-md-setup"] {
+                assert!(
+                    section_source(source, &parsed, query)
+                        .unwrap()
+                        .contains("Prefixed."),
+                    "{query}: {source}"
+                );
+            }
+            for query in ["Setup", "#setup", "#md-setup"] {
+                assert!(
+                    section_source(source, &parsed, query)
+                        .unwrap()
+                        .contains("Plain."),
+                    "{query}: {source}"
+                );
+            }
+        }
+        let parsed = sections(DOC);
+        assert!(
+            section_source(DOC, &parsed, "md-short-months")
+                .unwrap()
+                .contains("Use the **last** day.")
+        );
     }
 
     #[test]

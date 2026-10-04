@@ -433,6 +433,23 @@ mod tests {
     }
 
     #[test]
+    fn every_search_target_resolves_its_section_even_when_slugs_collide() {
+        let source = "## Setup\n\nFirst.\n\n## Setup\n\nSecond.\n\n## Setup-1\n\nThird.\n\n## md-setup\n\nFourth.\n";
+        let index = Index::build([("guide.md", Content::Markdown(source))]);
+        let sections = markdown::sections(source);
+        for word in ["First.", "Second.", "Third.", "Fourth."] {
+            let result = index.search(word);
+            let target = result.documents[0].hits[0].section.as_deref().unwrap();
+            assert!(
+                markdown::section_source(source, &sections, target)
+                    .unwrap()
+                    .contains(word),
+                "{target} must select {word}"
+            );
+        }
+    }
+
+    #[test]
     fn excerpts_center_on_the_match_at_word_boundaries() {
         let text = format!(
             "{} the needle sits here {}",
