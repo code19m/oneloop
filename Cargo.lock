@@ -1571,6 +1571,7 @@ dependencies = [
  "rpassword",
  "rusqlite",
  "rust-embed",
+ "rustix",
  "schemars",
  "scraper",
  "serde",

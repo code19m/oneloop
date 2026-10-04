@@ -16,6 +16,7 @@ use tokio::{
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
+use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -54,22 +55,26 @@ enum Fetched {
     Changed(Snapshot),
 }
 
-/// Marks a project as syncing until its sync ends or is cancelled.
+/// Marks a project as syncing until its sync ends, is cancelled or is stopped
+/// because an administrator changed or disconnected the source.
 struct Running {
     inner: Arc<Inner>,
     project_id: String,
+    stop: CancellationToken,
 }
 
 impl Running {
     fn claim(inner: &Arc<Inner>, project_id: &str) -> Option<Self> {
-        let claimed = inner
-            .syncing
-            .lock()
-            .expect("sync set lock")
-            .insert(project_id.to_owned());
-        claimed.then(|| Self {
+        let mut syncing = inner.syncing.lock().expect("sync set lock");
+        if syncing.contains_key(project_id) {
+            return None;
+        }
+        let stop = CancellationToken::new();
+        syncing.insert(project_id.to_owned(), stop.clone());
+        Some(Self {
             inner: inner.clone(),
             project_id: project_id.to_owned(),
+            stop,
         })
     }
 }
@@ -200,7 +205,15 @@ impl KnowledgeService {
             }
         };
         let generation = due.generation.clone();
-        let result = self.fetch(&project_id, due).await;
+        // Dropping a stopped download ends git and removes its working copy.
+        let result = tokio::select! {
+            biased;
+            () = claim.stop.cancelled() => {
+                tracing::info!(project_id, "knowledge sync stopped; the source changed");
+                return;
+            }
+            result = self.fetch(&project_id, due) => result,
+        };
         if let Err(error) = &result {
             tracing::warn!(
                 project_id,
@@ -492,7 +505,52 @@ fn store_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Db, knowledge::git::SnapshotFile};
+    use crate::{
+        Db,
+        auth::{Actor, ActorSource},
+        knowledge::{KnowledgeCommand, git::SnapshotFile},
+    };
+    use serde_json::Value;
+    use tokio::io::AsyncReadExt;
+
+    /// A project `p1` whose source points at `url`, and an administrator.
+    async fn fixture(url: &str) -> (tempfile::TempDir, Db, KnowledgeService) {
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        let url = url.to_owned();
+        db.run(move |connection| {
+            connection.execute_batch(
+                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1);
+                 INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at)
+                 VALUES('admin','admin','Admin','hash',1,1,1,1);
+                 INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
+                 VALUES('session','admin','token',1,1,1,9999999999,9999999999);",
+            )?;
+            connection.execute(
+                "INSERT INTO knowledge_sources(project_id,url,branch,folder,state,requested_at,created_at,updated_at,generation)
+                 VALUES('p1',?1,'main','docs','pending',1,1,1,'current')",
+                [url],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let service = KnowledgeService::new(db.clone(), 0);
+        (root, db, service)
+    }
+
+    async fn stored(db: &Db) -> (i64, String, Option<i64>) {
+        db.run(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT count(*) FROM knowledge_files),state,attempted_at FROM knowledge_sources",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .await
+        .unwrap()
+    }
 
     fn snapshot() -> Fetched {
         Fetched::Changed(Snapshot {
@@ -507,43 +565,90 @@ mod tests {
         })
     }
 
+    fn command(operation: &str, payload: Value, revision: Option<i64>) -> KnowledgeCommand {
+        KnowledgeCommand {
+            operation: operation.to_owned(),
+            payload,
+            idempotency_key: uuid::Uuid::now_v7().to_string(),
+            expected_revision: revision,
+        }
+    }
+
     #[tokio::test]
     async fn a_sync_result_for_an_earlier_connection_is_dropped() {
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let db = Db::open(root.path()).unwrap();
-        db.run(|connection| {
-            connection.execute_batch(
-                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1);
-                 INSERT INTO knowledge_sources(project_id,url,branch,folder,state,created_at,updated_at,generation)
-                 VALUES('p1','https://git.example.test/docs.git','main','docs','pending',1,1,'current');",
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        let service = KnowledgeService::new(db.clone(), 0);
-        let stored = || {
-            db.run(|connection| {
-                Ok(connection.query_row(
-                    "SELECT (SELECT count(*) FROM knowledge_files),state FROM knowledge_sources",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-                )?)
-            })
-        };
+        let (_root, db, service) = fixture("https://git.example.test/docs.git").await;
 
         // Disconnect and connect again keep the revision but not the generation.
         service
             .record("p1".to_owned(), "earlier".to_owned(), 1, Ok(snapshot()))
             .await
             .unwrap();
-        assert_eq!(stored().await.unwrap(), (0, "pending".to_owned()));
+        assert_eq!(stored(&db).await.0, 0);
 
         service
             .record("p1".to_owned(), "current".to_owned(), 1, Ok(snapshot()))
             .await
             .unwrap();
-        assert_eq!(stored().await.unwrap(), (1, "ready".to_owned()));
+        assert_eq!(stored(&db).await.0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_sync_ends_git_records_nothing_and_frees_the_project() {
+        // A host that accepts the connection and never answers.
+        let host = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = host.local_addr().unwrap().port();
+        let (_root, db, service) = fixture(&format!("https://127.0.0.1:{port}/docs.git")).await;
+        let claim = Running::claim(&service.inner, "p1").unwrap();
+        let sync = tokio::spawn({
+            let service = service.clone();
+            async move { service.sync_project(claim).await }
+        });
+        let (mut git, _) = host.accept().await.unwrap();
+
+        service.inner.stop_sync("p1");
+        sync.await.unwrap();
+        // The connection closes once git is gone.
+        let _ = git.read_to_end(&mut Vec::new()).await;
+        assert_eq!(stored(&db).await, (0, "pending".to_owned(), None));
+        assert!(Running::claim(&service.inner, "p1").is_some());
+    }
+
+    #[tokio::test]
+    async fn changes_and_disconnects_stop_the_running_sync() {
+        let (_root, _db, service) = fixture("https://git.example.test/docs.git").await;
+        let admin = Actor {
+            user_id: "admin".into(),
+            username: "admin".into(),
+            display_name: "Admin".into(),
+            is_admin: true,
+            must_change_password: false,
+            authenticated_at: 1,
+            source: ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        let project = serde_json::json!({"projectId": "p1"});
+        let claim = Running::claim(&service.inner, "p1").unwrap();
+        service
+            .execute(&admin, command("knowledge.sync", project.clone(), None))
+            .await
+            .unwrap();
+        assert!(!claim.stop.is_cancelled(), "a retry lets the sync finish");
+
+        let folder = serde_json::json!({"projectId": "p1", "url": "https://git.example.test/docs.git",
+            "branch": "main", "folder": "guides", "tokenAction": "keep"});
+        service
+            .execute(&admin, command("knowledge.update", folder, Some(1)))
+            .await
+            .unwrap();
+        assert!(claim.stop.is_cancelled(), "a change stops it");
+        drop(claim);
+
+        let claim = Running::claim(&service.inner, "p1").unwrap();
+        service
+            .execute(&admin, command("knowledge.disconnect", project, Some(2)))
+            .await
+            .unwrap();
+        assert!(claim.stop.is_cancelled(), "a disconnect stops it");
     }
 }

@@ -4,7 +4,7 @@
 //! credential.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::Not,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     AppError, AppResult, Db,
@@ -56,8 +57,9 @@ pub(super) struct Inner {
     pub(super) disk_min_free_bytes: u64,
     pub(super) limits: Limits,
     pub(super) wake: Notify,
-    /// Projects whose sync is running in this process.
-    pub(super) syncing: Mutex<HashSet<String>>,
+    /// Projects whose sync is running in this process, each with the token
+    /// that stops it.
+    pub(super) syncing: Mutex<HashMap<String, CancellationToken>>,
     /// Search indexes and outlines, most recently used last.
     catalogs: Mutex<Vec<Arc<Catalog>>>,
     /// Indexes are built one at a time; a request that waited finds the result.
@@ -347,7 +349,7 @@ impl KnowledgeService {
                     max_download_bytes: MAX_DOWNLOAD_BYTES,
                 },
                 wake: Notify::new(),
-                syncing: Mutex::new(HashSet::new()),
+                syncing: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
             }),
@@ -399,7 +401,7 @@ impl KnowledgeService {
         }))?;
         let actor = actor.clone();
         let inner = self.inner.clone();
-        let result = self
+        let (result, changed) = self
             .inner
             .db
             .transaction(move |tx| {
@@ -415,7 +417,7 @@ impl KnowledgeService {
                     &hash,
                 )? {
                     result.replayed = true;
-                    return Ok(result);
+                    return Ok((result, None));
                 }
                 let id = crate::idempotency::start(
                     tx,
@@ -427,6 +429,11 @@ impl KnowledgeService {
                     now,
                 )?;
                 let (project_id, entity, events) = dispatch(tx, &inner, &current, &command, now)?;
+                let changed = matches!(
+                    command.operation.as_str(),
+                    "knowledge.update" | "knowledge.disconnect"
+                )
+                .then(|| project_id.clone());
                 let result = KnowledgeCommandResult {
                     entities: vec![entity],
                     events,
@@ -447,9 +454,13 @@ impl KnowledgeService {
                     },
                     now,
                 )?;
-                Ok(result)
+                Ok((result, changed))
             })
             .await?;
+        // A sync that is still running works for the old source.
+        if let Some(project_id) = changed {
+            self.inner.stop_sync(&project_id);
+        }
         if !result.replayed {
             self.inner.wake.notify_one();
         }
@@ -918,6 +929,13 @@ impl Inner {
             .lock()
             .expect("catalog cache lock")
             .retain(|cached| cached.project_id != project_id);
+    }
+
+    /// Stop the project's running sync, so the next one starts at once.
+    pub(super) fn stop_sync(&self, project_id: &str) {
+        if let Some(stop) = self.syncing.lock().expect("sync set lock").get(project_id) {
+            stop.cancel();
+        }
     }
 
     pub(super) fn secrets(&self) -> AppResult<SecretBox> {

@@ -12,7 +12,11 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use tokio::{io::AsyncReadExt, process::Command, time::Instant};
+use tokio::{
+    io::AsyncReadExt,
+    process::{Child, Command},
+    time::Instant,
+};
 use zeroize::Zeroizing;
 
 use super::source::GitUrl;
@@ -173,6 +177,27 @@ struct Output {
     success: bool,
     stdout: Vec<u8>,
     stderr: String,
+}
+
+/// A running `git`. The helpers it starts, such as `git-remote-https`, `ssh`
+/// and `index-pack`, share its process group, and outlive it when only `git`
+/// is killed. So a time limit, the size watchdog or a changed source stops the
+/// whole group.
+struct GitProcess(Child);
+
+impl Drop for GitProcess {
+    fn drop(&mut self) {
+        // Until Git is waited for, its process ID can't be reused, so the
+        // group is still Git's own.
+        #[cfg(unix)]
+        if let Some(pid) = self
+            .0
+            .id()
+            .and_then(|id| rustix::process::Pid::from_raw(i32::try_from(id).ok()?))
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 impl Git {
@@ -548,6 +573,8 @@ impl Git {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         command
     }
 
@@ -576,15 +603,15 @@ impl Git {
     ) -> Result<Output, SyncError> {
         let mut command = self.command(session);
         command.args(arguments);
-        let mut child = command.spawn().map_err(|error| {
+        let mut child = GitProcess(command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 SyncError::new(Failure::GitUnavailable, "the git program is not installed")
             } else {
                 SyncError::new(Failure::Failed, format!("start git: {error}"))
             }
-        })?;
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
+        })?);
+        let mut stdout = child.0.stdout.take().expect("piped stdout");
+        let mut stderr = child.0.stderr.take().expect("piped stderr");
         let run = async {
             let out = async {
                 let mut buffer = Vec::new();
@@ -605,7 +632,7 @@ impl Git {
                 tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await?;
                 Ok::<_, std::io::Error>(buffer)
             };
-            let (out, err, status) = tokio::join!(out, err, child.wait());
+            let (out, err, status) = tokio::join!(out, err, child.0.wait());
             Ok::<_, std::io::Error>((out?, err?, status?))
         };
         let (stdout, stderr, status) = tokio::time::timeout_at(deadline, run)
