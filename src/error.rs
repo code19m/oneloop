@@ -186,6 +186,7 @@ impl AppError {
             Self::StorageFull(_) => {
                 "Server storage is full; ask an administrator to free space".to_owned()
             }
+            Self::Unavailable(_) => "The service is busy; try again shortly".to_owned(),
             Self::Database(_) | Self::Io(_) | Self::Internal(_) => {
                 "The operation could not be completed".to_owned()
             }
