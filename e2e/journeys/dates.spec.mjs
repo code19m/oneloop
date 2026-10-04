@@ -161,7 +161,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await openApp(page, instance, 'board');
     await expect(page.locator('.board .card')).toHaveCount(1);
     await expect(page.locator('[data-announce=polite]')).toContainText('Times and Today are shown in UTC');
-    expect(await page.evaluate(() => OneloopTime.instant('2026-09-27T09:59:00Z'))).toBe('2026-09-27 09:59:00 UTC');
+    expect(await page.evaluate(() => OneloopTime.instant('2026-09-27T09:59:00Z'))).toBe('2026-09-27 09:59:00');
   });
 
   test('Today follows server time when the device clock is days behind', { tag: '@smoke' }, async ({ page, instance }) => {

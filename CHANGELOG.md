@@ -34,6 +34,18 @@ All notable changes to oneloop are recorded here. The format follows
 - On narrow screens, the Board's filters no longer sit against the top edge,
   and its first column no longer touches the left edge.
 - Page titles no longer show a focus ring after a refresh or a page change.
+- A card dropped in another column now settles there directly, instead of
+  flying back to its old place first.
+- "Try again in … seconds" after too many sign-in attempts now counts down,
+  and says when you can try again.
+- Exact times, such as a task's creation time, no longer end with the time
+  zone name. They are still shown in the instance time zone.
+- Inbox items have a small gap between them, so highlighted items no longer
+  touch.
+- A long comment's "Show more" preview now fades out smoothly, like a long
+  description, instead of ending at a hard edge.
+- Clicking "Load older activity" is no longer lost when a new comment or
+  change arrives at the same moment.
 
 ## [0.1.0-rc.1] - 2026-09-28
 

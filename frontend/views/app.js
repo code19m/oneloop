@@ -51,7 +51,8 @@
   };
   const formatInstant = (value) => {
     const parts = instantParts(value);
-    return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${instantFormatter.resolvedOptions().timeZone}` : 'Unavailable';
+    // The instance time zone applies everywhere, so the label would only add noise.
+    return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}` : 'Unavailable';
   };
   const instanceDateKey = (value=instanceNow()) => formatInstant(value).slice(0, 10);
   const previousDate = value => { const date = d(value); date.setUTCDate(date.getUTCDate() - 1); return iso(date); };
@@ -1138,7 +1139,7 @@
     while (current.childNodes.length > children.length) current.lastChild.remove();
     return current;
   }
-  function applyBoardFilters(reset = true, fromServer = false) {
+  function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
     if (!fromServer) cancelBoardSearch();
     updateDocumentTitle();
     if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
@@ -1152,7 +1153,7 @@
     const previous = new Map([...board.querySelectorAll('.col-cards > *')].map((card) =>
       [boardRowKey(card,card.closest('.col').dataset.col), { card, rect: card.getBoundingClientRect(), opacity: getComputedStyle(card).opacity }]));
     clearFilterMotion();
-    const animate = !reducedMotion.matches && typeof board.animate === 'function' && !App._drag;
+    const animate = motion && !reducedMotion.matches && typeof board.animate === 'function' && !App._drag;
     const template = document.createElement('template');
     setHTML(template,renderBoard());
     if (!board.querySelector('.col') || !template.content.querySelector('.col')) {
@@ -1433,7 +1434,10 @@
     const exiting=document.createElement('div');exiting.inert=true;exiting.setAttribute('aria-hidden','true');Object.assign(exiting.style,{position:'absolute',inset:'0',height:before+'px',pointerEvents:'none'});
     const viewport=timeline.closest('.content')?.getBoundingClientRect(),removed=[...existing.keys()].filter(key=>!wanted.has(key)).length;
     if(removed<=20&&!UIMotion.reduced())existing.forEach((el,key)=>{const rect=rows.get(key);if(wanted.has(key)||!rect?.height||viewport&&(rect.bottom<viewport.top||rect.top>viewport.bottom))return;const ghost=el.cloneNode(true);[ghost,...ghost.querySelectorAll('*')].forEach(node=>[...node.attributes].forEach(attr=>{if(attr.name==='id'||attr.name==='name'||attr.name==='tabindex'||attr.name.startsWith('on')||attr.name.startsWith('data-')||attr.name.startsWith('aria-'))node.removeAttribute(attr.name);}));Object.assign(ghost.style,{position:'absolute',top:rect.top-timelineRect.top+'px',left:rect.left-timelineRect.left+'px',width:rect.width+'px',height:rect.height+'px',margin:'0'});exiting.append(ghost);});
-    timeline.style.position='relative';timeline.replaceChildren(...children);if(children.length<=100)changed.forEach(el=>UIMotion.fade(el));if(exiting.children.length){timeline.append(exiting);const animation=UIMotion.animate(exiting,[{opacity:1},{opacity:0}],140);if(animation)animation.finished.then(()=>exiting.remove(),()=>exiting.remove());else exiting.remove();}
+    timeline.style.position='relative';
+    // Move only rows whose place changed. replaceChildren would detach every row, and browsers cancel a click whose pressed element left the document, even briefly.
+    let cursor=timeline.firstChild;for(const child of children){if(child===cursor)cursor=cursor.nextSibling;else timeline.insertBefore(child,cursor);}while(cursor){const next=cursor.nextSibling;cursor.remove();cursor=next;}
+    if(children.length<=100)changed.forEach(el=>UIMotion.fade(el));if(exiting.children.length){timeline.append(exiting);const animation=UIMotion.animate(exiting,[{opacity:1},{opacity:0}],140);if(animation)animation.finished.then(()=>exiting.remove(),()=>exiting.remove());else exiting.remove();}
     if(active?.isConnected&&timeline.contains(active))active.focus({preventScroll:true});
     else if(focusedKey&&focusedControl){const row=[...timeline.querySelectorAll('[data-feed-key]')].find(el=>el.dataset.feedKey===focusedKey);const target=focusedControl.replyRoot?[...row?.querySelectorAll('[data-reply-root]')||[]].find(el=>el.dataset.replyRoot===focusedControl.replyRoot):focusedControl.comment?[...row?.querySelectorAll('[data-comment] button')||[]].find(el=>el.closest('[data-comment]')?.dataset.comment===focusedControl.comment&&el.getAttribute('aria-label')===focusedControl.action):[...row?.querySelectorAll('button')||[]].find(el=>el.className===focusedControl.className);target?.focus({preventScroll:true});}
     UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-feed-key]','data-feed-key',rows);
@@ -1444,7 +1448,7 @@
     // one timeline: activity lines and comment blocks, oldest first
     const items = [...Activity.visible(t.activity).map((a) => ({ k: 'act', ...a })), ...(t.comments || []).map((c, i) => ({ k: 'cmt', i, ...c }))].sort((a, b) => a.ts - b.ts);
     const limit = state.activityLimits[t.id] || 50;
-    return (items.length > limit ? `<button class="btn quiet" onclick="App.loadOlderActivity('${UIArg(t.id)}')">Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
+    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" onclick="App.loadOlderActivity('${UIArg(t.id)}')">Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
       ? `<div class="tl-act">${avatarHtml(it.who, 16)}<span><b>${esc((userById(it.who) || { name: it.who }).name)}</b> ${esc(it.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><span class="act-time">· ${ago(it.ts)}</span></div>`
       : `<div class="tl-cmt"><div class="cmt-head">${avatarHtml(it.who, 20)}<b>${esc((userById(it.who) || { name: it.who }).name)}</b><span class="act-time" title="${new Date(it.ts).toISOString()}">${ago(it.ts)}</span>
           ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" onclick="App.delComment('${UIArg(t.id)}',${it.i})">${I.close}</button>` : ''}</div>
@@ -2436,7 +2440,8 @@
       }
     },
     selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
-    refreshBoard() { applyBoardFilters(false,true); App.refreshCounts(); },
+    // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
+    refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
     refreshRoadmap({zoom=false}={}) {
       refreshEpicSummary();
       if(state.view!=='roadmap'){refreshBackground();return;}
@@ -3203,10 +3208,10 @@
         const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
         const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
         App.dragEnd(false);if(!change)return;
-        App.refreshBoard();document.querySelector('.board').scrollLeft=boardLeft;
+        App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
         scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
         animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
-        submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard();animateLayout(rollbackBefore,'.card[data-task]',id);});
+        submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
         return;
       }
       const before = motionRects('.card[data-task]');

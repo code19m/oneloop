@@ -137,6 +137,15 @@ export function retryDelayMs(error, now = Date.now()) {
   return Number.isFinite(date) ? Math.max(0, date - now) : 0;
 }
 
+/** The notice for a rate limit or an unavailable service, for the time still to wait. */
+/** @param {unknown} error @param {number} wait */
+export function retryMessage(error, wait) {
+  const value = /** @type {any} */ (error);
+  const start = value?.code === 'rate_limited' || value?.status === 429
+    ? 'Too many attempts.' : 'The service is temporarily unavailable.';
+  return `${start} Try again ${wait > 0 ? `in ${waitDescription(wait)}` : 'in a moment'}.`;
+}
+
 /** @param {number} milliseconds */
 function waitDescription(milliseconds) {
   const seconds = Math.ceil(milliseconds / 1000);
@@ -195,10 +204,7 @@ export function actionErrorFeedback(error) {
   if (code === 'unauthorized' || status === 401) return {silent:false,field:null,message:'Your session has ended. Sign in again.'};
   if(code==='storage_full'||(code==='unavailable'&&/storage safety floor|storage capacity is exhausted/i.test(raw)))return {silent:false,field:null,message:'There is not enough storage for this file. Free up space or contact an administrator.'};
   if (code === 'rate_limited' || status === 429 || code === 'unavailable' || status === 503) {
-    const wait = retryDelayMs(value);
-    const start = code === 'rate_limited' || status === 429
-      ? 'Too many attempts.' : 'The service is temporarily unavailable.';
-    return {silent:false,field:null,message:`${start} Try again ${wait > 0 ? `in ${waitDescription(wait)}` : 'in a moment'}.`};
+    return {silent:false,field:null,message:retryMessage(value, retryDelayMs(value))};
   }
   if(code==='already_member'||(code==='conflict'&&/already a project member/i.test(raw)))return {silent:false,field:null,message:'This person is already a project member.'};
   if (code === 'conflict' || status === 409) return {silent:false,field:null,message:'This item changed. Review the latest version and try again.'};

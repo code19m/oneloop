@@ -52,7 +52,7 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
 });
 
 test('the configured UTC zone controls every displayed instant, whatever the host zone', () => {
- const instant=Date.parse('2099-01-02T23:04:05Z'),expected='2099-01-02 23:04:05 UTC';
+ const instant=Date.parse('2099-01-02T23:04:05Z'),expected='2099-01-02 23:04:05';
  const t=boot('task/BIR-079',{prepare:D=>{
    const task=D.tasks.find(item=>item.id==='BIR-079');D.timeZone='UTC';task.created=instant;
    task.comments=[{id:'utc-comment',who:'taylorwu',text:'UTC comment',ts:instant,mentions:[]}];

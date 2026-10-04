@@ -11,6 +11,7 @@
 .inbox-group-heading { font-size:var(--text-ui);font-weight:600;color:var(--ink);margin:20px 8px 8px; }
 .inbox-list { display:flow-root;position:relative;overflow-anchor:none; }.inbox-exit-layer { position:absolute;inset:0 0 auto;overflow:hidden;pointer-events:none;z-index:1; }
 .inbox-row { position:relative;display:block;padding:0;border:1px solid transparent;border-bottom-color:var(--line);border-radius:var(--radius-md);transition:background var(--motion-fast),border-color var(--motion-fast); }
+.inbox-row + .inbox-row { margin-top:6px; }
 .inbox-row.unread { background:var(--surface-raised);  border-color:var(--line);}.inbox-row:hover,.inbox-row:focus-within { background:var(--surface-control);  border-color:var(--line-strong);}
 .inbox-open { display:flex;width:100%;flex-direction:row;align-items:flex-start;flex:1;gap:14px;min-width:0;padding:18px 12px 10px;background:none;border:0;border-radius:8px;font:inherit;text-align:left;color:var(--ink);cursor:pointer; }
 .inbox-open:hover { background:none; }.inbox-person { position:relative;flex-shrink:0;margin-top:1px; }.inbox-person .avatar { display:flex;border-radius:8px;font-size:13px; }
