@@ -1,15 +1,15 @@
 // Tests for deploy/launchd/oneloop-launchd.sh: configuration errors stop launchd retries.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 
 test('launchd preflight stops configuration retries and preserves runtime failures', () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
-  mkdirSync(join(root, 'target'), {recursive: true});
-  const scratch = mkdtempSync(join(root, 'target/launchd-test-'));
+  const scratch = mkdtempSync(join(tmpdir(), 'launchd-test-'));
   try {
     const binary = join(scratch, 'fake oneloop'), calls = join(scratch, 'calls');
     writeFileSync(binary, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LAUNCHER_TEST_CALLS"\nif [ "$2" = "--check" ]; then exit "$LAUNCHER_TEST_CHECK"; fi\nexit "$LAUNCHER_TEST_SERVE"\n', {mode: 0o700});

@@ -3,7 +3,7 @@
 Before your team uses oneloop, set up three things:
 
 1. **HTTPS**, with a reverse proxy such as Caddy or nginx in front of oneloop.
-2. **A service** that starts oneloop at boot and restarts it after a crash.
+2. **A service** that starts oneloop automatically and restarts it after a crash.
 3. **Nightly backups**, as described in [Backups and upgrades](backups-and-upgrades.md).
 
 ## HTTPS with a reverse proxy
@@ -91,7 +91,9 @@ not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
 To test the proxy, open oneloop in two tabs and change a task in one. The change
 should appear in the other tab without reloading.
 
-## Start at boot
+<a id="start-at-boot"></a>
+
+## Start automatically
 
 ### Docker
 
@@ -140,20 +142,36 @@ fails, systemd restarts it after five seconds.
 
 ### launchd (macOS)
 
+This LaunchAgent runs while you are signed in to macOS. It starts at login and
+stops at logout. To run before login, use a LaunchDaemon in the system domain.
+
+Complete the [source install](install.md#from-source), including the database
+and first admin, then stop the manually started server. The template uses
+`~/.cargo/bin/oneloop`, your home as its working directory, and `~/oneloop-data`.
+If you chose other locations, use absolute paths to your installed binary,
+an existing working directory and the initialized data directory.
+
+Create the job and log folders:
+
+```sh
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+```
+
 The [deploy/launchd](https://github.com/code19m/oneloop/tree/main/deploy/launchd)
-folder has three files:
+folder has three files to download:
 
 - `com.oneloop.example.plist` is the job. Replace every `REPLACE_ME`, set your
   environment, and save it as `~/Library/LaunchAgents/com.oneloop.plist`.
-- `oneloop-launchd.sh` starts oneloop. Install it as
-  `/usr/local/libexec/oneloop-launchd.sh`. It runs `oneloop serve --check`
+- `oneloop-launchd.sh` starts oneloop. It runs `oneloop serve --check`
   first, so a configuration mistake stops the job with a message in the log,
   instead of restarting it again and again.
 - `oneloop.newsyslog.conf.example` rotates the log.
 
-Load the job:
+From the folder where you saved the launcher, install it and load the job:
 
 ```sh
+sudo install -d /usr/local/libexec
+sudo install -m 0755 oneloop-launchd.sh /usr/local/libexec/oneloop-launchd.sh
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.oneloop.plist
 ```
 

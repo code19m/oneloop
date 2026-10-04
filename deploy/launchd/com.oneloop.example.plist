@@ -8,10 +8,10 @@
   <array>
     <string>/bin/sh</string>
     <string>/usr/local/libexec/oneloop-launchd.sh</string>
-    <string>/usr/local/bin/oneloop</string>
+    <string>/Users/REPLACE_ME/.cargo/bin/oneloop</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/REPLACE_ME/Library/Application Support/oneloop</string>
+  <string>/Users/REPLACE_ME</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>ONELOOP_PUBLIC_URL</key>
@@ -19,7 +19,7 @@
     <key>ONELOOP_LISTEN</key>
     <string>127.0.0.1:8080</string>
     <key>ONELOOP_DATA_DIR</key>
-    <string>/Users/REPLACE_ME/Library/Application Support/oneloop/data</string>
+    <string>/Users/REPLACE_ME/oneloop-data</string>
     <!-- The IANA timezone used for deadlines and the Roadmap's Today. -->
     <key>ONELOOP_TIMEZONE</key>
     <string>UTC</string>
@@ -56,6 +56,9 @@
   </dict>
   <key>ThrottleInterval</key>
   <integer>60</integer>
+  <!-- Allow the server's 30-second graceful shutdown to finish. -->
+  <key>ExitTimeOut</key>
+  <integer>35</integer>
   <!-- Both streams share one log. Rotate it only while the job is booted out:
        https://code19m.github.io/oneloop/production.html#launchd-macos -->
   <key>StandardOutPath</key>
