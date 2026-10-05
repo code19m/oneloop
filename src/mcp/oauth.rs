@@ -42,7 +42,8 @@ const AUTHORIZATION_CODE_SECONDS: i64 = 5 * 60;
 const MAX_CLIENTS_PER_CALLER_HOUR: i64 = 10;
 const MAX_CLIENTS_GLOBAL_HOUR: i64 = 300;
 /// Clients described by metadata documents that no app has used yet, at
-/// most. Each new authorization makes its client the newest.
+/// most, besides those with a sign-in under way. Each new authorization
+/// makes its client the newest.
 const MAX_UNUSED_DESCRIBED_CLIENTS: i64 = 1_000;
 
 pub(super) const SCOPES: &[&str] = &[
@@ -447,8 +448,9 @@ async fn described_client(
 /// Stores a described client like a registered one, so that consent, codes
 /// and tokens work the same. An unused row is removed after a day, as for
 /// registrations; each new authorization request starts that day again.
-/// Beyond `MAX_UNUSED_DESCRIBED_CLIENTS` unused rows, the oldest go, with
-/// their pending requests.
+/// Beyond `MAX_UNUSED_DESCRIBED_CLIENTS` unused rows, the oldest go. A client
+/// with an unexpired authorization request or code stays: deleting it would
+/// also delete those, and end a sign-in under way.
 fn remember_described_client(
     tx: &rusqlite::Transaction<'_>,
     document: &ClientDocument,
@@ -468,7 +470,7 @@ fn remember_described_client(
     )?;
     tx.execute(
         DELETE_OLD_DESCRIBED_CLIENTS_SQL,
-        params![document.client_id, MAX_UNUSED_DESCRIBED_CLIENTS - 1],
+        params![document.client_id, MAX_UNUSED_DESCRIBED_CLIENTS - 1, now],
     )?;
     Ok(())
 }
@@ -1885,6 +1887,9 @@ const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,c
 const DELETE_OLD_DESCRIBED_CLIENTS_SQL: &str = "DELETE FROM oauth_clients WHERE client_id IN (
              SELECT client_id FROM oauth_clients
              WHERE client_id LIKE 'https://%' AND last_used_at IS NULL AND client_id<>?1
+               AND client_id NOT IN (
+                 SELECT client_id FROM oauth_authorization_requests WHERE consumed_at IS NULL AND expires_at>?3
+                 UNION SELECT client_id FROM oauth_authorization_codes WHERE used_at IS NULL AND expires_at>?3)
              ORDER BY created_at DESC,client_id DESC LIMIT -1 OFFSET ?2)";
 const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
             AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
@@ -2299,6 +2304,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(counts, (MAX_UNUSED_DESCRIBED_CLIENTS, 1_005, 2));
+    }
+
+    #[tokio::test]
+    async fn the_cap_keeps_described_clients_with_a_sign_in_under_way() {
+        let Described {
+            _root, db, user_id, ..
+        } = described().await;
+        let now = 10_000_i64;
+        db.transaction(move |tx| {
+            // The oldest clients: two with a sign-in under way, one whose
+            // request expired.
+            for (client, name) in [
+                ("https://requested.example/client.json", "Pending"),
+                ("https://consented.example/client.json", "Pending"),
+                ("https://expired.example/client.json", "Expired"),
+            ] {
+                tx.execute(
+                    "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at)
+                     VALUES(?1,?2,'[]',1)",
+                    params![client, name],
+                )?;
+            }
+            for (id, client, expires_at) in [
+                ("open", "https://requested.example/client.json", now + 600),
+                ("stale", "https://expired.example/client.json", now - 1),
+            ] {
+                tx.execute(
+                    "INSERT INTO oauth_authorization_requests(id,user_id,client_id,redirect_uri,resource,requested_scopes_json,code_challenge,created_at,expires_at)
+                     VALUES(?1,?2,?3,?4,?5,'[\"project_read\"]','challenge',?6,?7)",
+                    params![id, user_id, client, LOCAL_CALLBACK, RESOURCE, now - 1, expires_at],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO oauth_authorization_codes(code_hash,user_id,client_id,client_name,redirect_uri,resource,projects_json,scopes_json,code_challenge,issued_at,expires_at)
+                 VALUES('code',?1,'https://consented.example/client.json','Pending',?2,?3,'[\"p1\"]','[\"project_read\"]','challenge',?4,?5)",
+                params![user_id, LOCAL_CALLBACK, RESOURCE, now - 1, now + 300],
+            )?;
+            for index in 0..MAX_UNUSED_DESCRIBED_CLIENTS {
+                let document = ClientDocument {
+                    client_id: format!("https://app{index}.example/client.json"),
+                    client_name: "App".into(),
+                    redirect_uris: vec![LOCAL_CALLBACK.into()],
+                    client_uri: None,
+                };
+                remember_described_client(tx, &document, now)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let kept = db
+            .run(|c| {
+                let mut statement = c.prepare(
+                    "SELECT client_name,COUNT(*) FROM oauth_clients GROUP BY client_name ORDER BY client_name",
+                )?;
+                let rows = statement
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let pending: i64 = c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM oauth_authorization_requests)
+                        + (SELECT COUNT(*) FROM oauth_authorization_codes)",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((rows, pending))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                vec![
+                    ("App".to_owned(), MAX_UNUSED_DESCRIBED_CLIENTS),
+                    ("Pending".to_owned(), 2)
+                ],
+                2
+            ),
+            "both sign-ins under way keep their clients, request and code"
+        );
     }
 
     #[derive(Clone, Default)]

@@ -275,7 +275,8 @@ oneloop limits what it fetches:
 - It reads at most 5 KiB within 5 seconds, and fetches at most 30 documents a
   minute, 10 of them for one person. It keeps a document as long as its
   `Cache-Control` header says, from 1 to 60 minutes (10 minutes if it doesn't
-  say), and at most 1,000 apps described this way that haven't connected yet.
+  say), and at most 1,000 apps described this way that haven't connected yet,
+  besides those with a sign-in under way.
 
 Two risks remain:
 
