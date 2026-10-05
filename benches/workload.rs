@@ -44,7 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (100_000, 1_000_000, 100, 12)
     };
-    let root = tempfile::tempdir_in("target")?;
+    // Cargo's scratch folder inside the target directory, wherever that is.
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
     let data_dir = root.path().join("data");
     migrate(&data_dir, None)?;
     let db = if profile_sql {
