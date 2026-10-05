@@ -169,19 +169,24 @@ example `v0.1.0-rc.1`.
      notes, because the Rust advisory database doesn't cover it.
 5. Build the image and try it on both architectures if you can: first run,
    an upgrade from the previous release, and a backup restore.
-6. Merge to `main`, then tag and push:
+6. Merge to `main`. Then tag the merged release commit, usually `origin/main`,
+   and push the tag:
 
    ```sh
-   git tag vX.Y.Z
+   git fetch origin
+   git tag vX.Y.Z origin/main
    git push origin vX.Y.Z
    ```
 
 The Release workflow then:
 
-- checks that the tag matches `Cargo.toml` and `CHANGELOG.md`, then runs the
-  full verification and the dependency checks;
+- checks that the tag is on `main`, is not released yet and matches
+  `Cargo.toml` and `CHANGELOG.md`, then runs the full verification and the
+  dependency checks;
 - builds the linux/amd64 and linux/arm64 image and pushes it to
-  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations;
+  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations. If the
+  version's image tag already exists with other images, it stops before it
+  changes any tag;
 - creates a GitHub Release with the changelog notes and no binary files;
 - runs the Docs workflow, which publishes the documentation. Docs pushed to
   `main` go live only when the version in `Cargo.toml` is released, so the site
@@ -193,8 +198,9 @@ published to crates.io; people who don't use Docker install a tag from source
 with `cargo install --git`.
 
 Afterwards, check the image and the GitHub Release. Publishing is not atomic:
-if one step fails, look at what already went out before you retry. Tags must
-never move, so fix forward with a new version when needed.
+if one step fails, look at what already went out before you retry. Retry with
+**Re-run failed jobs**, which reuses the images that were built. Tags must never
+move, so fix forward with a new version when needed.
 
 ### Dependencies
 

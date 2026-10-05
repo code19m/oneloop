@@ -26,12 +26,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # To check that the tag is on main.
           persist-credentials: false
       - name: Check the tag against Cargo.toml and CHANGELOG.md
         id: meta
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/release-metadata.mjs "$RELEASE_TAG"
+      - name: Check that the tag is on main and not released yet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::$RELEASE_TAG is not on main." >&2; exit 1; }
+          released=$(node scripts/release-exists.mjs "$RELEASE_TAG")
+          if [ "$released" = true ]; then echo "::error::$RELEASE_TAG is already released, and tags never move." >&2; exit 1; fi
 
   verify:
     needs: metadata
@@ -126,20 +136,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # A published version never moves; a re-run of failed jobs may only repeat it.
       - name: Create the multi-architecture image
         working-directory: ${{ runner.temp }}/digests
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          sources=()
-          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
-          if [ "${#sources[@]}" -ne 2 ]; then echo "Expected two platform digests" >&2; exit 1; fi
-          docker buildx imagetools create --tag "$IMAGE:$VERSION" \
-            --annotation "index:org.opencontainers.image.source=https://github.com/code19m/oneloop" \
-            --annotation "index:org.opencontainers.image.description=Lightweight, self-hosted task management for small teams, in a single binary" \
-            --annotation "index:org.opencontainers.image.licenses=MIT" \
-            --annotation "index:org.opencontainers.image.version=$VERSION" \
-            "${sources[@]}"
+          digests=(*)
+          node "$GITHUB_WORKSPACE/scripts/create-release-image.mjs" "$IMAGE" "$VERSION" "${digests[@]}"
           docker buildx imagetools inspect "$IMAGE:$VERSION"
       - name: Check the SBOM and provenance attestations
         env:
