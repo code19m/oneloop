@@ -73,7 +73,8 @@ async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_clie
     }
 }
 
-#[tokio::test]
+// The paused clock passes the 5-second lease wait at once.
+#[tokio::test(start_paused = true)]
 async fn busy_data_lease_returns_a_safe_retryable_http_error() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
@@ -88,8 +89,9 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
         .open(&lock_path)
         .unwrap();
     lock.lock().unwrap();
-    let response = app
-        .oneshot(
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        app.oneshot(
             Request::builder()
                 .method("DELETE")
                 .uri("/api/auth/avatar")
@@ -97,9 +99,11 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
                 .header("cookie", format!("oneloop_session={}", session.token))
                 .body(Body::empty())
                 .unwrap(),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .expect("a busy data lease must not wait forever")
+    .unwrap();
     drop(lock);
     assert_eq!(response.status(), 503);
     assert_eq!(response.headers()["retry-after"], "1");

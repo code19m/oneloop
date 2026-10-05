@@ -138,6 +138,62 @@ async fn permissions_are_rechecked_and_admin_assignment_still_requires_membershi
 }
 
 #[tokio::test]
+async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
+    let (_directory, db) = database();
+    let user_id = add_user(&db, "person", false, false).await;
+    let service = AuthService::new(db.clone());
+    let (_, current) = login(&service, "person").await;
+    let (other_token, other) = login(&service, "person").await;
+    let revoked = current.session_id().unwrap().to_owned();
+    db.run(move |connection| {
+        connection.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at) VALUES('grant',?1,'client','Client',1,1,9999999999)", [&user_id])?;
+        // The session ends after a request was authenticated with it.
+        connection.execute("UPDATE sessions SET revoked_at=1 WHERE id=?1", [&revoked])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let other_session = other.session_id().unwrap();
+    for (write, result) in [
+        (
+            "profile",
+            service.update_profile(&current, "Changed").await.map(drop),
+        ),
+        (
+            "session",
+            service.revoke_session(&current, other_session).await,
+        ),
+        (
+            "other sessions",
+            service.revoke_other_sessions(&current).await.map(drop),
+        ),
+        ("app", service.revoke_connected_app(&current, "grant").await),
+    ] {
+        assert!(
+            matches!(result, Err(AppError::Unauthorized)),
+            "{write}: {result:?}"
+        );
+    }
+    assert!(
+        service
+            .authenticate_session(&other_token, false)
+            .await
+            .is_ok()
+    );
+    let (name, app_revoked): (String, Option<i64>) = db
+        .run(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!((name.as_str(), app_revoked), ("person", None));
+}
+
+#[tokio::test]
 async fn session_lists_and_revocation_are_owner_private_even_for_admins() {
     let (_directory, db) = database();
     add_user(&db, "administrator", true, false).await;
