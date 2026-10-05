@@ -763,6 +763,19 @@
     return { list: sorted, rows: Math.max(rows.length, 1) };
   }
 
+  /** The zoom factor of one wheel event, as a natural logarithm. */
+  const WHEEL_NOTCH = Math.log(1.15), MAC_WHEEL_LINE = 4.000244140625;
+  function wheelZoom(event) {
+    const delta = event.deltaY;
+    if (!delta) return 0;
+    // A mouse notch zooms 15%: line or page deltas, large pixel deltas, or the
+    // multiples of 4.000244140625 px that macOS sends. A touchpad pinch arrives
+    // as many small pixel deltas (100 × the log of its scale), so the Roadmap
+    // follows the fingers.
+    const notch = event.deltaMode !== 0 || Math.abs(delta) >= 50 || Math.abs(delta) % MAC_WHEEL_LINE === 0;
+    return notch ? -Math.sign(delta) * WHEEL_NOTCH : Math.max(-WHEEL_NOTCH, Math.min(WHEEL_NOTCH, -delta / 100));
+  }
+
   function epicBar(e, x, rangeEnd, padTop, barHeight = BAR_H) {
     const s = d(e.start);
     const ongoing = !e.end;
@@ -2329,7 +2342,7 @@
       // Re-anchor on the same date under a moving pointer at the pending scale.
       gesture.date += (cx-gesture.cx) / gesture.next * DAY;
       gesture.cx = cx;
-      gesture.next = clamp(gesture.next * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+      gesture.next = clamp(gesture.next * Math.exp(wheelZoom(e)));
       schedule(); clearTimeout(idle); idle = setTimeout(finish, 120);
     }, {passive:false});
     const dist = (/** @type {TouchList} */ touches) => Math.hypot(touches[0].clientX-touches[1].clientX, touches[0].clientY-touches[1].clientY);

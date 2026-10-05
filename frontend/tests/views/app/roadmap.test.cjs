@@ -21,6 +21,18 @@ function withRuntime(route) {
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
+/** Dispatch one ctrl+wheel event on the Roadmap; a notch in by default. */
+const zoomWheel = (w, sc, init = {}) => { const event = new w.WheelEvent('wheel', { ctrlKey: true, deltaY: -100, clientX: 500, bubbles: true, cancelable: true, ...init }); sc.dispatchEvent(event); return event; };
+/** What the zoom tests read from the mounted Roadmap. */
+function timeline(d) {
+  const sc = d.getElementById('rmScroll'), rail = parseFloat(d.querySelector('.lane-head').style.width), bar = id => d.querySelector(`[data-epic="${id}"]`);
+  return {
+    sc, rail,
+    width: () => parseFloat(d.querySelector('.rm-canvas').style.width) - rail,
+    barWidth: id => parseFloat(bar(id).style.width),
+  };
+}
+
 test('ctrl-wheel zoom is scoped to the Roadmap and re-renders only its canvas after a pause', t => {
   const { w, d } = bootApp({ route: 'roadmap', media: () => true });
   const shell = d.querySelector('.sidebar'), sc = d.getElementById('rmScroll');
@@ -31,6 +43,32 @@ test('ctrl-wheel zoom is scoped to the Roadmap and re-renders only its canvas af
   t.mock.timers.tick(180);
   t.mock.timers.reset();
   assert.notEqual(d.getElementById('rmScroll'), sc); assert.equal(d.querySelector('.sidebar'), shell); assert.equal(d.querySelector('.rm-canvas').style.willChange, '');
+});
+
+test('a wheel notch zooms 15%, touchpad pinch deltas follow the fingers, and zoom stays within 2.2 to 42 px a day', t => {
+  const { w, d } = bootApp({ route: 'roadmap' });
+  const { width, barWidth } = timeline(d);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  /** The zoom factor of one gesture: its wheel events, then the pause that ends it. */
+  const zoom = events => { const before = width(); for (const init of events) zoomWheel(w, d.getElementById('rmScroll'), init); t.mock.timers.tick(150); return width() / before; };
+  // Chrome and Firefox send a touchpad pinch as ctrl+wheel deltas of -100 × ln(scale), split over many events.
+  const pinch = (scale, events = 24) => Array.from({ length: events }, () => ({ deltaY: -100 * Math.log(scale) / events }));
+  for (const [input, events, factor] of [
+    ['a mouse notch', [{ deltaY: -100 }], 1.15],
+    ['a mouse notch out', [{ deltaY: 100 }], 1 / 1.15],
+    ['a notch in lines', [{ deltaY: -3, deltaMode: 1 }], 1.15],
+    ['a notch in pages', [{ deltaY: 1, deltaMode: 2 }], 1 / 1.15],
+    ['a macOS notch', [{ deltaY: -4.000244140625 }], 1.15],
+    ['an accelerated macOS notch', [{ deltaY: 8.00048828125 }], 1 / 1.15],
+    ['a 2.4x touchpad pinch', pinch(2.4), 2.4],
+    ['the pinch back', pinch(1 / 2.4), 1 / 2.4],
+  ]) assert(Math.abs(zoom(events) / factor - 1) < 0.005, `${input} zooms ${factor.toFixed(3)}x`);
+  // At 42 and 2.2 px a day, the 39-day Reader app build is 1638 and 86 px wide.
+  zoom(Array.from({ length: 30 }, () => ({ deltaY: -100 })));
+  assert(Math.abs(barWidth('e6') - 39 * 42) <= 1, 'the zoom stops at 42 px a day');
+  zoom(Array.from({ length: 40 }, () => ({ deltaY: 100 })));
+  assert(Math.abs(barWidth('e6') - 39 * 2.2) <= 1, 'the zoom stops at 2.2 px a day');
+  t.mock.timers.reset();
 });
 
 test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
