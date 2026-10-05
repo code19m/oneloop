@@ -4,12 +4,14 @@
  * One tooltip for details that the browser's own `title` showed only on mouse
  * hover: a full time, the reason a task is blocked, a name that is cut off.
  * An element with `data-tip` shows that text on hover after a short delay, on
- * keyboard focus and on a tap; Escape, a press elsewhere, scrolling and
- * resizing hide it, and the pointer can move onto it. With
- * `data-tip-overflow`, it shows only while the element's text is cut off or
- * hidden. A tap shows a tip unless the element is a control, or sits inside one
- * without being focusable itself, so tapping a card still opens it; a
- * focusable tip, such as a Blocked badge, takes the tap instead.
+ * keyboard focus and on a tap; Escape, a press elsewhere and resizing hide it,
+ * and the pointer can move onto it. Scrolling hides it too, unless its
+ * element has focus: then the tip moves with it. With `data-tip-overflow`, it
+ * shows only while the element's text is cut off or hidden. A tap shows a tip
+ * unless the element is a control, or sits inside one, so tapping a card still
+ * opens it; a tip marked `data-tip-tap`, such as a Blocked badge, takes the
+ * tap instead. Screen readers hear the tip as a description, unless it only
+ * repeats the element's name.
  * @param {Document} [doc]
  * @param {{delay?:number,hideDelay?:number}} [options]
  */
@@ -18,8 +20,13 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
   /** @type {HTMLElement|null} */ let tip = null;
   /** @type {HTMLElement|null} */ let anchor = null;
   /** @type {string|null} */ let describedBy = null;
-  let showTimer = 0, hideTimer = 0, touch = false;
-  const observer = new win.MutationObserver(() => { if (anchor && !anchor.isConnected) hide(); });
+  let showTimer = 0, hideTimer = 0, placeFrame = 0, touch = false, described = false;
+  const observer = new win.MutationObserver(() => {
+    if (!anchor) return;
+    if (!anchor.isConnected) { hide(); return; }
+    // A redraw that patches the element in place, such as a live Board update, may drop the description.
+    if (described && tip && !anchor.getAttribute('aria-describedby')?.split(/\s+/).includes(tip.id)) describe(anchor);
+  });
 
   const anchorOf = (/** @type {EventTarget|null} */ target) => /** @type {HTMLElement|null} */ (target instanceof win.Element ? target.closest('[data-tip]') : null);
   const CONTROL = 'button,a[href],input,select,textarea,summary,label,[role="button"],[onclick],[data-oneloop-onclick]';
@@ -41,6 +48,13 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     tip.style.top = `${Math.max(8, below ? box.bottom + 6 : box.top - height - 6)}px`;
   }
 
+  /** Add the tip to the element's description, after what describes it already. @param {HTMLElement} element */
+  function describe(element) {
+    if (!tip) return;
+    describedBy = element.getAttribute('aria-describedby');
+    element.setAttribute('aria-describedby', [describedBy, tip.id].filter(Boolean).join(' '));
+  }
+
   function show(/** @type {HTMLElement} */ element) {
     win.clearTimeout(showTimer); win.clearTimeout(hideTimer);
     const text = element.dataset.tip ?? '';
@@ -50,20 +64,36 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     tip.textContent = text;
     if (!tip.isConnected) doc.body.append(tip);
     anchor = element;
-    describedBy = element.getAttribute('aria-describedby');
-    element.setAttribute('aria-describedby', [describedBy, tip.id].filter(Boolean).join(' '));
+    // A cut-off name, or a tip that repeats the label, would be heard twice.
+    described = !element.hasAttribute('data-tip-overflow') && element.getAttribute('aria-label')?.trim() !== text.trim();
+    if (described) describe(element);
     place();
-    observer.observe(doc.body, { childList: true, subtree: true });
+    observer.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-describedby'] });
   }
 
   function hide() {
     win.clearTimeout(showTimer); win.clearTimeout(hideTimer);
+    win.cancelAnimationFrame(placeFrame); placeFrame = 0;
     observer.disconnect();
     if (anchor && tip && anchor.getAttribute('aria-describedby')?.split(/\s+/).includes(tip.id)) {
       if (describedBy) anchor.setAttribute('aria-describedby', describedBy); else anchor.removeAttribute('aria-describedby');
     }
-    anchor = null; describedBy = null;
+    anchor = null; describedBy = null; described = false;
     tip?.remove();
+  }
+
+  /** Keep a focused element's tip beside it while the page scrolls; hide it once the element leaves the view. */
+  function follow() {
+    if (placeFrame) return;
+    placeFrame = win.requestAnimationFrame(() => {
+      placeFrame = 0;
+      if (!anchor) return;
+      const box = anchor.getBoundingClientRect();
+      const x = Math.min(Math.max(box.left + box.width / 2, 0), win.innerWidth - 1), y = Math.min(Math.max(box.top + box.height / 2, 0), win.innerHeight - 1);
+      const top = doc.elementFromPoint?.(x, y);
+      const shows = box.bottom > 0 && box.top < win.innerHeight && box.right > 0 && box.left < win.innerWidth && (!top || anchor.contains(top) || !!tip?.contains(top));
+      if (shows) place(); else hide();
+    });
   }
 
   const scheduleHide = () => { win.clearTimeout(hideTimer); hideTimer = win.setTimeout(hide, hideDelay); };
@@ -100,9 +130,9 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     if (!touch) return;
     const element = anchorOf(event.target);
     if (!element || element.matches(CONTROL)) return;
-    const focusable = element.tabIndex >= 0;
-    if (!focusable && element.parentElement?.closest(CONTROL)) return;
-    if (focusable) { event.preventDefault(); event.stopPropagation(); }
+    const takesTap = element.hasAttribute('data-tip-tap');
+    if (!takesTap && element.parentElement?.closest(CONTROL)) return;
+    if (takesTap) { event.preventDefault(); event.stopPropagation(); }
     if (anchor === element) hide(); else show(element);
   }, true);
   // Escape closes the tip first, so the dialog or menu under it stays open.
@@ -110,7 +140,11 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     if (event.key !== 'Escape' || !anchor) return;
     event.preventDefault(); event.stopImmediatePropagation(); hide();
   }, true);
-  doc.addEventListener('scroll', (event) => { if (anchor && !tip?.contains(/** @type {Node} */ (event.target))) hide(); }, true);
+  doc.addEventListener('scroll', (event) => {
+    if (!anchor || tip?.contains(/** @type {Node} */ (event.target))) return;
+    // Tab scrolls the element it moves to into view, so a focused element keeps its tip.
+    if (anchor.contains(doc.activeElement)) follow(); else hide();
+  }, true);
   win.addEventListener('resize', () => hide());
   return Object.freeze({ hide, get anchor() { return anchor; } });
 }
