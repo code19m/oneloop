@@ -319,3 +319,26 @@ test('session-limit choices use response timezone, activity order, IP and creati
     await buttons[0].click();assert.equal(requests[1].revokeSessionId,'new');
   }finally{globalThis.document=previousDocument;}
 });
+
+test('recent password confirmation is judged by the server clock',async()=>{
+  const serverAhead=10*60_000;
+  const state=reauthHarness({serverNow:()=>Date.now()+serverAhead});
+  try{
+    state.data.session.authenticatedAt=Date.now()+serverAhead-35*60_000;
+    let calls=0;const pending=state.auth.withRecentAuth(()=>{calls++;});
+    assert.ok(state.form(),'a browser clock behind the server still asks for the password');assert.equal(calls,0);
+    await state.cancel().click();await assert.rejects(pending,error=>error.code==='reauth_cancelled');
+  }finally{state.restore();}
+});
+
+test('a server that still asks for the password opens the prompt and retries once',async()=>{
+  const required=new ApiError('recent authentication required',{status:412,code:'recent_auth_required'});
+  const state=reauthHarness({serverNow:()=>Date.now(),recentAuth:async()=>({authenticatedAt:Math.floor(Date.now()/1000)})});
+  try{
+    state.data.session.authenticatedAt=Date.now();
+    let calls=0;const pending=state.auth.withRecentAuth(async()=>{calls++;if(calls===1)throw required;return 'saved';});
+    while(!state.form())await new Promise(setImmediate);
+    await state.form().emit('submit',{preventDefault(){}});
+    assert.equal(await pending,'saved');assert.equal(calls,2);
+  }finally{state.restore();}
+});
