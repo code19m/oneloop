@@ -285,10 +285,9 @@ impl Git {
         url: &GitUrl,
         branch: &str,
         credentials: &Credentials,
-        reservation: DiskReservation,
     ) -> Result<String, SyncError> {
         let deadline = Instant::now() + CHECK_TIMEOUT;
-        let session = self.session(url, credentials, Some(reservation))?;
+        let session = self.session(url, credentials, None)?;
         self.require_version(&session, deadline).await?;
         let reference = format!("refs/heads/{branch}");
         let listing = self
@@ -1139,10 +1138,43 @@ fn summary(stderr: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
+
+    /// Runs `git` in `repository` without user or system configuration, and
+    /// returns its trimmed output.
+    pub(in crate::knowledge) fn git(repository: &Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(repository)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["-c", "commit.gpgsign=false", "-c", "user.name=Test"])
+            .args(["-c", "user.email=test@example.test"])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Commits the files in `repository` to a new `main` branch and returns
+    /// the commit.
+    pub(in crate::knowledge) fn commit_all(repository: &Path) -> String {
+        for arguments in [
+            &["init", "--quiet", "--initial-branch=main"][..],
+            &["add", "."],
+            &["commit", "--quiet", "-m", "Files"],
+        ] {
+            git(repository, arguments);
+        }
+        git(repository, &["rev-parse", "HEAD"])
+    }
 
     #[tokio::test]
     async fn reading_many_blobs_uses_bounded_processes_and_phase_walks() {
@@ -1158,32 +1190,7 @@ mod tests {
             };
             std::fs::write(repository.join(format!("{n}.md")), content).unwrap();
         }
-        for args in [
-            &["init", "--quiet", "--initial-branch=main"][..],
-            &["add", "."],
-            &["commit", "--quiet", "-m", "Files"],
-        ] {
-            let result = std::process::Command::new("git")
-                .current_dir(&repository)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .args([
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.test",
-                ])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "{}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-        }
+        commit_all(&repository);
         let git = Git::new(
             root.path().join("work"),
             root.path().join("known_hosts"),

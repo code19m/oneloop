@@ -53,7 +53,9 @@ struct Due {
 
 enum Fetched {
     Unchanged,
-    Changed(Snapshot),
+    /// The branch moved. The download keeps its disk space until the files
+    /// are stored.
+    Changed(Snapshot, DiskReservation),
 }
 
 /// Marks a project as syncing until its sync ends, is cancelled or is stopped
@@ -207,20 +209,13 @@ impl KnowledgeService {
         };
         let generation = due.generation.clone();
         // Dropping a stopped download ends git and removes its working copy.
-        let reservation = self.require_space();
-        let (result, reservation) = match reservation {
-            Ok(reservation) => {
-                let result = tokio::select! {
-                    biased;
-                    () = claim.stop.cancelled() => {
-                        tracing::info!(project_id, "knowledge sync stopped; the source changed");
-                        return;
-                    }
-                    result = self.fetch(&project_id, due, reservation.clone()) => result,
-                };
-                (result, Some(reservation))
+        let result = tokio::select! {
+            biased;
+            () = claim.stop.cancelled() => {
+                tracing::info!(project_id, "knowledge sync stopped; the source changed");
+                return;
             }
-            Err(error) => (Err(error), None),
+            result = self.fetch(&project_id, due) => result,
         };
         if let Err(error) = &result {
             tracing::warn!(
@@ -231,7 +226,7 @@ impl KnowledgeService {
             );
         }
         if let Err(error) = self
-            .record(project_id.clone(), generation, started, result, reservation)
+            .record(project_id.clone(), generation, started, result)
             .await
         {
             tracing::warn!(%error, project_id, "could not store the knowledge sync result");
@@ -268,22 +263,18 @@ impl KnowledgeService {
             .await
     }
 
-    async fn fetch(
-        &self,
-        project_id: &str,
-        due: Due,
-        reservation: DiskReservation,
-    ) -> Result<Fetched, SyncError> {
+    async fn fetch(&self, project_id: &str, due: Due) -> Result<Fetched, SyncError> {
         let url = GitUrl::parse(&due.url, self.inner.allow_file)
             .map_err(|error| SyncError::new(Failure::Failed, error.to_string()))?;
         let credentials = self.credentials(project_id, &url, &due)?;
         let git = &self.inner.git;
-        let head = git
-            .remote_head(&url, &due.branch, &credentials, reservation.clone())
-            .await?;
+        let head = git.remote_head(&url, &due.branch, &credentials).await?;
         if due.commit.as_deref() == Some(head.as_str()) {
             return Ok(Fetched::Unchanged);
         }
+        // Only a download needs disk space. Its working copy and Git keep the
+        // reservation until they are gone, even when the sync is stopped.
+        let reservation = self.require_space()?;
         let depth = if due.commit.is_none() {
             FIRST_HISTORY_DEPTH
         } else {
@@ -299,10 +290,10 @@ impl KnowledgeService {
                     limits: self.inner.limits,
                     history_depth: depth,
                 },
-                reservation,
+                reservation.clone(),
             )
             .await?;
-        Ok(Fetched::Changed(snapshot))
+        Ok(Fetched::Changed(snapshot, reservation))
     }
 
     fn credentials(
@@ -389,8 +380,12 @@ impl KnowledgeService {
         generation: String,
         started: i64,
         result: Result<Fetched, SyncError>,
-        reservation: Option<DiskReservation>,
     ) -> AppResult<()> {
+        // New files use their reserved space until the transaction has ended.
+        let _reservation = match &result {
+            Ok(Fetched::Changed(_, reservation)) => Some(reservation.clone()),
+            _ => None,
+        };
         self.inner
             .db
             .transaction(move |tx| {
@@ -404,10 +399,10 @@ impl KnowledgeService {
                     )
                     .optional()?;
                 let Some((current_generation, revision, state, error_code)) = current else {
-                    return Ok(reservation);
+                    return Ok(());
                 };
                 if current_generation != generation {
-                    return Ok(reservation);
+                    return Ok(());
                 }
                 // A request made while this sync ran gets a sync of its own.
                 let finished = "attempted_at=?2,
@@ -422,11 +417,11 @@ impl KnowledgeService {
                             params![project_id, now, started],
                         )?;
                         if state == "ready" {
-                            return Ok(reservation);
+                            return Ok(());
                         }
                         ("knowledge.synced", json!({}))
                     }
-                    Ok(Fetched::Changed(snapshot)) => {
+                    Ok(Fetched::Changed(snapshot, _)) => {
                         let count = store_files(tx, &project_id, &snapshot)?;
                         tx.execute(
                             &format!(
@@ -454,7 +449,7 @@ impl KnowledgeService {
                             params![project_id, now, started, code],
                         )?;
                         if state == "failed" && error_code.as_deref() == Some(code) {
-                            return Ok(reservation);
+                            return Ok(());
                         }
                         ("knowledge.sync_failed", json!({"reason": code}))
                     }
@@ -475,10 +470,9 @@ impl KnowledgeService {
                     },
                     now,
                 )?;
-                Ok(reservation)
+                Ok(())
             })
             .await
-            .map(|_| ())
     }
 }
 
@@ -545,9 +539,16 @@ mod tests {
     use crate::{
         Db,
         auth::{Actor, ActorSource},
-        knowledge::{KnowledgeCommand, git::SnapshotFile},
+        knowledge::{
+            KnowledgeCommand,
+            git::{
+                SnapshotFile,
+                tests::{commit_all, git},
+            },
+        },
     };
     use serde_json::Value;
+    use std::path::Path;
     use tokio::io::AsyncReadExt;
 
     /// A project `p1` whose source points at `url`, and an administrator.
@@ -589,17 +590,87 @@ mod tests {
         .unwrap()
     }
 
-    fn snapshot() -> Fetched {
-        Fetched::Changed(Snapshot {
-            commit: "a".repeat(40),
-            committed_at: 100,
-            files: vec![SnapshotFile {
-                path: "README.md".to_owned(),
-                changed_at: None,
-                content: b"# Old folder".to_vec(),
-            }],
-            skipped: 0,
+    fn snapshot(service: &KnowledgeService) -> Fetched {
+        Fetched::Changed(
+            Snapshot {
+                commit: "a".repeat(40),
+                committed_at: 100,
+                files: vec![SnapshotFile {
+                    path: "README.md".to_owned(),
+                    changed_at: None,
+                    content: b"# Old folder".to_vec(),
+                }],
+                skipped: 0,
+            },
+            service.inner.disk.reserve(0).unwrap(),
+        )
+    }
+
+    /// A repository with `docs/README.md` on `main`, and its commit.
+    fn docs_repository(path: &Path) -> String {
+        std::fs::create_dir_all(path.join("docs")).unwrap();
+        std::fs::write(path.join("docs/README.md"), "# Docs\n").unwrap();
+        commit_all(path)
+    }
+
+    #[tokio::test]
+    async fn unchanged_branches_are_checked_without_disk_space_above_the_floor() {
+        let source = tempfile::tempdir_in("target").unwrap();
+        let commit = docs_repository(source.path());
+        let url = format!("file://{}", source.path().display());
+        let (_root, db, _) = fixture(&url).await;
+        db.run(move |c| {
+            for (project, prefix) in [("p2", "TWO"), ("p3", "THR"), ("p4", "FOU")] {
+                c.execute(
+                    "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,?1,?2,1,1)",
+                    [project, prefix],
+                )?;
+                c.execute(
+                    "INSERT INTO knowledge_sources(project_id,url,branch,folder,state,requested_at,created_at,updated_at,generation)
+                     VALUES(?1,?2,'main','docs','pending',1,1,1,'current')",
+                    [project, url.as_str()],
+                )?;
+            }
+            // Only p4 has never stored the branch's files.
+            c.execute(
+                "UPDATE knowledge_sources SET state='ready',commit_id=?1 WHERE project_id<>'p4'",
+                [commit],
+            )?;
+            Ok(())
         })
+        .await
+        .unwrap();
+        // No download fits above this floor.
+        let service = KnowledgeService::new(db.clone(), u64::MAX).allowing_local_repositories();
+        assert_eq!(service.sync_due().await, 4);
+        let sources: Vec<(String, String, Option<String>)> = db
+            .run(|c| {
+                let mut statement = c.prepare(
+                    "SELECT project_id,state,error_code FROM knowledge_sources ORDER BY project_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<_, _>>()?;
+                Ok(rows)
+            })
+            .await
+            .unwrap();
+        let source = |project: &str, state: &str, error: Option<&str>| {
+            (
+                project.to_owned(),
+                state.to_owned(),
+                error.map(str::to_owned),
+            )
+        };
+        assert_eq!(
+            sources,
+            [
+                source("p1", "ready", None),
+                source("p2", "ready", None),
+                source("p3", "ready", None),
+                source("p4", "failed", Some("storage_full")),
+            ]
+        );
     }
 
     async fn stalled_git_host() -> tokio::net::TcpListener {
@@ -613,13 +684,26 @@ mod tests {
         host.expect("a free test port in 18730–18739")
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
-        let host = stalled_git_host().await;
-        let url = format!(
-            "https://127.0.0.1:{}/docs.git",
-            host.local_addr().unwrap().port()
-        );
+        let source = tempfile::tempdir_in("target").unwrap();
+        docs_repository(source.path());
+        // Only a download reads the root tree. As a pipe without a writer, it
+        // stops Git in the clone, after the check found a new commit.
+        let tree = git(source.path(), &["rev-parse", "HEAD^{tree}"]);
+        let object = source
+            .path()
+            .join(".git/objects")
+            .join(&tree[..2])
+            .join(&tree[2..]);
+        std::fs::remove_file(&object).unwrap();
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&object)
+            .status()
+            .unwrap();
+        assert!(fifo.success());
+        let url = format!("file://{}", source.path().display());
         let (_root, db, _) = fixture(&url).await;
         db.run(|c| {
             c.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
@@ -634,7 +718,7 @@ mod tests {
             Ok(())
         }).await.unwrap();
         let free = fs4::available_space(db.layout().root()).unwrap();
-        let mut service = KnowledgeService::new(db.clone(), 0);
+        let mut service = KnowledgeService::new(db.clone(), 0).allowing_local_repositories();
         let inner = Arc::get_mut(&mut service.inner).unwrap();
         inner.limits.max_download_bytes = free / 4 * 3 - inner.limits.max_total_bytes;
         // Large margins tolerate unrelated disk activity. The upload service
@@ -653,11 +737,8 @@ mod tests {
         };
         let (shutdown, stop) = watch::channel(false);
         let worker = service.spawn_worker(stop);
-        // The real worker and real Git process are now blocked at the host.
-        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(10), host.accept())
-            .await
-            .unwrap()
-            .unwrap();
+        // Both syncs see a new commit. The one that reserved space waits in
+        // the clone, and the other is refused.
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let rejected: i64 = db.run(|c| Ok(c.query_row("SELECT count(*) FROM knowledge_sources WHERE error_code='storage_full'", [], |r| r.get(0))?)).await.unwrap();
@@ -687,12 +768,6 @@ mod tests {
         }
         shutdown.send(true).unwrap();
         worker.await.unwrap();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(10),
-            connection.read_to_end(&mut Vec::new()),
-        )
-        .await
-        .unwrap();
         assert!(
             blocked,
             "the upload must account for the worker's reservation"
@@ -744,8 +819,7 @@ mod tests {
                 "p1".to_owned(),
                 "earlier".to_owned(),
                 1,
-                Ok(snapshot()),
-                None,
+                Ok(snapshot(&service)),
             )
             .await
             .unwrap();
@@ -756,8 +830,7 @@ mod tests {
                 "p1".to_owned(),
                 "current".to_owned(),
                 1,
-                Ok(snapshot()),
-                None,
+                Ok(snapshot(&service)),
             )
             .await
             .unwrap();
