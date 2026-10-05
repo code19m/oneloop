@@ -84,25 +84,42 @@
     });
     return renderer;
   }
+  // What each drawn diagram was drawn from, so a new theme can draw it again.
+  const diagramSources=new WeakMap();
+  /**
+   * Draw one diagram into its figure, in the current theme. A first drawing
+   * that fails shows the source; a new drawing that fails keeps the old one.
+   */
+  function drawDiagram(figure,source,context,fallback=null){
+    diagramQueue=diagramQueue.then(async()=>{
+      if(!figure.isConnected)return;
+      try{
+        const render=await diagramRenderer();if(!figure.isConnected)return;
+        const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
+          secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
+        if(!figure.isConnected)return;
+        // The renderer returns sanitized SVG, shown as an image.
+        const picture=document.createElement('img');picture.alt='Mermaid diagram';if(drawn.width&&drawn.height){picture.width=drawn.width;picture.height=drawn.height;}picture.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(drawn.svg);figure.replaceChildren(picture);figure.removeAttribute('aria-busy');
+        if(fallback)UIMotion.fade(figure);
+        diagramSources.set(figure,{source,context});
+      }catch{if(figure.isConnected&&fallback)fallback('This diagram could not be rendered. Check its Mermaid syntax.');}
+    });
+  }
   function renderDiagrams(article,context){
     for(const code of article.querySelectorAll('pre code.language-mermaid')){
       const source=code.textContent,pre=code.parentElement,figure=document.createElement('figure');figure.className='markdown-diagram';figure.setAttribute('aria-busy','true');
       const status=document.createElement('span');status.className='markdown-diagram-status';status.textContent='Rendering diagram…';figure.append(status);pre.replaceWith(figure);
       const fallback=message=>{figure.removeAttribute('aria-busy');status.textContent=message;figure.replaceChildren(status,pre);};
       if(source.length>50000){fallback('Diagram is too large to render. Source is shown below.');continue;}
-      diagramQueue=diagramQueue.then(async()=>{
-        if(!figure.isConnected)return;
-        try{
-          const render=await diagramRenderer();if(!figure.isConnected)return;
-          const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
-            secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
-          if(!figure.isConnected)return;
-          // The renderer returns sanitized SVG, shown as an image.
-          const picture=document.createElement('img');picture.alt='Mermaid diagram';if(drawn.width&&drawn.height){picture.width=drawn.width;picture.height=drawn.height;}picture.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(drawn.svg);figure.replaceChildren(picture);figure.removeAttribute('aria-busy');UIMotion.fade(figure);
-        }catch{if(figure.isConnected)fallback('This diagram could not be rendered. Check its Mermaid syntax.');}
-      });
+      drawDiagram(figure,source,context,fallback);
     }
   }
+  // Diagram colors are part of the image, so a theme change, also one that
+  // follows the device under System, draws the diagrams on the page again.
+  new MutationObserver((records)=>{
+    if(records.every(record=>record.oldValue===document.documentElement.dataset.theme))return;
+    for(const figure of document.querySelectorAll('figure.markdown-diagram')){const drawn=diagramSources.get(figure);if(drawn)drawDiagram(figure,drawn.source,drawn.context);}
+  }).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme'],attributeOldValue:true});
   // Heading anchors follow src/knowledge/markdown.rs (inline_text, slug and
   // the headings of sections), so search hits and MCP sections name the
   // headings shown here. tests/support/fixtures/heading-anchors.json checks
