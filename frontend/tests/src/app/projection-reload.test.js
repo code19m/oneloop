@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createProjectionReload,routeScope} from '../../../src/app/projection-reload.js';
+import {createProjectionReload,createSignInLoad,routeScope} from '../../../src/app/projection-reload.js';
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData,hydrateLegacyData} from '../../../src/data/projection-store.js';
@@ -106,4 +106,35 @@ test('an unavailable destination is reported to the caller instead of the page w
   assert.deepEqual(await reload({taskId:'gone',routeErrors:false}),{stale:false,unavailable:true});
   assert.deepEqual(routeErrors,[]);
   await reload({taskId:'gone'});assert.deepEqual(routeErrors,[missing]);
+});
+
+/** A sign-in on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
+function signInPage(context,answer=async()=>({stale:false})){
+  const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};
+  const signIn=createSignInLoad({bootstrap,getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
+  return {signIn,loads};
+}
+
+test('signing in again loads the project the tab showed when the session ended',async()=>{
+  const {signIn,loads}=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'});
+  signIn.sessionEnded();
+  await signIn.load();
+  assert.deepEqual(loads,[{projectId:'p2',view:'board'}],'the Board loads the project its switcher shows');
+});
+
+test('a first sign-in loads the default project',async()=>{
+  const {signIn,loads}=signInPage(null);
+  signIn.sessionEnded();
+  await signIn.load();
+  assert.deepEqual(loads,[{view:'board'}]);
+});
+
+test('a project the account can no longer open loads the default project, and a task only metadata',async()=>{
+  const gone=new ApiError('project not found',{status:404,code:'not_found'});
+  const board=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'},async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  board.signIn.sessionEnded();await board.signIn.load();
+  assert.deepEqual(board.loads,[{projectId:'p2',view:'board'},{view:'board'}]);
+  const task=signInPage({view:'task',projectId:'p2',taskId:'TWO-1',hash:'#/task/TWO-1'},async scope=>{if(scope.taskId)throw gone;return {stale:false};});
+  task.signIn.sessionEnded();await task.signIn.load();
+  assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });

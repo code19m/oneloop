@@ -19,6 +19,31 @@ export function routeScope(hash, app) {
 }
 
 /**
+ * Load the projection as someone signs in: the page the tab shows, in the
+ * project it showed when the last session ended, so the project switcher and
+ * the loaded work agree. A task they can't open loads only metadata, and a
+ * project they can't open loads the default project.
+ * @param {{bootstrap:any,getApp:()=>any,location?:{hash:string}}} options
+ */
+export function createSignInLoad({ bootstrap, getApp, location = globalThis.location }) {
+  /** @type {string|undefined} */ let shown;
+  return Object.freeze({
+    /** Remember the project on screen as a session ends. */
+    sessionEnded() { shown = getApp()?.context?.().projectId ?? undefined; },
+    async load() {
+      const scope = routeScope(location.hash, getApp());
+      try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : scope); }
+      catch (error) {
+        if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
+        if (scope.taskId) return bootstrap.load({ view: 'metadata' });
+        if (shown) return bootstrap.load(scope);
+        throw error;
+      }
+    },
+  });
+}
+
+/**
  * Reload the projection and every window the page shows beyond it. A live
  * (background) refresh never interrupts a load someone started: it waits for
  * that load, then refreshes whatever is shown by then.

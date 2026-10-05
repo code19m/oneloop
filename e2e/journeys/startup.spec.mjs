@@ -45,6 +45,22 @@ test('the theme follows the device until someone picks one', async ({ page, inst
   expect(await shown()).toBe('dark');
 });
 
+test('signing in again in the same tab keeps the project you chose', async ({ page, instance }) => {
+  const [, second] = instance.projects;
+  const switcher = page.locator('.switcher-btn'), cards = page.locator('.board .card');
+  await openApp(page, instance, 'board');
+  await switcher.click();
+  await page.locator('#project-switcher-menu').getByRole('button', { name: second.project.name }).click();
+  await expect(cards).toContainText(second.task.title);
+  await page.evaluate(() => App.logout());
+  await page.locator('.confirmation-layer').getByRole('button', { name: 'Sign out', exact: true }).click();
+  await signIn(page, instance);
+  await expect(switcher).toHaveAccessibleName(`Project: ${second.project.name}`);
+  await expect(cards).toContainText(second.task.title);
+  await page.getByRole('button', { name: 'Task', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'New task' }).getByRole('textbox', { name: 'Title' })).toBeVisible();
+});
+
 test('a module loading failure offers a startup retry', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/api-client\.js/, /Loading failed for the module/);
   await page.route('**/src/data/api-client.js', route => route.abort());
