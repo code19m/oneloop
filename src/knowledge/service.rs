@@ -641,9 +641,13 @@ impl KnowledgeService {
         if !folder.is_empty() && inside.is_empty() && !view.files.is_empty() {
             return Err(AppError::NotFound { resource: "folder" });
         }
+        // A binary file named README.md returns only its details, as in read_text.
         let readme_path = inside
             .iter()
-            .find(|file| file.path[prefix.len()..].eq_ignore_ascii_case("readme.md"))
+            .find(|file| {
+                file.path[prefix.len()..].eq_ignore_ascii_case("readme.md")
+                    && matches!(file.kind, Some(PreviewKind::Markdown | PreviewKind::Text))
+            })
             .map(|file| file.path.clone());
         let readme = match readme_path {
             Some(path) => {

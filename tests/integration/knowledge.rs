@@ -319,6 +319,31 @@ fn cookie(token: &str) -> String {
 }
 
 #[tokio::test]
+async fn the_overview_leaves_out_a_readme_that_is_not_text() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/README.md", b"\x89\0\xff\xfeNOT TEXT \0\x01");
+    repository.write("docs/guide.md", b"# Guide\n");
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let actor = fixture
+        .state
+        .auth
+        .authenticate_session(fixture.member.split_once('=').unwrap().1, false)
+        .await
+        .unwrap();
+    let overview = fixture
+        .state
+        .knowledge
+        .overview(&actor, "p1", None)
+        .await
+        .unwrap();
+    assert!(overview.readme.is_none(), "{:?}", overview.readme);
+    assert_eq!(overview.file_count, 2);
+}
+
+#[tokio::test]
 async fn legacy_binary_markdown_is_not_previewed_or_indexed_across_resyncs() {
     let fixture = Fixture::new().await;
     let repository = Repository::new();
