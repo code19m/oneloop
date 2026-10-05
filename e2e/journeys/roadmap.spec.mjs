@@ -30,12 +30,18 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
   await page.evaluate(() => {
     window.originalSidebar = document.querySelector('.sidebar');
     window.originalScroll = document.getElementById('rmScroll');
-    window.initialWidth = document.querySelector('.bar').offsetWidth;
+    window.originalBar = document.querySelector('.bar');
+    window.initialWidth = window.originalBar.offsetWidth;
     for (let i = 0; i < 5; i++) window.originalScroll.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -10, clientX: 800, bubbles: true, cancelable: true }));
   });
-  await expect.poll(() => page.evaluate(() => document.getElementById('rmScroll') !== window.originalScroll)).toBe(true);
-  expect(await page.evaluate(() => document.querySelector('.sidebar') === window.originalSidebar)).toBe(true);
-  expect(await page.evaluate(() => document.querySelector('.bar').offsetWidth > window.initialWidth)).toBe(true);
+  // The zoom resizes the Roadmap in place: the same scroller and bars, wider, inside the same shell.
+  await expect.poll(() => page.evaluate(() => window.originalBar.offsetWidth > window.initialWidth)).toBe(true);
+  const unchanged = () => page.evaluate(() => document.getElementById('rmScroll') === window.originalScroll && window.originalBar.isConnected && document.querySelector('.sidebar') === window.originalSidebar);
+  expect(await unchanged()).toBe(true);
+  // Month cells follow the zoom through CSS: each spans its days times the pixels per day.
+  const months = await page.locator('.rm-month-grid .rm-month').evaluateAll(cells => cells.map(cell => [cell.getBoundingClientRect().width, Number(cell.style.getPropertyValue('--n')) * Number(cell.parentElement.style.getPropertyValue('--ppd'))]));
+  expect(months.length).toBeGreaterThan(0);
+  for (const [width, expected] of months) expect(Math.abs(width - expected)).toBeLessThan(1);
   // Playwright's WebKit screenshots insert a style element to sync animations, which the policy refuses.
   if (browserName === 'webkit') allowedConsoleErrors.push(/Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'/);
   for (const theme of ['light', 'dark']) {
@@ -45,6 +51,8 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
     expect(await page.locator('.rail-cell').first().evaluate(el => getComputedStyle(el).backdropFilter)).toBe('none');
     await page.screenshot({ path: testInfo.outputPath(`roadmap-${theme}.png`), animations: 'disabled' });
   }
+  // Long after the gesture ended, the Roadmap was still never rebuilt.
+  expect(await unchanged()).toBe(true);
 });
 
 test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
