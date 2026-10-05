@@ -37,7 +37,9 @@ oneloop. Add everyone else in the app:
 
 Usernames have 3 to 32 lowercase letters, digits, dots, underscores or hyphens,
 and they can't be changed later. Passwords need at least 5 characters. Ask
-people, especially admins, to use long passphrases.
+people, especially admins, to use long passphrases. To require longer
+passwords, refuse common ones, or make temporary passwords expire, use the
+[password settings](reference.md#passwords).
 
 You can also create accounts on the server with
 [`oneloop user add`](reference.md#commands).

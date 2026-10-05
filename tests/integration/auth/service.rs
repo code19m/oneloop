@@ -2,7 +2,9 @@ use oneloop::{
     AppError, Db,
     auth::{
         AccountUpdate, Actor, ActorSource, AuthService, LoginResult, NewUser, ProjectPermission,
-        SessionMetadata, create_user, token_hash, unix_now,
+        SessionMetadata, create_user,
+        password::{Blocklist, PasswordPolicy},
+        token_hash, unix_now,
     },
 };
 
@@ -734,6 +736,226 @@ async fn cli_creation_reset_and_browser_password_change_share_the_five_character
             .unwrap(),
         LoginResult::Authenticated(_)
     ));
+}
+
+fn refusal(error: AppError) -> String {
+    match error {
+        AppError::Validation { field, message } if field == "password" => message,
+        error => panic!("expected a password refusal, got {error:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stricter_password_rules_apply_to_every_password_by_role() {
+    let (_directory, db) = database();
+    add_user(&db, "chief", true, false).await;
+    add_user(&db, "longusername", false, false).await;
+    let service = AuthService::with_password_policy(
+        db.clone(),
+        PasswordPolicy {
+            min_length: 12,
+            admin_min_length: 16,
+            blocklist: Some(std::sync::Arc::new(Blocklist::from_text(
+                "Summer of 2026\n",
+            ))),
+            temporary_lifetime_seconds: None,
+        },
+    );
+    let current = "correct horse battery staple";
+    let (_, member) = login(&service, "longusername").await;
+    for (password, message) in [
+        ("eleven char", "Use at least 12 characters."),
+        (
+            "SUMMER OF 2026",
+            "This password is too easy to guess. Choose another one.",
+        ),
+        (
+            "LongUserName",
+            "This password is too easy to guess. Choose another one.",
+        ),
+    ] {
+        let Err(error) = service.change_password(&member, current, password).await else {
+            panic!("{password} was accepted");
+        };
+        assert_eq!(refusal(error), message, "{password}");
+    }
+    service
+        .change_password(&member, current, "twelve chars")
+        .await
+        .unwrap();
+    let (_, chief) = login(&service, "chief").await;
+    let Err(error) = service
+        .change_password(&chief, current, "fifteen chars!!")
+        .await
+    else {
+        panic!("an admin password needs 16 characters");
+    };
+    assert_eq!(refusal(error), "Use at least 16 characters.");
+    // Temporary passwords from admins are long enough for any role.
+    let created = service
+        .create_account(&chief, "newcomer", "Newcomer", true)
+        .await
+        .unwrap();
+    assert!(created.temporary_password.len() >= 16);
+    let reset = service
+        .reset_account_password(&chief, &created.user.id)
+        .await
+        .unwrap();
+    assert!(reset.len() >= 16);
+    assert!(matches!(
+        service
+            .login("newcomer", &reset, SessionMetadata::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
+    // Sign-in never applies the rules, so shorter passwords chosen earlier work.
+    let (_, still) = login(&service, "chief").await;
+    assert_eq!(still.username, "chief");
+}
+
+#[tokio::test]
+async fn temporary_passwords_stop_working_after_the_configured_lifetime() {
+    let (_directory, db) = database();
+    // Set at 1_700_000_000, long before now.
+    add_user(&db, "invited", false, true).await;
+    let password = "correct horse battery staple";
+    let weekly = AuthService::with_password_policy(
+        db.clone(),
+        PasswordPolicy {
+            temporary_lifetime_seconds: Some(7 * 24 * 60 * 60),
+            ..PasswordPolicy::default()
+        },
+    );
+    let Err(error) = weekly
+        .login("invited", password, SessionMetadata::default(), None)
+        .await
+    else {
+        panic!("an expired temporary password signed in");
+    };
+    assert_eq!(error.code(), "temporary_password_expired");
+    assert_eq!(error.status().as_u16(), 401);
+    // Without the setting, a temporary password works until it is changed.
+    assert!(matches!(
+        AuthService::new(db.clone())
+            .login("invited", password, SessionMetadata::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
+    // A wrong password still gets the usual answer.
+    assert!(matches!(
+        weekly
+            .login(
+                "invited",
+                "wrong password",
+                SessionMetadata::default(),
+                None
+            )
+            .await,
+        Err(AppError::InvalidCredentials)
+    ));
+    db.run(|connection| {
+        connection.execute(
+            "UPDATE users SET password_changed_at=?1 WHERE username='invited'",
+            [unix_now()?],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let (_, invited) = login(&weekly, "invited").await;
+    assert!(invited.must_change_password);
+    // A password the person chose never expires.
+    weekly
+        .change_password(&invited, password, "my own password")
+        .await
+        .unwrap();
+    db.run(|connection| {
+        connection.execute(
+            "UPDATE users SET password_changed_at=1 WHERE username='invited'",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        weekly
+            .login(
+                "invited",
+                "my own password",
+                SessionMetadata::default(),
+                None
+            )
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
+}
+
+#[tokio::test]
+async fn the_cli_applies_the_password_settings() {
+    use assert_cmd::Command;
+    let (directory, _db) = database();
+    let lists = crate::support::scratch_dir();
+    let blocklist = lists.path().join("common.txt");
+    std::fs::write(&blocklist, "Summer of 2026\n").unwrap();
+    let command = |args: &[&str], password: &str| {
+        let mut command = Command::cargo_bin("oneloop").unwrap();
+        command
+            .env_clear()
+            .env("ONELOOP_DATA_DIR", directory.path())
+            .env("ONELOOP_PASSWORD_MIN_LENGTH", "10")
+            .env("ONELOOP_ADMIN_PASSWORD_MIN_LENGTH", "14")
+            .env("ONELOOP_PASSWORD_BLOCKLIST", &blocklist)
+            .args(args)
+            .write_stdin(format!("{password}\n"));
+        command
+    };
+    let add = ["user", "add", "member", "--password-stdin"];
+    command(&add, "nine char")
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("Use at least 10 characters."));
+    command(&add, "summer OF 2026")
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("too easy to guess"));
+    command(&add, "ten chars!").assert().success();
+    let admin = ["user", "add", "boss", "--admin", "--password-stdin"];
+    command(&admin, "thirteen char")
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("Use at least 14 characters."));
+    command(&admin, "fourteen chars").assert().success();
+    // A reset uses the minimum of the account's role.
+    command(
+        &["user", "passwd", "boss", "--password-stdin"],
+        "ten chars!",
+    )
+    .assert()
+    .code(2)
+    .stderr(predicates::str::contains("Use at least 14 characters."));
+    command(
+        &["user", "passwd", "member", "--password-stdin"],
+        "ten chars?",
+    )
+    .assert()
+    .success();
+    Command::cargo_bin("oneloop")
+        .unwrap()
+        .env_clear()
+        .env("ONELOOP_DATA_DIR", directory.path())
+        .env(
+            "ONELOOP_PASSWORD_BLOCKLIST",
+            lists.path().join("missing.txt"),
+        )
+        .args(["user", "passwd", "member", "--password-stdin"])
+        .write_stdin("ten chars!\n")
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("ONELOOP_PASSWORD_BLOCKLIST"));
 }
 
 #[tokio::test]

@@ -111,6 +111,8 @@ function fieldLabel(field) {
 
 /** @param {string} field @param {string} message */
 function friendlyValidation(field, message) {
+  // The server words password rules for people, and an admin may have set them.
+  if (field === 'password') return message;
   const label = fieldLabel(field);
   const requiredRange = message.match(/^must contain (\d+)[–-](\d+) characters$/);
   if (requiredRange) return `Use ${requiredRange[1]}–${requiredRange[2]} characters for the ${label}.`;
@@ -186,6 +188,7 @@ export function actionErrorFeedback(error) {
     return { silent:false, field, message:field ? friendlyValidation(field, message) : 'Check the form and try again.' };
   }
   if (code === 'invalid_credentials') return {silent:false,field:'password',message:'Incorrect username or password.'};
+  if (code === 'temporary_password_expired') return {silent:false,field:'password',message:'This temporary password has expired. Ask an admin to reset it.'};
   if (code === 'incorrect_password') {
     const field = ['currentPassword','password'].includes(value?.details?.field) ? value.details.field : 'currentPassword';
     return {silent:false,field,message:'Incorrect current password.'};

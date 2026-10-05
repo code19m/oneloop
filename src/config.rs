@@ -12,6 +12,9 @@ use ipnet::IpNet;
 use tracing::Level;
 use url::{Host, Url};
 
+use crate::auth::password::{
+    Blocklist, MAX_MIN_PASSWORD_CHARACTERS, MIN_PASSWORD_CHARACTERS, PasswordPolicy,
+};
 use crate::error::{AppError, AppResult};
 use crate::timezone::TimeZone;
 
@@ -23,8 +26,12 @@ pub const STORAGE_LIMIT_ENV: &str = "ONELOOP_STORAGE_LIMIT";
 pub const DISK_MIN_FREE_ENV: &str = "ONELOOP_DISK_MIN_FREE";
 pub const TRUSTED_PROXIES_ENV: &str = "ONELOOP_TRUSTED_PROXIES";
 pub const LOG_LEVEL_ENV: &str = "ONELOOP_LOG_LEVEL";
+pub const PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_PASSWORD_MIN_LENGTH";
+pub const ADMIN_PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_ADMIN_PASSWORD_MIN_LENGTH";
+pub const PASSWORD_BLOCKLIST_ENV: &str = "ONELOOP_PASSWORD_BLOCKLIST";
+pub const TEMPORARY_PASSWORD_LIFETIME_ENV: &str = "ONELOOP_TEMPORARY_PASSWORD_LIFETIME";
 
-const KNOWN_ENV: [&str; 8] = [
+const KNOWN_ENV: [&str; 12] = [
     PUBLIC_URL_ENV,
     LISTEN_ENV,
     DATA_DIR_ENV,
@@ -33,6 +40,10 @@ const KNOWN_ENV: [&str; 8] = [
     DISK_MIN_FREE_ENV,
     TRUSTED_PROXIES_ENV,
     LOG_LEVEL_ENV,
+    PASSWORD_MIN_LENGTH_ENV,
+    ADMIN_PASSWORD_MIN_LENGTH_ENV,
+    PASSWORD_BLOCKLIST_ENV,
+    TEMPORARY_PASSWORD_LIFETIME_ENV,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +56,7 @@ pub struct Config {
     pub disk_min_free_bytes: u64,
     pub trusted_proxies: Vec<IpNet>,
     pub log_level: Level,
+    pub password_policy: PasswordPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +99,7 @@ impl Config {
         let trusted_proxies =
             parse_trusted_proxies(env.get(TRUSTED_PROXIES_ENV).unwrap_or_default())?;
         let log_level = parse_log_level(env.get(LOG_LEVEL_ENV).unwrap_or("info"))?;
+        let password_policy = parse_password_policy(&env)?;
 
         Ok(Self {
             public_url,
@@ -97,8 +110,101 @@ impl Config {
             disk_min_free_bytes,
             trusted_proxies,
             log_level,
+            password_policy,
         })
     }
+}
+
+/// The password settings, for the commands that set passwords.
+pub fn password_policy_from_env() -> AppResult<PasswordPolicy> {
+    password_policy_from_os_iter(env::vars_os())
+}
+
+pub fn password_policy_from_os_iter<I, K, V>(values: I) -> AppResult<PasswordPolicy>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: Into<OsString>,
+    V: Into<OsString>,
+{
+    parse_password_policy(&Environment::collect(values)?)
+}
+
+fn parse_password_policy(env: &Environment) -> AppResult<PasswordPolicy> {
+    let length = |variable: &'static str, raw: &str| {
+        raw.parse::<usize>()
+            .ok()
+            .filter(|value| (MIN_PASSWORD_CHARACTERS..=MAX_MIN_PASSWORD_CHARACTERS).contains(value))
+            .ok_or_else(|| {
+                invalid_env(
+                    variable,
+                    format!(
+                        "expected a whole number from {MIN_PASSWORD_CHARACTERS} to {MAX_MIN_PASSWORD_CHARACTERS}"
+                    ),
+                )
+            })
+    };
+    let min_length = match env.get(PASSWORD_MIN_LENGTH_ENV) {
+        Some(raw) => length(PASSWORD_MIN_LENGTH_ENV, raw)?,
+        None => MIN_PASSWORD_CHARACTERS,
+    };
+    let admin_min_length = match env.get(ADMIN_PASSWORD_MIN_LENGTH_ENV) {
+        Some(raw) => length(ADMIN_PASSWORD_MIN_LENGTH_ENV, raw)?,
+        None => min_length,
+    };
+    if admin_min_length < min_length {
+        return Err(invalid_env(
+            ADMIN_PASSWORD_MIN_LENGTH_ENV,
+            format!("must be at least {PASSWORD_MIN_LENGTH_ENV}"),
+        ));
+    }
+    let blocklist = match env.get(PASSWORD_BLOCKLIST_ENV) {
+        Some(raw) if !raw.trim().is_empty() => {
+            let path = Path::new(raw);
+            let list = Blocklist::load(path).map_err(|error| {
+                invalid_env(
+                    PASSWORD_BLOCKLIST_ENV,
+                    format!("cannot read {}: {error}", path.display()),
+                )
+            })?;
+            Some(std::sync::Arc::new(list))
+        }
+        _ => None,
+    };
+    let temporary_lifetime_seconds = env
+        .get(TEMPORARY_PASSWORD_LIFETIME_ENV)
+        .map(parse_lifetime)
+        .transpose()?;
+    Ok(PasswordPolicy {
+        min_length,
+        admin_min_length,
+        blocklist,
+        temporary_lifetime_seconds,
+    })
+}
+
+/// Whole hours (`36h`) or days (`7d`), from one hour to a year.
+fn parse_lifetime(raw: &str) -> AppResult<i64> {
+    let invalid = || {
+        invalid_env(
+            TEMPORARY_PASSWORD_LIFETIME_ENV,
+            "expected hours or days, such as 36h or 7d, from 1h to 365d",
+        )
+    };
+    let (number, unit) = match (raw.strip_suffix('h'), raw.strip_suffix('d')) {
+        (Some(hours), _) => (hours, 60 * 60),
+        (_, Some(days)) => (days, 24 * 60 * 60),
+        _ => return Err(invalid()),
+    };
+    let seconds = number
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .and_then(|value| value.checked_mul(unit))
+        .ok_or_else(invalid)?;
+    if seconds > 365 * 24 * 60 * 60 {
+        return Err(invalid());
+    }
+    Ok(seconds)
 }
 
 impl DataConfig {
@@ -382,6 +488,7 @@ mod generated_tests {
             let _ = parse_size("test", &raw);
             let _ = parse_trusted_proxies(&raw);
             let _ = parse_public_url(&raw);
+            let _ = parse_lifetime(&raw);
         }
     }
 }

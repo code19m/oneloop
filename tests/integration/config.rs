@@ -202,3 +202,86 @@ fn documented_fixed_offset_timezone_workarounds_cover_current_boundaries() {
         }
     }
 }
+
+#[test]
+fn password_settings_are_opt_in_and_checked() {
+    use oneloop::auth::password::PasswordPolicy;
+    use oneloop::config::password_policy_from_os_iter;
+    let defaults = Config::from_os_iter(environment(&[(
+        "ONELOOP_PUBLIC_URL",
+        "https://work.example.com",
+    )]))
+    .unwrap()
+    .password_policy;
+    assert_eq!(defaults, PasswordPolicy::default());
+    assert_eq!((defaults.min_length, defaults.admin_min_length), (5, 5));
+
+    let lists = crate::support::scratch_dir();
+    let list = lists.path().join("common.txt");
+    std::fs::write(&list, "password\n123456\nPASSWORD\n").unwrap();
+    let list = list.to_str().unwrap();
+    let policy = password_policy_from_os_iter(environment(&[
+        ("ONELOOP_PASSWORD_MIN_LENGTH", "10"),
+        ("ONELOOP_ADMIN_PASSWORD_MIN_LENGTH", "16"),
+        ("ONELOOP_PASSWORD_BLOCKLIST", list),
+        ("ONELOOP_TEMPORARY_PASSWORD_LIFETIME", "36h"),
+    ]))
+    .unwrap();
+    assert_eq!((policy.min_length, policy.admin_min_length), (10, 16));
+    assert_eq!(policy.temporary_lifetime_seconds, Some(36 * 60 * 60));
+    assert_eq!(policy.blocklist.as_ref().unwrap().len(), 2);
+    let policy = password_policy_from_os_iter(environment(&[
+        ("ONELOOP_PASSWORD_MIN_LENGTH", "9"),
+        ("ONELOOP_TEMPORARY_PASSWORD_LIFETIME", "7d"),
+    ]))
+    .unwrap();
+    assert_eq!(policy.admin_min_length, 9, "the admin minimum follows");
+    assert_eq!(policy.temporary_lifetime_seconds, Some(7 * 24 * 60 * 60));
+
+    let oversized = lists.path().join("oversized.txt");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let missing = lists.path().join("missing.txt");
+    for (entries, variable) in [
+        (
+            vec![("ONELOOP_PASSWORD_MIN_LENGTH", "4")],
+            "ONELOOP_PASSWORD_MIN_LENGTH",
+        ),
+        (
+            vec![("ONELOOP_PASSWORD_MIN_LENGTH", "1025")],
+            "ONELOOP_PASSWORD_MIN_LENGTH",
+        ),
+        (
+            vec![("ONELOOP_PASSWORD_MIN_LENGTH", "ten")],
+            "ONELOOP_PASSWORD_MIN_LENGTH",
+        ),
+        (
+            vec![
+                ("ONELOOP_PASSWORD_MIN_LENGTH", "10"),
+                ("ONELOOP_ADMIN_PASSWORD_MIN_LENGTH", "8"),
+            ],
+            "ONELOOP_ADMIN_PASSWORD_MIN_LENGTH",
+        ),
+        (
+            vec![("ONELOOP_PASSWORD_BLOCKLIST", missing.to_str().unwrap())],
+            "ONELOOP_PASSWORD_BLOCKLIST",
+        ),
+        (
+            vec![("ONELOOP_PASSWORD_BLOCKLIST", oversized.to_str().unwrap())],
+            "ONELOOP_PASSWORD_BLOCKLIST",
+        ),
+    ]
+    .into_iter()
+    .chain(["0d", "2w", "366d", "7", "8760h1", "-1d"].map(|value| {
+        (
+            vec![("ONELOOP_TEMPORARY_PASSWORD_LIFETIME", value)],
+            "ONELOOP_TEMPORARY_PASSWORD_LIFETIME",
+        )
+    })) {
+        let error = password_policy_from_os_iter(environment(&entries)).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains(variable), "{entries:?}: {error}");
+    }
+}

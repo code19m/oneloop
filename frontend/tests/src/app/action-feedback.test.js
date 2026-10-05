@@ -62,6 +62,15 @@ test('credential and prefix failures point to the field that can be corrected',(
   assert.equal(formFieldName('currentPassword'),'cur');
 });
 
+test('password rules and expired temporary passwords show what to do',()=>{
+  assert.deepEqual(actionErrorFeedback(new ApiError('invalid password: Use at least 12 characters.',{status:400,code:'validation_failed',details:{field:'password',message:'Use at least 12 characters.'}})),
+    {silent:false,field:'password',message:'Use at least 12 characters.'});
+  assert.equal(actionErrorFeedback(new ApiError('invalid password: This password is too easy to guess. Choose another one.',{status:400,code:'validation_failed'})).message,
+    'This password is too easy to guess. Choose another one.');
+  assert.deepEqual(actionErrorFeedback(new ApiError('This temporary password has expired. Ask an admin to reset it.',{status:401,code:'temporary_password_expired'})),
+    {silent:false,field:'password',message:'This temporary password has expired. Ask an admin to reset it.'});
+});
+
 test('access and unexpected errors use safe copy while keeping a server reference',()=>{
   assert.equal(actionErrorFeedback(new ApiError('you do not have permission to perform this action',{status:403,code:'forbidden'})).message,
     'You do not have permission to make this change.');
