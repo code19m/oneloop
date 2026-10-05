@@ -368,7 +368,10 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
 .rm-axis .rail-cell { z-index: 6; box-shadow: none; }
 
-.lane { display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); }
+/* Lanes far outside the view skip style, layout and paint, so a zoom step
+   costs what is near the view. That makes a lane a stacking context, so it
+   sits above the milestone and today lines (z-index 1), as its bars did. */
+.lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
 .lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
 .lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
 .lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
