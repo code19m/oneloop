@@ -1,7 +1,7 @@
 // views/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle } = require('../support/dom.cjs');
+const { bootApp, settle, waitFor } = require('../support/dom.cjs');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
 const { createRecoveryController } = require('../../src/features/recovery/controller.js');
 const { ApiError } = require('../../src/data/api-client.js');
@@ -390,4 +390,26 @@ test('the feed checks posting permission once and indexes people once', () => {
   project.members.splice(project.members.indexOf(membership), 1); assert.equal(w.Collab.canComment(task), false);
   project.members.push(membership); assert.equal(w.Collab.canComment(task), true);
   actor.active = false; assert.equal(w.Collab.canComment(task), false);
+});
+
+test('a deleted comment offers Undo, which brings its text back',async()=>{
+ const requests=[];
+ const t=productionComments({execute:async(operation,payload,options)=>{
+  requests.push([operation,payload.commentId,options.expectedRevision]);
+  const deleted=operation==='discussion.comment.delete';
+  Object.assign(t.comment,{content:deleted?null:'Original',deletedAt:deleted?1700000100:null,revision:options.expectedRevision+1});
+  return {entities:[{...t.comment}],events:[]};
+ }});
+ await settle();
+ try{
+  t.A.deleteComment('BIR-079','comment-1');
+  assert.match(t.d.querySelector('#confirmation-description').textContent,/You can undo this right after/);
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(()=>t.d.querySelector('#toast-region .toast-action'),'the deletion offers Undo');
+  assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').deleted,true);
+  t.d.querySelector('#toast-region .toast-action').click();
+  await waitFor(()=>t.d.querySelector('#toast-region').textContent.includes('Comment restored'),'the comment is restored');
+  assert.deepEqual(requests,[['discussion.comment.delete','comment-1',1],['discussion.comment.restore','comment-1',2]]);
+  assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').text,'Original');
+ }finally{t.controller.dispose();}
 });

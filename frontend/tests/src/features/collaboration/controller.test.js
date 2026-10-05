@@ -542,3 +542,22 @@ test('opening an Inbox item whose task was deleted keeps the Inbox and says so',
     assert.equal(inboxReads,1,'the Inbox reloads so the item shows as unavailable');
   }finally{t.controller.dispose();}
 });
+
+test('a restored comment replaces its tombstone and tells the task page',async()=>{
+  const restored=[];
+  const t=fixture({facade:{commentRestored:(...args)=>restored.push(args)}});
+  const task=t.data.tasks[0];
+  task.comments.push({id:'c3',deleted:true,deletedAt:40000,text:'',revision:2});
+  t.transport.commands.execute=async(...args)=>{t.commandCalls.push(args);return {entities:[{id:'c3',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c3',replyToId:null,content:'Back again',mentions:[],createdAt:30,editedAt:null,deletedAt:null,revision:3}],events:[{id:'a3'}],replayed:false};};
+  assert.equal(await t.controller.restoreComment({task,comment:task.comments[0]}),true);
+  assert.deepEqual(t.commandCalls[0].slice(0,2),['discussion.comment.restore',{commentId:'c3'}]);
+  assert.equal(t.commandCalls[0][2].expectedRevision,2);
+  assert.equal(task.comments[0].text,'Back again');assert.equal(task.comments[0].deleted,false);
+  assert.deepEqual(restored,[['ONE-101','c3']]);
+});
+
+test('activity names restores like the deletions they undo',()=>{
+  assert.equal(mapActivity({eventType:'task.restored'},[]).text,'restored the task');
+  assert.equal(mapActivity({eventType:'comment.restored'},[]).text,'restored a comment');
+  assert.equal(mapActivity({eventType:'attachment.restored',metadata:{name:'plan.pdf'}},[]).text,'restored attachment: plan.pdf');
+});

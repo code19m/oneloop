@@ -1712,3 +1712,92 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
         "not_found",
     );
 }
+
+#[tokio::test]
+async fn undo_for_deletions_stays_in_the_browser() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &[
+            "project_read",
+            "board_manage",
+            "roadmap_manage",
+            "discussion",
+            "destructive",
+        ],
+        &["project-1"],
+    )
+    .await;
+    let listed = mcp.request("tools/list", json!({})).await;
+    let offered = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|tool| {
+            tool["inputSchema"]["oneOf"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|variant| {
+            variant["properties"]["operation"]["const"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    assert!(!offered.iter().any(|operation| {
+        operation == "task.restore" || operation == "discussion.comment.restore"
+    }));
+
+    let task_id = create_protocol_task(&mut mcp, "project-1", "undo").await;
+    let comment = tool_value(
+        &mcp.call(
+            "execute_discussion_command",
+            json!({"operation":"discussion.comment.create","payload":{"taskId":task_id,"content":"Kept"},"idempotencyKey":"undo-comment"}),
+        )
+        .await,
+    );
+    let comment_id = comment["entities"][0]["id"].as_str().unwrap();
+    for (operation, payload) in [
+        ("discussion.comment.delete", json!({"commentId":comment_id})),
+        ("task.delete", json!({"id":task_id})),
+    ] {
+        tool_value(
+            &mcp.call(
+                "execute_destructive_command",
+                json!({"operation":operation,"payload":payload,"idempotencyKey":operation,"expectedRevision":1}),
+            )
+            .await,
+        );
+    }
+    for (tool, operation, payload) in [
+        (
+            "execute_work_command",
+            "task.restore",
+            json!({"id":task_id}),
+        ),
+        (
+            "execute_discussion_command",
+            "discussion.comment.restore",
+            json!({"commentId":comment_id}),
+        ),
+    ] {
+        assert_tool_error(
+            &mcp.call(
+                tool,
+                json!({"operation":operation,"payload":payload,"idempotencyKey":format!("{tool}-undo"),"expectedRevision":2}),
+            )
+            .await,
+            "only in the browser",
+        );
+        assert_tool_error(
+            &mcp.call(
+                "execute_destructive_command",
+                json!({"operation":operation,"payload":payload,"idempotencyKey":format!("{operation}-undo"),"expectedRevision":2}),
+            )
+            .await,
+            "unsupported destructive operation",
+        );
+    }
+}

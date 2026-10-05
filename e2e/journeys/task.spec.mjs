@@ -283,3 +283,22 @@ test('descriptions and comments take each paragraph\'s direction from its own te
   const description = await page.locator('#task-description').evaluate(element => getComputedStyle(element).unicodeBidi);
   expect(description).toBe('plaintext');
 });
+
+test('Undo brings a deleted task back to the Board', async ({ page, instance, allowedConsoleErrors }) => {
+  // A live read of the open task page can still be on its way when it is deleted.
+  allowedConsoleErrors.push(/404 .*\/api\/tasks\//);
+  const key = instance.projects[0].task.taskKey;
+  await openApp(page, instance);
+  await page.getByRole('button', { name: 'Task actions' }).click();
+  await page.locator('#action-menu').getByText('Delete task').click();
+  await expect(page.locator('#confirmation-description')).toContainText('You can undo this right after');
+  await page.locator('[data-confirm-accept]').click();
+  const deleted = page.locator('#toast-region .toast').filter({ hasText: `${key} deleted` });
+  await expect(deleted).toBeVisible();
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
+  await deleted.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.locator('#toast-region')).toContainText(`${key} restored`);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
+  await page.reload();
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
+});

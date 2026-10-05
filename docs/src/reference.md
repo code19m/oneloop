@@ -89,14 +89,18 @@ The storage limit covers uploaded files (attachments and avatars), their
 previews and unfinished uploads. The database doesn't count, and neither do
 Knowledge files, which oneloop keeps in the database.
 
-When usage reaches 80% of the limit, oneloop removes temporary attachments that
-nobody has opened for 24 hours, until usage is back at 70%. It also removes
-them, at any usage, when an upload would leave less free disk space than
-`ONELOOP_DISK_MIN_FREE`. It never removes other files by itself.
+When usage reaches 80% of the limit, oneloop removes all image thumbnails, then
+temporary attachments that nobody has opened for 24 hours, until usage is back
+at 70%. It also removes them, at any usage, when an upload would leave less
+free disk space than `ONELOOP_DISK_MIN_FREE`. It makes a thumbnail again when
+someone views the image, while usage stays under 80%. It never removes other
+files by itself.
 
 oneloop refuses an upload when the limit is reached, or when the upload would
 still leave less free disk space than `ONELOOP_DISK_MIN_FREE`. Space that
-running uploads and Knowledge downloads need counts as used.
+running uploads and Knowledge downloads need counts as used. A deleted file,
+or a file of a deleted task, still counts, as pending deletion, until oneloop
+removes it after the [Undo](user-guide.md#undo-a-deletion) window.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of
@@ -153,10 +157,24 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
-| Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
+| Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
+| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
 Text and Markdown previews need the whole file to be valid UTF-8 text.
+
+oneloop decodes one image at a time, and only an image that needs at most about
+192 MiB of memory to decode, with at most 8192 px per side and 128 MiB of
+pixels. That allows about 44 megapixels for a photo, 33 for an image with
+transparency, and 22 for a 16-bit PNG, or 16 with transparency. Some images
+need more memory to decode, so their limit is lower: about 32 megapixels for a
+progressive JPEG, or 22 when it keeps full colour detail; 24 for a lossless
+WebP; 18 for a progressive CMYK JPEG or a WebP with transparency; and 12 for an
+animated WebP. A larger avatar is refused.
+
+Tasks load the original file for other images, such as GIFs, and for images
+that oneloop can't read or that are over these limits. A new image has its
+thumbnail a moment after the upload.
 
 **Knowledge**
 
@@ -210,6 +228,7 @@ Some emoji count as two characters.
 | --- | --- |
 | `@everyone` | Once a minute per person in each project |
 | Archived Inbox items | Removed after 90 days; cannot be restored |
+| Undo of a deletion | Within 5 minutes; within about a minute after that, oneloop removes the deleted files and comment text |
 | Activity | Edits by one person to the same field within 5 minutes show as one entry. History is kept forever. |
 
 **AI assistants**

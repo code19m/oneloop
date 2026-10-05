@@ -13,7 +13,8 @@ pub(crate) use transfer::UploadDeadline;
 
 pub use models::*;
 pub(crate) use service::{
-    ConditionalRead, classify_bytes, file_etag, sanitized_html_preview, validate_original_name,
+    ConditionalRead, ThumbnailRead, classify_bytes, file_etag, sanitized_html_preview,
+    validate_original_name,
 };
 pub use service::{
     FileRead, FileRuntimeReport, FileService, LeasedFile, PendingAttachmentUpload, ReadMode,

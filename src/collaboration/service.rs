@@ -23,14 +23,17 @@ use crate::{
 
 use super::{
     ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationCommandResult,
-    CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentView, InboxBulkCommand,
-    InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionKind, MentionToken,
-    NotificationInput, record_activity_tx, snapshot_notification_tx,
+    CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
+    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionKind,
+    MentionToken, NotificationInput, record_activity_tx, snapshot_notification_tx,
 };
 
 use crate::access::enforce_broadcast_cooldown;
 pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const DEFAULT_PAGE_SIZE: usize = 50;
+/// Deleted comments whose text the Undo window no longer needs.
+const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
+    WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT 500";
 const MAX_PAGE_SIZE: usize = 100;
 const INBOX_FILTER_SQL: &str = "
     WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL
@@ -121,6 +124,7 @@ impl CollaborationService {
             "discussion.comment.create"
                 | "discussion.comment.edit"
                 | "discussion.comment.delete"
+                | "discussion.comment.restore"
                 | "inbox.markRead"
                 | "inbox.markUnread"
                 | "inbox.archive"
@@ -459,6 +463,29 @@ impl CollaborationService {
         }).await
     }
 
+    /// Removes the text and mentions of comments deleted longer ago than the
+    /// Undo window, at most 500 at a time. Returns how many it emptied.
+    pub async fn purge_deleted_comments(&self, now: i64) -> AppResult<u64> {
+        self.db
+            .delivery_transaction(move |tx| {
+                let cutoff = now.saturating_sub(crate::domain::UNDO_WINDOW_SECONDS);
+                let mut statement = tx.prepare(DELETED_COMMENT_TEXT_SQL)?;
+                let ids = statement
+                    .query_map([cutoff], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                drop(statement);
+                for id in &ids {
+                    tx.execute("DELETE FROM comment_mentions WHERE comment_id=?1", [id])?;
+                    tx.execute(
+                        "UPDATE comments SET content='',edited_at=NULL WHERE id=?1",
+                        [id],
+                    )?;
+                }
+                Ok(ids.len() as u64)
+            })
+            .await
+    }
+
     pub async fn purge_archived(&self, now: i64) -> AppResult<u64> {
         self.db.delivery_transaction(move |connection| {
             let cutoff = now.saturating_sub(ARCHIVE_RETENTION_SECONDS);
@@ -520,6 +547,13 @@ fn dispatch(
             now,
         ),
         "discussion.comment.delete" => delete_comment(
+            tx,
+            actor,
+            parse_payload(&command.payload)?,
+            required_revision(command)?,
+            now,
+        ),
+        "discussion.comment.restore" => restore_comment(
             tx,
             actor,
             parse_payload(&command.payload)?,
@@ -617,7 +651,10 @@ fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentV
         .ok_or(AppError::NotFound {
             resource: "comment",
         })?;
-    view.mentions = load_mentions_tx(tx, comment_id)?;
+    // A deleted comment keeps its mentions only for a restore.
+    if view.deleted_at.is_none() {
+        view.mentions = load_mentions_tx(tx, comment_id)?;
+    }
     Ok(view)
 }
 
@@ -651,7 +688,11 @@ fn comment_page_context(
             context.push(view);
         }
     }
-    for item in items.iter_mut().chain(context.iter_mut()) {
+    for item in items
+        .iter_mut()
+        .chain(context.iter_mut())
+        .filter(|item| item.deleted_at.is_none())
+    {
         item.mentions = load_mentions_connection(connection, &item.id)?;
     }
     let mut reply_counts = std::collections::BTreeMap::new();
@@ -856,7 +897,7 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound { resource: "task" })?;
             require_participation(tx, actor, &project_id)
         }
-        "discussion.comment.edit" | "discussion.comment.delete" => {
+        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore" => {
             let comment_id = command
                 .payload
                 .get("commentId")
@@ -873,7 +914,7 @@ fn authorize_replay(
                     resource: "comment",
                 })?;
             require_participation(tx, actor, &project_id)?;
-            if command.operation == "discussion.comment.delete" {
+            if command.operation != "discussion.comment.edit" {
                 require_mcp_scope_connection(tx, actor, "destructive", Some(&project_id))?;
             }
             require_comment_owner_or_admin(tx, actor, &author_id)
@@ -1065,7 +1106,7 @@ fn required_revision(command: &CollaborationCommand) -> AppResult<i64> {
 fn validate_revision_contract(command: &CollaborationCommand) -> AppResult<()> {
     let needs_revision = matches!(
         command.operation.as_str(),
-        "discussion.comment.edit" | "discussion.comment.delete"
+        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore"
     );
     if needs_revision && command.expected_revision.is_none() {
         return Err(AppError::validation("expectedRevision", "is required"));

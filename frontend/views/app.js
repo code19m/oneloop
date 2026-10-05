@@ -361,7 +361,14 @@
       const message = document.createElement('div'); message.className = 'toast-message'; message.textContent = toast.text;
       const close = document.createElement('button'); close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Dismiss notification'); setHTML(close,I.close);
       close.addEventListener('click', () => dismissToast(toast.id));
-      el.append(icon, message, close); stack.append(el); toast.el = el; added.add(toast.id); visible++;
+      el.append(icon, message);
+      if (toast.action) {
+        // The action runs once, and the message goes with it.
+        const action = document.createElement('button'); action.type = 'button'; action.className = 'btn toast-action'; action.textContent = toast.action.label;
+        action.addEventListener('click', () => { const run = toast.action.run; dismissToast(toast.id); run(); }, { once: true });
+        el.append(action);
+      }
+      el.append(close); stack.append(el); toast.el = el; added.add(toast.id); visible++;
       announce(toast.text, toast.kind === 'error' ? 'assertive' : 'polite');
       startToastTimer(toast);
     }
@@ -375,14 +382,17 @@
       }
     });
   }
-  function pushToast(text, kind = 'success') {
+  /** `action` adds a button, such as Undo, that runs `action.run` once. */
+  function pushToast(text, kind = 'success', { action = null } = {}) {
     const message = cleanStr(text, 500);
     if (!message) return null;
     if (!['success','error','info'].includes(kind)) kind = 'info';
-    const lifetime = Math.max(kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
-    const existing = toastQueue.find(toast => toast.kind === kind && toast.text === message);
+    action = typeof action?.run === 'function' ? { label: cleanStr(action.label, 40) || 'Undo', run: action.run } : null;
+    const lifetime = Math.max(action ? 10000 : kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
+    // Each action belongs to its own change, so those messages never merge.
+    const existing = !action && toastQueue.find(toast => !toast.action && toast.kind === kind && toast.text === message);
     if (existing) { existing.remaining = lifetime; startToastTimer(existing); return existing.id; }
-    const toast = { id: String(++toastSequence), text: message, kind, remaining: lifetime, timer:null, el:null, restoreFocus:document.activeElement };
+    const toast = { id: String(++toastSequence), text: message, kind, action, remaining: lifetime, timer:null, el:null, restoreFocus:document.activeElement };
     toastQueue.push(toast); showQueuedToasts(); return toast.id;
   }
   function dismissToast(id) {

@@ -52,6 +52,10 @@ pub struct AttachmentView {
     pub preview_kind: Option<PreviewKind>,
     pub download_url: Option<String>,
     pub content_url: Option<String>,
+    /// A small preview of a PNG, JPEG or WebP image. It serves the original
+    /// until the thumbnail is ready, or when one can't be made.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
     pub source_url: Option<String>,
     pub html_preview_url: Option<String>,
 }
@@ -78,6 +82,14 @@ pub struct AttachmentReorder {
     pub target_id: String,
     #[serde(default)]
     pub after: bool,
+    pub expected_revision: i64,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentRestore {
+    /// The revision that the deletion left.
     pub expected_revision: i64,
     pub idempotency_key: String,
 }

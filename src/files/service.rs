@@ -4,9 +4,12 @@ mod detect;
 use detect::preview_kind_from_metadata;
 pub(crate) use detect::validate_original_name;
 mod avatar;
+mod decode;
 mod maintenance;
 mod read;
 pub use read::ReadMode;
+mod thumbnail;
+pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
 
 use super::BlobState;
@@ -36,11 +39,12 @@ use crate::{
     auth::{Actor, ActorSource},
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
     db::DataLease,
+    domain::UNDO_WINDOW_SECONDS,
 };
 
 use super::{
-    ACCESS_GRACE_SECONDS, AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentView,
-    FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_TASK,
+    ACCESS_GRACE_SECONDS, AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore,
+    AttachmentView, FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_TASK,
     MAX_AVATAR_BYTES, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
     StorageCleanupRun, StorageProjectUsage, StorageUsage, StoredFile, UPLOAD_RESERVATION_SECONDS,
 };
@@ -50,8 +54,6 @@ const CLEANUP_LOW_PERCENT: u64 = 70;
 
 const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
 const AVATAR_SIDE: u32 = 256;
-const AVATAR_MAX_DIMENSION: u32 = 8192;
-const AVATAR_MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const FILE_MAINTENANCE_LOCK_FILE: &str = ".oneloop-files.lock";
 
 #[derive(Clone)]
@@ -60,6 +62,7 @@ pub struct FileService {
     store: FileStore,
     storage_limit_bytes: u64,
     disk: DiskAdmission,
+    thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -251,6 +254,7 @@ impl FileService {
             store,
             storage_limit_bytes,
             disk,
+            thumbnails: Default::default(),
         }
     }
 
@@ -494,6 +498,8 @@ impl FileService {
         Ok(list)
     }
 
+    /// Deletes an attachment for the Undo window: reads hide it at once, and
+    /// file maintenance removes its bytes and metadata after the window.
     pub async fn delete_attachment(
         &self,
         actor: &Actor,
@@ -505,10 +511,9 @@ impl FileService {
             return Err(AppError::validation("expectedRevision", "must be positive"));
         }
         validate_idempotency_key(idempotency_key)?;
-        let _lease = self.db.acquire_data_lease().await?;
-        let actor_owned = actor.clone();
-        let attachment_id_owned = attachment_id.to_owned();
-        let key_owned = idempotency_key.to_owned();
+        let actor = actor.clone();
+        let attachment_id = attachment_id.to_owned();
+        let key = idempotency_key.to_owned();
         let request_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(
                 &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
@@ -516,125 +521,183 @@ impl FileService {
             .expect("serializable delete hash"),
         ));
         let idempotency_id = Uuid::now_v7().to_string();
-        enum DeleteStart {
-            Done,
-            Pending {
-                stored: Box<StoredFile>,
-                storage_key: String,
-                job_id: String,
-                idempotency_id: String,
-            },
-        }
-        let start = self
-            .db
-            .transaction(move |tx| {
-                let now = unix_now()?;
-                if let Some(replay)=delete_idempotency_replay(tx,&actor_owned,&key_owned,&request_hash)?{
-                    require_file_access_tx(tx,&actor_owned,&replay.0,false,true,now)?;
-                    return Ok(DeleteStart::Done);
-                }
-                let stored = attachment_by_id(tx, &attachment_id_owned)?;
-                require_file_access_tx(
-                    tx,
-                    &actor_owned,
-                    &stored.attachment.project_id,
-                    true,
-                    true,
-                    now,
-                )?;
-                if stored.attachment.revision != expected_revision {
-                    return Err(AppError::revision(expected_revision, stored.attachment.revision));
-                }
-                let actual_id=upsert_running_idempotency(tx,&actor_owned,&idempotency_id,&key_owned,"attachment.delete",&request_hash,now)?;
-                let leased: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",
-                    params![stored.blob_id, now],
-                    |row| row.get(0),
-                )?;
-                if leased {
-                    return Err(AppError::Conflict(
-                        "the attachment is currently being transferred; retry shortly".into(),
-                    ));
-                }
-                let response = json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string();
-                let Some(storage_key) = stored.storage_key.as_deref() else {
-                    // Cleaned files have no bytes to unlink, so their deletion,
-                    // audit record and receipt complete in this transaction.
-                    let removed = tx.execute("DELETE FROM task_attachments WHERE id=?1", [&attachment_id_owned])?;
-                    tx.execute("DELETE FROM file_blobs WHERE id=?1", [&stored.blob_id])?;
-                    if removed > 0 {
-                        record_attachment_deletion(tx, &DeleteActivityContext {
-                            id: attachment_id_owned.clone(), project_id: Some(stored.attachment.project_id.clone()),
-                            task_id: Some(stored.attachment.task_id.clone()), name: stored.attachment.name.clone(),
-                        }, Some(&actor_owned), now)?;
-                    }
-                    crate::idempotency::succeed(tx, &actual_id, crate::idempotency::Receipt {
-                        status: 204, response: &response,
-                        resource_type: Some("attachment"), resource_id: Some(&attachment_id_owned),
-                        project_id: Some(&stored.attachment.project_id),
-                    }, now)?;
-                    return Ok(DeleteStart::Done);
-                };
-                tx.execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [&stored.blob_id])?;
-                tx.execute("INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
-                    VALUES(?1,?2,?3,'manual',?4,?4)", params![Uuid::now_v7().to_string(), stored.blob_id, storage_key, now])?;
-                let job_id: String = tx.query_row("SELECT id FROM file_deletion_jobs WHERE blob_id=?1", [&stored.blob_id], |r| r.get(0))?;
-                // Freeze the first deleting actor. A retry must not replace it.
-                // A previously queued cleanup becomes a manual deletion.
-                tx.execute("UPDATE file_deletion_jobs SET reason='manual',actor_user_id=?2,actor_mcp_grant_id=?3,
-                    actor_name=?4,project_id=?5,task_id=?6,attachment_id=?7,attachment_name=?8
-                    WHERE id=?1 AND attachment_id IS NULL",
-                    params![job_id, actor_owned.user_id, actor_owned.mcp_grant_id(), actor_owned.display_name,
-                        stored.attachment.project_id, stored.attachment.task_id, stored.attachment.id, stored.attachment.name])?;
-
-                tx.execute(
-                    "UPDATE idempotency_keys SET resource_type='attachment',resource_id=?1,response_json=?2
-                     WHERE id=?3",
-                    params![attachment_id_owned, response, actual_id],
-                )?;
-                let storage_key = storage_key.to_owned();
-                Ok(DeleteStart::Pending { stored: Box::new(stored), storage_key, job_id, idempotency_id: actual_id })
-            })
-            .await?;
-
-        let DeleteStart::Pending {
-            stored,
-            storage_key,
-            job_id,
-            idempotency_id,
-        } = start
-        else {
-            return Ok(());
-        };
-
-        let path = self.store.file_path(&storage_key)?;
-        if let Err(error) = self.store.remove_file_if_present(&path).await {
-            log_cleanup_failure(
-                self.record_deletion_failure(&job_id, &error.to_string())
-                    .await,
-            );
-            log_cleanup_failure(self.fail_idempotency(&idempotency_id).await);
-            return Err(AppError::Unavailable(
-                "attachment deletion is pending and will be retried".into(),
-            ));
-        }
-        FileStore::sync_deletion_parent(path).await?;
-
-        // If this fails, reconciliation finishes the job and the receipt.
-        let attachment_id = attachment_id.to_owned();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                finish_deletion_job(tx, &DeletionJob {
-                    id: job_id, blob_id: stored.blob_id.clone(), storage_key,
-                })?;
-                crate::idempotency::succeed(tx, &idempotency_id, crate::idempotency::Receipt {
-                    status: 204,
-                    response: &json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string(),
-                    resource_type: Some("attachment"), resource_id: Some(&attachment_id),
-                    project_id: Some(&stored.attachment.project_id),
-                }, now)?;
+                if let Some(replay) = delete_idempotency_replay(tx, &actor, &key, &request_hash)? {
+                    require_file_access_tx(tx, &actor, &replay.0, false, true, now)?;
+                    return Ok(());
+                }
+                let stored = attachment_by_id(tx, &attachment_id)?;
+                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                if stored.attachment.revision != expected_revision {
+                    return Err(AppError::revision(expected_revision, stored.attachment.revision));
+                }
+                if stored.attachment.state == BlobState::Deleting {
+                    // Cleanup, or a deletion from before Undo, is removing the bytes.
+                    return Err(AppError::Conflict(
+                        "the attachment is being removed; try again shortly".into(),
+                    ));
+                }
+                let actual_id = upsert_running_idempotency(
+                    tx,
+                    &actor,
+                    &idempotency_id,
+                    &key,
+                    "attachment.delete",
+                    &request_hash,
+                    now,
+                )?;
+                tx.execute(
+                    "UPDATE task_attachments SET deleted_at=?1,updated_at=?1,revision=revision+1
+                     WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
+                    params![now, attachment_id, expected_revision],
+                )?;
+                record_attachment_deletion(
+                    tx,
+                    &DeleteActivityContext {
+                        id: attachment_id.clone(),
+                        project_id: Some(stored.attachment.project_id.clone()),
+                        task_id: Some(stored.attachment.task_id.clone()),
+                        name: stored.attachment.name.clone(),
+                    },
+                    Some(&actor),
+                    now,
+                )?;
+                let response = json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string();
+                crate::idempotency::succeed(
+                    tx,
+                    &actual_id,
+                    crate::idempotency::Receipt {
+                        status: 204,
+                        response: &response,
+                        resource_type: Some("attachment"),
+                        resource_id: Some(&attachment_id),
+                        project_id: Some(&stored.attachment.project_id),
+                    },
+                    now,
+                )?;
                 Ok(())
+            })
+            .await
+    }
+
+    /// Undoes a deletion within the Undo window, for the people who could
+    /// delete the attachment. It returns to its place unless the files were
+    /// reordered since.
+    pub async fn restore_attachment(
+        &self,
+        actor: &Actor,
+        attachment_id: &str,
+        input: AttachmentRestore,
+    ) -> AppResult<AttachmentView> {
+        validate_idempotency_key(&input.idempotency_key)?;
+        if input.expected_revision < 1 {
+            return Err(AppError::validation("expectedRevision", "must be positive"));
+        }
+        let actor = actor.clone();
+        let attachment_id = attachment_id.to_owned();
+        let request_hash = hex::encode(Sha256::digest(
+            serde_json::to_vec(
+                &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
+            )
+            .expect("serializable restore hash"),
+        ));
+        let idempotency_id = Uuid::now_v7().to_string();
+        self.db
+            .transaction(move |tx| {
+                let now = unix_now()?;
+                if let Some(view) = idempotency_replay(
+                    tx,
+                    &actor,
+                    &input.idempotency_key,
+                    "attachment.restore",
+                    &request_hash,
+                )? {
+                    require_file_access_tx(tx, &actor, &view.project_id, false, true, now)?;
+                    return Ok(view);
+                }
+                let (stored, deleted_at) = attachment_with_deletion(tx, &attachment_id)?;
+                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                let Some(deleted_at) = deleted_at else {
+                    return Err(AppError::Conflict("the attachment is not deleted".into()));
+                };
+                if stored.attachment.revision != input.expected_revision {
+                    return Err(AppError::revision(
+                        input.expected_revision,
+                        stored.attachment.revision,
+                    ));
+                }
+                crate::domain::require_undo_window("attachment", deleted_at, now)?;
+                if stored.attachment.state == BlobState::Deleting {
+                    return Err(AppError::Conflict(
+                        "the attachment is being removed and can no longer be restored".into(),
+                    ));
+                }
+                let occupied: i64 = tx.query_row(
+                    "SELECT
+                       (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+                        WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
+                       (SELECT count(*) FROM upload_reservations
+                        WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
+                    params![stored.attachment.task_id, now],
+                    |row| row.get(0),
+                )?;
+                if stored.attachment.state == BlobState::Available
+                    && occupied >= MAX_ATTACHMENTS_PER_TASK
+                {
+                    return Err(AppError::Conflict(format!(
+                        "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
+                    )));
+                }
+                let actual_id = upsert_running_idempotency(
+                    tx,
+                    &actor,
+                    &idempotency_id,
+                    &input.idempotency_key,
+                    "attachment.restore",
+                    &request_hash,
+                    now,
+                )?;
+                let revision = input.expected_revision + 1;
+                tx.execute(
+                    "UPDATE task_attachments SET deleted_at=NULL,updated_at=?1,revision=?2
+                     WHERE id=?3 AND revision=?4 AND deleted_at IS NOT NULL",
+                    params![now, revision, attachment_id, input.expected_revision],
+                )?;
+                record_activity_tx(
+                    tx,
+                    &actor,
+                    ActivityInput {
+                        project_id: Some(&stored.attachment.project_id),
+                        entity_type: "attachment",
+                        entity_id: &attachment_id,
+                        task_id: Some(&stored.attachment.task_id),
+                        event_type: "attachment.restored",
+                        field_key: None,
+                        before: None,
+                        after: Some(json!({"name": stored.attachment.name})),
+                        metadata: json!({"name": stored.attachment.name}),
+                        entity_revision: Some(revision),
+                    },
+                    now,
+                )?;
+                let view = attachment_by_id(tx, &attachment_id)?.attachment;
+                let response = serde_json::to_string(&view)
+                    .map_err(|error| AppError::internal(format!("serialize attachment: {error}")))?;
+                crate::idempotency::succeed(
+                    tx,
+                    &actual_id,
+                    crate::idempotency::Receipt {
+                        status: 200,
+                        response: &response,
+                        resource_type: Some("attachment"),
+                        resource_id: Some(&attachment_id),
+                        project_id: Some(&view.project_id),
+                    },
+                    now,
+                )?;
+                Ok(view)
             })
             .await
     }
@@ -724,6 +787,22 @@ fn attachment_by_id(connection: &rusqlite::Connection, id: &str) -> AppResult<St
             resource: "attachment",
         })
 }
+
+/// An attachment of a task that isn't deleted, with when it was deleted, if
+/// it was.
+fn attachment_with_deletion(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> AppResult<(StoredFile, Option<i64>)> {
+    connection
+        .query_row(SELECT_TASK_ATTACHMENTS_6_SQL, [id], |row| {
+            Ok((stored_file_row(row)?, row.get(16)?))
+        })
+        .optional()?
+        .ok_or(AppError::NotFound {
+            resource: "attachment",
+        })
+}
 fn attachment_views(
     connection: &rusqlite::Connection,
     task_id: &str,
@@ -731,7 +810,7 @@ fn attachment_views(
     let mut s=connection.prepare("SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
                      b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
                      b.state,a.revision,b.id,b.storage_key FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.task_id=?1 ORDER BY a.position,a.id")?;
+                     b.id=a.blob_id WHERE a.task_id=?1 AND a.deleted_at IS NULL ORDER BY a.position,a.id")?;
     Ok(s.query_map([task_id], stored_file_row)?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -747,6 +826,7 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
     let preview = preview_kind_from_metadata(&name, &media)
         .filter(|kind| *kind != PreviewKind::Html || size <= MAX_HTML_PREVIEW_BYTES);
     let available = state == BlobState::Available;
+    let thumbnail = available && thumbnail::makes_thumbnail(&media);
     Ok(StoredFile {
         attachment: AttachmentView {
             id: id.clone(),
@@ -768,6 +848,7 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
             content_url: (available
                 && matches!(preview, Some(PreviewKind::Image | PreviewKind::Pdf)))
             .then(|| format!("/api/attachments/{id}/content")),
+            thumbnail_url: thumbnail.then(|| format!("/api/attachments/{id}/thumbnail")),
             source_url: (available
                 && matches!(
                     preview,
@@ -1088,15 +1169,13 @@ fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
             "must be a PNG, JPEG or WebP image",
         ));
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(AVATAR_MAX_DIMENSION);
-    limits.max_image_height = Some(AVATAR_MAX_DIMENSION);
-    limits.max_alloc = Some(AVATAR_MAX_DECODE_BYTES);
-    reader.limits(limits);
-    let image = reader.decode().map_err(|_| {
-        AppError::validation("avatar", "image data is invalid or exceeds safe dimensions")
-    })?;
+    let (image, _) =
+        decode::decode_untrusted(Cursor::new(bytes), bytes.len() as u64).map_err(|_| {
+            AppError::validation(
+                "avatar",
+                "image data is invalid, or too large to process safely",
+            )
+        })?;
     let normalized = image
         .resize_to_fill(
             AVATAR_SIDE,
@@ -1227,12 +1306,14 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
 }
-static AVATAR_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+/// One image decode at a time, for avatar uploads and the thumbnail worker
+/// together, so their memory never adds up.
+static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        AVATAR_DECODE_PERMITS.acquire(),
+        IMAGE_DECODE_PERMITS.acquire(),
     )
     .await
     .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?
@@ -1313,11 +1394,13 @@ const SELECT_USERS_SQL: &str = "SELECT b.storage_key,b.size_bytes,b.checksum_sha
 const INSERT_FILE_LEASES_SQL: &str = "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at) VALUES(?1,?2,\
                      'preview',?3,?4,?5)";
 const SELECT_TASK_ATTACHMENTS_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.is_ephemeral=0 AND b.state='available'";
+                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=0 AND b.state='available' \
+                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
 const SELECT_TASK_ATTACHMENTS_2_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.is_ephemeral=1 AND b.state='available'";
+                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=1 AND b.state='available' \
+                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
 const SELECT_TASK_ATTACHMENTS_3_SQL: &str = "SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE \
-                     b.state='cleaned'";
+                     b.state='cleaned' AND a.deleted_at IS NULL";
 const UPDATE_FILE_DELETION_JOBS_SQL: &str = "UPDATE file_deletion_jobs SET attempt_count=attempt_count+1,\
                      available_at=unixepoch()+min(3600,30*(1<<min(attempt_count,7))),last_error=?1 WHERE id=?2";
 const INSERT_FILE_DELETION_JOBS_SQL: &str = "INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,\
@@ -1334,6 +1417,11 @@ const INSERT_TASK_ATTACHMENTS_SQL: &str = "INSERT INTO task_attachments(id,proje
 const SELECT_TASK_ATTACHMENTS_4_SQL: &str = "SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
                      b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
                      b.state,a.revision,b.id,b.storage_key FROM task_attachments a JOIN file_blobs b ON \
+                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.id=?1 AND t.deleted_at IS NULL \
+                     AND a.deleted_at IS NULL";
+const SELECT_TASK_ATTACHMENTS_6_SQL: &str = "SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
+                     b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
+                     b.state,a.revision,b.id,b.storage_key,a.deleted_at FROM task_attachments a JOIN file_blobs b ON \
                      b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.id=?1 AND t.deleted_at IS NULL";
 const SELECT_TASK_ATTACHMENTS_5_SQL: &str = "SELECT a.id,b.size_bytes FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id \
                      WHERE a.blob_id=?1";

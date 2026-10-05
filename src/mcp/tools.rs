@@ -22,6 +22,10 @@ use crate::{
     files::{AttachmentPatch, AttachmentReorder},
 };
 
+/// Restoring is the browser's Undo, offered right after a deletion. An
+/// assistant's deletions are confirmed by the person before they run.
+const UNDO_IS_BROWSER_ONLY: &str = "Undo for deletions is available only in the browser";
+
 #[derive(Clone)]
 pub struct OneloopMcp {
     state: AppState,
@@ -678,6 +682,9 @@ impl OneloopMcp {
                     None,
                 ));
             }
+            None if operation == DomainOperation::RestoreTask => {
+                return Err(ToolError::invalid_params(UNDO_IS_BROWSER_ONLY, None));
+            }
             None => {
                 return Err(ToolError::invalid_params(
                     "administrative operations are not exposed through MCP",
@@ -729,6 +736,9 @@ impl OneloopMcp {
                 "deletion must use execute_destructive_command",
                 None,
             ));
+        }
+        if input.operation == "discussion.comment.restore" {
+            return Err(ToolError::invalid_params(UNDO_IS_BROWSER_ONLY, None));
         }
         let actor = actor(&parts)?;
         let result = self
@@ -1325,6 +1335,7 @@ fn command_variants(tool: &str) -> Vec<Value> {
                 | DomainOperation::RemoveMembership => {
                     unreachable!("administration is excluded from MCP")
                 }
+                DomainOperation::RestoreTask => unreachable!("Undo is excluded from MCP"),
             };
             variants.push(command_variant(operation.as_str(), payload));
         }

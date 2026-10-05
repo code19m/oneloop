@@ -276,6 +276,7 @@ impl FileService {
                 preview_kind: Some(PreviewKind::Image),
                 download_url: None,
                 content_url: None,
+                thumbnail_url: None,
                 source_url: None,
                 html_preview_url: None,
             },

@@ -42,7 +42,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     );
     fs::create_dir(root.path().join("before")).unwrap();
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
-    assert_eq!(upgrade.applied, vec![3, 4]);
+    assert_eq!(upgrade.applied, vec![3, 4, 5]);
     let upgraded = Connection::open(live.join("oneloop.sqlite3")).unwrap();
     let done_order_index: bool = upgraded
         .query_row(
@@ -88,6 +88,171 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
         "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'",
         [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await.unwrap();
     assert_eq!(attribution, ("u".into(), "g".into(), "Original".into()));
+}
+
+/// Writes `bytes` where the original with a new storage key belongs.
+fn stored_original(store: &oneloop::files::FileStore, bytes: &[u8]) -> (String, String) {
+    let key = store.new_storage_key().unwrap();
+    let path = store.layout().files().join(&key);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, bytes).unwrap();
+    (key, hex::encode(Sha256::digest(bytes)))
+}
+
+#[tokio::test]
+async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
+    let root = support::scratch_dir();
+    let live = root.path().join("live");
+    fs::create_dir(&live).unwrap();
+    let connection = support::schema_three_database(&live);
+    let now = support::now();
+    connection.execute_batch(&format!("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Owner','hash',1,1,1);
+        INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('s','u','h',{now},{now},{now},{expiry},{expiry});
+        INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+        INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at) VALUES('p','u',1,1,1);
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('e','p','tr','Epic','2026-01-01',0,1,1);
+        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('t','p','e',1,'PRJ-001','Task','planning',0,1,1);
+        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('gone','p','e',2,'PRJ-002','Gone','planning',1024,1,1);", expiry = now + 3600)).unwrap();
+    let store = oneloop::files::FileStore::new(oneloop::db::DataLayout::new(&live));
+    for (attachment, task, blob, state, bytes) in [
+        ("kept", "t", "kept-blob", "available", b"kept".as_slice()),
+        (
+            "leaving",
+            "t",
+            "leaving-blob",
+            "deleting",
+            b"leaving".as_slice(),
+        ),
+        (
+            "orphaned",
+            "gone",
+            "orphaned-blob",
+            "available",
+            b"orphaned".as_slice(),
+        ),
+    ] {
+        let (key, checksum) = stored_original(&store, bytes);
+        connection.execute("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at) VALUES(?1,?2,?3,?4,'text/plain','available',1)",
+            params![blob, key, checksum, bytes.len() as i64]).unwrap();
+        connection.execute("INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,position,created_at,last_accessed_at,updated_at) VALUES(?1,'p',?2,?3,?4,'u',0,?5,1,1,1)",
+            params![attachment, task, blob, format!("{attachment}.txt"), attachment.len() as i64]).unwrap();
+        if state == "deleting" {
+            // A deletion that main started and couldn't finish yet.
+            connection
+                .execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [blob])
+                .unwrap();
+            connection.execute("INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,actor_user_id,actor_name,project_id,task_id,attachment_id,attachment_name)
+                VALUES('job',?1,?2,'manual',1,1,'u','Owner','p','t',?3,'leaving.txt')", params![blob, key, attachment]).unwrap();
+        }
+    }
+    // Deleted on main, long before the upgrade.
+    connection
+        .execute(
+            "UPDATE tasks SET deleted_at=1,revision=2 WHERE id='gone'",
+            [],
+        )
+        .unwrap();
+    // Deleted on main just before the upgrade: main emptied the text at once.
+    connection
+        .execute(
+            "INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at,deleted_at,revision)
+             VALUES('emptied','p','t','u','emptied','',1,?1,2)",
+            [now],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(
+        migrate(&live, None)
+            .unwrap_err()
+            .to_string()
+            .contains("--backup-dir")
+    );
+    fs::create_dir(root.path().join("before")).unwrap();
+    let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
+    assert_eq!(
+        (upgrade.previous_version, upgrade.applied.clone()),
+        (3, vec![4, 5])
+    );
+    assert_eq!(
+        validate_backup(upgrade.backup_path.unwrap())
+            .unwrap()
+            .schema_version,
+        3
+    );
+
+    let db = Db::open(&live).unwrap();
+    let files = oneloop::files::FileService::new(db.clone(), 100 * 1024 * 1024, 0);
+    oneloop::runtime::prepare_files(&files).await.unwrap();
+    // The interrupted deletion finishes as main would have finished it, and
+    // the files of the long-deleted task go.
+    let (deleted_by, attachments): (String, Vec<String>) = db
+        .run(|c| {
+            let deleted_by = c.query_row(
+                "SELECT actor_user_id FROM activity_events WHERE entity_id='leaving' AND event_type='attachment.deleted'",
+                [],
+                |r| r.get(0),
+            )?;
+            let mut statement = c.prepare("SELECT id FROM task_attachments ORDER BY id")?;
+            let attachments = statement
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            Ok((deleted_by, attachments))
+        })
+        .await
+        .unwrap();
+    assert_eq!(deleted_by, "u");
+    assert_eq!(attachments, ["kept"]);
+
+    // Undo works on the upgraded database.
+    let owner = support::browser_actor("u", "Owner", "s", now);
+    files
+        .delete_attachment(&owner, "kept", 1, "delete-kept")
+        .await
+        .unwrap();
+    let restored = files
+        .restore_attachment(
+            &owner,
+            "kept",
+            oneloop::files::AttachmentRestore {
+                expected_revision: 2,
+                idempotency_key: "undo-kept".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.revision, 3);
+    let restore_gone = oneloop::domain::DomainService::new(db.clone(), support::utc())
+        .execute(
+            &owner,
+            oneloop::domain::CommandEnvelope {
+                operation: oneloop::domain::DomainOperation::RestoreTask,
+                payload: serde_json::json!({"id":"gone"}),
+                idempotency_key: "undo-gone".into(),
+                expected_revision: Some(2),
+            },
+        )
+        .await;
+    assert!(
+        matches!(restore_gone, Err(AppError::PreconditionFailed(_))),
+        "{restore_gone:?}"
+    );
+    let restore_emptied = oneloop::collaboration::CollaborationService::new(db.clone())
+        .execute(
+            &owner,
+            oneloop::collaboration::CollaborationCommand {
+                operation: "discussion.comment.restore".into(),
+                payload: serde_json::json!({"commentId":"emptied"}),
+                idempotency_key: "undo-emptied".into(),
+                expected_revision: Some(2),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&restore_emptied, Err(AppError::PreconditionFailed(message)) if message.contains("text is gone")),
+        "{restore_emptied:?}"
+    );
 }
 
 #[tokio::test]

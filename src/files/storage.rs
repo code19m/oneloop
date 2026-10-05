@@ -7,6 +7,8 @@ use tokio::fs as async_fs;
 
 use crate::{AppError, AppResult, db::DataLayout};
 
+const THUMBNAIL_SUFFIX: &str = ".thumb";
+
 #[derive(Clone, Debug)]
 pub struct FileStore {
     layout: DataLayout,
@@ -23,6 +25,46 @@ impl FileStore {
 
     pub fn previews(&self) -> PathBuf {
         self.layout.root().join("previews")
+    }
+
+    /// An original's thumbnail, `previews/aa/bb/<key>.thumb`. Its path comes
+    /// from the original's storage key, so it needs no metadata of its own.
+    pub fn thumbnail_path(&self, key: &str) -> AppResult<PathBuf> {
+        validate_storage_key(key)?;
+        let previews = self.previews();
+        let path = previews.join(format!("{key}{THUMBNAIL_SUFFIX}"));
+        reject_symlink(&previews)?;
+        if let Some(parent) = path.parent() {
+            reject_symlink(parent)?;
+            if let Some(shard) = parent.parent() {
+                reject_symlink(shard)?;
+            }
+        }
+        reject_symlink(&path)?;
+        Ok(path)
+    }
+
+    pub async fn prepare_thumbnail_parent(&self, key: &str) -> AppResult<PathBuf> {
+        let destination = self.thumbnail_path(key)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| AppError::internal("generated thumbnail path has no parent"))?
+            .to_path_buf();
+        let directory = parent.clone();
+        tokio::task::spawn_blocking(move || crate::db::create_private_directories(&directory))
+            .await
+            .map_err(|error| AppError::internal(format!("directory worker failed: {error}")))??;
+        self.thumbnail_path(key)
+    }
+
+    /// The storage key of the original that `path` is the thumbnail of, if it
+    /// is a thumbnail at all.
+    pub(super) fn thumbnail_key(&self, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(self.previews()).ok()?.to_str()?;
+        let key = relative.replace('\\', "/");
+        let key = key.strip_suffix(THUMBNAIL_SUFFIX)?;
+        validate_storage_key(key).ok()?;
+        Some(key.to_owned())
     }
 
     pub async fn ensure_directories(&self) -> AppResult<()> {
@@ -207,6 +249,22 @@ mod tests {
     fn path_traversal_is_never_a_storage_key() {
         for value in ["../secret", "/etc/passwd", "aa/bb/../cc", "aa\\bb\\cc"] {
             assert!(validate_storage_key(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn only_thumbnails_of_valid_keys_map_back_to_their_original() {
+        let store = FileStore::new(DataLayout::new("data"));
+        let key = store.new_storage_key().unwrap();
+        let path = store.thumbnail_path(&key).unwrap();
+        assert_eq!(store.thumbnail_key(&path), Some(key.clone()));
+        for other in [
+            store.previews().join(format!("{key}.thumb.tmp")),
+            store.previews().join(&key),
+            store.previews().join("aa/bb/not-a-key.thumb"),
+            store.layout().files().join(format!("{key}.thumb")),
+        ] {
+            assert_eq!(store.thumbnail_key(&other), None, "{}", other.display());
         }
     }
 }

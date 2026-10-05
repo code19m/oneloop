@@ -450,3 +450,38 @@ test('a live re-read of attachments that lost access stays quiet', async () => {
   await waitFor(() => reads === 2, 'a live update reads them again'); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
 });
+
+test('image files show their thumbnail, or the original when there is none', async () => {
+  const image = (id, overrides) => ({ id, name: `${id}.png`, size: 5, mediaType: 'image/png', previewKind: 'image', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${id}`, downloadUrl: `/download/${id}`, ...overrides });
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: { attachments: async () => ({ items: [image('photo', { thumbnailUrl: '/thumbnail/photo' }), image('spinner', { mediaType: 'image/gif' })] }), uploadAttachment() {} }, subscribe: () => () => {} };
+  } });
+  await waitFor(() => t.d.querySelectorAll('.attachment-thumbnail img').length === 2, 'both images render');
+  assert.deepEqual([...t.d.querySelectorAll('.attachment-thumbnail img')].map(img => img.getAttribute('src')), ['/thumbnail/photo', '/content/spinner']);
+});
+
+test('a deleted file offers Undo, which restores it at the revision its deletion left', async () => {
+  const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 3, contentUrl: '/content', downloadUrl: '/download' };
+  let listed = [file];
+  const restores = [];
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: {
+      attachments: async () => ({ items: listed }),
+      deleteAttachment: async () => { listed = []; return {}; },
+      restoreAttachment: async (id, input) => { restores.push([id, input.expectedRevision, typeof input.idempotencyKey]); listed = [{ ...file, revision: 5 }]; return listed[0]; },
+      uploadAttachment() {},
+    }, subscribe: () => () => {} };
+  } });
+  const notices = []; t.A.toast = (text, kind, options) => notices.push({ text, kind, options });
+  await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
+  t.A.delAttachment('BIR-079', 0);
+  assert.match(t.d.querySelector('#confirmation-description').textContent, /undo this right after/);
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => notices.some(notice => notice.text === 'Attachment deleted'), 'the delete completes');
+  const deleted = notices.find(notice => notice.text === 'Attachment deleted');
+  assert.equal(deleted.options.action.label, 'Undo');
+  deleted.options.action.run();
+  await waitFor(() => notices.some(notice => notice.text === 'Attachment restored'), 'the restore completes');
+  assert.deepEqual(restores, [['f1', 4, 'string']]);
+  await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').attachments?.[0]?.revision === 5, 'the list is read again');
+});

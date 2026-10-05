@@ -1356,3 +1356,373 @@ async fn task_update_returns_and_replays_the_activated_epic() {
         .await
         .unwrap();
 }
+
+async fn planning_tasks(f: &Fixture, titles: &[&str]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for title in titles {
+        let created = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":title}),
+                    &format!("create-{title}"),
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        ids.push(created.entities[0]["id"].as_str().unwrap().to_owned());
+    }
+    ids
+}
+
+async fn planning_order(f: &Fixture) -> Vec<String> {
+    f.service
+        .board_page(&f.manager, board_query("planning", None))
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|task| task.title)
+        .collect()
+}
+
+#[tokio::test]
+async fn undo_brings_a_deleted_task_back_to_its_place() {
+    let f = fixture().await;
+    let ids = planning_tasks(&f, &["First", "Second", "Third"]).await;
+    let delete = command(
+        DomainOperation::DeleteTask,
+        json!({"id":ids[1]}),
+        "delete-second",
+        Some(1),
+    );
+    let deleted = f.service.execute(&f.manager, delete).await.unwrap();
+    assert_eq!(deleted.entities[0]["revision"], 2);
+    assert_eq!(planning_order(&f).await, ["First", "Third"]);
+
+    let restore = command(
+        DomainOperation::RestoreTask,
+        json!({"id":ids[1]}),
+        "restore-second",
+        Some(2),
+    );
+    let restored = f
+        .service
+        .execute(&f.manager, restore.clone())
+        .await
+        .unwrap();
+    assert_eq!(restored.entities[0]["id"], ids[1].as_str());
+    assert_eq!(restored.entities[0]["revision"], 3);
+    assert_eq!(restored.events[0].event_type, "task.restored");
+    assert_eq!(planning_order(&f).await, ["First", "Second", "Third"]);
+    let replay = f.service.execute(&f.manager, restore).await.unwrap();
+    assert!(replay.replayed);
+
+    // History keeps the deletion next to the restore.
+    let id = ids[1].clone();
+    let history: Vec<String> =
+        f.db.run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT event_type FROM activity_events WHERE entity_id=?1 ORDER BY created_at,id",
+            )?;
+            Ok(statement
+                .query_map([id], |row| row.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(history, ["task.created", "task.deleted", "task.restored"]);
+}
+
+#[tokio::test]
+async fn only_people_who_could_delete_a_task_restore_it_in_time() {
+    let f = fixture().await;
+    let ids = planning_tasks(&f, &["Kept"]).await;
+    let restore = |key: &str, revision| {
+        command(
+            DomainOperation::RestoreTask,
+            json!({"id":ids[0]}),
+            key,
+            Some(revision),
+        )
+    };
+    assert!(matches!(
+        f.service.execute(&f.manager, restore("live", 1)).await,
+        Err(AppError::Conflict(_))
+    ));
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::DeleteTask,
+                json!({"id":ids[0]}),
+                "delete-kept",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    // The member can read the project but not change the Board.
+    assert!(matches!(
+        f.service.execute(&f.member, restore("member", 2)).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        f.service.execute(&f.manager, restore("stale", 1)).await,
+        Err(AppError::RevisionConflict { .. })
+    ));
+    let id = ids[0].clone();
+    f.db.transaction(move |tx| {
+        tx.execute(
+            "UPDATE tasks SET deleted_at=deleted_at-?1 WHERE id=?2",
+            params![oneloop::domain::UNDO_WINDOW_SECONDS, id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let late = f.service.execute(&f.manager, restore("late", 2)).await;
+    assert!(
+        matches!(&late, Err(AppError::PreconditionFailed(message)) if message.contains("5 minutes")),
+        "{late:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_restored_task_goes_last_when_its_place_was_taken() {
+    let f = fixture().await;
+    let ids = planning_tasks(&f, &["First", "Second", "Third"]).await;
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::DeleteTask,
+                json!({"id":ids[0]}),
+                "delete-first",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    // Moving a card to the top takes the deleted card's exact position.
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":ids[2],"status":"planning","position":0}),
+                "third-first",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let positions: Vec<i64> =
+        f.db.run(|connection| {
+            let mut statement = connection
+                .prepare("SELECT position FROM tasks WHERE title IN ('First','Third')")?;
+            Ok(statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(positions[0], positions[1]);
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":ids[0]}),
+                "restore-first",
+                Some(2),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(planning_order(&f).await, ["Third", "Second", "First"]);
+}
+
+#[tokio::test]
+async fn a_restored_task_drops_assignees_who_left_the_project() {
+    let f = fixture().await;
+    let mut ids = Vec::new();
+    for (title, key) in [
+        ("Open work", "open-assigned"),
+        ("Finished work", "done-assigned"),
+    ] {
+        let task = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":title,"assigneeIds":["u3"]}),
+                    key,
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        ids.push(task.entities[0]["id"].as_str().unwrap().to_owned());
+    }
+    for (operation, payload, key, revision) in [
+        (
+            DomainOperation::MoveTask,
+            json!({"taskId":ids[1],"status":"done"}),
+            "finish-assigned",
+            1,
+        ),
+        (
+            DomainOperation::DeleteTask,
+            json!({"id":ids[0]}),
+            "delete-open",
+            1,
+        ),
+        (
+            DomainOperation::DeleteTask,
+            json!({"id":ids[1]}),
+            "delete-done",
+            2,
+        ),
+    ] {
+        f.service
+            .execute(&f.manager, command(operation, payload, key, Some(revision)))
+            .await
+            .unwrap();
+    }
+    // The check for unfinished tasks skips deleted ones, so the person can
+    // leave the project during the Undo window.
+    f.service
+        .execute(
+            &f.admin,
+            command(
+                DomainOperation::RemoveMembership,
+                json!({"projectId":"p1","userId":"u3"}),
+                "remove-assignee",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let open = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":ids[0]}),
+                "restore-open",
+                Some(2),
+            ),
+        )
+        .await
+        .unwrap();
+    let events: Vec<_> = open
+        .events
+        .iter()
+        .map(|event| (event.event_type.as_str(), event.before.clone()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("task.restored", None),
+            ("task.assignee.removed", Some(json!("u3")))
+        ]
+    );
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":ids[1]}),
+                "restore-done",
+                Some(3),
+            ),
+        )
+        .await
+        .unwrap();
+    let assignees: Vec<(String, String)> =
+        f.db.run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT t.title,a.user_id FROM task_assignees a JOIN tasks t ON t.id=a.task_id
+                 WHERE t.title IN ('Open work','Finished work')",
+            )?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    // A Done task keeps them, as it does when someone leaves.
+    assert_eq!(assignees, [("Finished work".to_owned(), "u3".to_owned())]);
+}
+
+#[tokio::test]
+async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
+    let f = fixture().await;
+    let epic = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateEpic,
+                json!({"projectId":"p1","trackId":"tr1","title":"Short","startDate":"2026-01-01"}),
+                "short-epic",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let epic_id = epic.entities[0]["id"].as_str().unwrap();
+    let task = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":epic_id,"title":"Orphan"}),
+                "orphan-task",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let task_id = task.entities[0]["id"].as_str().unwrap();
+    for (operation, payload, key) in [
+        (
+            DomainOperation::DeleteTask,
+            json!({"id":task_id}),
+            "delete-orphan",
+        ),
+        (
+            DomainOperation::DeleteEpic,
+            json!({"id":epic_id}),
+            "delete-short",
+        ),
+    ] {
+        f.service
+            .execute(&f.manager, command(operation, payload, key, Some(1)))
+            .await
+            .unwrap();
+    }
+    let restore = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":task_id}),
+                "restore-orphan",
+                Some(2),
+            ),
+        )
+        .await;
+    assert!(
+        matches!(&restore, Err(AppError::PreconditionFailed(message)) if message.contains("epic")),
+        "{restore:?}"
+    );
+}

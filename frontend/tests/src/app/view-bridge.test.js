@@ -673,3 +673,20 @@ test('a value typed while a failing save ran is the one kept as Not saved',async
   assert.equal(state.requests.length,1,'the newer value waits for the connection');
   assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Second text',unsaved:true});
 });
+
+test('a deleted task offers Undo, which restores it at the revision its deletion left',async()=>{
+  const commands=[];let confirmation;
+  const gateway={execute:async(operation,payload,input)=>{commands.push([operation,payload,input.expectedRevision]);return operation==='task.delete'?{entities:[{entityType:'task',id:'t1',projectId:'p1',deleted:true,revision:4}],events:[]}:{entities:[],events:[]};}};
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,app:{confirm(options){confirmation=options;}}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3});
+  state.app.deleteTask('ONE-1');
+  assert.match(confirmation.text,/You can undo this right after/);
+  confirmation.confirm();
+  for(let turn=0;turn<20&&!state.toasts.length;turn++)await new Promise(setImmediate);
+  const [text,kind,options]=state.toasts.at(-1);
+  assert.deepEqual([text,kind,options.action.label],['ONE-1 deleted','success','Undo']);
+  options.action.run();
+  for(let turn=0;turn<20&&state.toasts.length<2;turn++)await new Promise(setImmediate);
+  assert.deepEqual(commands,[['task.delete',{id:'t1'},3],['task.restore',{id:'t1'},4]]);
+  assert.deepEqual(state.toasts.at(-1),['ONE-1 restored']);
+});

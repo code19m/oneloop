@@ -6,6 +6,10 @@ Before your team uses oneloop, set up three things:
 2. **A service** that starts oneloop automatically and restarts it after a crash.
 3. **Nightly backups**, as described in [Backups and upgrades](backups-and-upgrades.md).
 
+Give oneloop at least 512 MB of memory. It uses about 50 MiB when idle, and up
+to about 200 MiB more while it decodes an image for a thumbnail or an avatar,
+one image at a time.
+
 ## HTTPS with a reverse proxy
 
 oneloop serves plain HTTP and leaves certificates to the proxy. It accepts an

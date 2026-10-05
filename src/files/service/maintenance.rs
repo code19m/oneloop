@@ -105,11 +105,16 @@ impl FileService {
                 Ok(s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
             })
             .await?;
+        let orphan_thumbnails = self.orphan_thumbnail_candidates(&referenced).await?;
         // Scan without blocking publication. Only apparent orphans need the gate;
         // their reference is rechecked under it before unlinking, so an upload
         // committed after the snapshot is never mistaken for an orphan.
         for path in unreferenced_files(self.store.layout().files(), referenced).await? {
             report.orphan_files_removed += u64::from(self.remove_if_unreferenced(&path).await?);
+        }
+        for path in orphan_thumbnails {
+            report.orphan_files_removed +=
+                u64::from(self.remove_thumbnail_if_orphaned(&path).await?);
         }
         let active_staging: HashSet<String> = self
             .db
@@ -216,7 +221,7 @@ impl FileService {
                 Ok(connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
                      WHERE a.is_ephemeral=1 AND a.last_accessed_at<=?1 AND a.created_at<=?1
-                       AND b.state='available'
+                       AND b.state='available' AND a.deleted_at IS NULL
                        AND NOT EXISTS(SELECT 1 FROM file_leases l WHERE l.blob_id=b.id AND l.expires_at>?2))",
                     params![now-ACCESS_GRACE_SECONDS,now], |r| r.get::<_,bool>(0))?)
             }).await?;
@@ -247,8 +252,14 @@ impl FileService {
                     connection.query_row(SELECT_TASK_ATTACHMENTS_SQL, [], |r| r.get(0))?;
                 let temporary: i64 =
                     connection.query_row(SELECT_TASK_ATTACHMENTS_2_SQL, [], |r| r.get(0))?;
+                // Deleted attachments, and the files of deleted tasks, keep
+                // their bytes for the Undo window.
                 let pending_deletion: i64 = connection.query_row(
-                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state='deleting'",
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM file_blobs b WHERE b.state='deleting'
+                       OR (b.state='available' AND EXISTS(SELECT 1 FROM task_attachments a
+                           JOIN tasks t ON t.id=a.task_id
+                           WHERE a.blob_id=b.id
+                             AND (a.deleted_at IS NOT NULL OR t.deleted_at IS NOT NULL)))",
                     [],
                     |r| r.get(0),
                 )?;
@@ -358,7 +369,7 @@ impl FileService {
             let mut statement = connection.prepare(
                 "SELECT a.blob_id,b.storage_key,b.size_bytes,a.revision FROM task_attachments a
                  JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE a.is_ephemeral=1 AND b.state='available'
+                 WHERE a.is_ephemeral=1 AND b.state='available' AND a.deleted_at IS NULL
                    AND a.created_at<=?1 AND a.last_accessed_at<=?1
                    AND NOT EXISTS(SELECT 1 FROM file_leases l WHERE l.blob_id=b.id AND l.expires_at>?2)
                  ORDER BY a.last_accessed_at,a.id")?;
@@ -438,7 +449,7 @@ impl FileService {
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1 AND state='available'
                          AND EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=?1
                            AND a.is_ephemeral=1 AND a.created_at<=?2 AND a.last_accessed_at<=?2
-                           AND a.revision=?4)
+                           AND a.revision=?4 AND a.deleted_at IS NULL)
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?3)",
                         params![blob, now-ACCESS_GRACE_SECONDS, now, revision])?;
                     if changed == 0 { continue; }
@@ -457,6 +468,7 @@ impl FileService {
                 let path = self.store.file_path(&job.storage_key)?;
                 match self.store.remove_file_if_present(&path).await {
                     Ok(()) => {
+                        self.remove_thumbnail(&job.storage_key).await;
                         parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
                         removed.push((job, size));
                     }
@@ -600,19 +612,6 @@ impl FileService {
             .await
     }
 
-    pub(super) async fn fail_idempotency(&self, id: &str) -> AppResult<()> {
-        let id = id.to_owned();
-        self.db
-            .transaction(move |connection| {
-                connection.execute(
-                    "UPDATE idempotency_keys SET state='failed',updated_at=unixepoch() WHERE id=?1 AND state!='succeeded'",
-                    [id],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     pub(super) async fn schedule_blob_deletion(
         &self,
         blob_id: &str,
@@ -646,6 +645,26 @@ impl FileService {
     }
 
     pub(super) async fn schedule_deleted_parent_files(&self) -> AppResult<()> {
+        // A deleted task or attachment keeps its files for the Undo window.
+        let restorable_after = unix_now()? - UNDO_WINDOW_SECONDS;
+        // A deleted attachment without bytes only needs its row removed.
+        loop {
+            let removed = self
+                .db
+                .transaction(move |tx| {
+                    Ok(tx.execute(
+                        "DELETE FROM task_attachments WHERE id IN (
+                    SELECT a.id FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+                    WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='cleaned'
+                    LIMIT 500)",
+                        [restorable_after],
+                    )?)
+                })
+                .await?;
+            if removed < 500 {
+                break;
+            }
+        }
         // Retain cleaned attachment rows while referenced, but reclaim metadata
         // once a hard-deleted task/project has removed the final owner.
         loop {
@@ -668,14 +687,28 @@ impl FileService {
                 break;
             }
         }
-        let rows = self
-            .db
-            .run(|connection| {
+        let candidates = self.deletion_candidates(restorable_after).await?;
+        self.claim_for_deletion(candidates).await
+    }
+
+    /// The available files of tasks and attachments deleted before
+    /// `restorable_after`, and files that nothing refers to: their blob, key
+    /// and deletion reason.
+    pub(super) async fn deletion_candidates(
+        &self,
+        restorable_after: i64,
+    ) -> AppResult<Vec<(String, String, String)>> {
+        self.db
+            .run(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT b.id,b.storage_key,'manual' FROM tasks t
                  CROSS JOIN task_attachments a ON a.task_id=t.id
                  JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE t.deleted_at IS NOT NULL AND b.state='available'
+                 WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
+                 UNION ALL
+                 SELECT b.id,b.storage_key,'manual' FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id
+                 WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
                  UNION ALL
                  SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
                  WHERE b.state='available'
@@ -683,7 +716,7 @@ impl FileService {
                    AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)",
                 )?;
                 Ok(statement
-                    .query_map([], |row| {
+                    .query_map([restorable_after], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -692,20 +725,32 @@ impl FileService {
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
-            .await?;
-        for batch in rows.chunks(500) {
+            .await
+    }
+
+    /// Hands candidates from an earlier scan to deletion jobs, checking each
+    /// again first.
+    pub(super) async fn claim_for_deletion(
+        &self,
+        candidates: Vec<(String, String, String)>,
+    ) -> AppResult<()> {
+        for batch in candidates.chunks(500) {
             let batch = batch.to_vec();
             self.db.transaction(move |tx| {
                 let now = unix_now()?;
                 for (blob,key,reason) in batch {
+                    // The claim rechecks the window: a restore that committed
+                    // since the scan keeps the files.
                     let changed = tx.execute(
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1 AND state='available'
                          AND (EXISTS(SELECT 1 FROM task_attachments a JOIN tasks t ON t.id=a.task_id
-                                     WHERE a.blob_id=?1 AND t.deleted_at IS NOT NULL)
+                                     WHERE a.blob_id=?1 AND t.deleted_at IS NOT NULL AND t.deleted_at<=?3)
+                              OR EXISTS(SELECT 1 FROM task_attachments a
+                                     WHERE a.blob_id=?1 AND a.deleted_at IS NOT NULL AND a.deleted_at<=?3)
                               OR (NOT EXISTS(SELECT 1 FROM task_attachments WHERE blob_id=?1)
                                   AND NOT EXISTS(SELECT 1 FROM users WHERE avatar_blob_id=?1)))
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",
-                        params![blob,now])?;
+                        params![blob,now,now-UNDO_WINDOW_SECONDS])?;
                     if changed == 1 {
                         tx.execute(
                             "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
@@ -755,6 +800,7 @@ impl FileService {
                         .await?;
                     continue;
                 }
+                self.remove_thumbnail(&job.storage_key).await;
                 parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
                 removed.push(job);
             }
