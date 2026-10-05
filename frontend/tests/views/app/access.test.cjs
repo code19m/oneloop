@@ -273,6 +273,22 @@ test('text typed when the session ends is dropped when someone else signs in', (
  assert.equal(t.d.getElementById('cmtIn')?.value ?? '', '');
 });
 
+test('a kept comment that waits for its task goes when its writer signs out', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
+ const session = endSession(t);
+ // The writer signs in again but can no longer read the task, so the comment waits.
+ const task = t.D.tasks.find(item => item.id === 'BIR-079');
+ t.D.tasks.splice(t.D.tasks.indexOf(task), 1);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.w.Recovery.keepsInput, false, 'the comment was handed to the task page');
+ t.D.session = null; t.w.Recovery.sessionChanged(null); t.A.refresh();
+ t.D.tasks.push(task);
+ signInAgain(t, { userId: 'robin', id: 'robin-session', authenticatedAt: Date.now() });
+ t.A.openTask('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value, '', 'someone else never sees it');
+});
+
 test('the sign-in page still focuses Username when nothing typed is waiting', () => {
  const t = bootApp({ route: 'board' });
  endSession(t);

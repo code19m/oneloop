@@ -52,6 +52,8 @@
  function beforeRender(next){
   capture();
   if(production&&renderedUserId!==next.userId){taskPages.clear();feedSnapshot=null;inboxMeta={unreadCount:Number.isFinite(D.inboxUnreadCount)?D.inboxUnreadCount:null,filteredCount:null,nextCursor:null,loaded:false,loading:false,error:false};renderedUserId=next.userId;}
+  // A kept comment that is still waiting goes when its writer signs out or someone else signs in.
+  if(resumedComment&&resumedComment.userId!==next.userId)resumedComment=null;
   const scope=next.userId&&next.view==='task'?JSON.stringify([next.userId,next.projectId,next.taskId]):null;
   if(scope!==editorScope){feedSnapshot=null;commentResizeObserver?.disconnect();commentResizeObserver=null;cancelAnimationFrame(commentResizeFrame);commentResizeFrame=0;expandedCommentBodies.clear();}
   if(scope!==editorScope||!scope){commentEditor=null;commentMode={mode:'comment',target:null};}
@@ -271,11 +273,13 @@
   capture();
   const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
   if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
-  return {taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
+  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
  }
  // Put a kept comment back once its task page shows; a reply or an edit waits for
- // its comment, and becomes a new comment when that comment is gone.
+ // its comment, and becomes a new comment when that comment is gone. Only the
+ // person who wrote it gets it back.
  function resumeComment(){
+  if(resumedComment&&resumedComment.userId!==me()?.id)resumedComment=null;
   const draft=resumedComment,task=draft&&hooks?.task(draft.taskId);
   if(!task||hooks.view()!=='task'||mountedTaskId!==task.id||!canComment(task)||!document.querySelector('[data-comment-task]'))return;
   const target=draft.target?task.comments?.find(c=>c.id===draft.target):null;
