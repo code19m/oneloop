@@ -42,6 +42,7 @@ use super::{
     MentionKind, MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote, PoolItemUpdate,
     PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove,
     TaskStatus, TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate,
+    require_undo_window,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;
@@ -327,6 +328,14 @@ fn dispatch(
             expected_revision()?,
             now,
         ),
+        DomainOperation::RestoreTask => restore_task(
+            tx,
+            actor,
+            stored,
+            payload!(EntityId),
+            expected_revision()?,
+            now,
+        ),
         DomainOperation::BlockTask => block_task(
             tx,
             actor,
@@ -574,6 +583,7 @@ fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
         | DomainOperation::UpdateTask
         | DomainOperation::MoveTask
         | DomainOperation::DeleteTask
+        | DomainOperation::RestoreTask
         | DomainOperation::BlockTask
         | DomainOperation::UpdateBlockReason
         | DomainOperation::UnblockTask
@@ -585,7 +595,9 @@ fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
             Permission::Board,
             matches!(
                 operation,
-                DomainOperation::DeleteTask | DomainOperation::DeletePoolItem
+                DomainOperation::DeleteTask
+                    | DomainOperation::RestoreTask
+                    | DomainOperation::DeletePoolItem
             ),
         ),
         _ => (Permission::Read, false),

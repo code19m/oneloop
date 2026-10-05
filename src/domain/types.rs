@@ -10,6 +10,22 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+/// How long a deleted task, comment or attachment can be restored. Its
+/// content stays until then, and maintenance removes it soon after.
+pub const UNDO_WINDOW_SECONDS: i64 = 5 * 60;
+
+/// Refuses a restore once the Undo window has passed, when maintenance may
+/// already have removed the content.
+pub(crate) fn require_undo_window(item: &str, deleted_at: i64, now: i64) -> crate::AppResult<()> {
+    if now.saturating_sub(deleted_at) < UNDO_WINDOW_SECONDS {
+        return Ok(());
+    }
+    Err(crate::AppError::PreconditionFailed(format!(
+        "the {item} was deleted more than {} minutes ago and can no longer be restored",
+        UNDO_WINDOW_SECONDS / 60
+    )))
+}
+
 /// Stable command vocabulary shared by HTTP and MCP adapters.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 pub enum DomainOperation {
@@ -57,6 +73,8 @@ pub enum DomainOperation {
     MoveTask,
     #[serde(rename = "task.delete")]
     DeleteTask,
+    #[serde(rename = "task.restore")]
+    RestoreTask,
     #[serde(rename = "task.block")]
     BlockTask,
     #[serde(rename = "task.block.update")]
@@ -85,6 +103,9 @@ impl DomainOperation {
             | Self::AddMembership
             | Self::UpdateMembership
             | Self::RemoveMembership => None,
+            // Undo belongs to the browser's delete flow. An assistant's
+            // deletion is confirmed by the person before it runs.
+            Self::RestoreTask => None,
             Self::DeleteTrack
             | Self::DeleteEpic
             | Self::DeleteMilestone
@@ -136,6 +157,7 @@ impl DomainOperation {
             Self::UpdateTask => "task.update",
             Self::MoveTask => "task.move",
             Self::DeleteTask => "task.delete",
+            Self::RestoreTask => "task.restore",
             Self::BlockTask => "task.block",
             Self::UpdateBlockReason => "task.block.update",
             Self::UnblockTask => "task.unblock",

@@ -422,6 +422,21 @@ async fn soft_deleted_tasks_are_reconciled_to_byte_and_metadata_removal() {
             .await,
         Err(AppError::NotFound { .. })
     ));
+    // The files stay for the Undo window.
+    let report = service.reconcile().await.unwrap();
+    assert_eq!(report.deletion_jobs_completed, 0);
+    assert_eq!(stored_file_count(&fixture.db.layout().files()), 1);
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE tasks SET deleted_at=deleted_at-?1 WHERE id='task'",
+                [oneloop::domain::UNDO_WINDOW_SECONDS],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let report = service.reconcile().await.unwrap();
     assert_eq!(report.deletion_jobs_completed, 1);
     let id = file.id;
@@ -437,6 +452,58 @@ async fn soft_deleted_tasks_are_reconciled_to_byte_and_metadata_removal() {
         .await
         .unwrap();
     assert!(!exists);
+}
+
+#[tokio::test]
+async fn a_restored_task_keeps_its_files() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let file = upload(
+        &service,
+        &fixture.manager,
+        "restored-parent",
+        "notes.txt",
+        b"notes",
+        false,
+    )
+    .await;
+    let domain = oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc());
+    for (operation, key, revision) in [
+        (
+            oneloop::domain::DomainOperation::DeleteTask,
+            "delete-parent",
+            1,
+        ),
+        (
+            oneloop::domain::DomainOperation::RestoreTask,
+            "restore-parent",
+            2,
+        ),
+    ] {
+        domain
+            .execute(
+                &fixture.manager,
+                oneloop::domain::CommandEnvelope {
+                    operation,
+                    payload: serde_json::json!({"id":"task"}),
+                    idempotency_key: key.into(),
+                    expected_revision: Some(revision),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service.reconcile().await.unwrap().deletion_jobs_completed,
+            0
+        );
+    }
+    let mut read = service
+        .open_for_read(&fixture.viewer, &file.id, ReadMode::Download)
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    read.file.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"notes");
 }
 
 #[tokio::test]
@@ -1686,10 +1753,10 @@ async fn deleted_parent_discovery_uses_the_small_deleted_task_index() {
                 "EXPLAIN QUERY PLAN SELECT b.id,b.storage_key FROM tasks t
              CROSS JOIN task_attachments a ON a.task_id=t.id
              JOIN file_blobs b ON b.id=a.blob_id
-             WHERE t.deleted_at IS NOT NULL AND b.state='available'",
+             WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'",
             )?;
             Ok(query
-                .query_map([], |r| r.get(3))?
+                .query_map([0], |r| r.get(3))?
                 .collect::<Result<_, _>>()?)
         })
         .await

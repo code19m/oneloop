@@ -674,14 +674,16 @@ impl FileService {
                 break;
             }
         }
+        // A deleted task keeps its files for the Undo window.
+        let restorable_after = unix_now()? - UNDO_WINDOW_SECONDS;
         let rows = self
             .db
-            .run(|connection| {
+            .run(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT b.id,b.storage_key,'manual' FROM tasks t
                  CROSS JOIN task_attachments a ON a.task_id=t.id
                  JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE t.deleted_at IS NOT NULL AND b.state='available'
+                 WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
                  UNION ALL
                  SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
                  WHERE b.state='available'
@@ -689,7 +691,7 @@ impl FileService {
                    AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)",
                 )?;
                 Ok(statement
-                    .query_map([], |row| {
+                    .query_map([restorable_after], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -704,14 +706,16 @@ impl FileService {
             self.db.transaction(move |tx| {
                 let now = unix_now()?;
                 for (blob,key,reason) in batch {
+                    // The claim rechecks the window: a restore that committed
+                    // since the scan keeps the files.
                     let changed = tx.execute(
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1 AND state='available'
                          AND (EXISTS(SELECT 1 FROM task_attachments a JOIN tasks t ON t.id=a.task_id
-                                     WHERE a.blob_id=?1 AND t.deleted_at IS NOT NULL)
+                                     WHERE a.blob_id=?1 AND t.deleted_at IS NOT NULL AND t.deleted_at<=?3)
                               OR (NOT EXISTS(SELECT 1 FROM task_attachments WHERE blob_id=?1)
                                   AND NOT EXISTS(SELECT 1 FROM users WHERE avatar_blob_id=?1)))
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",
-                        params![blob,now])?;
+                        params![blob,now,now-UNDO_WINDOW_SECONDS])?;
                     if changed == 1 {
                         tx.execute(
                             "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)

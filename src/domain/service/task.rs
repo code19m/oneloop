@@ -470,3 +470,110 @@ pub(super) fn delete_task(
     )?;
     Ok(Mutation::one(entity, event, "task", &input.id))
 }
+
+/// Undoes a deletion within the Undo window, for the people who could delete
+/// the task. Its comments and files never left; the history keeps both events.
+pub(super) fn restore_task(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    stored: &StoredActor,
+    input: EntityId,
+    expected: i64,
+    now: i64,
+) -> AppResult<Mutation> {
+    let (before, deleted_at) = tx
+        .query_row(
+            "SELECT project_id,epic_id,task_key,title,description,status,deadline,revision,position,deleted_at
+             FROM tasks WHERE id=?1",
+            [&input.id],
+            |row| {
+                Ok((
+                    TaskRow {
+                        project_id: row.get(0)?,
+                        epic_id: row.get(1)?,
+                        task_key: row.get(2)?,
+                        title: row.get(3)?,
+                        description: row.get(4)?,
+                        status: row.get(5)?,
+                        deadline: row.get(6)?,
+                        revision: row.get(7)?,
+                        position: row.get(8)?,
+                    },
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| not_found("task"))?;
+    require_project(
+        tx,
+        actor,
+        stored,
+        &before.project_id,
+        Permission::Board,
+        true,
+    )?;
+    let Some(deleted_at) = deleted_at else {
+        return Err(AppError::Conflict("the task is not deleted".into()));
+    };
+    ensure_revision(before.revision, expected)?;
+    require_undo_window("task", deleted_at, now)?;
+    let epic: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM epics WHERE id=?1 AND project_id=?2 AND deleted_at IS NULL)",
+        params![before.epic_id, before.project_id],
+        |row| row.get(0),
+    )?;
+    if !epic {
+        return Err(AppError::PreconditionFailed(
+            "the task's epic was deleted, so the task can't be restored".into(),
+        ));
+    }
+    // The task returns to its place unless another card took that position.
+    let taken: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status=?2 AND position=?3 AND deleted_at IS NULL)",
+        params![before.project_id, before.status, before.position],
+        |row| row.get(0),
+    )?;
+    let position = if taken {
+        task_append_position(tx, &before.project_id, &before.status)?
+    } else {
+        before.position
+    };
+    let revision = expected + 1;
+    tx.execute(
+        "UPDATE tasks SET deleted_at=NULL,position=?1,updated_at=?2,revision=?3
+         WHERE id=?4 AND revision=?5 AND deleted_at IS NOT NULL",
+        params![position, now, revision, input.id, expected],
+    )?;
+    let mut events = vec![activity(
+        tx,
+        actor,
+        ActivityInput {
+            project_id: Some(&before.project_id),
+            entity_type: "task",
+            entity_id: &input.id,
+            task_id: Some(&input.id),
+            event_type: "task.restored",
+            field_key: None,
+            before: None,
+            after: Some(json!({"taskKey":before.task_key,"title":before.title})),
+            metadata: json!({}),
+            entity_revision: Some(revision),
+        },
+        now,
+    )?];
+    let mut entities = vec![task_entity(tx, &input.id)?];
+    if matches!(before.status.as_str(), "in_progress" | "in_review")
+        && let Some(event) =
+            activate_epic_for_work(tx, actor, &before.project_id, &before.epic_id, now)?
+    {
+        entities.push(activated_epic_entity(&before.project_id, &event));
+        events.push(event);
+    }
+    Ok(Mutation {
+        entities,
+        events,
+        resource_type: Some("task".into()),
+        resource_id: Some(input.id),
+    })
+}

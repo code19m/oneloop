@@ -1325,6 +1325,7 @@ fn command_variants(tool: &str) -> Vec<Value> {
                 | DomainOperation::RemoveMembership => {
                     unreachable!("administration is excluded from MCP")
                 }
+                DomainOperation::RestoreTask => unreachable!("Undo is excluded from MCP"),
             };
             variants.push(command_variant(operation.as_str(), payload));
         }
