@@ -99,7 +99,8 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
         const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
         // A real reconcile rebuilds only the previously loaded depth, using the
         // server's bounded pages. Ordinary task hints use patchBoard instead.
-        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){const next=await api.board(projectId,{...common,status:wireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
+        // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
+        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:wireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
         if(!current(token))return {stale:true};
         replaceBoardTasks(data,projectId,pages.flatMap((page)=>page.items));
         const pageMap=Object.fromEntries(STATUSES.map((status,index)=>[status,{nextCursor:pages[index].nextCursor,total:Number(pages[index].total??0)}]));
@@ -191,7 +192,12 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       if(replaced())return {stale:true};
       appendBoardTasks(data,next.items);for(const item of next.items)state.ids.add(item.id);state.depths[status]=(state.depths[status]??1)+1;page.nextCursor=next.nextCursor;page.total=Number(next.total??page.total);
       setBoardPageInfo(data,state.projectId,state.filters,state.pages);return {done:!next.nextCursor};
-    }catch(error){if(replaced()||error?.code==='aborted')return {stale:true};if(error?.code==='cursor_stale'){boardState=null;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?['__unassigned__']:[])]});}onError(error);throw error;}
+    }catch(error){
+      if(replaced()||error?.code==='aborted')return {stale:true};
+      // A write since the last read moved the cursor: read the Board again, one page deeper in this column.
+      if(error?.code==='cursor_stale'){state.depths[status]=(state.depths[status]??1)+1;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?['__unassigned__']:[])]});}
+      onError(error);throw error;
+    }
   }
 
   async function roadmap(projectId,options={}){

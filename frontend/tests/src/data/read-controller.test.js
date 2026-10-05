@@ -131,19 +131,22 @@ test('a Board hint waits for foreground pagination instead of aborting or discar
   assert.equal(data.tasks.length,2);assert.equal(data.boardPageInfo.pages.planning.nextCursor,'last');assert.equal(data.tasks.find(row=>row.internalId==='one').title,'Updated');
 });
 
-test('a stale deep Board cursor discards the old window before restarting',async()=>{
-  const data=createLegacyData();let views=0,pages=0;
-  const empty={items:[],nextCursor:null,total:0};
+test('a stale Board cursor reads the Board again with one more page of that column',async()=>{
+  // Cursors carry the generation they were read at; a write makes older ones stale.
+  const data=createLegacyData();let generation=1;const empty={items:[],nextCursor:null,total:0};
+  const rows=Array.from({length:6},(_,index)=>task(`row-${index}`,'planning'));
+  const page=(from)=>({items:rows.slice(from,from+2),nextCursor:from+2<rows.length?`${generation}:${from+2}`:null,total:rows.length});
   const api={
-    boardView:async()=>({planning:{items:[task(`head-${++views}`,'planning')],nextCursor:'next',total:4},inProgress:empty,inReview:empty,done:empty,counts:{}}),
-    board:async()=>{if(++pages>1)throw {code:'cursor_stale'};return {items:[task('older','planning')],nextCursor:'last',total:4};},
+    boardView:async()=>({planning:page(0),inProgress:empty,inReview:empty,done:empty,counts:{}}),
+    board:async(_id,filters)=>{const [at,from]=filters.cursor.split(':').map(Number);if(at!==generation)throw {code:'cursor_stale'};return page(from);},
   };
   const reads=createReadController({api,data});
   await reads.board('p1');await reads.moreBoard('planning');
-  assert.equal(data.tasks.length,2);
-  await reads.moreBoard('planning');
-  assert.deepEqual(data.tasks.map(item=>item.internalId),['head-2']);
-  assert.equal(pages,2,'restart does not follow cursors from the old loaded depth');
+  assert.deepEqual(data.tasks.map(item=>item.internalId),['row-0','row-1','row-2','row-3']);
+  generation++;
+  assert.equal((await reads.moreBoard('planning')).stale,false);
+  assert.deepEqual(data.tasks.map(item=>item.internalId),rows.map(item=>item.id),'the next page shows, read from fresh cursors');
+  assert.equal(data.boardPageInfo.pages.planning.nextCursor,null);
 });
 
 function held(){const calls=[];const api=(name)=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,signal:args.at(-1)?.signal,resolve,reject}));return {calls,api};}
