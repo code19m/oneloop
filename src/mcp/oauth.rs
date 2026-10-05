@@ -41,6 +41,9 @@ const AUTHORIZATION_REQUEST_SECONDS: i64 = 10 * 60;
 const AUTHORIZATION_CODE_SECONDS: i64 = 5 * 60;
 const MAX_CLIENTS_PER_CALLER_HOUR: i64 = 10;
 const MAX_CLIENTS_GLOBAL_HOUR: i64 = 300;
+/// Clients described by metadata documents that no app has used yet, at
+/// most. Each new authorization makes its client the newest.
+const MAX_UNUSED_DESCRIBED_CLIENTS: i64 = 1_000;
 
 pub(super) const SCOPES: &[&str] = &[
     crate::auth::McpScope::ProjectRead.as_str(),
@@ -444,6 +447,8 @@ async fn described_client(
 /// Stores a described client like a registered one, so that consent, codes
 /// and tokens work the same. An unused row is removed after a day, as for
 /// registrations; each new authorization request starts that day again.
+/// Beyond `MAX_UNUSED_DESCRIBED_CLIENTS` unused rows, the oldest go, with
+/// their pending requests.
 fn remember_described_client(
     tx: &rusqlite::Transaction<'_>,
     document: &ClientDocument,
@@ -460,6 +465,10 @@ fn remember_described_client(
             document.client_uri,
             now
         ],
+    )?;
+    tx.execute(
+        DELETE_OLD_DESCRIBED_CLIENTS_SQL,
+        params![document.client_id, MAX_UNUSED_DESCRIBED_CLIENTS - 1],
     )?;
     Ok(())
 }
@@ -1872,6 +1881,10 @@ const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,c
              ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,
                redirect_uris_json=excluded.redirect_uris_json,client_uri=excluded.client_uri,
                created_at=CASE WHEN last_used_at IS NULL THEN excluded.created_at ELSE oauth_clients.created_at END";
+const DELETE_OLD_DESCRIBED_CLIENTS_SQL: &str = "DELETE FROM oauth_clients WHERE client_id IN (
+             SELECT client_id FROM oauth_clients
+             WHERE client_id LIKE 'https://%' AND last_used_at IS NULL AND client_id<>?1
+             ORDER BY created_at DESC,client_id DESC LIMIT -1 OFFSET ?2)";
 const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
             AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
 
@@ -2215,6 +2228,49 @@ mod tests {
             (name.as_str(), renamed_at),
             ("Renamed App", created_at - 100)
         );
+    }
+
+    #[tokio::test]
+    async fn only_the_newest_unused_described_clients_are_kept() {
+        let Described { _root, db, .. } = described().await;
+        db.transaction(|tx| {
+            // Registered apps and described apps in use are never removed.
+            tx.execute(
+                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at)
+                 VALUES('olc_registered','Registered','[]',1)",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at,last_used_at)
+                 VALUES('https://used.example/client.json','Used','[]',1,1)",
+                [],
+            )?;
+            for index in 0..MAX_UNUSED_DESCRIBED_CLIENTS + 5 {
+                let document = ClientDocument {
+                    client_id: format!("https://app{index}.example/client.json"),
+                    client_name: "App".into(),
+                    redirect_uris: vec![LOCAL_CALLBACK.into()],
+                    client_uri: None,
+                };
+                remember_described_client(tx, &document, 1_000 + index)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let counts = db
+            .run(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*),MIN(created_at),
+                        (SELECT COUNT(*) FROM oauth_clients WHERE client_id IN ('olc_registered','https://used.example/client.json'))
+                     FROM oauth_clients WHERE client_id LIKE 'https://%' AND last_used_at IS NULL",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(counts, (MAX_UNUSED_DESCRIBED_CLIENTS, 1_005, 2));
     }
 
     #[derive(Clone, Default)]
