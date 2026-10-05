@@ -81,6 +81,54 @@ test('paged and filtered task reads never overwrite authoritative epic aggregate
   assert.equal(data.epics[0].total,100);assert.equal(data.epics[0].done,20);
 });
 
+test('a bootstrap without epic counts keeps the counts the Roadmap read last',()=>{
+  const data=createLegacyData(),roadmap=bootstrap();
+  Object.assign(roadmap.epics[0],{taskTotal:12,taskDone:5,taskOpen:7,completedThisWeek:2,completedSinceStart:5,weeklyCompletions:[0,0,1,0,0,1,0]});
+  hydrateLegacyData(data,roadmap);
+  const board=bootstrap();delete board.epics[0].taskTotal;delete board.epics[0].taskDone;board.epics[0].title='Renamed';
+  hydrateLegacyData(data,board);
+  assert.equal(data.epics[0].title,'Renamed');
+  assert.deepEqual([data.epics[0].done,data.epics[0].total,data.epics[0].open,data.epics[0].closedThisWeek,data.epics[0].weekly],[5,12,7,2,[0,0,1,0,0,1,0]]);
+  assert.equal(data.epics[0].counted,true);
+  // Without counts read before, the Roadmap waits for its own read.
+  const fresh=createLegacyData();hydrateLegacyData(fresh,board);
+  assert.equal(fresh.epics[0].counted,false);
+  replaceRoadmap(fresh,{projectId:fresh.epics[0].projectId,epics:[roadmap.epics[0]]});
+  assert.deepEqual([fresh.epics[0].counted,fresh.epics[0].done,fresh.epics[0].total],[true,5,12]);
+});
+
+test('epics from command results keep or bring their counts, never the loading state',()=>{
+  const data=createLegacyData(),roadmap=bootstrap();
+  Object.assign(roadmap.epics[0],{taskTotal:12,taskDone:5,taskOpen:7,completedThisWeek:2,completedSinceStart:5,weeklyCompletions:[0,0,1,0,0,1,0]});
+  hydrateLegacyData(data,roadmap);
+  const epic=roadmap.epics[0];
+  // An update or a state change carries no counts; the epic keeps the last ones.
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:epic.id,projectId:epic.projectId,trackId:epic.trackId,title:'Renamed',startDate:epic.startDate,state:'active',position:0,revision:5}]});
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:epic.id,projectId:epic.projectId,state:'done',revision:6}]});
+  assert.deepEqual([data.epics[0].title,data.epics[0].counted,data.epics[0].done,data.epics[0].total],['Renamed',true,5,12]);
+  // A new epic comes with its empty counts.
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:'fresh',projectId:epic.projectId,trackId:epic.trackId,title:'Fresh',startDate:'2026-10-01',state:'planning',position:1,revision:1,
+    taskTotal:0,taskDone:0,taskOpen:0,completedThisWeek:0,completedSinceStart:0,weeklyCompletions:[0,0,0,0,0,0,0]}]});
+  const fresh=data.epics.find(item=>item.id==='fresh');
+  assert.deepEqual([fresh.counted,fresh.done,fresh.total],[true,0,0]);
+});
+
+test('a newest-first Done keeps live cards in completion order, newest first',()=>{
+  const data=createLegacyData(),value=bootstrap();
+  value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  hydrateLegacyData(data,value);
+  assert.equal(data.boardPageInfo.filters.doneOrder,'completed');
+  const done=(id,position,completedAt)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position,completedAt});
+  appendBoardTasks(data,[done('old',1,100),done('undated',2,null),done('new',3,300),done('tie-b',4,200),done('tie-a',5,200)]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['new','tie-b','tie-a','old','undated']);
+  assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,300000);
+  data.boardPageInfo.filters={};
+  appendBoardTasks(data,[]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['old','undated','new','tie-b','tie-a']);
+  reconcileCommandResult(data,{entities:[{...done('new',3,null),entityType:'task',status:'in_review',revision:9}]});
+  assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,null);
+});
+
 test('an explicitly empty roadmap clears stale project collections',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());
   replaceRoadmap(data,{projectId:'p1',tracks:[],epics:[],milestones:[]});

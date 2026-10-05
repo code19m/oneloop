@@ -59,10 +59,19 @@ function mapEpic(epic) {
     desc: epic.description ?? '', start: epic.startDate, end: epic.endDate ?? null,
     state: epic.state, order: epic.position, revision: epic.revision,
     done: epic.taskDone ?? epic.done ?? 0, total: epic.taskTotal ?? epic.total ?? 0,
+    // Only Roadmap reads carry task counts; until one arrives, they are unknown.
+    counted: epic.taskTotal !== undefined || epic.total !== undefined,
     open: epic.taskOpen, closedThisWeek: epic.completedThisWeek,
     completedSinceStart: epic.completedSinceStart,
     weekly: epic.weeklyCompletions ?? epic.weekly, activity: [],
   };
+}
+
+/** Only Roadmap reads carry epic task counts; other reads keep the last ones known. */
+function keepEpicCounts(mapped, view, previous) {
+  if (view.taskTotal !== undefined || !previous) return mapped;
+  for (const key of ['done','total','open','closedThisWeek','completedSinceStart','weekly','counted']) mapped[key] = previous[key];
+  return mapped;
 }
 
 function mapMilestone(milestone) {
@@ -84,7 +93,7 @@ function mapTask(task) {
     internalId: task.id, id: task.taskKey, projectId: task.projectId, epicId: task.epicId,
     title: task.title, desc: task.description ?? '', detailsLoaded:typeof task.description==='string', state: STATUS_TO_LEGACY[task.status] ?? task.status,
     order: task.position, deadline: task.deadline ?? null, created: secondsToMilliseconds(task.createdAt), updatedAt: secondsToMilliseconds(task.updatedAt),
-    revision: task.revision, assignees: [...(task.assigneeIds ?? [])], block: mapBlock(task.activeBlock),
+    completedAt: secondsToMilliseconds(task.completedAt) ?? null, revision: task.revision, assignees: [...(task.assigneeIds ?? [])], block: mapBlock(task.activeBlock),
     attachments: task.attachments ?? [], comments: task.comments ?? [], activity: task.activity ?? [],
   };
 }
@@ -120,12 +129,27 @@ export function replaceBoardTasks(data, projectId, taskViews) {
 export function appendBoardTasks(data, taskViews) {
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
   for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
-  replace(data.tasks,[...byId.values()].sort(compareTaskOrder));return data;
+  const doneOrder=data.boardPageInfo?.filters?.doneOrder;
+  replace(data.tasks,[...byId.values()].sort((left,right)=>compareTaskOrder(left,right,doneOrder)));return data;
 }
 
-/** Match the server's position, then opaque ID ordering within each column. */
-export function compareTaskOrder(left, right) {
-  return left.order-right.order || (left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0);
+/**
+ * Match the server's order within each column: position, then opaque ID. A
+ * newest-first Done orders by completion time, newest first, then by ID the
+ * other way round; a task without a completion time comes last. Done tasks
+ * then sort after all others, so the order stays consistent across columns.
+ * @param {{order:number,internalId:string,state?:string,completedAt?:number|null}} left
+ * @param {{order:number,internalId:string,state?:string,completedAt?:number|null}} right
+ * @param {string} [doneOrder]
+ */
+export function compareTaskOrder(left, right, doneOrder) {
+  const byId=left.internalId < right.internalId ? -1 : left.internalId > right.internalId ? 1 : 0;
+  if(doneOrder==='completed'){
+    const leftDone=left.state==='done',rightDone=right.state==='done';
+    if(leftDone!==rightDone)return leftDone?1:-1;
+    if(leftDone)return (right.completedAt??-1)-(left.completedAt??-1) || -byId;
+  }
+  return left.order-right.order || byId;
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {
@@ -217,7 +241,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   const memberships = bootstrap.memberships ?? [];
   const identity = auth?.user ?? bootstrap.session;
   const sameUser=previousSession?.userId===(identity?.id??identity?.userId);
-  const history=new Map((sameUser?data.epics:[]).map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
+  const history=new Map((sameUser?data.epics:[]).map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item]));
   // A bootstrap lists only the selected project's people. An administrator's
   // loaded account pages stay until the Users or Settings page reloads them.
   const directory=sameUser&&identity?.isAdmin&&data.adminUsers?.loaded?data.adminUsers:null;
@@ -235,7 +259,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
     return mapped;
   }));
   replace(data.tracks, (bootstrap.tracks ?? []).map(mapTrack));
-  replace(data.epics, (bootstrap.epics ?? []).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]})));
+  replace(data.epics, (bootstrap.epics ?? []).map((/** @type {{id:string,taskTotal?:number}} */ view)=>keepEpicCounts({...mapEpic(view),activity:history.get(view.id)?.activity??[]},view,history.get(view.id))));
   replace(data.milestones, (bootstrap.milestones ?? []).map(mapMilestone));
   replace(data.tasks, (bootstrap.tasks ?? []).map(view=>retainTaskDetails(sameUser?previousTasks.get(view.id):null,mapTask(view))));
   // An epic drawer keeps its loaded tasks until it reads them again. Board
@@ -264,7 +288,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   if(projectId&&bootstrap.boardCounts){const counts=bootstrap.boardCounts;setProjectTaskCounts(data,projectId,{planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked});}
   if(projectId&&Object.keys(bootstrap.boardPages??{}).length){
     const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[STATUS_TO_LEGACY[status]??status,page]));
-    setBoardPageInfo(data,projectId,{},pages);
+    setBoardPageInfo(data,projectId,bootstrap.doneOrder==='completed'?{doneOrder:'completed'}:{},pages);
   }
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
     const page=setPoolPageInfo(data,projectId,scope,{total:bootstrap.poolCounts[scope]??0});page.loaded=false;
@@ -319,9 +343,9 @@ function patchEntity(target,entity){
   set('revision');
   if(entity.entityType==='project'){set('name');set('taskPrefix','key');set('taskPrefix');}
   if(entity.entityType==='track'){set('projectId');set('name');set('description','desc');set('position','order');}
-  if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
+  if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');if(Object.hasOwn(entity,'taskTotal'))target.counted=true;set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
   if(entity.entityType==='milestone'){set('projectId');set('title','name');set('description','desc');set('milestoneDate','date');}
-  if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
+  if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('completedAt','completedAt',(value)=>secondsToMilliseconds(value)??null);set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
   if(entity.entityType==='poolItem'){set('projectId');set('scope','scope',(value)=>SCOPE_TO_LEGACY[value]??value);set('ownerUserId','ownerId');set('title');set('description','desc');set('createdAt','created',secondsToMilliseconds);}
   if(entity.entityType==='taskBlock'){set('reason');set('createdBy','by');set('createdAt','at',secondsToMilliseconds);set('mentions');set('resolution');}
   return target;

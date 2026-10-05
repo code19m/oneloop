@@ -2,6 +2,7 @@
 
 import { ApiError } from '../data/api-client.js';
 import { mergeAdminUsersPage, wireStatus } from '../data/projection-store.js';
+import { saveDoneOrder } from '../data/done-order.js';
 import {
   actionErrorFeedback,
   commandInteractionKey,
@@ -780,6 +781,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='task.assignees'){const item=task(payload.taskId);if(!item)return skipped();return saveAssignees(item,payload.assigneeIds);}
       if(action==='task.move'){const item=task(payload.taskId),body={taskId:item.internalId,status:wireStatus(payload.status)};for(const key of ['position','beforeTaskId','afterTaskId'])if(payload[key]!==undefined)body[key]=payload[key];return execute('task.move',body,item,payload.optimistic?null:'Task moved',{skipNoChange:!!payload.optimistic,paint:!payload.optimistic});}
       if(action==='track.reorder'){const item=track(payload.trackId);return execute('track.reorder',{trackId:item.id,position:payload.position},item,payload.optimistic?null:'Track reordered',{skipNoChange:!!payload.optimistic,paint:!payload.optimistic});}
+      if(action==='board.doneOrder'){saveDoneOrder(payload.order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);}
       if(action==='board.filter'){
         const result=await reads.board(context().projectId,payload,{skipUnchanged:true});
         const empty=!payload.search&&!payload.blocked&&!(payload.trackIds||[]).length&&!(payload.epicIds||[]).length&&!(payload.assigneeIds||[]).length;

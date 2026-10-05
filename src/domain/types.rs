@@ -327,6 +327,16 @@ impl TaskStatus {
     }
 }
 
+/// How the Board orders its Done column: by the manual position, or with
+/// the most recently completed task first.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DoneOrder {
+    #[default]
+    Manual,
+    Completed,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskCreate {

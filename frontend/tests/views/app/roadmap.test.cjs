@@ -158,6 +158,22 @@ test('Safari touchpad pinch gestures zoom the Roadmap around the pointer instead
   assert(Math.abs(width() / before - 1.8) < 0.005, 'the end applies the final scale at once');
 });
 
+test('epics show a loading state, not 0/0, until their task counts arrive', () => {
+  const { d, D, A } = boot('roadmap', { readOnly: true, prepare: D => {
+    for (const id of ['e6', 'e8']) Object.assign(D.epics.find(epic => epic.id === id), { counted: false, done: 0, total: 0 });
+  } });
+  const meta = id => d.querySelector(`[data-epic="${id}"] .m`);
+  assert(meta('e6').querySelector('.sr-only').textContent.includes('Loading task counts'));
+  assert(!meta('e6').textContent.includes('0/0'));
+  assert(!d.querySelector('[data-epic="e6"] .prog'), 'no progress bar without counts');
+  assert.equal(meta('e8').textContent.trim(), 'complete', 'a done epic needs no counts');
+  A.epicHover({ currentTarget: d.querySelector('[data-epic="e6"]') }, 'e6', true);
+  assert(d.querySelector('#epic-tooltip').textContent.includes('Loading task counts'));
+  Object.assign(D.epics.find(epic => epic.id === 'e6'), { counted: true, done: 21, total: 34 });
+  A.refreshRoadmap();
+  assert.equal(meta('e6').textContent.trim(), '21/34');
+});
+
 test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
   const { d, A } = bootApp({ route: 'roadmap' });
   const sc = d.getElementById('rmScroll'), rail = parseFloat(d.querySelector('.lane-head').style.width), shell = d.querySelector('.sidebar'), pill = d.querySelector('.today-pill');

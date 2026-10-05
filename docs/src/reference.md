@@ -11,8 +11,9 @@ service manager can load them for it.
   that starts with `ONELOOP_`. This way, a typo can't go unnoticed.
 - `oneloop serve --check` checks the settings, and the database if there is
   one, without starting the server. Run it after every change.
-- The other commands read only `ONELOOP_DATA_DIR`. Still, run them as the same
-  system account and with the same environment as the server.
+- The other commands read only `ONELOOP_DATA_DIR`, and `user add` and
+  `user passwd` also read the [password settings](#passwords). Still, run them
+  as the same system account and with the same environment as the server.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
@@ -24,6 +25,13 @@ service manager can load them for it.
 | `ONELOOP_DISK_MIN_FREE` | `1GiB` | oneloop refuses an upload that would leave less free disk space than this. A Knowledge sync needs more; see [Limits](#limits). |
 | `ONELOOP_TRUSTED_PROXIES` | Empty (trust none) | IP addresses or CIDR ranges of your reverse proxies, separated by commas. Only these may send the visitor's address in `X-Forwarded-For`. See [Trusted proxy](production.md#trusted-proxy). |
 | `ONELOOP_LOG_LEVEL` | `info` | How much to log: `error`, `warn`, `info`, `debug` or `trace`. |
+| `ONELOOP_PASSWORD_MIN_LENGTH` | `5` | The fewest characters in a new password, from 5 to 1,024. See [Passwords](#passwords). |
+| `ONELOOP_ADMIN_PASSWORD_MIN_LENGTH` | `ONELOOP_PASSWORD_MIN_LENGTH` | The fewest characters in a new admin password. It can't be lower than `ONELOOP_PASSWORD_MIN_LENGTH`. |
+| `ONELOOP_PASSWORD_BLOCKLIST` | None | A file of passwords that nobody may choose, one per line. See [Passwords](#passwords). |
+| `ONELOOP_TEMPORARY_PASSWORD_LIFETIME` | None (no expiry) | How long a temporary password works for signing in, in hours or days, such as `36h` or `7d`, up to `365d`. |
+| `ONELOOP_MCP_REDIRECT_SCHEMES` | None | Link schemes of apps, such as `cursor`, that AI assistants may use for their sign-in callback, separated by commas. `http`, `https`, `web+` schemes and the schemes browsers handle themselves, such as `javascript` and `data`, aren't allowed. See [AI assistant connections](production.md#ai-assistant-connections). |
+| `ONELOOP_MCP_ALLOWED_ORIGINS` | None | Origins of browser-based MCP clients, such as `http://localhost:6274`, separated by commas. Each is `https://` and a host, or `http://` and a loopback host, with an optional port and no path. |
+| `ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS` | `false` | `true` lets AI assistants use an HTTPS address of a client ID metadata document as their client ID. oneloop fetches the document. |
 
 Logs go to standard error. In a terminal they are colored, unless `NO_COLOR` is
 set.
@@ -46,6 +54,34 @@ brings them before a new oneloop release does; the Docker image includes the
 one of its Debian release. Until then, times can be an hour off, and you can
 set a fixed offset such as `Etc/GMT+7`, which means UTC−07 (the sign is
 reversed).
+
+### Passwords
+
+The password settings are off until you set them. They apply whenever someone
+chooses a new password: when they change it, when they replace a temporary
+password at their first sign-in, and when you set one with `oneloop user add`
+or `oneloop user passwd`. The temporary passwords that admins get in the app
+are random and always long enough.
+
+Signing in never checks the rules, so existing passwords keep working when you
+make them stricter. A person who becomes an admin keeps a shorter password
+until they change it.
+
+- `ONELOOP_PASSWORD_BLOCKLIST` names a text file with one password per line,
+  such as a list of common passwords, of at most 16 MiB. Letter case doesn't
+  matter, and empty lines are skipped. With a list, a password that equals the
+  username is refused too. oneloop reads the file when it starts, and refuses
+  to start if it can't. Give an absolute path: the server and the `user`
+  commands can run in different folders, and a relative path depends on the
+  folder.
+- With `ONELOOP_TEMPORARY_PASSWORD_LIFETIME`, a temporary password that is older
+  than this no longer signs in. The person sees "This temporary password has
+  expired", and an admin resets it again. Temporary passwords come from
+  **Create user** and **Reset password** in the app, and from
+  `oneloop user add` and `oneloop user passwd`. When you turn the setting on,
+  temporary passwords that are already older stop working at once.
+  `oneloop user passwd` gives a new one, also to the last admin, whom nobody
+  else can reset.
 
 ### Storage
 
@@ -162,7 +198,7 @@ Some emoji count as two characters.
 | --- | --- |
 | Username | 3 to 32 lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit |
 | Full name | 80 characters |
-| Password | At least 5 characters; at most 16,384 UTF-8 bytes |
+| Password | At least 5 characters, or more with the [password settings](#passwords); at most 16,384 UTF-8 bytes |
 | Sessions per account | 10; sign out of one to sign in somewhere new |
 | Session length | Ends after 7 days without use, and after 30 days at most. Automatic background requests, such as live updates and image or HTML previews, don't extend it. |
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
@@ -196,6 +232,6 @@ Some emoji count as two characters.
 | Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
 | Request body size | 256 KiB for normal requests; 1 MiB for MCP calls |
 | Request body speed | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
-| Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes |
+| Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes. A client that stops reading is disconnected within 5 minutes. |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |

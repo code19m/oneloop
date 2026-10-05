@@ -739,7 +739,7 @@ async fn large_files_are_sent_in_bounded_chunks() {
     let (mut received, mut frames) = (Vec::new(), 0);
     while let Some(frame) = body.frame().await {
         let chunk = frame.unwrap().into_data().unwrap();
-        assert!(chunk.len() <= 256 * 1024, "{} bytes at once", chunk.len());
+        assert!(chunk.len() <= 64 * 1024, "{} bytes at once", chunk.len());
         received.extend_from_slice(&chunk);
         frames += 1;
     }
@@ -1291,6 +1291,49 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         .unwrap();
     assert_eq!(remaining, 0);
     assert_eq!(fixture.events("knowledge.disconnected").await, 1);
+}
+
+#[tokio::test]
+async fn a_command_for_a_disconnected_source_never_changes_its_successor() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/README.md", b"# Guide\n");
+    repository.commit(FIRST);
+    let first = fixture.connect(&repository).await;
+    let first_revision = first["entities"][0]["revision"].as_i64().unwrap();
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(first_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second = fixture.connect(&repository).await;
+    let second_revision = second["entities"][0]["revision"].as_i64().unwrap();
+    assert!(second_revision > first_revision + 1, "{second_revision}");
+    // A tab that still shows the first source sends its revision.
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(first_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "revision_conflict");
+    assert_eq!(fixture.view(&fixture.admin).await["state"], "pending");
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(second_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

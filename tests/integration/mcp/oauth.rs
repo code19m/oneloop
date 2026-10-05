@@ -2140,3 +2140,412 @@ async fn registration_labels_reject_display_spoofing_and_preserve_unicode() {
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(body_json(response).await["client_name"], name);
 }
+
+fn cross_origin(method: &str, path: &str, origin: &str) -> axum::http::request::Builder {
+    Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, "127.0.0.1:8080")
+        .header(header::ORIGIN, origin)
+}
+
+fn preflight(path: &str, origin: &str, method: &str) -> Request<Body> {
+    cross_origin("OPTIONS", path, origin)
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, method)
+        .header(
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            "authorization, content-type, mcp-protocol-version",
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn any_page_may_read_oauth_metadata_and_use_tokens_but_nothing_else() {
+    const PAGE: &str = "https://any.example";
+    let (_dir, _db, app, session, _) = fixture().await;
+    for (path, method) in [
+        ("/.well-known/oauth-protected-resource/mcp", "GET"),
+        ("/.well-known/oauth-protected-resource", "GET"),
+        ("/.well-known/oauth-authorization-server", "GET"),
+        ("/oauth/token", "POST"),
+        ("/oauth/revoke", "POST"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(preflight(path, PAGE, method))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{path}");
+        let headers = response.headers();
+        assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert!(
+            headers[header::ACCESS_CONTROL_ALLOW_HEADERS]
+                .to_str()
+                .unwrap()
+                .contains("mcp-protocol-version")
+        );
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+    }
+    let metadata = app
+        .clone()
+        .oneshot(
+            cross_origin("GET", "/.well-known/oauth-authorization-server", PAGE)
+                .header("mcp-protocol-version", "2025-11-25")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metadata.status(), StatusCode::OK);
+    assert_eq!(metadata.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    // Errors stay readable, so a page can tell what went wrong.
+    let mut token = form("/oauth/token", &[("grant_type", "authorization_code")]);
+    token
+        .headers_mut()
+        .insert(header::ORIGIN, PAGE.parse().unwrap());
+    let response = app.clone().oneshot(token).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    // Registration, /mcp and its file transfers answer only listed pages.
+    for (path, method) in [
+        ("/oauth/register", "POST"),
+        ("/mcp", "POST"),
+        ("/mcp/files/upload", "PUT"),
+        ("/mcp/files/download", "GET"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(preflight(path, PAGE, method))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        assert!(
+            !response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        );
+    }
+    // Pages and endpoints that use the session cookie get no CORS headers.
+    for path in ["/oauth/authorize", "/api/auth/me", "/"] {
+        let response = app
+            .clone()
+            .oneshot(
+                cross_origin("GET", path, PAGE)
+                    .header(header::COOKIE, format!("oneloop_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "{path}"
+        );
+        let response = app
+            .clone()
+            .oneshot(preflight(path, PAGE, "POST"))
+            .await
+            .unwrap();
+        assert!(
+            !response
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn listed_pages_may_register_and_call_mcp_from_a_browser() {
+    const LISTED: &str = "http://localhost:6274";
+    let (_dir, _db, app, session, _) = fixture_with(&[(
+        "ONELOOP_MCP_ALLOWED_ORIGINS",
+        "http://localhost:6274, https://inspector.example",
+    )])
+    .await;
+    for (path, method) in [
+        ("/oauth/register", "POST"),
+        ("/mcp", "POST"),
+        ("/mcp/files/upload", "PUT"),
+        ("/mcp/files/download", "GET"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(preflight(path, LISTED, method))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{path}");
+        let headers = response.headers();
+        assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], LISTED);
+        assert_eq!(headers[header::VARY], "origin");
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+    }
+    for origin in ["http://localhost:6275", "https://foreign.example"] {
+        let response = app
+            .clone()
+            .oneshot(preflight("/mcp", origin, "POST"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin}");
+    }
+
+    let register_from = |origin: &str| {
+        cross_origin("POST", "/oauth/register", origin)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"client_name":"Inspector","redirect_uris":["http://127.0.0.1:49152/callback"]})
+                    .to_string(),
+            ))
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(register_from("https://foreign.example"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !response
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+    );
+    let response = app.clone().oneshot(register_from(LISTED)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        LISTED
+    );
+    let client = body_json(response).await["client_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Without a token, a listed page can read how to sign in.
+    let response = app
+        .clone()
+        .oneshot(
+            cross_origin("POST", "/mcp", LISTED)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        LISTED
+    );
+    assert!(
+        response.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS]
+            .to_str()
+            .unwrap()
+            .contains("www-authenticate")
+    );
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let access = issue(&app, &client, &code, &verifier).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"browser","version":"1"}}});
+    for (origin, allowed) in [
+        (LISTED, true),
+        ("https://inspector.example", true),
+        ("http://localhost:6275", false),
+        ("https://inspector.example:8443", false),
+        ("https://foreign.example", false),
+    ] {
+        let mut request = mcp_request(&access, None, initialize.clone());
+        request
+            .headers_mut()
+            .insert(header::ORIGIN, origin.parse().unwrap());
+        let response = app.clone().oneshot(request).await.unwrap();
+        let expected = if allowed {
+            StatusCode::OK
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        assert_eq!(response.status(), expected, "{origin}");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            allowed.then_some(origin),
+            "{origin}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn app_schemes_need_listing_and_still_match_exactly() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+    const CURSOR: &str = "cursor://anysphere.cursor-mcp/oauth/callback";
+    let (_dir, _db, app, _, _) = fixture().await;
+    let response = registration(&app, json!({"redirect_uris": [CURSOR]})).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_redirect_uri");
+
+    let (_dir, _db, app, session, _) =
+        fixture_with(&[("ONELOOP_MCP_REDIRECT_SCHEMES", "cursor")]).await;
+    for refused in [
+        "vscode://vscode.github-authentication/did-authenticate",
+        "cursor:callback",
+        "cursor://anysphere.cursor-mcp/oauth/callback#done",
+        "cursor://user:secret@anysphere.cursor-mcp/oauth/callback",
+    ] {
+        let response = registration(&app, json!({"redirect_uris": [refused]})).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{refused}");
+    }
+    let response = registration(
+        &app,
+        json!({"client_name": "Cursor", "redirect_uris": [CURSOR]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let client = body_json(response).await["client_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for other in [
+        "cursor://anysphere.cursor-mcp/oauth/callback2",
+        "cursor://other.cursor-mcp/oauth/callback",
+        "cursor://anysphere.cursor-mcp/oauth/callback?x=1",
+    ] {
+        let status = consent_page(&app, &session, &authorization_path(&client, other))
+            .await
+            .0;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{other}");
+    }
+
+    let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let path = authorization_path(&client, CURSOR)
+        .replace("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", &challenge);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(path)
+                .header(header::COOKIE, format!("oneloop_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let policy = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(policy.contains("form-action 'self' cursor:;"), "{policy}");
+    let html = body_text(response).await;
+    assert!(
+        html.contains(&format!(
+            "An app on this computer that opens cursor: links ({CURSOR})"
+        )),
+        "{html}"
+    );
+    let id = request_id(&html).to_owned();
+    let response = app
+        .clone()
+        .oneshot(consent_submit(
+            &session,
+            &[
+                ("request_id", &id),
+                ("decision", "allow"),
+                ("project", "project-1"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = url::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    assert!(location.as_str().starts_with(&format!("{CURSOR}?iss=")));
+    let code = location
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let response = app
+        .clone()
+        .oneshot(form(
+            "/oauth/token",
+            &[
+                ("grant_type", "authorization_code"),
+                ("client_id", &client),
+                ("code", &code),
+                ("redirect_uri", CURSOR),
+                ("code_verifier", verifier),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in() {
+    const DOCUMENT: &str = "https://app.example.com/oauth/client.json";
+    const CALLBACK: &str = "http://127.0.0.1:49152/callback";
+    let metadata = |app: Router| async move {
+        body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+    };
+    let (_dir, _db, app, session, _) = fixture().await;
+    assert!(
+        metadata(app.clone())
+            .await
+            .get("client_id_metadata_document_supported")
+            .is_none()
+    );
+    let (status, html) =
+        consent_page(&app, &session, &authorization_path(DOCUMENT, CALLBACK)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+
+    let (_dir, _db, app, _, _) =
+        fixture_with(&[("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "true")]).await;
+    assert_eq!(
+        metadata(app.clone()).await["client_id_metadata_document_supported"],
+        true
+    );
+    let signed_out = |client: &str| {
+        Request::builder()
+            .uri(authorization_path(client, CALLBACK))
+            .body(Body::empty())
+            .unwrap()
+    };
+    // Refused before the sign-in page; nothing is fetched for them.
+    for refused in [
+        "https://127.0.0.1/client.json",
+        "https://app.example.com",
+        "https://app.example.com:8443/client.json",
+        "https://app.example.com/client.json?version=2",
+        "https://APP.example.com/client.json",
+    ] {
+        let response = app.clone().oneshot(signed_out(refused)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{refused}");
+    }
+    let response = app.clone().oneshot(signed_out(DOCUMENT)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .starts_with("/?oauth_return=")
+    );
+}

@@ -12,6 +12,23 @@ test('Roadmap shows its summary without work counters', { tag: '@smoke' }, async
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
 });
 
+test('an epic created on the Roadmap shows its empty counts at once', async ({ page, instance }) => {
+  await openApp(page, instance, 'roadmap');
+  await page.getByRole('button', { name: 'Epic', exact: true }).click();
+  const dialog = page.locator('.modal');
+  await dialog.locator('[name="title"]').fill('Fresh epic');
+  await dialog.getByRole('button', { name: /^Track / }).click();
+  await page.locator('.pop-opt').filter({ hasText: instance.projects[0].track.name }).click();
+  await dialog.locator('[data-date-key="mStart"] .date-text').fill('2026-10-01');
+  await dialog.locator('[data-date-key="mEnd"] .date-text').fill('2026-10-31');
+  await dialog.getByRole('button', { name: 'Create epic', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  // Its own hint brings no Roadmap read, so the counts come with the result.
+  const bar = page.locator('[data-epic]').filter({ hasText: 'Fresh epic' });
+  await expect(bar.locator('.m')).toContainText('0/0 · starts');
+  await expect(bar).not.toContainText('Loading task counts');
+});
+
 test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ page, instance, browserName, allowedConsoleErrors }, testInfo) => {
   const { project, track } = instance.projects[0];
   for (let i = 0; i < 4; i++) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Overlapping epic ${i}`, startDate: '2026-09-24', endDate: '2026-10-24' });

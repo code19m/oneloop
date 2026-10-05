@@ -45,6 +45,7 @@ async fn project_reads_recheck_a_cached_admin_role() {
                 project_id: Some(project_id),
                 task_id: None,
                 view: None,
+                done_order: Default::default(),
             },
         )
         .await

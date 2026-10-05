@@ -32,6 +32,7 @@ async fn bootstrap_and_task_reads_enforce_membership_and_accept_readable_keys() 
                 project_id: Some("p1".into()),
                 task_id: Some(key),
                 view: None,
+                done_order: Default::default(),
             },
         )
         .await
@@ -65,6 +66,7 @@ async fn bootstrap_waits_for_delivery_and_redacts_deleted_task_context() {
         project_id: Some("p1".into()),
         task_id: None,
         view: None,
+        done_order: Default::default(),
     };
     let pending = f.service.bootstrap(&f.member, query()).await.unwrap();
     assert_eq!(pending.inbox_unread_count, 0);
@@ -130,6 +132,128 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn epic_task_counts_come_only_with_the_roadmap() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Finished"}),
+                "counted",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let task_id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":task_id,"status":"done"}),
+                "counted-done",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let epic = |epics: &Value| {
+        epics
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|epic| epic["id"] == "e1")
+            .unwrap()
+            .clone()
+    };
+    for (view, task) in [
+        (Some("roadmap"), None),
+        (None, None),
+        (Some("board"), None),
+        (Some("task"), Some(task_id.clone())),
+        (Some("metadata"), None),
+    ] {
+        let bootstrap = f
+            .service
+            .bootstrap(
+                &f.member,
+                BootstrapQuery {
+                    project_id: Some("p1".into()),
+                    task_id: task,
+                    view: view.map(str::to_owned),
+                    done_order: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let epic = epic(&serde_json::to_value(bootstrap).unwrap()["epics"]);
+        let counted = matches!(view, None | Some("roadmap"));
+        for field in [
+            "taskTotal",
+            "taskDone",
+            "taskOpen",
+            "completedThisWeek",
+            "completedSinceStart",
+            "weeklyCompletions",
+        ] {
+            assert_eq!(epic.get(field).is_some(), counted, "{view:?} {field}");
+        }
+        if counted {
+            assert_eq!(
+                (&epic["taskTotal"], &epic["taskDone"]),
+                (&json!(1), &json!(1))
+            );
+        }
+        assert_eq!(epic["title"], "Open epic");
+    }
+    let roadmap = f.service.roadmap(&f.member, "p1".into()).await.unwrap();
+    let epic = epic(&roadmap["epics"]);
+    assert_eq!(epic["completedThisWeek"], 1);
+    assert_eq!(epic["weeklyCompletions"][6], 1);
+}
+
+#[tokio::test]
+async fn a_new_epic_comes_with_empty_task_counts() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateEpic,
+                json!({"projectId":"p1","trackId":"tr1","title":"Fresh","startDate":"2026-10-01"}),
+                "fresh-epic",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    // The Roadmap that created it can show 0/0 without reading counts.
+    let epic = &created.entities[0];
+    for field in [
+        "taskTotal",
+        "taskDone",
+        "taskOpen",
+        "completedThisWeek",
+        "completedSinceStart",
+    ] {
+        assert_eq!(epic[field], 0, "{field}");
+    }
+    assert_eq!(epic["weeklyCompletions"], json!([0, 0, 0, 0, 0, 0, 0]));
+    // The activity keeps a record of the epic, not of its counts.
+    let after = &created.events[0].after;
+    assert!(
+        after
+            .as_ref()
+            .is_some_and(|after| after.get("taskTotal").is_none()),
+        "{after:?}"
+    );
 }
 
 #[tokio::test]

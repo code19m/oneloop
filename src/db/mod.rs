@@ -45,7 +45,7 @@ impl DataLayout {
     pub(crate) fn ensure_restore_complete(&self) -> AppResult<()> {
         if self.root.join(RESTORE_MARKER).try_exists()? {
             return Err(AppError::PreconditionFailed(format!(
-                "incomplete restore at {}; stop all instance commands, remove the interrupted restore contents and retry into an empty directory; do not remove only {RESTORE_MARKER}",
+                "incomplete restore at {}; run the same `oneloop backup restore` again, which first removes what the interrupted restore left; do not remove only {RESTORE_MARKER}",
                 self.root.display()
             )));
         }

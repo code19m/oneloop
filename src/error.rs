@@ -65,6 +65,7 @@ pub enum RuleKind {
     RecentAuthRequired,
     BroadcastCooldown,
     StorageFull,
+    TemporaryPasswordExpired,
 }
 impl RuleKind {
     pub fn code(self) -> &'static str {
@@ -79,6 +80,7 @@ impl RuleKind {
             Self::RecentAuthRequired => "recent_auth_required",
             Self::BroadcastCooldown => "broadcast_cooldown",
             Self::StorageFull => "storage_full",
+            Self::TemporaryPasswordExpired => "temporary_password_expired",
         }
     }
     fn status(self) -> StatusCode {
@@ -93,6 +95,7 @@ impl RuleKind {
             Self::RecentAuthRequired => StatusCode::PRECONDITION_FAILED,
             Self::BroadcastCooldown => StatusCode::TOO_MANY_REQUESTS,
             Self::StorageFull => StatusCode::SERVICE_UNAVAILABLE,
+            Self::TemporaryPasswordExpired => StatusCode::UNAUTHORIZED,
         }
     }
 }

@@ -36,8 +36,8 @@ The services are `DomainService`, `CollaborationService`, `FileService`,
 that checks access, validates input, compares the expected revision, records
 the idempotency receipt, changes the data, appends audit activity and adds a
 message to the outbox. After it commits, `CollaborationRuntime` delivers the
-outbox: it creates Inbox notifications and sends small hints over SSE, and
-clients then fetch what changed.
+outbox, many messages per transaction: it creates Inbox notifications and sends
+small hints over SSE, and clients then fetch what changed.
 
 ## Codemap
 
@@ -89,8 +89,10 @@ clients then fetch what changed.
   headers. `assets` serves the embedded client. `server` bounds connections and
   shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
-  registration, the Connect page and tokens, and `mod.rs` wires the transport
-  and file transfer endpoints.
+  registration, the Connect page and tokens, `client_metadata` fetches client
+  ID metadata documents from public addresses only, `cors` answers clients
+  that run in a web page, and `mod.rs` wires the transport and file transfer
+  endpoints.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes.
 - `text.rs`: validation for display text such as titles and comments.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired

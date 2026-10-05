@@ -1,3 +1,5 @@
+pub(crate) mod client_metadata;
+mod cors;
 mod oauth;
 mod tools;
 
@@ -42,11 +44,28 @@ pub fn router(state: AppState) -> Router<AppState> {
         Some(port) => format!("{host}:{port}"),
         None => host.clone(),
     };
-    let origin = state.config.public_url.origin().ascii_serialization();
+    // With explicit ports, rmcp matches each origin exactly.
+    let origins = std::iter::once(state.config.public_url.clone())
+        .chain(
+            state
+                .config
+                .mcp_allowed_origins
+                .iter()
+                .filter_map(|origin| url::Url::parse(origin).ok()),
+        )
+        .filter_map(|url| {
+            Some(format!(
+                "{}://{}:{}",
+                url.scheme(),
+                url.host_str()?,
+                url.port_or_known_default()?
+            ))
+        })
+        .collect::<Vec<_>>();
     let server_state = state.clone();
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts([host, authority])
-        .with_allowed_origins([origin])
+        .with_allowed_origins(origins)
         .with_json_response(true)
         .with_legacy_session_mode(false)
         .with_max_request_body_bytes(1024 * 1024);
@@ -55,18 +74,25 @@ pub fn router(state: AppState) -> Router<AppState> {
         Arc::new(NeverSessionManager::default()),
         config,
     );
-    let transport =
-        Router::new()
-            .route_service("/mcp", service)
-            .route_layer(middleware::from_fn_with_state(
-                state.clone(),
-                require_mcp_actor,
-            ));
+    let transport = Router::new()
+        .route_service("/mcp", service)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_mcp_actor,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            cors::listed_origins,
+        ));
     let transfers = Router::new()
         .route("/mcp/files/upload", put(upload_file))
         .route("/mcp/files/download", get(download_file))
-        .layer(DefaultBodyLimit::disable());
-    oauth::router().merge(transport).merge(transfers)
+        .layer(DefaultBodyLimit::disable())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            cors::listed_origins,
+        ));
+    oauth::router(&state).merge(transport).merge(transfers)
 }
 
 async fn require_mcp_actor(

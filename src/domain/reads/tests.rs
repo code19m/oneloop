@@ -26,15 +26,16 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
         c.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at,deleted_at) VALUES(?1,'p','e',?2,?1,'Task',?3,?2,1,1,?4,?5)",params![format!("t{id}"),id,status,completed,deleted]).unwrap();
     }
     let result = epics_on(&c, "p", &zone, date(2026, 11, 2)).unwrap();
-    let epic = &result[0];
+    let epic = result[0].summary.as_ref().unwrap();
     assert_eq!((epic.task_total, epic.task_done, epic.task_open), (7, 6, 1));
     assert_eq!(
         (epic.completed_this_week, epic.completed_since_start),
         (2, 4)
     );
     assert_eq!(epic.weekly_completions, vec![0, 0, 0, 0, 1, 2, 1]);
-    assert_eq!(result[1].task_total, 0);
-    assert_eq!(result[1].weekly_completions, vec![0; 7]);
+    let empty = result[1].summary.as_ref().unwrap();
+    assert_eq!(empty.task_total, 0);
+    assert_eq!(empty.weekly_completions, vec![0; 7]);
     let mut explain = c
         .prepare(&format!("EXPLAIN QUERY PLAN {EPIC_SUMMARY_SQL}"))
         .unwrap();
@@ -51,6 +52,37 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
         !plan.contains("TEMP B-TREE") && plan.contains("COVERING INDEX tasks_project_summary_idx"),
         "{plan}"
     );
+}
+
+#[test]
+fn newest_done_pages_read_the_partial_index_in_order() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    crate::db::migrate(root.path(), None).unwrap();
+    let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+    for (sql, values) in [
+        (NEWEST_DONE_SQL, params!["p", 51]),
+        (NEWEST_DONE_AFTER_SQL, params!["p", 1_800_000_000, "t", 51]),
+        (UNDATED_DONE_SQL, params!["p", "t", 51]),
+    ] {
+        let mut explain = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan = explain
+            .query_map(values, |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            !plan.contains("TEMP B-TREE") && plan.contains("tasks_project_done_completed_idx"),
+            "{sql}\n{plan}"
+        );
+    }
+    let mut explain = c
+        .prepare(&format!("EXPLAIN QUERY PLAN {NEWEST_DONE_AFTER_SQL}"))
+        .unwrap();
+    let plan: String = explain
+        .query_row(params!["p", 1_800_000_000, "t", 51], |r| r.get(3))
+        .unwrap();
+    assert!(plan.contains("(completed_at,id)<(?,?)"), "{plan}");
 }
 
 #[test]
@@ -92,7 +124,11 @@ fn epic_summary_scale_probe() {
         let summary_ms = begin.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(rows.len(), 100_000);
         assert_eq!(summaries.len(), 100);
-        assert!(summaries.iter().all(|epic| epic.task_done == 1000));
+        assert!(
+            summaries
+                .iter()
+                .all(|epic| epic.summary.as_ref().unwrap().task_done == 1000)
+        );
         eprintln!(
             "round {round}: old grouped row decoding {previous_ms:.3}ms (100000 rows); complete epic summaries {summary_ms:.3}ms (100 rows)"
         );
@@ -132,7 +168,11 @@ mod epic_date_tests {
         for (offset, weekly, last) in [(-1, 3, 1), (0, 2, 2), (1, 2, 2)] {
             let instant = Timestamp::from_second(boundary + offset).unwrap();
             let today = zone.rules().to_datetime(instant).date();
-            let epic = epics_on(&connection, "p", &zone, today).unwrap().remove(0);
+            let epic = epics_on(&connection, "p", &zone, today)
+                .unwrap()
+                .remove(0)
+                .summary
+                .unwrap();
             assert_eq!(epic.completed_this_week, weekly);
             assert_eq!(epic.weekly_completions[6], last);
             assert_eq!(epic.completed_since_start, 3);
@@ -153,7 +193,11 @@ mod epic_date_tests {
             let end = local_midnight(&zone, next).unwrap();
             assert_eq!(end - start, hours * 3600, "{name}");
             let connection = fixture(&[start - 1, start, end - 1, end], &day.to_string());
-            let epic = epics_on(&connection, "p", &zone, next).unwrap().remove(0);
+            let epic = epics_on(&connection, "p", &zone, next)
+                .unwrap()
+                .remove(0)
+                .summary
+                .unwrap();
             assert_eq!(
                 epic.weekly_completions[5],
                 if hours == 0 { 0 } else { 2 },

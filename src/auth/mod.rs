@@ -23,7 +23,7 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-use password::{hash_password, verify_password};
+use password::{PasswordPolicy, hash_password, verify_password};
 
 const ACCOUNT_PAGE_SIZE: usize = 50;
 
@@ -262,26 +262,34 @@ pub enum LoginResult {
 #[derive(Clone)]
 pub struct AuthService {
     db: Db,
+    policy: PasswordPolicy,
 }
 
 impl AuthService {
+    /// With the default password rules.
     pub fn new(db: Db) -> Self {
-        Self { db }
+        Self::with_password_policy(db, PasswordPolicy::default())
+    }
+
+    pub fn with_password_policy(db: Db, policy: PasswordPolicy) -> Self {
+        Self { db, policy }
     }
 }
 
+/// Creates an account under the default password rules.
 pub fn create_user(tx: &Transaction<'_>, input: NewUser, now: i64) -> AppResult<User> {
-    create_user_with_actor(tx, input, now, None)
+    create_user_with_policy(tx, input, now, &PasswordPolicy::default())
 }
 
-pub fn create_user_with_actor(
+pub fn create_user_with_policy(
     tx: &Transaction<'_>,
     input: NewUser,
     now: i64,
-    actor_user_id: Option<&str>,
+    policy: &PasswordPolicy,
 ) -> AppResult<User> {
     let username = normalize_username(&input.username)?;
     let display_name = normalize_display_name(&input.display_name)?;
+    policy.check(&input.password, &username, input.is_admin)?;
     let password_hash = hash_password(&input.password)?;
     insert_user(
         tx,
@@ -293,7 +301,7 @@ pub fn create_user_with_actor(
             must_change_password: input.must_change_password,
         },
         now,
-        actor_user_id,
+        None,
     )
 }
 
@@ -337,33 +345,35 @@ fn insert_user(
     Ok(user)
 }
 
+/// Sets a temporary password under the default password rules.
 pub fn reset_password(
     tx: &Transaction<'_>,
     username: &str,
     password: &str,
     now: i64,
 ) -> AppResult<()> {
-    reset_password_with_actor(tx, username, password, now, None)
+    reset_password_with_policy(tx, username, password, now, &PasswordPolicy::default())
 }
 
-pub fn reset_password_with_actor(
+pub fn reset_password_with_policy(
     tx: &Transaction<'_>,
     username: &str,
     password: &str,
     now: i64,
-    actor_user_id: Option<&str>,
+    policy: &PasswordPolicy,
 ) -> AppResult<()> {
     let username = normalize_username(username)?;
-    let password_hash = hash_password(password)?;
-    let user_id: String = tx
+    let (user_id, is_admin): (String, bool) = tx
         .query_row(
-            "SELECT id FROM users WHERE username=?1",
+            "SELECT id,is_admin FROM users WHERE username=?1",
             [&username],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "user" })?;
-    reset_password_hash_with_actor(tx, &user_id, password_hash, now, actor_user_id)
+    policy.check(password, &username, is_admin)?;
+    let password_hash = hash_password(password)?;
+    reset_password_hash_with_actor(tx, &user_id, password_hash, now, None)
 }
 
 fn reset_password_hash_with_actor(
@@ -672,6 +682,7 @@ fn values_for_grant(
 struct LoginUser {
     user: User,
     password_hash: String,
+    password_changed_at: i64,
 }
 enum LoginTransaction {
     Issued,

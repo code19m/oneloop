@@ -5,8 +5,10 @@
 //! the fixture, `-- --burst` removes client-side pacing for overload
 //! diagnostics and `-- --profile-sql` reports slow statements. By default four
 //! HTTP requests and one ordering or deletion write are active at a time.
+//! `-- --outbox` instead measures how fast the outbox delivers a burst of
+//! notifications, and how long other writes wait meanwhile.
 //!
-//! `cargo test` runs the small fixture as a quick harness check that every
+//! `cargo test` runs the small fixtures as a quick harness check that every
 //! operation succeeds; it does not enforce latency budgets.
 
 use std::{
@@ -39,6 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let small = !measure || flag("--small");
     let burst = flag("--burst");
     let profile_sql = flag("--profile-sql");
+    if flag("--outbox") {
+        return outbox_burst(small).await;
+    }
     let (tasks, events, clients, rounds) = if small {
         (1_000, 10_000, 10, 12)
     } else {
@@ -197,7 +202,218 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !failures.is_empty() || (measure && !within_budget) {
         return Err("workload acceptance budget was not met".into());
     }
+    if !measure {
+        assert_eq!(latency_summary(Vec::new()), json!({"count":0}));
+        outbox_burst(true).await?;
+    }
     Ok(())
+}
+
+/// One person mentions `@everyone` and then edits the comment, which queues an
+/// Inbox change for every member at once. Reports how long the outbox takes
+/// to deliver that burst, and the latency of task edits made meanwhile.
+async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let members = if small { 20 } else { 300 };
+    let writers = 4;
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
+    let data_dir = root.path().join("data");
+    migrate(&data_dir, None)?;
+    let db = Db::open(&data_dir)?;
+    db.transaction(move |tx| {
+        let now = oneloop::auth::unix_now()?;
+        for user in 0..members {
+            let id = format!("user-{user}");
+            tx.execute("INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at) VALUES(?1,?2,?2,'benchmark-disabled',0,?3,?3,?3)", params![id,format!("user{user:03}"),now])?;
+            tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,?4,?4,?5,?6)",params![format!("session-{user}"),id,token_hash(&fixture_token(user)),now,now+604800,now+2592000])?;
+        }
+        tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at) VALUES('project','Outbox','OUT','user-0',?1,?1)",[now])?;
+        for user in 0..members {
+            tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project',?1,1,1,?2,?2)",params![format!("user-{user}"),now])?;
+        }
+        tx.execute("INSERT INTO project_prefixes VALUES('OUT','project',?1)",[now])?;
+        tx.execute("INSERT INTO project_sequences VALUES('project',?1)",[(writers+2) as i64])?;
+        tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','project','Work',0,?1,?1)",[now])?;
+        tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES('epic','project','track','Epic','2026-01-01','active',0,?1,?1)",[now])?;
+        for task in 0..=writers {
+            tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'project','epic',?2,?3,'Outbox task','planning',?2,?4,?4)",params![format!("task-{task}"),(task+1) as i64,format!("OUT-{}",task+1),now])?;
+        }
+        Ok(())
+    }).await?;
+    let config = Config::from_os_iter([
+        ("ONELOOP_PUBLIC_URL", "http://127.0.0.1:8080"),
+        (
+            "ONELOOP_DATA_DIR",
+            data_dir.to_str().ok_or("invalid temporary path")?,
+        ),
+    ])?;
+    let app = application(AppState::new(config, db.clone()));
+    let (shutdown, stop) = tokio::sync::watch::channel(false);
+    let outbox = app.collaboration.spawn_worker(stop);
+    let command = |client: usize,
+                   operation: &str,
+                   payload: serde_json::Value,
+                   revision: Option<i64>,
+                   key: String| {
+        let mut body = json!({"operation":operation,"payload":payload,"idempotencyKey":key});
+        if let Some(revision) = revision {
+            body["expectedRevision"] = json!(revision);
+        }
+        Request::builder()
+            .method("POST")
+            .uri("/api/commands")
+            .header("origin", "http://127.0.0.1:8080")
+            .header("content-type", "application/json")
+            .header(
+                "cookie",
+                format!("oneloop_session={}", fixture_token(client)),
+            )
+            .body(Body::from(body.to_string()))
+            .expect("valid command request")
+    };
+    // Messages queued so far that are not delivered yet; later edits keep
+    // queueing their own messages, which the measurement doesn't wait for.
+    let pending = |db: Db| async move {
+        db.run(|connection| {
+            Ok(connection.query_row(
+                "SELECT COUNT(*),(SELECT MAX(rowid) FROM outbox_messages) FROM outbox_messages WHERE delivered_at IS NULL",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+            )?)
+        })
+        .await
+    };
+    let drain = |db: Db| async move {
+        let started = Instant::now();
+        let (_, last) = pending(db.clone()).await?;
+        loop {
+            let waiting = db
+                .run(move |connection| {
+                    Ok(connection.query_row(
+                        "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NULL AND rowid<=?1",
+                        [last],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                })
+                .await?;
+            if waiting == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        Ok::<_, oneloop::AppError>(started.elapsed().as_secs_f64() * 1000.0)
+    };
+    let everyone = json!([{"kind":"everyone","startOffset":0,"endOffset":9,"label":"@everyone"}]);
+    let response = app
+        .router
+        .clone()
+        .oneshot(command(
+            0,
+            "discussion.comment.create",
+            json!({"taskId":"task-0","content":"@everyone outbox burst","mentions":everyone}),
+            None,
+            "outbox-comment".into(),
+        ))
+        .await?;
+    assert!(
+        response.status().is_success(),
+        "comment: {}",
+        response.status()
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    let comment = created["entities"][0]["id"]
+        .as_str()
+        .ok_or("comment id")?
+        .to_owned();
+    let comment_revision = created["entities"][0]["revision"]
+        .as_i64()
+        .ok_or("comment revision")?;
+    let notification_ms = drain(db.clone()).await?;
+    // Task edits by other people, before and while the burst is delivered.
+    let editing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut edits = JoinSet::new();
+    for writer in 1..=writers {
+        let router = app.router.clone();
+        let editing = editing.clone();
+        edits.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(writer as u64 * 3)).await;
+            let mut samples = Vec::new();
+            let mut revision = 1;
+            let mut round = 0;
+            while editing.load(std::sync::atomic::Ordering::Relaxed) {
+                let started = Instant::now();
+                let request = command(writer, "task.update",
+                    json!({"taskId":format!("task-{writer}"),"title":format!("Edit {writer} {round}")}),
+                    Some(revision), format!("outbox-edit-{writer}-{round}"));
+                let response = router.clone().oneshot(request).await.expect("router is infallible");
+                let status = response.status();
+                let bytes = response.into_body().collect().await.expect("response body").to_bytes();
+                assert!(status.is_success(), "task edit: {status} {}", String::from_utf8_lossy(&bytes));
+                let value: serde_json::Value = serde_json::from_slice(&bytes).expect("command JSON");
+                revision = value["entities"][0]["revision"].as_i64().expect("task revision");
+                samples.push((started, started.elapsed().as_secs_f64() * 1000.0));
+                round += 1;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            samples
+        });
+    }
+    // Edits before the burst give the baseline; `cargo test` only checks the harness.
+    tokio::time::sleep(Duration::from_millis(if small { 100 } else { 1500 })).await;
+    let started = Instant::now();
+    let response = app.router.clone().oneshot(command(0, "discussion.comment.edit",
+        json!({"commentId":comment,"content":"@everyone outbox burst, edited","mentions":everyone}), Some(comment_revision), "outbox-comment-edit".into())).await?;
+    assert!(
+        response.status().is_success(),
+        "edit: {}",
+        response.status()
+    );
+    response.into_body().collect().await?;
+    let (queued, _) = pending(db.clone()).await?;
+    drain(db.clone()).await?;
+    let finished = Instant::now();
+    let burst_ms = (finished - started).as_secs_f64() * 1000.0;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    editing.store(false, std::sync::atomic::Ordering::Relaxed);
+    let (mut before, mut during) = (Vec::new(), Vec::new());
+    while let Some(result) = edits.join_next().await {
+        for (at, millis) in result? {
+            if at < started {
+                before.push(millis);
+            } else if at <= finished {
+                during.push(millis);
+            }
+        }
+    }
+    app.collaboration.shutdown();
+    let _ = shutdown.send(true);
+    outbox.await??;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "outbox":{
+                "members":members,
+                "mentionDeliveryMs":notification_ms,
+                "burstMessages":queued,
+                "burstDeliveryMs":burst_ms,
+                "messagesPerSecond":queued as f64 / (burst_ms / 1000.0),
+                "taskEditsBefore":latency_summary(before),
+                "taskEditsDuring":latency_summary(during),
+            }
+        }))?
+    );
+    Ok(())
+}
+
+/// Percentiles of a latency sample. A fast host can deliver the whole burst
+/// between two rounds of edits, so a sample may be empty.
+fn latency_summary(mut values: Vec<f64>) -> serde_json::Value {
+    if values.is_empty() {
+        return json!({"count":0});
+    }
+    values.sort_by(f64::total_cmp);
+    let at = |fraction: f64| values[((values.len() - 1) as f64 * fraction).ceil() as usize];
+    json!({"count":values.len(),"p50Ms":at(0.5),"p95Ms":at(0.95),"maxMs":at(1.0)})
 }
 
 fn fixture_token(client: usize) -> String {

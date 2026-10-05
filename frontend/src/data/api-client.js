@@ -1,5 +1,7 @@
 // @ts-check
 
+import { savedDoneOrder } from './done-order.js';
+
 /** HTTP transport only. Product validation and permissions belong to the server. */
 /** @typedef {{status?:number,code?:string,details?:unknown,retryAfter?:string|null,uncertain?:boolean,cause?:unknown,requestContext?:any}} ApiErrorOptions */
 /** @typedef {{method?:string,body?:unknown,signal?:AbortSignal,background?:boolean,headers?:Record<string,string>}} RequestOptions */
@@ -177,6 +179,8 @@ export function createApiClient({
       if (projectId) query.set('projectId', projectId);
       if (taskId) query.set('taskId', taskId);
       if (view) query.set('view', view);
+      // Board pages come in the order this browser chose for Done.
+      if (view === 'board' && savedDoneOrder() === 'completed') query.set('doneOrder', 'completed');
       return request('/api/bootstrap' + (query.size ? '?' + query.toString() : ''), { signal, background });
     },
     board: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => {

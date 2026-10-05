@@ -354,3 +354,28 @@ fn commands_on_an_empty_data_folder_say_how_to_fix_it() {
             root.path().join("oneloop.sqlite3").display()
         )));
 }
+
+#[test]
+fn metadata_documents_need_trusted_certificate_authorities_to_start() {
+    let root = scratch_dir();
+    let empty = root.path().join("no-authorities.pem");
+    std::fs::write(&empty, "").unwrap();
+    let command = |documents: &str, authorities: &std::path::Path| {
+        let mut command = ProcessCommand::cargo_bin("oneloop").unwrap();
+        command
+            .env_clear()
+            .env("ONELOOP_PUBLIC_URL", "http://127.0.0.1:18820")
+            .env("ONELOOP_DATA_DIR", root.path().join("data"))
+            .env("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", documents)
+            .env("SSL_CERT_FILE", authorities)
+            .args(["serve", "--check"]);
+        command
+    };
+    command("true", &empty)
+        .assert()
+        .code(2)
+        .stderr(contains("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS is true"))
+        .stderr(contains("no trusted certificate authorities"));
+    // Off, the setting needs nothing.
+    command("false", &empty).assert().success();
+}
