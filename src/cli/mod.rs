@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     AppState, Config, Db,
-    auth::{NewUser, create_user, reset_password, unix_now},
+    auth::{NewUser, create_user_with_policy, reset_password_with_policy, unix_now},
     config::DataConfig,
     db::{create_backup, migrate, restore_backup},
     error::{AppError, AppResult},
@@ -27,8 +27,8 @@ static VERSION: LazyLock<String> = LazyLock::new(|| match crate::build_info::REV
     version = VERSION.as_str(),
     about = "Self-hosted team task management",
     after_help = "Settings come from ONELOOP_* environment variables. Commands other than \
-        serve read only ONELOOP_DATA_DIR (default ./data). \
-        See https://code19m.github.io/oneloop/reference.html"
+        serve read only ONELOOP_DATA_DIR (default ./data), and user also reads the \
+        password settings. See https://code19m.github.io/oneloop/reference.html"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -148,6 +148,9 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
             "warning: HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
         );
     }
+    if config.mcp_client_metadata_documents {
+        crate::mcp::client_metadata::check_trust_roots()?;
+    }
     if arguments.check {
         crate::db::DataLayout::new(&config.data_dir).ensure_restore_complete()?;
         let database = config.data_dir.join("oneloop.sqlite3");
@@ -240,6 +243,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
 
 async fn user(arguments: UserArgs) -> AppResult<()> {
     let config = DataConfig::from_env()?;
+    let policy = crate::config::password_policy_from_env()?;
     let db = Db::open(config.data_dir)?;
     match arguments.command {
         UserCommand::Add(arguments) => {
@@ -252,7 +256,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                     let existing_users: i64 =
                         transaction
                             .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
-                    create_user(
+                    create_user_with_policy(
                         transaction,
                         NewUser {
                             username,
@@ -262,6 +266,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                             must_change_password: !(is_admin && existing_users == 0),
                         },
                         unix_now()?,
+                        &policy,
                     )
                 })
                 .await
@@ -278,7 +283,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
             let password = read_password(arguments.password_stdin, true)?;
             let username = arguments.username;
             db.transaction(move |transaction| {
-                reset_password(transaction, &username, &password, unix_now()?)
+                reset_password_with_policy(transaction, &username, &password, unix_now()?, &policy)
             })
             .await?;
             println!("password reset; existing credentials revoked");

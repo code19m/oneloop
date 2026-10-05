@@ -74,6 +74,10 @@ a review.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
   filters together show fewer.
+- **Newest first**, at the top of **Done**, lists the most recently finished
+  tasks first. Each browser remembers this choice. While it is on, a task you
+  move to Done goes to the top, and you can't reorder Done by hand. The manual
+  order stays as it was for when you turn it off.
 
 ### Pool
 

@@ -13,7 +13,8 @@ use oneloop::{
     auth::{Actor, ActorSource, AuthService},
     collaboration::CollaborationService,
     domain::{
-        BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation, DomainService,
+        BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation,
+        DomainService, DoneOrder,
     },
 };
 use rusqlite::params;
@@ -112,5 +113,6 @@ fn board_query(status: &str, cursor: Option<String>) -> BoardQuery {
         assignee_ids: vec![],
         no_assignee: false,
         blocked: false,
+        done_order: Default::default(),
     }
 }

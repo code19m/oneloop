@@ -29,6 +29,10 @@ impl AuthService {
         let outcome = match &result {
             Err(AppError::InvalidCredentials) => Some(failure_outcome),
             Err(AppError::RateLimited { .. }) => Some("rate_limited"),
+            Err(AppError::Rule {
+                kind: crate::error::RuleKind::TemporaryPasswordExpired,
+                ..
+            }) => Some(failure_outcome),
             _ => None,
         };
         if let Some(outcome) = outcome {
@@ -64,7 +68,8 @@ impl AuthService {
         self.check_login_throttle(&account_key, now).await?;
         let user = self.db.run(move |connection| {
             connection.query_row(
-                "SELECT id, username, display_name, password_hash, is_admin, is_active, must_change_password, revision
+                "SELECT id, username, display_name, password_hash, is_admin, is_active, must_change_password, revision,
+                        password_changed_at
                  FROM users WHERE username = ?1",
                 [lookup_name],
                 |row| Ok(LoginUser {
@@ -74,6 +79,7 @@ impl AuthService {
                         revision: row.get(7)?,
                     },
                     password_hash: row.get(3)?,
+                    password_changed_at: row.get(8)?,
                 }),
             ).optional().map_err(AppError::from)
         }).await?;
@@ -117,6 +123,18 @@ impl AuthService {
         }
 
         let user = user.expect("successful password verification requires an active account");
+        // Only after the password matched, so the answer reveals nothing new.
+        if user.user.must_change_password
+            && self
+                .policy
+                .temporary_password_expired(user.password_changed_at, now)
+        {
+            *failure_outcome = "temporary_password_expired";
+            return Err(AppError::rule(
+                crate::error::RuleKind::TemporaryPasswordExpired,
+                "This temporary password has expired. Ask an admin to reset it.",
+            ));
+        }
         let token = random_token()?;
         let token_hash = token_hash(&token);
         let session_id = Uuid::now_v7().to_string();

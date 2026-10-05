@@ -16,8 +16,19 @@ use crate::{AppError, AppResult, Db};
 
 use super::{CollaborationService, SseHint};
 
+/// Leases from versions that claimed messages before delivering them.
 const CLAIM_SECONDS: i64 = 30;
-const IDLE_POLL: Duration = Duration::from_millis(500);
+/// One delivery transaction takes at most this many messages, and stops
+/// taking more after `BATCH_TIME`, so it holds the writer only briefly.
+const BATCH_MESSAGES: usize = 64;
+const BATCH_TIME: std::time::Duration = std::time::Duration::from_millis(10);
+/// Writes in this process wake the worker at once. This interval only finds
+/// messages from other processes, such as `oneloop user passwd`, and retries.
+const LONGEST_IDLE: Duration = Duration::from_secs(5);
+const SHORTEST_IDLE: Duration = Duration::from_secs(1);
+const FIRST_ERROR_PAUSE: Duration = Duration::from_millis(500);
+const DELIVERABLE_TOPICS: &str =
+    "'notification.created','domain.activity','inbox.state_changed','access.changed'";
 
 #[derive(Clone)]
 pub struct CollaborationRuntime {
@@ -80,7 +91,6 @@ impl CollaborationRuntime {
     pub fn worker(&self) -> OutboxWorker {
         OutboxWorker {
             runtime: self.clone(),
-            worker_id: Uuid::now_v7().to_string(),
         }
     }
 
@@ -93,7 +103,6 @@ impl CollaborationRuntime {
 #[derive(Clone)]
 pub struct OutboxWorker {
     runtime: CollaborationRuntime,
-    worker_id: String,
 }
 
 impl OutboxWorker {
@@ -103,6 +112,7 @@ impl OutboxWorker {
         let mut next_optimize = 0_i64;
         let mut next_retention = 0_i64;
         let mut next_throttle_prune = 0_i64;
+        let mut error_pause = FIRST_ERROR_PAUSE;
         loop {
             if *shutdown.borrow() || *runtime_shutdown.borrow() {
                 return Ok(());
@@ -172,138 +182,218 @@ impl OutboxWorker {
                 }
             }
             match self.run_once().await {
-                Ok(true) => continue,
-                Ok(false) => tokio::select! {
-                    _ = self.runtime.db().wait_for_changes() => {},
-                    _ = sleep(IDLE_POLL) => {},
-                    result = shutdown.changed() => {
-                        if result.is_err() || *shutdown.borrow() { return Ok(()); }
-                    },
-                    result = runtime_shutdown.changed() => {
-                        if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
+                Ok(true) => {
+                    error_pause = FIRST_ERROR_PAUSE;
+                    continue;
+                }
+                Ok(false) => {
+                    error_pause = FIRST_ERROR_PAUSE;
+                    let wait = match self.next_available().await {
+                        Ok(earliest) => idle_wait(earliest, unix_now().unwrap_or(now)),
+                        Err(_) => LONGEST_IDLE,
+                    };
+                    tokio::select! {
+                        _ = self.runtime.db().wait_for_changes() => {},
+                        _ = sleep(wait) => {},
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                        },
+                        result = runtime_shutdown.changed() => {
+                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     tracing::error!(error = %error, "collaboration outbox delivery failed");
-                    sleep(IDLE_POLL).await;
+                    tokio::select! {
+                        _ = sleep(error_pause) => {},
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                        },
+                        result = runtime_shutdown.changed() => {
+                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
+                        }
+                    }
+                    error_pause = (error_pause * 2).min(LONGEST_IDLE);
                 }
             }
         }
     }
 
-    /// Delivers at most one outbox record. Exposed for deterministic tests and
-    /// service supervisors that prefer their own scheduling loop.
+    /// Delivers the outbox messages that are ready, oldest first, in one
+    /// transaction (see `BATCH_MESSAGES`), then sends one hint for each, in
+    /// the same order. A message that fails rolls back alone and is retried
+    /// later with a backoff. Returns whether anything was delivered; when
+    /// nothing was and a message failed, returns that failure. Exposed for
+    /// deterministic tests and service supervisors that prefer their own
+    /// scheduling loop.
     pub async fn run_once(&self) -> AppResult<bool> {
         let now = unix_now()?;
         // A WAL read does not compete for the serialized writer while idle.
-        // The claim transaction rechecks readiness to handle competing workers.
-        let ready = self.runtime.db().run(move |connection| {
-            Ok(connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM outbox_messages
+        let ready = self
+            .runtime
+            .db()
+            .run(move |connection| {
+                Ok(connection
+                    .prepare_cached(&format!(
+                        "SELECT EXISTS(SELECT 1 FROM outbox_messages
                  WHERE delivered_at IS NULL AND available_at<=?1
-                   AND topic IN ('notification.created','domain.activity','inbox.state_changed','access.changed')
-                   AND (locked_at IS NULL OR locked_at<=?2))")?.query_row(
-                params![now, now - CLAIM_SECONDS], |row| row.get::<_, bool>(0),
-            )?)
-        }).await?;
+                   AND topic IN ({DELIVERABLE_TOPICS})
+                   AND (locked_at IS NULL OR locked_at<=?2))"
+                    ))?
+                    .query_row(params![now, now - CLAIM_SECONDS], |row| {
+                        row.get::<_, bool>(0)
+                    })?)
+            })
+            .await?;
         if !ready {
             return Ok(false);
         }
-        let worker_id = self.worker_id.clone();
-        let claimed = self
+        // One writer transaction selects, delivers and marks the messages, so
+        // concurrent workers can't deliver one twice.
+        let batch = self
             .runtime
             .db()
-            .delivery_transaction(move |tx| {
-                let candidate: Option<ClaimedMessage> = tx.prepare_cached("SELECT id,topic,aggregate_type,aggregate_id,payload_json,attempt_count
-                 FROM outbox_messages
-                 WHERE delivered_at IS NULL AND available_at<=?1
-                   AND topic IN ('notification.created','domain.activity','inbox.state_changed','access.changed')
-                   AND (locked_at IS NULL OR locked_at<=?2)
-                 ORDER BY available_at,id LIMIT 1")?.query_row(
-                        params![now, now - CLAIM_SECONDS],
-                        |row| {
-                            Ok(ClaimedMessage {
-                                id: row.get(0)?,
-                                topic: row.get(1)?,
-                                aggregate_type: row.get(2)?,
-                                aggregate_id: row.get(3)?,
-                                payload_json: row.get(4)?,
-                                attempt_count: row.get(5)?,
-                            })
-                        },
-                    )
-                    .optional()?;
-                let Some(message) = candidate else {
-                    return Ok(None);
-                };
-                let changed = tx.prepare_cached("UPDATE outbox_messages SET locked_at=?1,locked_by=?2
-                 WHERE id=?3 AND delivered_at IS NULL AND (locked_at IS NULL OR locked_at<=?4)")?.execute(
-                    params![now, worker_id, message.id, now - CLAIM_SECONDS],
-                )?;
-                Ok((changed == 1).then_some(message))
-            })
+            .delivery_transaction(move |tx| deliver_batch(tx, now, BATCH_TIME))
             .await?;
-        let Some(message) = claimed else {
-            return Ok(false);
-        };
+        for hint in batch.hints {
+            let _ = self.runtime.inner.hints.send(Arc::new(hint));
+        }
+        let mut failures = batch.failures.into_iter();
+        if batch.delivered == 0
+            && let Some(failure) = failures.next()
+        {
+            return Err(failure);
+        }
+        for failure in failures {
+            tracing::error!(error = %failure, "collaboration outbox delivery failed");
+        }
+        Ok(batch.delivered > 0)
+    }
 
-        let delivery = self.deliver(&message, now).await;
-        match delivery {
+    /// When the earliest undelivered message becomes ready, as a Unix time.
+    async fn next_available(&self) -> AppResult<Option<i64>> {
+        self.runtime
+            .db()
+            .run(move |connection| {
+                Ok(connection
+                    .prepare_cached(&format!(
+                        "SELECT MIN(MAX(available_at,COALESCE(locked_at+{CLAIM_SECONDS},0)))
+                         FROM outbox_messages
+                         WHERE delivered_at IS NULL AND topic IN ({DELIVERABLE_TOPICS})"
+                    ))?
+                    .query_row([], |row| row.get(0))?)
+            })
+            .await
+    }
+}
+
+/// How long an idle worker sleeps before it looks again: until the earliest
+/// message is ready, from one to five seconds.
+fn idle_wait(earliest: Option<i64>, now: i64) -> Duration {
+    earliest.map_or(LONGEST_IDLE, |at| {
+        Duration::from_secs(at.saturating_sub(now).max(0).unsigned_abs())
+            .clamp(SHORTEST_IDLE, LONGEST_IDLE)
+    })
+}
+
+struct Batch {
+    delivered: usize,
+    hints: Vec<SseHint>,
+    failures: Vec<AppError>,
+}
+
+/// Takes ready messages until `budget` is spent, and always at least one.
+fn deliver_batch(
+    tx: &rusqlite::Transaction<'_>,
+    now: i64,
+    budget: std::time::Duration,
+) -> AppResult<Batch> {
+    let started = std::time::Instant::now();
+    let messages = tx
+        .prepare_cached(&format!(
+            "SELECT id,topic,aggregate_type,aggregate_id,payload_json,attempt_count
+             FROM outbox_messages
+             WHERE delivered_at IS NULL AND available_at<=?1
+               AND topic IN ({DELIVERABLE_TOPICS})
+               AND (locked_at IS NULL OR locked_at<=?2)
+             ORDER BY available_at,id LIMIT ?3"
+        ))?
+        .query_map(
+            params![now, now - CLAIM_SECONDS, BATCH_MESSAGES as i64],
+            |row| {
+                Ok(ClaimedMessage {
+                    id: row.get(0)?,
+                    topic: row.get(1)?,
+                    aggregate_type: row.get(2)?,
+                    aggregate_id: row.get(3)?,
+                    payload_json: row.get(4)?,
+                    attempt_count: row.get(5)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut batch = Batch {
+        delivered: 0,
+        hints: Vec::new(),
+        failures: Vec::new(),
+    };
+    for message in messages {
+        if batch.delivered + batch.failures.len() > 0 && started.elapsed() >= budget {
+            break;
+        }
+        tx.execute_batch("SAVEPOINT outbox_message")?;
+        match deliver_message(tx, &message, now) {
             Ok(hint) => {
-                if let Some(hint) = hint {
-                    let _ = self.runtime.inner.hints.send(Arc::new(hint));
-                }
-                Ok(true)
+                tx.execute_batch("RELEASE outbox_message")?;
+                batch.delivered += 1;
+                batch.hints.extend(hint);
             }
             Err(error) => {
-                let id = message.id.clone();
-                let worker_id = self.worker_id.clone();
-                let detail = safe_error(&error);
+                tx.execute_batch("ROLLBACK TO outbox_message; RELEASE outbox_message")?;
                 let attempt = message.attempt_count.saturating_add(1);
                 let backoff = 2_i64.saturating_pow(attempt.min(8) as u32).min(300);
-                self.runtime.db().transaction(move |connection| {
-                    connection.execute(
-                        "UPDATE outbox_messages
-                         SET attempt_count=?1,available_at=?2,locked_at=NULL,locked_by=NULL,last_error=?3
-                         WHERE id=?4 AND locked_by=?5 AND delivered_at IS NULL",
-                        params![attempt, now + backoff, detail, id, worker_id],
-                    )?;
-                    Ok(())
-                }).await?;
-                Err(error)
+                tx.execute(
+                    "UPDATE outbox_messages
+                     SET attempt_count=?1,available_at=?2,locked_at=NULL,locked_by=NULL,last_error=?3
+                     WHERE id=?4 AND delivered_at IS NULL",
+                    params![attempt, now + backoff, safe_error(&error), message.id],
+                )?;
+                batch.failures.push(error);
             }
         }
     }
+    Ok(batch)
+}
 
-    async fn deliver(&self, message: &ClaimedMessage, now: i64) -> AppResult<Option<SseHint>> {
-        let message = message.clone();
-        let worker_id = self.worker_id.clone();
-        self.runtime.db().delivery_transaction(move |tx| {
-            let owns_claim: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM outbox_messages
-                 WHERE id=?1 AND locked_by=?2 AND delivered_at IS NULL)",
-                params![message.id, worker_id], |row| row.get(0),
-            )?;
-            if !owns_claim { return Ok(None); }
-            let hint = match message.topic.as_str() {
-                "notification.created" => deliver_notification(tx, &message, now)?,
-                "domain.activity" => deliver_activity(tx, &message)?,
-                "inbox.state_changed" => deliver_inbox_change(tx, &message)?,
-                "access.changed" => Some(SseHint {
-                    id: message.id.clone(), kind: "access.changed".into(),
-                    project_id: None, task_id: None, entity_type: None, entity_id: None,
-                    entity_revision: None, notification_id: None,
-                    recipient_ids: BTreeSet::from([message.aggregate_id.clone()]),
-                }),
-                _ => None,
-            };
-            tx.execute(
-                "UPDATE outbox_messages SET delivered_at=?1,locked_at=NULL,locked_by=NULL,last_error=NULL
-                 WHERE id=?2 AND locked_by=?3 AND delivered_at IS NULL",
-                params![now, message.id, worker_id],
-            )?;
-            Ok(hint)
-        }).await
-    }
+fn deliver_message(
+    tx: &rusqlite::Transaction<'_>,
+    message: &ClaimedMessage,
+    now: i64,
+) -> AppResult<Option<SseHint>> {
+    let hint = match message.topic.as_str() {
+        "notification.created" => deliver_notification(tx, message, now)?,
+        "domain.activity" => deliver_activity(tx, message)?,
+        "inbox.state_changed" => deliver_inbox_change(tx, message)?,
+        "access.changed" => Some(SseHint {
+            id: message.id.clone(),
+            kind: "access.changed".into(),
+            project_id: None,
+            task_id: None,
+            entity_type: None,
+            entity_id: None,
+            entity_revision: None,
+            notification_id: None,
+            recipient_ids: BTreeSet::from([message.aggregate_id.clone()]),
+        }),
+        _ => None,
+    };
+    tx.execute(
+        "UPDATE outbox_messages SET delivered_at=?1,locked_at=NULL,locked_by=NULL,last_error=NULL
+         WHERE id=?2 AND delivered_at IS NULL",
+        params![now, message.id],
+    )?;
+    Ok(hint)
 }
 
 fn deliver_inbox_change(
@@ -486,4 +576,46 @@ pub(crate) fn enqueue_access_change_tx(
         params![Uuid::now_v7().to_string(), user_id, now],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_batch_takes_ready_messages_until_its_time_is_up() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        db.run(|connection| {
+            for index in 0..70 {
+                connection.execute(
+                    "INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+                     VALUES(?1,'inbox.state_changed','inbox','nobody','{}',1,1)",
+                    [format!("m{index:03}")],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let batch = |budget| db.delivery_transaction(move |tx| deliver_batch(tx, 10, budget));
+        // With time to spare, one batch takes as many messages as it may.
+        assert_eq!(
+            batch(Duration::MAX).await.unwrap().delivered,
+            BATCH_MESSAGES
+        );
+        // Out of time, it still takes one, so delivery always moves on.
+        assert_eq!(batch(Duration::ZERO).await.unwrap().delivered, 1);
+    }
+
+    #[test]
+    fn an_idle_worker_looks_again_when_the_next_message_is_due() {
+        assert_eq!(idle_wait(None, 100), LONGEST_IDLE);
+        assert_eq!(idle_wait(Some(103), 100), Duration::from_secs(3));
+        assert_eq!(idle_wait(Some(400), 100), LONGEST_IDLE);
+        for due in [99, 100] {
+            assert_eq!(idle_wait(Some(due), 100), SHORTEST_IDLE);
+        }
+    }
 }

@@ -366,8 +366,8 @@ pub(crate) fn inline_text(value: &str) -> String {
                     )
                 };
                 pieces.push(Piece::Run {
-                    mark: c,
-                    left: length,
+                    star: c == '*',
+                    left: u32::try_from(length).unwrap_or(u32::MAX),
                     open,
                     close,
                 });
@@ -379,23 +379,43 @@ pub(crate) fn inline_text(value: &str) -> String {
             }
         }
     }
+    drop(closers);
+    drop(chars);
     pair_emphasis(&mut pieces);
+    // Runs of whitespace become one space, and none is left at either end.
     let mut out = String::with_capacity(value.len());
+    let mut space = false;
+    let mut push = |c: char| {
+        if c.is_whitespace() {
+            space = !out.is_empty();
+        } else {
+            if std::mem::take(&mut space) {
+                out.push(' ');
+            }
+            out.push(c);
+        }
+    };
     for piece in pieces {
         match piece {
-            Piece::Text(c) => out.push(c),
-            Piece::Run { mark, left, .. } => out.extend(std::iter::repeat_n(mark, left)),
+            Piece::Text(c) => push(c),
+            Piece::Run { star, left, .. } => {
+                for _ in 0..left {
+                    push(if star { '*' } else { '_' });
+                }
+            }
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
+/// One character of a line, or a run of emphasis marks. A long line holds
+/// one piece per character, so pieces stay small.
 enum Piece {
     Text(char),
-    /// A run of `*` or `_`, with the marks not yet paired.
+    /// A run of `*` (or `_`), with the marks not yet paired.
     Run {
-        mark: char,
-        left: usize,
+        star: bool,
+        left: u32,
         open: bool,
         close: bool,
     },
@@ -427,12 +447,12 @@ fn pair_emphasis(pieces: &mut [Piece]) {
     let mut openers: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     for index in 0..pieces.len() {
         let Piece::Run {
-            mark, open, close, ..
+            star, open, close, ..
         } = pieces[index]
         else {
             continue;
         };
-        let (same, other) = if mark == '*' { (0, 1) } else { (1, 0) };
+        let (same, other) = if star { (0, 1) } else { (1, 0) };
         if close {
             while let Some(&opener) = openers[same].last() {
                 let (Piece::Run { left: before, .. }, Piece::Run { left: after, .. }) =
@@ -666,6 +686,9 @@ mod tests {
             );
         }
         assert_eq!(inline_text(&"<".repeat(1_000)).len(), 1_000);
+        // A long line holds one piece per character.
+        assert!(std::mem::size_of::<Piece>() <= 8);
+        assert_eq!(inline_text(" \t a \u{2003} *b*\n c \u{3000}"), "a b c");
         assert_eq!(
             inline_text("[a](b) and 2 < 3 [e] <https://f.test>"),
             "a and 2 < 3 e https://f.test"

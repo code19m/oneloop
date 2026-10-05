@@ -207,6 +207,42 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
   assert.notEqual(original,task.state);
 });
 
+test('a newest-first Done takes a finished card on top, keeps the manual order and offers no reordering', async () => {
+  const t=withRuntime('board'),projectId=t.A.context().projectId;
+  t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
+  const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
+  assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
+  const before=done(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=before.at(-1);
+  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
+  assert.deepEqual(done(),[task.id,...before]);
+  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['task.move',['optimistic','status','taskId']]],'the server keeps the manual order');
+  t.requests[0].resolve({});await tick();
+  const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
+  t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move')},card.dataset.task);
+  const labels=[...t.d.querySelectorAll('.menu button')].map(button=>button.textContent);
+  assert(labels.includes('Move to Planning'));assert(!labels.includes('Move up')&&!labels.includes('Move down'));
+  t.A.closeOverlays();
+  t.A._drag={kind:'task',id:before[0],offsetX:0,offsetY:0};t.A._dropBefore=null;
+  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',before[0])},'done');
+  assert.equal(t.calls.length,1,'reordering Done sends nothing');
+  assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('onclick'),'App.toggleDoneOrder()');
+  t.A.toggleDoneOrder();
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'manual'}]));
+});
+
+test('the manual Done order keeps the drop position and reordering', () => {
+  const t=withRuntime('board');
+  const toggle=t.d.querySelector('[data-col="done"] .done-order');
+  assert.equal(toggle.getAttribute('aria-pressed'),'false');
+  const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=done.at(-1);
+  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
+  assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
+  t.A.toggleDoneOrder();
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'completed'}]));
+});
+
 test('a rejected Board move rolls back its card', async () => {
   const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;

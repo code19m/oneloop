@@ -37,7 +37,8 @@ oneloop. Add everyone else in the app:
 
 Usernames can't be changed later. The rules for usernames and passwords are
 under [Limits](reference.md#limits). Ask people, especially admins, to use long
-passphrases.
+passphrases. To require longer passwords, refuse common ones, or make temporary
+passwords expire, use the [password settings](reference.md#passwords).
 
 You can also create accounts on the server with
 [`oneloop user add`](reference.md#commands).

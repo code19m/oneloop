@@ -45,6 +45,7 @@ const LIMITS: Limits = Limits {
         longest_wait: Some(Duration::from_secs(60)),
         grace: Duration::from_secs(60),
         bytes_per_second: 1024,
+        most_credit: Duration::from_secs(5 * 60),
     },
     // Socket buffers between oneloop and a client can hold megabytes, so even
     // a steady reader can keep a single write waiting for minutes.
@@ -52,6 +53,7 @@ const LIMITS: Limits = Limits {
         longest_wait: None,
         grace: Duration::from_secs(60),
         bytes_per_second: 1024,
+        most_credit: Duration::from_secs(5 * 60),
     },
 };
 
@@ -66,12 +68,15 @@ struct Limits {
 /// How long a client may keep oneloop waiting for the rest of a request body,
 /// or for room to send more of a response: `longest_wait` at a time, and in
 /// total `grace` plus one second for each `bytes_per_second` it moved. A slow
-/// but steady client stays within this; a trickle does not.
+/// but steady client stays within this; a trickle does not. Moving bytes early
+/// or fast, including into socket buffers, earns at most `most_credit` of
+/// waiting, so a client that stops reading can't hold a connection for hours.
 #[derive(Clone, Copy)]
 struct Pace {
     longest_wait: Option<Duration>,
     grace: Duration,
     bytes_per_second: u64,
+    most_credit: Duration,
 }
 
 pub(crate) async fn serve(
@@ -181,12 +186,12 @@ async fn serve_connection<T>(
     }
 }
 
-/// Time a client kept oneloop waiting, against the bytes it moved.
+/// How much longer a client may keep oneloop waiting: waiting spends this
+/// credit, and the bytes the client moves earn it back, up to a ceiling.
 struct PaceMeter {
     limit: Pace,
     waiting_since: Option<Instant>,
-    waited: Duration,
-    moved: u64,
+    credit: Duration,
 }
 
 impl PaceMeter {
@@ -194,25 +199,28 @@ impl PaceMeter {
         Self {
             limit,
             waiting_since: None,
-            waited: Duration::ZERO,
-            moved: 0,
+            credit: limit.grace,
         }
     }
 
     /// The client moved `bytes`; any wait for it is over.
     fn moved(&mut self, bytes: usize) {
         if let Some(since) = self.waiting_since.take() {
-            self.waited += since.elapsed();
+            self.credit = self.credit.saturating_sub(since.elapsed());
         }
-        self.moved = self.moved.saturating_add(bytes as u64);
+        let earned = u128::from(bytes as u64) * 1_000_000_000
+            / u128::from(self.limit.bytes_per_second.max(1));
+        let earned = Duration::from_nanos(u64::try_from(earned).unwrap_or(u64::MAX));
+        self.credit = self
+            .credit
+            .saturating_add(earned)
+            .min(self.limit.most_credit.max(self.limit.grace));
     }
 
     /// Starts or continues a wait for the client; returns when it must end.
     fn deadline(&mut self) -> Instant {
         let since = *self.waiting_since.get_or_insert_with(Instant::now);
-        let budget =
-            self.limit.grace + Duration::from_secs(self.moved / self.limit.bytes_per_second.max(1));
-        let deadline = since + budget.saturating_sub(self.waited);
+        let deadline = since + self.credit;
         match self.limit.longest_wait {
             Some(longest) => deadline.min(since + longest),
             None => deadline,
@@ -448,6 +456,7 @@ mod tests {
             longest_wait: Some(Duration::from_secs(10)),
             grace: Duration::from_secs(10),
             bytes_per_second: 1024,
+            most_credit: Duration::from_secs(5 * 60),
         };
         let router = Router::new().route(
             "/",
@@ -487,6 +496,7 @@ mod tests {
             longest_wait: Some(Duration::from_secs(10)),
             grace: Duration::from_secs(10),
             bytes_per_second: 1024,
+            most_credit: Duration::from_secs(5 * 60),
         };
         let router = Router::new()
             .route(
@@ -563,9 +573,19 @@ mod tests {
         watch::Sender<bool>,
         tokio::task::JoinHandle<()>,
     ) {
+        download_of(RESPONSE_SIZE).await
+    }
+
+    async fn download_of(
+        size: usize,
+    ) -> (
+        DuplexStream,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let router = Router::new().route(
             "/",
-            axum::routing::get(|| async { vec![b'x'; RESPONSE_SIZE] }),
+            axum::routing::get(move || async move { vec![b'x'; size] }),
         );
         let (mut client, closing, connection) = connect(router, 4096);
         client
@@ -582,6 +602,25 @@ mod tests {
             .await
             .expect("the server must give up on a client that reads nothing")
             .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bytes_moved_earlier_earn_at_most_five_minutes_of_waiting() {
+        let (mut client, _closing, connection) = download_of(4 * RESPONSE_SIZE).await;
+        // Reading 1 MiB fast would earn over 15 minutes at 1 KiB a second.
+        let mut read = 0;
+        let mut buffer = [0; 4096];
+        while read < RESPONSE_SIZE {
+            read += client.read(&mut buffer).await.unwrap();
+        }
+        // Then the client stops reading.
+        tokio::time::timeout(
+            LIMITS.response.most_credit + Duration::from_secs(5),
+            connection,
+        )
+        .await
+        .expect("the earned credit is capped")
+        .unwrap();
     }
 
     #[tokio::test(start_paused = true)]

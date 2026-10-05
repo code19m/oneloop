@@ -42,7 +42,20 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     );
     fs::create_dir(root.path().join("before")).unwrap();
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
-    assert_eq!(upgrade.applied, vec![3]);
+    assert_eq!(upgrade.applied, vec![3, 4]);
+    let upgraded = Connection::open(live.join("oneloop.sqlite3")).unwrap();
+    let done_order_index: bool = upgraded
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='tasks_project_done_completed_idx')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        done_order_index,
+        "schema 4 adds the newest-first Done index"
+    );
+    drop(upgraded);
     assert_eq!(
         validate_backup(upgrade.backup_path.unwrap())
             .unwrap()

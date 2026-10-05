@@ -7,7 +7,7 @@ curl --fail --max-time 5 https://tasks.example.com/healthz
 ```
 
 ```json
-{"status":"ok","version":"0.1.0-rc.2","revision":"…","schemaVersion":3}
+{"status":"ok","version":"0.1.0-rc.2","revision":"…","schemaVersion":4}
 ```
 
 `/healthz` needs no sign-in. It returns HTTP 200 when the server is up and its
@@ -51,7 +51,7 @@ usernames, IP addresses and file paths, so keep them private.
 | `database schema … is newer than this binary supports` | An older version runs with an upgraded database. | Install the newer version again, or [roll back](backups-and-upgrades.md#roll-back). |
 | `another oneloop server or command is using …` | `db migrate` needs the data directory to itself, but the server or another `oneloop` command, such as a backup, uses it. | Stop the server, wait for other `oneloop` commands to finish, and try again. |
 | `another oneloop server is already using …` | A second server started with the same data directory. | Run only one server for each data directory. |
-| `incomplete restore at …` | A restore stopped halfway. | Empty the directory, including hidden files, and restore again. |
+| `incomplete restore at …` | A restore stopped halfway. | Run the same `oneloop backup restore` again. See [Restore](backups-and-upgrades.md#restore). |
 | Permission errors for files in the data directory | The files belong to another account, often after a command ran as root. | Give them back to the service account with `chown -R`. For Docker bind mounts, the owner is user 10001. |
 | "Open oneloop at its configured address" or "This address is not configured for sign-in" | The address in the browser, or the `Host` header, doesn't match `ONELOOP_PUBLIC_URL`. `localhost` and `127.0.0.1` count as different addresses. | Open the exact configured address. Make the proxy pass `Host` unchanged, with the port. |
 | People see "Too many attempts" when they sign in | A [sign-in limit](reference.md#limits) was reached. People can share an address even with correct forwarding. | Wait for the delay. If the log says `ignoring X-Forwarded-For from an untrusted peer`, set [`ONELOOP_TRUSTED_PROXIES`](production.md#trusted-proxy). |

@@ -46,9 +46,17 @@ const MIGRATIONS: &[Migration] = &[
         hook: None,
         foreign_keys_off: false,
     },
+    Migration {
+        version: 4,
+        name: "done_order",
+        sql: include_str!("../../migrations/0004_done_order.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

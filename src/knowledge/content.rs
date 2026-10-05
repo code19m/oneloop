@@ -13,9 +13,10 @@ use tokio_stream::Stream;
 
 use crate::{AppError, AppResult, Db};
 
-/// Bytes per database read. Each read walks the stored value from its start,
-/// so larger chunks cost fewer walks; attachments send 64 KiB at a time.
-const CHUNK_BYTES: u64 = 256 * 1024;
+/// Bytes per database read, as attachments send them. Each read walks the
+/// stored value from its start, so larger chunks would cost fewer walks, but
+/// every stalled download holds a chunk in memory.
+const CHUNK_BYTES: u64 = 64 * 1024;
 
 /// The first `len()` bytes of one stored version of a Knowledge file.
 pub struct FileBody {

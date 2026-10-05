@@ -849,22 +849,25 @@
   /** A goal label's center: under its date, but kept inside the timeline. */
   const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
 
+  /** Task counts arrive with the Roadmap's own read; until then, a placeholder. */
+  const countsLoading = '<span style="color:var(--ink-faint)" aria-hidden="true">…</span><span class="sr-only">Loading task counts</span>';
   function epicBar(item, ppd, top) {
     const e = item.epic, s = d(e.start);
-    const ongoing = item.to === null;
-    const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
+    const ongoing = item.to === null, counted = e.counted !== false;
+    const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (counted && ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
 
     const right = e.state === 'done' ? I.check : '';
 
     let meta;
-    if (e.state === 'done') meta = `${e.total ? e.done+'/'+e.total+' · ' : ''}<span style="color:var(--ok)">complete</span>`;
+    if (!counted && e.state !== 'done') meta = countsLoading;
+    else if (e.state === 'done') meta = `${counted && e.total ? e.done+'/'+e.total+' · ' : ''}<span style="color:var(--ok)">complete</span>`;
     else if (ongoing && e.total === 0) meta = '<span style="color:var(--ink-faint)">ongoing</span>';
     else if (ongoing) meta = `<span style="color:var(--ink-soft)">ongoing</span> · ${e.completedSinceStart ?? e.done} done · ${e.open ?? e.total - e.done} open`;
     else if (e.state === 'planning') meta = `${e.done}/${e.total} · starts ${humanShort(s)}`;
     else meta = `${e.done}/${e.total}`;
 
-    const prog = (ongoing || e.total === 0) ? '' :
+    const prog = (!counted || ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
     return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
@@ -898,7 +901,7 @@
     const status = { planning: 'Planning', active: 'In progress', done: 'Done' }[epic.state] || epic.state;
     mountRoadmapTip(anchor, 'epic-tooltip', `<div class="epic-tip-title">${esc(epic.title)}</div>
       <div class="epic-tip-track">${esc(trackById(epic.trackId)?.name || '')}</div>
-      <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.done} / ${epic.total} done</dd></div>
+      <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.counted === false ? countsLoading : `${epic.done} / ${epic.total} done`}</dd></div>
       <div><dt>Start</dt><dd>${esc(epic.start)}</dd></div><div><dt>End</dt><dd>${epic.end ? esc(epic.end) : 'No end date'}</dd></div></dl>
       ${epic.desc ? `<div class="epic-tip-description">${esc(epic.desc)}</div>` : ''}`);
   }
@@ -1019,6 +1022,9 @@
   }
 
   function applyTaskMove(t, col, beforeId = null, atTop = false) {
+    // A newest-first Done shows a finished task on top and has no manual order to change.
+    const newest = col === 'done' && doneNewest();
+    if (newest) { if (t.state === 'done') return null; beforeId = null; atTop = true; }
     const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
     const shownBefore = shownColumn(col).filter((item) => item !== t);
     const previousState = t.state, projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId, sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
@@ -1037,6 +1043,7 @@
     const at = next ? D.tasks.indexOf(next) : previous ? D.tasks.indexOf(previous) + 1 : D.tasks.length;
     D.tasks.splice(Math.max(0, at), 0, t);
     t.state = col;
+    if (newest) t.completedAt = Date.now();
     for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
     // The column keeps showing every card it showed, and shows the moved card too.
     const column = boardTasks().filter((item) => item.state === col);
@@ -1058,7 +1065,7 @@
       previousTaskBefore,previousTaskAfter,previousOrders,optimisticOrders,
       pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
       countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
-      payload:{ taskId:t.internalId||t.id, status:col, ...plan.placement, optimistic:true },
+      payload:{ taskId:t.internalId||t.id, status:col, ...(newest ? {} : plan.placement), optimistic:true },
     };
   }
 
@@ -1136,6 +1143,8 @@
     { key: 'done', name: 'Done' },
   ];
   const stIcon = (state) => I['st_' + state] || '';
+  /** Whether the loaded Done column lists the most recently completed task first. */
+  const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
 
   function taskBits(t) {
     if (t.state === 'done') return { right: stIcon('done'), cls: 'done' };
@@ -1181,7 +1190,7 @@
           </div></div>`;
       }).join('');
       return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `ondragover="App.colOver(event)" ondragleave="App.colLeave(event)" ondrop="App.dropTask(event,'${UIArg(c.key)}')"` : ''}>
-        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span></div>
+        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" onclick="App.toggleDoneOrder()">Newest first</button>` : ''}</div>
         </div>
         <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" onclick="App.loadMoreBoard('${UIArg(c.key)}')">Load more</button></div>` : ''}</div></section>`;
     }).join('');
@@ -1306,6 +1315,8 @@
       while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}
       const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
       if(count.textContent!==nextCount)count.textContent=nextCount;
+      const order=column.querySelector('.col-head .done-order'),pressed=next.querySelector('.col-head .done-order')?.getAttribute('aria-pressed');
+      if(order&&pressed&&order.getAttribute('aria-pressed')!==pressed)order.setAttribute('aria-pressed',pressed);
       list.scrollTop = scrollTop;
       filterScroll.set(list, { wanted: scrollTop, applied: list.scrollTop });
       if (!animate) return;
@@ -1730,7 +1741,7 @@
     }).join('') || '<div class="empty-note" style="margin:14px 0">no tasks yet</div>';
 
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
-    const midBlock = ongoing && e.weekly
+    const midBlock = e.counted === false ? '' : ongoing && e.weekly
       ? `<div data-epic-throughput style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px">${sparkline(e.weekly)}
           <div><div class="mono" style="font-size:var(--text-xs);color:var(--ink-soft)">${e.closedThisWeek} closed this week</div>
           <div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${e.completedSinceStart ?? e.done} since ${humanShort(d(e.start))} · ${e.open ?? e.total - e.done} open</div></div></div>`
@@ -3458,7 +3469,7 @@
         if (ev.clientY >= r.top - 4 && ev.clientY <= r.bottom + 4) return;
       }
       const cards = [...colEl.querySelectorAll('.card:not(.dragging)')];
-      const next = cards.find((c) => {
+      const next = colEl.dataset.col === 'done' && doneNewest() ? cards[0] : cards.find((c) => {
         // Hit-test the final layout, not a sibling's in-flight transform.
         const y = list.getBoundingClientRect().top + c.offsetTop - list.scrollTop;
         return ev.clientY < y + c.offsetHeight / 2;
@@ -3829,6 +3840,7 @@
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
+    toggleDoneOrder(){bootWindow.OneloopRuntime?.invoke('board.doneOrder',{order:doneNewest()?'manual':'completed'}).catch(bootWindow.OneloopRuntime.report);},
     loadMoreBoard(col){if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.more',{status:col}).catch(bootWindow.OneloopRuntime.report);return;}state.boardLimits[col]=(state.boardLimits[col]||50)+50;applyBoardFilters(false);},
     loadMoreUsers(){const count=document.querySelectorAll('.user-row').length;state.usersLimit+=50;render();[...document.querySelectorAll('.user-row')].slice(count).forEach(el=>UIMotion.enter(el));},
     loadOlderActivity(id){state.activityLimits[id]=(state.activityLimits[id]||50)+50;const timeline=document.querySelector('.task-page .timeline'),task=taskById(id);if(timeline&&task){const scroll=document.querySelector('.task-page'),before=scroll.scrollHeight;setHTML(timeline,taskFeedHtml(task,canBoard()));scroll.scrollTop+=scroll.scrollHeight-before;fadeContent(timeline);}},
@@ -3836,8 +3848,9 @@
       if(App._boardMovePending)return;
       if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
       const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){render();focusMovedTask(id);}}}}));
-      if(index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
-      if(index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
+      const ordered=!(task.state==='done'&&doneNewest());
+      if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
+      if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
       App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
     },
     moveTaskOrder(id,anchor,before){if(!canBoard())return;const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);render();focusMovedTask(id);animateLayout(old,'.card[data-task]');},

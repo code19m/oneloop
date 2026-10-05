@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ApiError, createApiClient, prepareCommand } from '../../../src/data/api-client.js';
 import { createCommandGateway } from '../../../src/data/command-gateway.js';
+import { saveDoneOrder } from '../../../src/data/done-order.js';
 
 test('retries preserve immutable logical command identity without automatic retry', async () => {
   const payload = { title: 'Initial', assignees: ['a'] };
@@ -50,6 +51,20 @@ test('bootstrap uses encoded identifiers, supports empty responses, and rejects 
   assert.equal(requested, '/api/bootstrap?projectId=my+project&taskId=BIR-001');
   const invalid = createApiClient({ fetchImpl: async () => new Response('bad', { status: 200 }) });
   await assert.rejects(invalid.command(prepareCommand('task.update', {})), error => error.code === 'invalid_response' && error.uncertain);
+});
+
+test('a Board bootstrap asks for Done in the order this browser chose', async (t) => {
+  const requested = [];
+  const api = createApiClient({ fetchImpl: async (url) => { requested.push(url); return new Response(null, { status: 204 }); } });
+  await api.bootstrap({ projectId: 'p1', view: 'board' });
+  saveDoneOrder('completed', undefined); t.after(() => saveDoneOrder('manual', undefined));
+  await api.bootstrap({ projectId: 'p1', view: 'board' });
+  await api.bootstrap({ projectId: 'p1', view: 'roadmap' });
+  assert.deepEqual(requested, [
+    '/api/bootstrap?projectId=p1&view=board',
+    '/api/bootstrap?projectId=p1&view=board&doneOrder=completed',
+    '/api/bootstrap?projectId=p1&view=roadmap',
+  ]);
 });
 
 test('auth helpers use the fixed same-origin routes and JSON contracts', async () => {

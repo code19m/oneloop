@@ -30,6 +30,17 @@ oneloop backup create /var/backups/oneloop/2026-09-28
 The destination folder must not exist yet, but its parent folder must. It must
 be outside the data directory.
 
+A backup builds its copy in a hidden folder next to the destination, such as
+`.2026-09-28.partial-…`, and renames it when the copy is complete and verified.
+If a backup stops halfway, for example because the server restarted, the next
+backup into the same folder removes that hidden folder; `db migrate` does the
+same in its backup folder. oneloop removes it only when it can tell that the
+backup that wrote it has ended: the backup ran on the same computer, and its
+process no longer runs. Otherwise oneloop prints the folder's path. Delete it
+yourself once you are sure that no backup is running. oneloop tells computers
+apart by their host name, so don't share a backup folder between computers
+that have the same host name.
+
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:
 
@@ -119,8 +130,12 @@ you are sure that the restore worked.
 After a restore, everyone must sign in again and reconnect their AI assistants,
 because oneloop cancels all sessions and connections from the backup.
 
-If a restore stops halfway, oneloop refuses to use that directory. Empty it
-completely, including hidden files, and restore again.
+If a restore stops halfway, oneloop refuses to use that directory. Run the same
+restore again: it first removes what the stopped restore left, and nothing
+else. If oneloop can't tell that the stopped restore has ended, for example
+because it ran on another computer, the restore says so. Then make sure that no
+restore is running, empty the directory completely, including hidden files, and
+restore again.
 
 ## Upgrade
 
@@ -153,8 +168,8 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database in <data folder> migrated from 2 to 3` and the
-folder of its backup, or `database in <data folder> is current (schema 3)` if
+`db migrate` prints `database in <data folder> migrated from 2 to 4` and the
+folder of its backup, or `database in <data folder> is current (schema 4)` if
 there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
@@ -176,7 +191,7 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database in <data folder> migrated from 16 to 3`.
+It prints something like `database in <data folder> migrated from 16 to 4`.
 Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back

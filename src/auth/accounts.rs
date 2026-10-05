@@ -47,6 +47,7 @@ impl AuthService {
         new: &str,
     ) -> AppResult<IssuedSession> {
         let session_id = actor.session_id().ok_or(AppError::Forbidden)?.to_owned();
+        self.policy.check(new, &actor.username, actor.is_admin)?;
         let permit = password_work_permit().await?;
         let verified_hash = self
             .verify_current_password(actor, current, "currentPassword", &permit)
@@ -209,7 +210,7 @@ impl AuthService {
         if is_admin {
             actor.require_recent_auth(now)?;
         }
-        let temporary_password = random_token()?;
+        let temporary_password = self.policy.temporary_password()?;
         let username = normalize_username(username)?;
         let display_name = normalize_display_name(display_name)?;
         let password_for_hash = temporary_password.clone();
@@ -296,7 +297,7 @@ impl AuthService {
                 "use profile password change for your own account",
             ));
         }
-        let password = random_token()?;
+        let password = self.policy.temporary_password()?;
         let password_for_hash = password.clone();
         let permit = password_work_permit().await?;
         let password_hash =

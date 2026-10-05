@@ -10,7 +10,7 @@
 <main class=mcp-consent>
 <div class=brand>oneloop</div>
 <h1>Connect <bdi>{client}</bdi></h1>
-<p class=hint>App name supplied by the client; identity is unverified.</p>
+<p class=hint>{client_source}</p>
 <p class=warning>{destination}</p>
 <p class=account>Signed in as <bdi>{display_name}</bdi> (@<bdi>{username}</bdi>)</p>
 <p class=lead>This app can send permitted oneloop data to its AI provider. Select only the projects and capabilities it needs.</p>{error}<form method=post action=/oauth/authorize>

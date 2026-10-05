@@ -29,6 +29,12 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, Db, Router, String, String)
 async fn fixture_with_trusted_proxies(
     trusted_proxies: &str,
 ) -> (tempfile::TempDir, Db, Router, String, String) {
+    fixture_with(&[("ONELOOP_TRUSTED_PROXIES", trusted_proxies)]).await
+}
+
+async fn fixture_with(
+    settings: &[(&str, &str)],
+) -> (tempfile::TempDir, Db, Router, String, String) {
     // These independent fixtures share the process-wide password workers. Bound
     // setup hashing so a parallel test run does not test overload accidentally.
     static SETUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -47,11 +53,7 @@ async fn fixture_with_trusted_proxies(
     else {
         panic!()
     };
-    let config = support::config(
-        dir.path(),
-        "http://127.0.0.1:8080",
-        &[("ONELOOP_TRUSTED_PROXIES", trusted_proxies)],
-    );
+    let config = support::config(dir.path(), "http://127.0.0.1:8080", settings);
     (
         dir,
         db.clone(),

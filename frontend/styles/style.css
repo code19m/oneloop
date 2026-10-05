@@ -491,6 +491,9 @@ div.ms-label {cursor:default}
 .col-cards > .card { flex-shrink:0; }
 .col-head .row1 { display: flex; align-items: center; gap: 7px; font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
 .col-head .row2 { padding-left: 20px; font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
+.col-head .done-order { margin-left: auto; min-height: 24px; padding: 2px 8px; font-size: var(--text-xs); }
+.col-head .done-order[aria-pressed=true] { --btn-bg: var(--fill-selected); --btn-ink: var(--ink); }
+@media (forced-colors: active) { .col-head .done-order[aria-pressed=true] { forced-color-adjust: none; background: Highlight; color: HighlightText; } }
 .card { display: flex; flex-direction: column; gap: 9px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: var(--shadow-card); cursor: pointer; transition: transform 0.14s var(--ease-out), filter 0.14s var(--ease-out); }
 .card:hover { transform: none; filter: none;  background: var(--surface-control); border-color: var(--line-strong);}
 .card:active { transform: none; transition-duration: 0.06s; }

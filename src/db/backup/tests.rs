@@ -155,3 +155,245 @@ fn validate_a_hundred_thousand_file_manifest_above_old_limit() {
     assert!(fs::metadata(backup.join(MANIFEST_FILE)).unwrap().len() > 16 * 1024 * 1024);
     assert_eq!(validate_backup(&backup).unwrap().files.len(), 100_001);
 }
+
+/// The ID of a process that has exited, as an interrupted backup's would be.
+fn exited_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+fn owner(kind: &str, pid: u32) -> WorkOwner {
+    WorkOwner {
+        kind: kind.into(),
+        host: host_name(),
+        pid,
+        data_dir: "/srv/oneloop".into(),
+        started_at: 1,
+        working: None,
+        publishes: Vec::new(),
+    }
+}
+
+fn plant(path: &Path, owner: &WorkOwner) {
+    fs::write(path, serde_json::to_vec(owner).unwrap()).unwrap();
+}
+
+/// Retries `step` for up to two seconds until it reports success. A process
+/// that another test starts holds a copy of every lock this process holds
+/// until the child runs its program, so a lock released here can stay taken
+/// for a moment. Backup and restore start no processes.
+fn soon(mut step: impl FnMut() -> bool) -> bool {
+    (0..200).any(|_| {
+        step() || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        }
+    })
+}
+
+#[test]
+fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let record = root.path().join(OWNER_FILE);
+    let gone = exited_pid();
+    plant(&record, &owner("backup", gone));
+    let (lock, found) = claim_abandoned(&record).unwrap();
+    assert_eq!(found.pid, gone);
+    // A lock belongs to one open file, so a second open of the record sees it.
+    assert!(claim_abandoned(&record).is_none());
+    drop(lock);
+    fs::remove_file(&record).unwrap();
+    let writer = OwnerLock::create(&record, &owner("backup", gone)).unwrap();
+    assert!(
+        claim_abandoned(&record).is_none(),
+        "the writer still holds its lock"
+    );
+    drop(writer);
+    assert!(soon(|| claim_abandoned(&record).is_some()));
+    plant(&record, &owner("backup", std::process::id()));
+    assert!(claim_abandoned(&record).is_none(), "the process still runs");
+    let mut elsewhere = owner("backup", gone);
+    elsewhere.host.push_str("-elsewhere");
+    plant(&record, &elsewhere);
+    assert!(claim_abandoned(&record).is_none(), "another computer");
+    fs::write(&record, b"").unwrap();
+    assert!(
+        claim_abandoned(&record).is_none(),
+        "a record from an older version"
+    );
+    fs::remove_file(&record).unwrap();
+    assert!(claim_abandoned(&record).is_none());
+}
+
+#[test]
+fn a_backup_removes_only_copies_whose_writer_is_gone() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let live = root.path().join("live");
+    migration::migrate(&live, None).unwrap();
+    let parent = root.path().join("backups");
+    fs::create_dir(&parent).unwrap();
+    let copy = |name: &str| {
+        let path = parent.join(format!(".{name}.partial-{}", Uuid::now_v7()));
+        fs::create_dir_all(path.join("data")).unwrap();
+        fs::write(path.join("data/oneloop.sqlite3"), b"partial").unwrap();
+        path
+    };
+    let (abandoned, running, unowned) = (copy("nightly"), copy("other"), copy("old"));
+    plant(&abandoned.join(OWNER_FILE), &owner("backup", exited_pid()));
+    let _writer =
+        OwnerLock::create(&running.join(OWNER_FILE), &owner("backup", exited_pid())).unwrap();
+    let published = create_backup(&live, parent.join("new")).unwrap();
+    assert!(!abandoned.exists());
+    assert!(running.exists() && unowned.exists());
+    assert!(!published.join(OWNER_FILE).exists());
+    validate_backup(&published).unwrap();
+}
+
+#[test]
+fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir_in("target").unwrap();
+    let gone = exited_pid();
+    // Filesystems list a folder by name, by creation in either direction, or
+    // by a hash of the names. Each copy has its own name for the part that
+    // can't be removed, on either side of the record's name, and half the
+    // copies get their record first. Whichever way a folder is listed,
+    // removing a record before the rest would lose some of them.
+    let copies = (0..16)
+        .map(|index| {
+            let copy = root
+                .path()
+                .join(format!(".copy{index}.partial-{}", Uuid::now_v7()));
+            let stuck = copy.join(format!(
+                "{}stuck-{index}",
+                if index % 2 == 0 { "-" } else { "" }
+            ));
+            fs::create_dir(&copy).unwrap();
+            let record_first = index % 4 < 2;
+            if record_first {
+                plant(&copy.join(OWNER_FILE), &owner("backup", gone));
+            }
+            fs::create_dir(&stuck).unwrap();
+            fs::write(stuck.join("oneloop.sqlite3"), b"partial").unwrap();
+            if !record_first {
+                plant(&copy.join(OWNER_FILE), &owner("backup", gone));
+            }
+            fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+            (copy, stuck)
+        })
+        .collect::<Vec<_>>();
+    let unlock = || {
+        for (_, stuck) in &copies {
+            fs::set_permissions(stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    };
+    if fs::write(copies[0].1.join("probe"), b"").is_ok() {
+        // Root ignores the permissions this test relies on.
+        unlock();
+        return;
+    }
+    reclaim_partial_copies(root.path());
+    for (copy, _) in &copies {
+        assert!(
+            copy.join(OWNER_FILE).exists(),
+            "{}: the record goes only after everything else",
+            copy.display()
+        );
+    }
+    unlock();
+    assert!(soon(|| {
+        reclaim_partial_copies(root.path());
+        copies.iter().all(|(copy, _)| !copy.exists())
+    }));
+}
+
+#[test]
+fn a_restore_removes_only_the_marker_it_claimed() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let marker = root.path().join(crate::db::RESTORE_MARKER);
+    plant(&marker, &owner("restore", exited_pid()));
+    let (lock, _) = claim_abandoned(&marker).unwrap();
+    // Another restore removed the old marker and wrote its own meanwhile.
+    fs::remove_file(&marker).unwrap();
+    plant(&marker, &owner("restore", std::process::id()));
+    assert!(!remove_claimed_marker(&marker, lock).unwrap());
+    assert_eq!(
+        serde_json::from_slice::<WorkOwner>(&fs::read(&marker).unwrap())
+            .unwrap()
+            .pid,
+        std::process::id(),
+        "the other restore keeps its marker"
+    );
+    // The marker this restore claimed goes.
+    plant(&marker, &owner("restore", exited_pid()));
+    let mut claimed = None;
+    assert!(soon(|| {
+        claimed = claim_abandoned(&marker);
+        claimed.is_some()
+    }));
+    assert!(remove_claimed_marker(&marker, claimed.unwrap().0).unwrap());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn restoring_again_removes_only_what_an_interrupted_restore_left() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let live = root.path().join("live");
+    migration::migrate(&live, None).unwrap();
+    let backup = root.path().join("backup");
+    create_backup(&live, &backup).unwrap();
+    // A restore stopped while it moved its copy into place.
+    let interrupted = |target: &Path, publishes: &[&str]| {
+        fs::create_dir_all(target).unwrap();
+        let working = format!(".oneloop-restore-{}", Uuid::now_v7());
+        fs::create_dir_all(target.join(&working).join("files")).unwrap();
+        fs::write(target.join("oneloop.sqlite3"), b"half published").unwrap();
+        let mut record = owner("restore", exited_pid());
+        record.working = Some(working.clone());
+        record.publishes = publishes.iter().map(|name| (*name).to_owned()).collect();
+        plant(&target.join(crate::db::RESTORE_MARKER), &record);
+        working
+    };
+    let target = root.path().join("target");
+    let working = interrupted(&target, &["oneloop.sqlite3", "files"]);
+    restore_backup(&backup, &target).unwrap();
+    assert!(!target.join(&working).exists());
+    assert!(!target.join(crate::db::RESTORE_MARKER).exists());
+    drop(crate::db::Db::open(&target).unwrap());
+
+    // Anything the restore did not publish stays, so the target stays refused.
+    let kept = root.path().join("kept");
+    interrupted(&kept, &["oneloop.sqlite3"]);
+    fs::write(kept.join("notes.txt"), b"mine").unwrap();
+    let error = restore_backup(&backup, &kept).unwrap_err().to_string();
+    assert!(error.contains("not empty"), "{error}");
+    assert_eq!(fs::read(kept.join("notes.txt")).unwrap(), b"mine");
+
+    // A record that names anything outside the target removes nothing.
+    let escape = root.path().join("escape");
+    interrupted(&escape, &["../live"]);
+    let error = restore_backup(&backup, &escape).unwrap_err().to_string();
+    assert!(error.contains("incomplete restore"), "{error}");
+    assert!(live.join("oneloop.sqlite3").exists());
+    assert!(escape.join("oneloop.sqlite3").exists());
+
+    // A wrong backup path stops the restore before it removes anything.
+    let mistyped = root.path().join("mistyped");
+    let working = interrupted(&mistyped, &["oneloop.sqlite3", "files"]);
+    let error = restore_backup(root.path().join("no-such-backup"), &mistyped)
+        .unwrap_err()
+        .to_string();
+    assert!(mistyped.join(&working).exists());
+    assert!(mistyped.join(crate::db::RESTORE_MARKER).exists());
+    assert!(error.contains("backup directory does not exist"), "{error}");
+
+    // A marker from an older version has no record and stays refused.
+    let older = root.path().join("older");
+    fs::create_dir(&older).unwrap();
+    fs::write(older.join(crate::db::RESTORE_MARKER), b"").unwrap();
+    let error = restore_backup(&backup, &older).unwrap_err().to_string();
+    assert!(error.contains("incomplete restore"), "{error}");
+    assert!(older.join(crate::db::RESTORE_MARKER).exists());
+}
