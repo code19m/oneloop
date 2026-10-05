@@ -235,3 +235,60 @@ test('Users counts loaded accounts as a lower bound and lists a new account only
   assert.deepEqual(listed(),['blairq','u-carol','danaell','robin']);assert.equal(count(),'4+');
  }finally{globalThis.FormData=originalFormData;}
 });
+
+/** End the session the way the auth controller does: private data goes, the page signs out. */
+function endSession(t) {
+ const session = t.D.session;
+ t.w.Recovery.sessionExpired();
+ t.D.session = null; t.w.Recovery.sessionChanged(null); t.A.refresh();
+ return session;
+}
+function signInAgain(t, session) { t.D.session = session; t.w.Recovery.sessionChanged(session); t.A.refresh(); }
+
+test('text typed when the session ends waits for the same person to sign in again', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ const description = t.d.getElementById('task-description');
+ description.focus(); description.value = 'A description typed before the session ended';
+ const comment = t.d.getElementById('cmtIn'); comment.value = 'A comment that took ten minutes to write';
+ comment.focus();
+ const session = endSession(t);
+ const heading = t.d.querySelector('.auth-card h1');
+ assert.equal(t.d.activeElement, heading, 'typing goes nowhere instead of into Username');
+ assert.equal(t.d.querySelector('[name="username"]').hasAttribute('autofocus'), false);
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in again to keep what you typed.');
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.getElementById('cmtIn').value, 'A comment that took ten minutes to write');
+ assert.equal(t.d.getElementById('task-description').value, 'A description typed before the session ended');
+ assert.equal(t.d.activeElement, t.d.getElementById('cmtIn'));
+ assert.equal(t.w.Recovery.keepsInput, false, 'it is put back once');
+});
+
+test('text typed when the session ends is dropped when someone else signs in', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
+ const session = endSession(t);
+ signInAgain(t, { ...session, id: 'other-session', userId: 'robin' });
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, session);
+ assert.equal(t.d.getElementById('cmtIn')?.value ?? '', '');
+});
+
+test('the sign-in page still focuses Username when nothing typed is waiting', () => {
+ const t = bootApp({ route: 'board' });
+ endSession(t);
+ assert.equal(t.d.activeElement, t.d.querySelector('[name="username"]'));
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in to continue.');
+});
+
+test('a reply typed when the session ends comes back as a reply, and as a comment once its target is gone', () => {
+ for (const removed of [false, true]) {
+  const t = bootApp({ route: 'task/BIR-079', prepare(D) { D.tasks.find(task => task.id === 'BIR-079').comments = [{ id: 'c1', who: 'robin', ts: Date.now() - 60_000, text: 'Question', mentions: [], parentId: null }]; } });
+  t.A.replyComment('BIR-079', 'c1');
+  const input = t.d.getElementById('cmtIn'); input.value = 'My answer'; input.focus();
+  const session = endSession(t);
+  if (removed) t.D.tasks.find(task => task.id === 'BIR-079').comments = [];
+  signInAgain(t, session);
+  assert.equal(t.d.getElementById('cmtIn').value, 'My answer');
+  assert.equal(!!t.d.querySelector('.collaboration-composer .reply-context'), !removed, removed ? 'a reply to a removed comment' : 'a reply');
+ }
+});

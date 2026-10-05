@@ -1275,6 +1275,8 @@
 
   // ---------- auth ----------
   function renderAuth(mode) {
+    // Someone typing when their session ended keeps typing into nothing, not into Username.
+    const keptInput = !!window.Recovery?.keepsInput;
     const inner = mode === 'change'
       ? `<h1 tabindex="-1">Set a new password</h1>
         <form novalidate onsubmit="return App.setPassword(event)">
@@ -1285,12 +1287,12 @@
         </form>`
       : `<h1 tabindex="-1">Sign in</h1>
         <form novalidate onsubmit="return App.login(event)">
-          ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username" autofocus>`)}
+          ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username"${keptInput ? '' : ' autofocus'}>`)}
           ${field('Password', `<input class="ctl" type="password" name="password" autocomplete="current-password">`)}
           <div class="modal-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Sign in</button></div>
         </form>`;
     return `<main class="auth-wrap" id="main" tabindex="-1"><div class="auth-card">
-      <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?'<p class="auth-notice">Your session ended. Sign in to continue.</p>':''}${inner}</div></main>`;
+      <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?`<p class="auth-notice" role="alert">${keptInput?'Your session ended. Sign in again to keep what you typed.':'Your session ended. Sign in to continue.'}</p>`:''}${inner}</div></main>`;
   }
 
   // ---------- shared descriptions ----------
@@ -2135,7 +2137,7 @@
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
       migrateEvents?.();
       if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
-        const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]');
+        const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
         target?.focus({preventScroll:true});
       }
       if(scope===renderScope()&&focused){
@@ -2148,6 +2150,7 @@
       const sidebar=document.querySelector('.sidebar');
       if(innerWidth<=900 && state.sideOpen && sidebar && !sidebar.inert && !sidebar.closest('[inert]') && document.activeElement===document.body)sidebar.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
     }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
+    window.Recovery?.resumeEditing?.();
   }
   /** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
   const waitingPasswords=[];

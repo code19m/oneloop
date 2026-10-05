@@ -160,7 +160,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   // A task field value that is not saved yet. The task page shows it instead of
   // the saved value, so a refresh never replaces what the person typed, and
   // offers Save when the save failed.
-  /** @type {Map<string,{taskId:string,field:string,value:string,base:number|undefined,unsaved:boolean,retryOnline:boolean}>} */
+  /** @type {Map<string,{taskId:string,field:string,value:string,base:number|undefined,scope:string,unsaved:boolean,retryOnline:boolean}>} */
   const drafts=new Map();
   let jobSequence=0;
   const RECORD_FIELDS={task:'taskId',epic:'epicId',track:'trackId',milestone:'milestoneId',pool:'poolItemId',project:'projectId'};
@@ -171,9 +171,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const id=payload[RECORD_FIELDS[type]]??payload.id;
     return id?`${type}:${id}`:null;
   }
-  const draftKey=(taskId,field)=>`${sessionScope()}|${taskId}|${field}`;
-  // Drafts belong to one session; another session never sees them.
-  function pruneDrafts(){const scope=`${sessionScope()}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  // Drafts belong to one person: they survive the end of a session and come
+  // back when the same person signs in again; anyone else never sees them.
+  const draftKey=(taskId,field)=>`${data.session?.userId??''}|${taskId}|${field}`;
+  function pruneDrafts(){if(!data.session)return;const scope=`${data.session.userId}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  // A save the end of a session cut off leaves its draft Not saved.
+  function unsaved(draft){if(draft&&sessionScope()!==draft.scope)draft.unsaved=true;}
   const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
   const unsavedDraft=(taskId)=>[...drafts.values()].some(draft=>draft.taskId===taskId&&draft.unsaved&&drafts.get(draftKey(taskId,draft.field))===draft);
   function paintDrafts(taskId){const item=task(taskId);if(item)app.refreshTaskDrafts?.(item.id);}
@@ -199,7 +202,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       while(queue.jobs.size){
         const [jobKey,job]=queue.jobs.entries().next().value;queue.jobs.delete(jobKey);
         const draft=job.options.draft?drafts.get(job.options.draft):null;
-        if(sessionScope()!==scope){for(const waiter of job.waiters)waiter.resolve(stale());continue;}
+        if(sessionScope()!==scope){unsaved(draft);for(const waiter of job.waiters)waiter.resolve(stale());continue;}
         let base=job.base;while(chain.has(base))base=chain.get(base);
         const current=latestEntity(job.operation,job.payload,job.entity)??job.entity;
         queue.active=true;
@@ -213,6 +216,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           // A newer value of this field is still queued: its callers learn the outcome together.
           if(newer&&!result?.stale){newer.waiters.unshift(...job.waiters);newer.carry=carry;continue;}
           const outcome=result?.stale||!carry?result:carry;
+          if(result?.stale)unsaved(draft);
           if(draft&&!result?.stale&&drafts.get(job.options.draft)===draft&&draft.value===job.options.draftValue){drafts.delete(job.options.draft);paintDrafts(draft.taskId);}
           if(job.options.coalesce&&carry&&!outcome?.stale){
             if(job.options.paint!==false&&!carry.refreshError)paintCommand(job.operation);
@@ -224,6 +228,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           // A newer queued value of the field is not sent after a failure; its draft keeps it.
           const newer=queue.jobs.get(jobKey);if(newer){queue.jobs.delete(jobKey);job.waiters.push(...newer.waiters);}
           const latest=job.options.draft?drafts.get(job.options.draft):null;
+          unsaved(latest);
           if(latest&&sessionScope()===scope){
             if(/** @type {any} */(error)?.conflictChoice==='latest')drafts.delete(job.options.draft);
             else Object.assign(latest,{unsaved:true,base:latest.base??job.base,retryOnline:['offline','network_error','timeout'].includes(/** @type {any} */(error)?.code)});
@@ -253,7 +258,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       draft=draftKey(item.internalId,field);
       const previous=drafts.get(draft);
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
-      else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
+      else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }
     return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   }
@@ -710,7 +715,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const item=task(taskId),max={title:140,desc:4000}[field];if(!item||!max)return;
       const next=text(value,max);if(next===(field==='title'?item.title:item.desc??''))return;
       pruneDrafts();
-      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,unsaved:true,retryOnline:false});
+      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,scope:sessionScope(),unsaved:true,retryOnline:false});
     },
     async invoke(action,payload){
       if(action==='date.rollover')return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});

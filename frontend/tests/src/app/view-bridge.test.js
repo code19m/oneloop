@@ -88,6 +88,33 @@ test('a title cut at its length limit keeps whole characters',async()=>{
   assert.equal(payloads[0].title,'A'.repeat(139));
 });
 
+test('a task draft is dropped when someone else signs in after the session ended',async()=>{
+  const pending=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:()=>new Promise((_resolve,reject)=>pending.push(reject))}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3,title:'Saved title'});
+  state.app.updTask('ONE-1','title','Typed title');
+  assert.deepEqual(state.bridge.taskDraft('t1','title'),{value:'Typed title',unsaved:false});
+  const person=state.data.session;state.data.session=null;
+  pending[0](new ApiError('Authentication is required',{status:401,code:'unauthorized'}));await new Promise(setImmediate);
+  state.data.session={id:'s2',userId:'u2'};
+  assert.equal(state.bridge.taskDraft('t1','title'),null,'someone else never sees it');
+  state.data.session={...person,id:'s3'};
+  assert.equal(state.bridge.taskDraft('t1','title'),null,'it was dropped when someone else signed in');
+});
+
+test('a task draft survives the end of a session for the same person',async()=>{
+  const pending=[],sent=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:(_operation,payload,options)=>{sent.push([payload.title,options.expectedRevision]);return new Promise((_resolve,reject)=>pending.push(reject));}}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3,title:'Saved title'});
+  state.app.updTask('ONE-1','title','Typed title');
+  const person=state.data.session;state.data.session=null;
+  pending[0](new ApiError('Authentication is required',{status:401,code:'unauthorized'}));await new Promise(setImmediate);
+  state.data.session={...person,id:'s2'};
+  assert.deepEqual(state.bridge.taskDraft('t1','title'),{value:'Typed title',unsaved:true});
+  state.app.saveTaskDraft('ONE-1','title');
+  assert.deepEqual(sent,[['Typed title',3],['Typed title',3]],'Save sends it again from the revision it was typed on');
+});
+
 test('project autosave keeps the latest name while an earlier name is saving',async()=>{
   let gateway;
   const state=fixture({view:'settings',projectId:'p1'}, {gateway:{execute:(...args)=>gateway.execute(...args)}});

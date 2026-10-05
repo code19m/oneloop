@@ -213,5 +213,9 @@ On your **Profile**:
 A session ends after 7 days without use, and after 30 days at most. Background
 updates do not keep an idle session open.
 
+If your session ends while you type, sign in again in the same tab and your
+text comes back. The tab keeps it only in memory, and drops it if someone else
+signs in there.
+
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

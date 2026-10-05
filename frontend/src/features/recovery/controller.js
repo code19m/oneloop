@@ -28,8 +28,19 @@ function controlKey(root, element) {
   return element.getAttribute('name') ? `[name="${CSS.escape(element.getAttribute('name') || '')}"]:${index}` : null;
 }
 
-/** Capture open editor state only in memory for the duration of one refresh. */
-export function captureOpenEditor(doc = document) {
+/** @param {HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement} element */
+function changedControl(element) {
+  if (element instanceof HTMLSelectElement) return [...element.options].some((option)=>option.selected!==option.defaultSelected);
+  return element.value!==element.defaultValue || (element instanceof HTMLInputElement && element.checked!==element.defaultChecked);
+}
+
+/**
+ * Capture open editor state, only in memory. With `changedOnly`, only the
+ * controls the person changed, and nothing when they changed none; `skip`
+ * leaves out controls that keep their own state.
+ * @param {Document} [doc] @param {{changedOnly?:boolean,skip?:(element:Element)=>boolean}} [options]
+ */
+export function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>false} = {}) {
   const active=doc.activeElement;
   const candidates=[...doc.querySelectorAll(EDITOR_ROOT)];
   const root=active?.closest?.(EDITOR_ROOT) ?? candidates.find((candidate)=>candidate.querySelector('form:focus-within')) ?? candidates.find((candidate)=>EDITOR_REVISIONS.has(candidate)) ?? null;
@@ -38,9 +49,11 @@ export function captureOpenEditor(doc = document) {
   for (const element of root.querySelectorAll('input,textarea,select')) {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) continue;
     if (element instanceof HTMLInputElement && ['password','file','submit','button'].includes(element.type)) continue;
+    if (skip(element) || changedOnly && !changedControl(element)) continue;
     const key=controlKey(root,element);if(!key)continue;
     controls.push({key,value:element.value,checked:element instanceof HTMLInputElement?element.checked:undefined});
   }
+  if (changedOnly && !controls.length) return null;
   const activeKey=active instanceof Element?controlKey(root,active):null;
   const selection=active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement
     ? {start:active.selectionStart,end:active.selectionEnd,direction:active.selectionDirection}
@@ -48,8 +61,12 @@ export function captureOpenEditor(doc = document) {
   return {rootClass:[...root.classList],controls,activeKey,selection,scrollTop:root.scrollTop,revisions:[...(EDITOR_REVISIONS.get(root)?.entries?.()??[])]};
 }
 
-/** @param {ReturnType<typeof captureOpenEditor>} snapshot @param {Document} [doc] */
-export function restoreOpenEditor(snapshot, doc = document) {
+/**
+ * Put captured editor state back. With `notify`, a control whose value changes
+ * reports an input event, so the page reacts as if the person typed it.
+ * @param {ReturnType<typeof captureOpenEditor>} snapshot @param {Document} [doc] @param {{notify?:boolean}} [options]
+ */
+export function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
   if (!snapshot) return null;
   const root=[...doc.querySelectorAll(EDITOR_ROOT)].find((candidate)=>snapshot.rootClass.every((name)=>candidate.classList.contains(name)));
   if (!root) return null;
@@ -62,8 +79,10 @@ export function restoreOpenEditor(snapshot, doc = document) {
   for(const state of snapshot.controls){
     const element=find(state.key);
     if(!(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement||element instanceof HTMLSelectElement))continue;
+    const changed=element.value!==state.value||element instanceof HTMLInputElement&&state.checked!==undefined&&element.checked!==state.checked;
     element.value=state.value;
     if(element instanceof HTMLInputElement&&state.checked!==undefined)element.checked=state.checked;
+    if(notify&&changed)element.dispatchEvent(new (doc.defaultView??globalThis).Event('input',{bubbles:true}));
   }
   root.scrollTop=snapshot.scrollTop;
   const active=snapshot.activeKey?find(snapshot.activeKey):null;
@@ -123,6 +142,9 @@ export function createRecoveryController({
   documentObject = globalThis.document,
 }) {
   let hooks=null,pageError=null,pageReference=null,expired=false;
+  // What the person was typing when their session ended, kept in memory for their next sign-in.
+  /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any}|null} */
+  let resume=null;
   let apiReachable=online(),liveReachable=true,reconnectAttempt=0,reconnectTimer=null,liveAttempt=0,liveTimer=null,reconcilePromise=null,accessTimer=null;
   let bound=false,disposed=false;
   let sessionGeneration=0,connectivityGeneration=0,reconnectGeneration=0;
@@ -340,7 +362,24 @@ export function createRecoveryController({
 
   function sessionExpired() {
     if(expired||!data?.session)return false;
+    // The comment composer keeps its own draft, with its reply target and mentions.
+    const editor=documentObject?captureOpenEditor(documentObject,{changedOnly:true,skip:(element)=>element.id==='cmtIn'}):null,comment=getApp()?.commentDraft?.()??null;
+    resume=editor||comment?{userId:data.session.userId,hash:windowObject?.location?.hash??'',editor,comment}:null;
     expired=true;sessionGeneration++;reconnectGeneration++;gateway?.invalidate?.();getAuth()?.expire?.();return true;
+  }
+
+  /**
+   * After the same person signs in again, put back what they typed once the
+   * page they left shows its editor. Another person, or another page, drops it.
+   */
+  function resumeEditing() {
+    const next=resume;if(!next||!data?.session||data.session.temporary)return false;
+    if(data.session.userId!==next.userId||(windowObject?.location?.hash??'')!==next.hash){resume=null;return false;}
+    if(next.editor&&![...documentObject?.querySelectorAll?.(EDITOR_ROOT)??[]].some((candidate)=>next.editor.rootClass.every((name)=>candidate.classList.contains(name))))return false;
+    resume=null;
+    if(next.comment)getApp()?.restoreCommentDraft?.(next.comment);
+    if(next.editor&&documentObject)restoreOpenEditor(next.editor,documentObject,{notify:true});
+    return true;
   }
 
   function observeResponse(event) {
@@ -439,6 +478,9 @@ export function createRecoveryController({
 
   const controller={
     get pageError(){return pageError;},get pageReference(){return pageReference;},get connection(){return visibleConnection();},get expired(){return expired;},scenario:'',
+    /** Whether typed text waits for the person's next sign-in. */
+    get keepsInput(){return !!resume;},
+    resumeEditing,
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,
     errorHtml,
     captureEditor:()=>documentObject?captureOpenEditor(documentObject):null,
@@ -474,8 +516,8 @@ export function createRecoveryController({
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
     bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }
