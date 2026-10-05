@@ -359,8 +359,11 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rm-axis-labels { position: relative; flex: 1; }
 .rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
 .rm-month-grid { position:relative;flex:1; }
-.rm-axis-divider { position:absolute;top:0;bottom:0;width:1px;background:var(--line-soft);pointer-events:none; }
-.rm-month { line-height: 16px; position: absolute; top: 7px; text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
+/* Month cells are day offsets (--d) and lengths (--n) times --ppd, the pixels
+   per day that the zoom sets on their containers. */
+.rm-axis-divider { position:absolute;top:0;bottom:0;left:calc(var(--d) * var(--ppd) * 1px);width:1px;background:var(--line-soft);pointer-events:none; }
+.rm-month-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:1px;background:var(--line-soft);pointer-events:none; }
+.rm-month { line-height: 16px; position: absolute; top: 7px; left: calc(var(--d) * var(--ppd) * 1px); width: calc(var(--n) * var(--ppd) * 1px); text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
 .rm-axis .rail-cell { z-index: 6; box-shadow: none; }
