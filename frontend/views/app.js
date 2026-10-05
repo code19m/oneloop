@@ -2984,10 +2984,13 @@
     },
     setTheme(value) { window.Theme.set(value); },
     toggleAutoReload() {
-      const on = !window.Recovery?.autoReload;
-      window.Recovery?.setAutoReload?.(on);
-      const button = document.querySelector('[data-auto-reload]');
-      if (!button) return;
+      window.Recovery?.setAutoReload?.(!window.Recovery?.autoReload);
+      App.autoReloadChanged();
+    },
+    /** Show Reload after updates as it is now, also after another tab changed it. */
+    autoReloadChanged() {
+      const on = !!window.Recovery?.autoReload, button = document.querySelector('[data-auto-reload]');
+      if (!button || button.getAttribute('aria-pressed') === String(on)) return;
       button.setAttribute('aria-pressed', String(on));
       setHTML(button.querySelector('.menu-check'), on ? I.tick : '');
     },

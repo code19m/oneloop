@@ -338,7 +338,7 @@ function updatable({autoReload=true,hidden=false,stores={local:new Map(),session
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
   if(autoReload)stores.local.set('oneloop.autoReload','on');
   const documentObject={visibilityState:hidden?'hidden':'visible',activeElement:null,querySelectorAll:()=>[],addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);}};
-  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener(){}};
+  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener:(type,listener)=>{(listeners[`window:${type}`]??=[]).push(listener);}};
   const app={context:()=>({view:'board',projectId:'p1'}),refresh(){}};
   let server=oldVersion;
   const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
@@ -348,6 +348,8 @@ function updatable({autoReload=true,hidden=false,stores={local:new Map(),session
   controller.bind(app,{});
   const fire=type=>{for(const listener of listeners[type]??[])listener({});};
   return {controller,stores,documentObject,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
+    /** Another tab of this browser changes the stored setting. */
+    otherTab(value){if(value)stores.local.set('oneloop.autoReload',value);else stores.local.delete('oneloop.autoReload');for(const listener of listeners['window:storage']??[])listener({key:'oneloop.autoReload',newValue:value});},
     /** The tab hides, or shows again. */
     show(visible){documentObject.visibilityState=visible?'visible':'hidden';fire('visibilitychange');},
     /** Move the clock on, run the timers that are due, and let the checks they start finish. */
@@ -379,6 +381,15 @@ test('with Reload after updates off, a hidden tab never asks the server',async()
   page.show(false);page.server=newVersion;
   await page.advance(10*60_000);
   assert.equal(page.checks,1);assert.equal(page.reloads,0);
+});
+
+test('a hidden tab starts asking the server once another tab turns Reload after updates on',async()=>{
+  const page=updatable({autoReload:false});await page.monitor.check();
+  page.show(false);page.server=newVersion;
+  await page.advance(60_000);assert.equal(page.checks,1);
+  page.otherTab('on');
+  await page.advance(60_000);
+  assert.equal(page.checks,2);assert.equal(page.reloads,1);
 });
 
 test('a tab that shows again counts as activity, so the person who comes back is not reloaded at once',async()=>{

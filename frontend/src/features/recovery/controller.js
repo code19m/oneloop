@@ -345,6 +345,12 @@ export function createRecoveryController({
     },HIDDEN_BUILD_CHECK_MS);
   }
 
+  /** Another tab of this browser changed Reload after updates, or cleared storage. @param {{key:string|null}} event */
+  function storageChanged(event){
+    if(event.key!==AUTO_RELOAD&&event.key!==null)return;
+    scheduleHiddenCheck();reloadWhenSafe();getApp()?.autoReloadChanged?.();
+  }
+
   /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
   function visibilityChanged(){
     if(documentObject?.visibilityState!=='hidden')noteActivity();
@@ -696,9 +702,9 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }

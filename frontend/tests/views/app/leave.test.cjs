@@ -238,3 +238,16 @@ test('Reload after updates is a choice in the account menu, which stays open', (
   t.A.toggleAutoReload();
   assert.equal(toggle().getAttribute('aria-pressed'), 'false'); assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), null);
 });
+
+test('the account menu follows Reload after updates when another tab changes it', () => {
+  const t = bootApp({ route: 'board' });
+  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
+  const toggle = () => t.d.querySelector('[data-auto-reload]');
+  // Another tab of the same browser turns it on: this tab hears of it through storage.
+  t.w.localStorage.setItem('oneloop.autoReload', 'on');
+  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: 'oneloop.autoReload', newValue: 'on' }));
+  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(toggle().querySelector('.menu-check svg'));
+  t.w.localStorage.clear();
+  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: null }));
+  assert.equal(toggle().getAttribute('aria-pressed'), 'false');
+});
