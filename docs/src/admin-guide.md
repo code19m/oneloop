@@ -141,4 +141,4 @@ The **Storage** page shows how much space uploaded files use, in total and for
 each project. When storage runs low, oneloop removes old temporary files by
 itself, and **Clean up now** does it at once. [Storage](reference.md#storage)
 explains the rules. When storage is full, uploads fail. Then delete files, which
-frees their space 5 minutes later, or raise `ONELOOP_STORAGE_LIMIT`.
+frees their space about 5 minutes later, or raise `ONELOOP_STORAGE_LIMIT`.

@@ -215,9 +215,13 @@ dates such as deadlines are `YYYY-MM-DD` strings in the instance time zone,
 
 **Undo.** Deleting a task, comment or attachment hides it at once and keeps
 its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore operation can
-bring it back. After the window, file maintenance removes the files with
-deletion jobs, and the collaboration worker empties deleted comments. Restoring
-is a browser operation; MCP doesn't offer it.
+bring it back. A restore puts the item back at its old position, or at the end
+of its list when that position was taken, and unassigns people who left the
+project from an unfinished task. After the window, file maintenance removes the
+files with deletion jobs, and the collaboration worker empties deleted
+comments; until then the files count as pending deletion. A deleted task's own
+row and its comments stay in the database; only its files are removed.
+Restoring is a browser operation; MCP doesn't offer it.
 
 **IDs.** Records have UUIDv7 string IDs, created by the server. Tasks also get
 a readable key such as `WEB-042` from the project prefix and a per-project

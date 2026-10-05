@@ -228,7 +228,7 @@ Some emoji count as two characters.
 | --- | --- |
 | `@everyone` | Once a minute per person in each project |
 | Archived Inbox items | Removed after 90 days; cannot be restored |
-| Undo of a deletion | Within 5 minutes; then oneloop removes the deleted files and comment text |
+| Undo of a deletion | Within 5 minutes; within about a minute after that, oneloop removes the deleted files and comment text |
 | Activity | Edits by one person to the same field within 5 minutes show as one entry. History is kept forever. |
 
 **AI assistants**
