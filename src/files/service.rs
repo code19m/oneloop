@@ -4,6 +4,7 @@ mod detect;
 use detect::preview_kind_from_metadata;
 pub(crate) use detect::validate_original_name;
 mod avatar;
+mod decode;
 mod maintenance;
 mod read;
 pub use read::ReadMode;
@@ -53,8 +54,6 @@ const CLEANUP_LOW_PERCENT: u64 = 70;
 
 const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
 const AVATAR_SIDE: u32 = 256;
-const AVATAR_MAX_DIMENSION: u32 = 8192;
-const AVATAR_MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const FILE_MAINTENANCE_LOCK_FILE: &str = ".oneloop-files.lock";
 
 #[derive(Clone)]
@@ -1158,15 +1157,6 @@ async fn tree_bytes(root: PathBuf) -> AppResult<u64> {
     .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
 }
 
-/// Decode limits for avatars and thumbnails.
-fn image_limits() -> Limits {
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(AVATAR_MAX_DIMENSION);
-    limits.max_image_height = Some(AVATAR_MAX_DIMENSION);
-    limits.max_alloc = Some(AVATAR_MAX_DECODE_BYTES);
-    limits
-}
-
 fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
     let format = image::guess_format(bytes)
         .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
@@ -1179,11 +1169,13 @@ fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
             "must be a PNG, JPEG or WebP image",
         ));
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(image_limits());
-    let image = reader.decode().map_err(|_| {
-        AppError::validation("avatar", "image data is invalid or exceeds safe dimensions")
-    })?;
+    let (image, _) =
+        decode::decode_untrusted(Cursor::new(bytes), bytes.len() as u64).map_err(|_| {
+            AppError::validation(
+                "avatar",
+                "image data is invalid, or too large to process safely",
+            )
+        })?;
     let normalized = image
         .resize_to_fill(
             AVATAR_SIDE,
@@ -1314,13 +1306,14 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
 }
-/// Image decodes at once: avatar uploads and the thumbnail worker together.
-static AVATAR_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+/// One image decode at a time, for avatar uploads and the thumbnail worker
+/// together, so their memory never adds up.
+static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        AVATAR_DECODE_PERMITS.acquire(),
+        IMAGE_DECODE_PERMITS.acquire(),
     )
     .await
     .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?

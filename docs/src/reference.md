@@ -157,15 +157,24 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
-| Image thumbnails | PNG, JPEG and WebP images up to 8192 px per side and about 40 megapixels; at most 256 × 256 px |
-| Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
+| Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
+| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
 Text and Markdown previews need the whole file to be valid UTF-8 text.
 
+oneloop decodes one image at a time, and only an image that needs at most about
+192 MiB of memory to decode, with at most 8192 px per side and 128 MiB of
+pixels. That allows about 44 megapixels for a photo, 33 for an image with
+transparency, and 22 for a 16-bit PNG, or 16 with transparency. Some images
+need more memory to decode, so their limit is lower: about 32 megapixels for a
+progressive JPEG, or 22 when it keeps full colour detail; 24 for a lossless
+WebP; 18 for a progressive CMYK JPEG or a WebP with transparency; and 12 for an
+animated WebP. A larger avatar is refused.
+
 Tasks load the original file for other images, such as GIFs, and for images
-that oneloop can't read. A new image has its thumbnail a moment after the
-upload.
+that oneloop can't read or that are over these limits. A new image has its
+thumbnail a moment after the upload.
 
 **Knowledge**
 

@@ -4,9 +4,8 @@ use super::*;
 use std::{collections::VecDeque, sync::Mutex};
 
 use image::{
-    DynamicImage, ImageDecoder, ImageError,
+    DynamicImage,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
-    metadata::Orientation,
 };
 use tokio::sync::{Notify, watch};
 
@@ -218,9 +217,6 @@ impl FileService {
     }
 
     async fn make_thumbnail(&self, key: &str, used: &mut Option<u64>) -> AppResult<bool> {
-        if !self.wants_thumbnail(key).await? {
-            return Ok(false);
-        }
         let destination = self.store.thumbnail_path(key)?;
         if fs::try_exists(&destination).await? {
             return Ok(false);
@@ -240,10 +236,17 @@ impl FileService {
             return Ok(false);
         }
         let original = self.store.file_path(key)?;
-        let permit = AVATAR_DECODE_PERMITS
+        let permit = IMAGE_DECODE_PERMITS
             .acquire()
             .await
             .map_err(|_| AppError::Unavailable("image worker is shutting down".into()))?;
+        // The empty marker of an image that can't be decoded goes in first,
+        // once the image is known to be still wanted. A decode that ends the
+        // process leaves it, so later views show the original instead of
+        // decoding the image again.
+        if !self.write_thumbnail(key, &[], None).await? {
+            return Ok(false);
+        }
         let rendered = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             render_thumbnail(&original)
@@ -251,32 +254,48 @@ impl FileService {
         .await;
         let bytes = match rendered {
             Ok(Ok(bytes)) => bytes,
-            Ok(Err(RenderError::Io(error))) => return Err(error),
+            Ok(Err(RenderError::Io(error))) => {
+                // Reading failed, not decoding: a later view may try again.
+                self.remove_thumbnail(key).await;
+                return Err(error);
+            }
             // A decoder that fails or panics on this file would do so again.
-            Ok(Err(RenderError::Image)) | Err(_) => Vec::new(),
+            Ok(Err(RenderError::Image)) | Err(_) => return Ok(false),
         };
         let size = bytes.len() as u64;
-        let disk = if size == 0 {
-            None
-        } else {
-            if current.saturating_add(size) >= threshold {
-                return Ok(false);
-            }
-            let Ok(disk) = self.disk.reserve(size) else {
-                return Ok(false);
-            };
-            *used = Some(current.saturating_add(size));
-            Some(disk)
+        let disk = (current.saturating_add(size) < threshold)
+            .then(|| self.disk.reserve(size).ok())
+            .flatten();
+        let Some(disk) = disk else {
+            self.remove_thumbnail(key).await;
+            return Ok(false);
         };
+        if !self.write_thumbnail(key, &bytes, Some(&disk)).await? {
+            return Ok(false);
+        }
+        disk.published();
+        *used = Some(current.saturating_add(size));
+        Ok(true)
+    }
+
+    /// Writes a thumbnail, or the empty marker, in place of what is there.
+    /// When the original went away meanwhile, it removes the marker instead.
+    async fn write_thumbnail(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        disk: Option<&DiskReservation>,
+    ) -> AppResult<bool> {
         let _gate = self.acquire_file_maintenance_gate().await?;
         // Under the gate, a deletion that finished meanwhile is visible here,
         // and orphan cleanup can't remove the file while it is written.
         if !self.wants_thumbnail(key).await? {
+            self.remove_thumbnail(key).await;
             return Ok(false);
         }
         let destination = self.store.prepare_thumbnail_parent(key).await?;
         let temporary = destination.with_extension(format!("thumb.{}.tmp", Uuid::now_v7()));
-        if let Some(disk) = &disk {
+        if let Some(disk) = disk {
             disk.keep_until_removed(temporary.clone());
         }
         let written: AppResult<()> = async {
@@ -285,7 +304,7 @@ impl FileService {
                 .write(true)
                 .open(&temporary)
                 .await?;
-            file.write_all(&bytes).await?;
+            file.write_all(bytes).await?;
             file.sync_all().await?;
             drop(file);
             fs::rename(&temporary, &destination).await?;
@@ -296,10 +315,7 @@ impl FileService {
             log_cleanup_failure(self.store.remove_file_if_present(&temporary).await);
             return Err(error);
         }
-        if let Some(disk) = disk {
-            disk.published();
-        }
-        Ok(size > 0)
+        Ok(true)
     }
 
     /// Whether a task that isn't deleted shows the original with `key` in an
@@ -380,23 +396,15 @@ impl FileService {
 /// square, turns it upright and encodes it: JPEG, or PNG to keep transparency.
 fn render_thumbnail(original: &Path) -> Result<Vec<u8>, RenderError> {
     let file = std::fs::File::open(original).map_err(|error| RenderError::Io(error.into()))?;
-    let mut reader = ImageReader::new(std::io::BufReader::new(file))
-        .with_guessed_format()
-        .map_err(|error| RenderError::Io(error.into()))?;
-    if !matches!(
-        reader.format(),
-        Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP)
-    ) {
-        return Err(RenderError::Image);
-    }
-    reader.limits(image_limits());
-    let mut decoder = reader.into_decoder().map_err(image_error)?;
-    // The decoders check the dimensions; this bounds the decoded pixels.
-    if decoder.total_bytes() > AVATAR_MAX_DECODE_BYTES {
-        return Err(RenderError::Image);
-    }
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-    let mut image = DynamicImage::from_decoder(decoder).map_err(image_error)?;
+    let size = file
+        .metadata()
+        .map_err(|error| RenderError::Io(error.into()))?
+        .len();
+    let (mut image, orientation) = decode::decode_untrusted(std::io::BufReader::new(file), size)
+        .map_err(|failure| match failure {
+            decode::DecodeFailure::Io(error) => RenderError::Io(error.into()),
+            decode::DecodeFailure::Refused => RenderError::Image,
+        })?;
     if image.width() > THUMBNAIL_SIDE || image.height() > THUMBNAIL_SIDE {
         image = image.thumbnail(THUMBNAIL_SIDE, THUMBNAIL_SIDE);
     }
@@ -421,13 +429,4 @@ fn render_thumbnail(original: &Path) -> Result<Vec<u8>, RenderError> {
     };
     encoded.map_err(|_| RenderError::Image)?;
     Ok(output)
-}
-
-fn image_error(error: ImageError) -> RenderError {
-    match error {
-        ImageError::IoError(error) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
-            RenderError::Io(error.into())
-        }
-        _ => RenderError::Image,
-    }
 }

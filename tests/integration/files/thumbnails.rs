@@ -425,6 +425,57 @@ async fn reconciliation_removes_thumbnails_without_an_original() {
     assert!(!interrupted.exists());
 }
 
+#[tokio::test]
+async fn an_image_that_needs_too_much_memory_to_decode_shows_the_original() {
+    let fixture = Fixture::new().await;
+    // A lossless WebP takes about 8 bytes a pixel to decode: 27 megapixels
+    // need over 200 MiB, while the file is a few bytes.
+    let original = super::flat_webp(6000, 4500);
+    let attachment = fixture.attach("flat", "flat.webp", &original).await;
+    assert_eq!(fixture.files.make_queued_thumbnails().await, 0);
+    let marker = fixture.thumbnail_file(&attachment);
+    assert_eq!(std::fs::metadata(&marker).unwrap().len(), 0);
+    let (status, headers, body) = fixture
+        .get(attachment.thumbnail_url.as_deref().unwrap(), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(body.as_ref(), original.as_slice());
+    // A smaller one of the same kind gets its thumbnail.
+    let small = fixture
+        .attach("small-flat", "small.webp", &super::flat_webp(3000, 2000))
+        .await;
+    assert_eq!(fixture.files.make_queued_thumbnails().await, 1);
+    assert!(
+        std::fs::metadata(fixture.thumbnail_file(&small))
+            .unwrap()
+            .len()
+            > 0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_image_is_marked_before_it_decodes_so_a_crash_is_not_repeated() {
+    let fixture = Fixture::new().await;
+    let attachment = fixture
+        .attach("marked", "marked.png", &png(300, 300, false))
+        .await;
+    let marker = fixture.thumbnail_file(&attachment);
+    let pipe = fixture.pipe_original(&attachment);
+    let worker = fixture.start_worker();
+    // The worker now waits to open the original. Were the decode to end the
+    // process, the marker would make later views show the original instead.
+    let marked = within_seconds(|| marker.exists()).await;
+    let waiting = !worker.is_finished();
+    let made = release(&pipe, worker).await;
+    assert!(marked && waiting, "the marker is written before the decode");
+    // A read error isn't the image's fault: the marker goes, so a later view
+    // tries again.
+    assert_eq!(made, 0);
+    assert!(!marker.exists());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn at_the_cleanup_threshold_images_wait_without_being_decoded() {

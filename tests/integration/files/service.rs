@@ -1434,6 +1434,25 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     );
 }
 
+#[tokio::test]
+async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    // 27 megapixels of lossless WebP need over 200 MiB to decode, though the
+    // file is a few bytes.
+    let refused = service
+        .upload_avatar(&fixture.manager, super::flat_webp(6000, 4500))
+        .await;
+    assert!(
+        matches!(&refused, Err(AppError::Validation { field, .. }) if field == "avatar"),
+        "{refused:?}"
+    );
+    service
+        .upload_avatar(&fixture.manager, super::flat_webp(600, 450))
+        .await
+        .unwrap();
+}
+
 #[test]
 fn html_preview_removes_direct_navigation_primitives() {
     let source=br#"<!doctype html><base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><iframe src="https://evil.test"></iframe><object data="x"></object><script>document.body.dataset.ok='yes'</script><p>Kept</p>"#;

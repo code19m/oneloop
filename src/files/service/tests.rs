@@ -1,8 +1,9 @@
 use super::*;
 
 #[tokio::test]
-async fn avatar_admission_is_bounded_and_survives_request_cancellation() {
-    let held = AVATAR_DECODE_PERMITS.acquire_many(2).await.unwrap();
+async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
+    // A thumbnail decode holds the only permit, so an avatar upload waits.
+    let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
     let root = tempfile::tempdir().unwrap();
     crate::db::migrate(root.path(), None).unwrap();
     let service = FileService::new(Db::open(root.path()).unwrap(), 1_000_000, 0);
@@ -41,10 +42,10 @@ async fn avatar_admission_is_bounded_and_survives_request_cancellation() {
     started_rx.await.unwrap();
     request.abort();
     let _ = request.await;
-    assert_eq!(AVATAR_DECODE_PERMITS.available_permits(), 1);
+    assert_eq!(IMAGE_DECODE_PERMITS.available_permits(), 0);
     release_tx.send(()).unwrap();
     done_rx.await.unwrap();
-    assert_eq!(AVATAR_DECODE_PERMITS.available_permits(), 2);
+    assert_eq!(IMAGE_DECODE_PERMITS.available_permits(), 1);
 }
 
 #[tokio::test]
