@@ -239,6 +239,33 @@ fn a_backup_removes_only_copies_whose_writer_is_gone() {
 }
 
 #[test]
+fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir_in("target").unwrap();
+    let copy = root
+        .path()
+        .join(format!(".nightly.partial-{}", Uuid::now_v7()));
+    let stuck = copy.join("data");
+    fs::create_dir_all(&stuck).unwrap();
+    fs::write(stuck.join("oneloop.sqlite3"), b"partial").unwrap();
+    plant(&copy.join(OWNER_FILE), &owner("backup", exited_pid()));
+    fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+    if fs::write(stuck.join("probe"), b"").is_ok() {
+        // Root ignores the permissions this test relies on.
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    reclaim_partial_copies(root.path());
+    assert!(
+        copy.join(OWNER_FILE).exists(),
+        "the record goes only after everything else"
+    );
+    fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+    reclaim_partial_copies(root.path());
+    assert!(!copy.exists());
+}
+
+#[test]
 fn restoring_again_removes_only_what_an_interrupted_restore_left() {
     let root = tempfile::tempdir_in("target").unwrap();
     let live = root.path().join("live");

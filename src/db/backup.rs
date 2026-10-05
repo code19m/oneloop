@@ -597,8 +597,8 @@ fn reclaim_partial_copies(parent: &Path) {
             continue;
         }
         let path = entry.path();
-        if let Some((_lock, owner)) = claim_abandoned(&path.join(OWNER_FILE)) {
-            match fs::remove_dir_all(&path) {
+        if let Some((lock, owner)) = claim_abandoned(&path.join(OWNER_FILE)) {
+            match remove_claimed(&path, lock) {
                 Ok(()) => {
                     let _ = sync_directory(parent);
                     eprintln!(
@@ -635,6 +635,28 @@ fn reclaim_partial_copies(parent: &Path) {
     }
 }
 
+/// Removes a claimed working folder. Its owner record goes last, and only
+/// after its lock is closed: network filesystems keep a deleted file that is
+/// still open under another name, which would keep the folder in place. When
+/// something can't be removed, the record stays, so that a later command can
+/// claim the folder again and finish.
+fn remove_claimed(path: &Path, lock: File) -> std::io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_name() == OWNER_FILE {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    drop(lock);
+    fs::remove_file(path.join(OWNER_FILE))?;
+    fs::remove_dir(path)
+}
+
 /// Clears an interrupted restore from `target` when its marker proves the
 /// restore is gone, so that the restore can start again. It removes only the
 /// working folder and the names the marker lists as published, then the
@@ -650,7 +672,7 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
             target.display()
         ))
     };
-    let Some((_lock, owner)) = claim_abandoned(&marker) else {
+    let Some((lock, owner)) = claim_abandoned(&marker) else {
         return Err(refused());
     };
     let working = owner.working.as_deref().filter(|name| {
@@ -676,6 +698,8 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
             Err(error) => return Err(error.into()),
         }
     }
+    // Closed first, as in `remove_claimed`, so that nothing stays behind.
+    drop(lock);
     fs::remove_file(&marker)?;
     sync_directory(target)?;
     eprintln!(
