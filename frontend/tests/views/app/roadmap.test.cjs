@@ -33,6 +33,12 @@ test('ctrl-wheel zoom is scoped to the Roadmap and re-renders only its canvas af
   assert.notEqual(d.getElementById('rmScroll'), sc); assert.equal(d.querySelector('.sidebar'), shell); assert.equal(d.querySelector('.rm-canvas').style.willChange, '');
 });
 
+test('an ongoing epic that starts after every other date stays on the timeline', () => {
+  const { d } = boot('roadmap', { prepare: D => { D.epics.find(epic => epic.id === 'e11').start = '2099-01-01'; } });
+  const rail = parseFloat(d.querySelector('.lane-head').style.width), bar = d.querySelector('[data-epic="e11"]');
+  assert(rail + parseFloat(bar.style.left) + 60 <= parseFloat(d.querySelector('.rm-canvas').style.width), 'the bar starts with room for its minimum width');
+});
+
 test('milestone details stay readable for viewers, show safe full text and dismiss, while managers can edit', () => {
  const t=boot('roadmap',{readOnly:true,prepare:D=>{D.milestones[1].name='A very long milestone name '.repeat(6);D.milestones[1].desc='<img src=x onerror=alert(1)>\nFull description';}});
  const card=t.d.querySelector('[data-milestone="m2"]');assert.equal(card.tagName,'BUTTON');

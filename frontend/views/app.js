@@ -732,7 +732,8 @@
   function rmRange() {
     let min = today, max = new Date(today.getTime() + 60 * DAY);
     epics().forEach((e) => {
-      const s = d(e.start); if (s < min) min = s;
+      // An ongoing epic's start also extends the range, or a late one would fall past the end.
+      const s = d(e.start); if (s < min) min = s; if (s > max) max = s;
       if (e.end) { const en = d(e.end); if (en > max) max = en; }
     });
     milestones().forEach((m) => { const md = d(m.date); if (md < min) min = md; if (md > max) max = md; });
