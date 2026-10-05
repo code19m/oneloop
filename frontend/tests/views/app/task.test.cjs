@@ -152,3 +152,25 @@ test('a pasted line break cleans the title without splitting an emoji at its len
   title.dispatchEvent(joined);
   assert.equal(title.value, 'A'.repeat(137) + ' ', 'a joined emoji that does not fit stays whole');
 });
+
+test('text typed into a task field when edit rights end stays as Not saved, readable and saved again once rights return', () => {
+  const t = productionTaskPage();
+  const actor = t.D.users.find(user => user.id === t.D.session.userId), membership = t.D.projects[0].members.find(member => member.userId === actor.id);
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Typed while access changed';
+  actor.admin = false; const permissions = membership.permissions; membership.permissions = [];
+  t.A.refreshBackground();
+  let field = t.d.getElementById('task-description'), note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.equal(field.value, 'Typed while access changed');
+  assert.equal(field.readOnly, true); assert.equal(field.disabled, false);
+  assert.equal(note?.getAttribute('role'), 'alert'); assert.equal(note.textContent, 'Not saved. You no longer have permission to edit this task.');
+  assert.equal(t.d.activeElement, field, 'focus stays on the text');
+  t.A.refresh();
+  assert.equal(t.d.getElementById('task-description').value, 'Typed while access changed', 'a later refresh keeps it');
+  actor.admin = true; membership.permissions = permissions; t.A.refresh();
+  field = t.d.getElementById('task-description'); note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.equal(field.readOnly, false); assert.equal(field.value, 'Typed while access changed');
+  assert.match(note.textContent, /^Not saved/); assert(note.querySelector('button'));
+  t.A.saveTaskDraft(t.task.id, 'desc');
+  assert.deepEqual(t.requests.map(request => [request.operation, request.payload.description, request.options.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
+});

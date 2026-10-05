@@ -1506,8 +1506,12 @@
   // A title or description that is not saved yet stays as typed, with Save.
   const taskDraft = (t, field) => bootWindow.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
   function taskDraftNote(t, field) {
-    return taskDraft(t, field)?.unsaved ? `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>` : '';
+    if (!taskDraft(t, field)?.unsaved) return '';
+    if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
+    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>`;
   }
+  // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
+  const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
   function renderTask() {
     const t = taskById(state.taskId);
     if (!t) { state.view = 'board'; return renderBoard(); }
@@ -1519,7 +1523,7 @@
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : 'disabled'}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
         <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
@@ -1533,7 +1537,7 @@
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : 'disabled'}>${esc(desc)}</textarea></div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
           <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
           ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
@@ -2106,7 +2110,7 @@
     // WebKit may blur an editor without focusing the pressed button. Keep its
     // DOM target alive through pointer release/click, including slow presses.
     const busy=POP.el||state.modal||state.peek||pendingConfirmation||document.activeElement?.closest('.task-page,.peek,.modal')||pressedTaskControl;
-    if(authorized&&busy&&!(state.view==='task'&&!canBoard()&&document.querySelector('.tp-title:not(:disabled)'))){backgroundRenderTimer=setTimeout(refreshBackground,100);return;}
+    if(authorized&&busy&&!(state.view==='task'&&!canBoard()&&document.querySelector('.tp-title:not(:disabled):not([readonly])'))){backgroundRenderTimer=setTimeout(refreshBackground,100);return;}
     render();
   }
   // Snapshot immediately around the DOM swap, never across an awaited read.
@@ -2116,6 +2120,11 @@
     const scope=renderScope(),active=document.activeElement;
     const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
     const focused=preserve&&active?.matches('input:not([type=file]),textarea')?{opener:rememberOpener(active),value:active.value,scrollTop:active.scrollTop}:null;
+    // Text typed into a task field whose edit rights just ended stays as a Not saved draft.
+    if(focused&&state.view==='task'&&!active.disabled&&!active.readOnly&&!canBoard()){
+      const field=active.matches('.tp-title')?'title':active.id==='task-description'?'desc':null,t=taskById(state.taskId);
+      if(field&&t)bootWindow.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
+    }
     const focusedControl=preserve&&!focused&&active?.closest('#app')?rememberOpener(active):null;
     const snapshot=focused?window.OneloopRecovery?.captureEditor?.():null;
     if(snapshot)snapshot.controls=snapshot.controls.filter(control=>control.key===snapshot.activeKey);

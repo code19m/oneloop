@@ -436,3 +436,15 @@ test('live updates read attachments and storage usage again passively', async ()
   await answered(6, 'a refresh reads usage again');
   assert.deepEqual(reads, [['attachments', false], ['attachments', true], ['attachments', true], ['storage', false], ['storage', true], ['storage', true]]);
 });
+
+test('a live re-read of attachments that lost access stays quiet', async () => {
+  let reads = 0, listener = () => {};
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: { attachments: async () => { if (++reads > 1) throw new w.TestApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; }, uploadAttachment() {} }, subscribe: fn => { listener = fn; return () => {}; } };
+  } });
+  const notices = []; t.A.toast = (text, kind) => notices.push([text, kind]);
+  await waitFor(() => reads === 1, 'the page reads its attachments'); await new Promise(resolve => setImmediate(resolve));
+  listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
+  await waitFor(() => reads === 2, 'a live update reads them again'); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
+});

@@ -73,6 +73,8 @@
         current.attachments=[];productionLoaded.delete(current);
         if(preview?.taskId===taskId)closePreview();
         hooks.refreshAttachments(taskId);
+        // Lost access during a live refresh: the page itself says what happened.
+        if(background)return;
       }
       app.toast(errorMessage(error,'Attachments could not be loaded.'),'error');
     }).finally(()=>{

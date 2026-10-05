@@ -80,6 +80,17 @@ test('a live refresh of an account page reloads the pages already shown, passive
   assert.deepEqual(requests,[{refresh:true,background:true},{refresh:true,background:false}]);
 });
 
+test('a refresh that removes the shown project names it when leaving',async()=>{
+  const context={view:'task',projectId:'p2',taskId:'TWO-1'},toasts=[];
+  const data=createLegacyData();hydrateLegacyData(data,projection('p2'));
+  const app={context:()=>context,toast:(...args)=>toasts.push(args),selectProject:id=>{context.projectId=id;},nav:view=>{context.view=view;},updateDocumentTitle(){}};
+  const bootstrap={idle:async()=>{},load:async()=>{hydrateLegacyData(data,{...projection('p1'),projects:[{id:'p1',name:'One',taskPrefix:'ONE',revision:1}]});return {stale:false};}};
+  const reload=createProjectionReload({data,bootstrap,reads:{idle:async()=>{}},getApp:()=>app,getBridge:()=>null,getRecovery:()=>({refreshSucceeded(){}}),location:{hash:'#/task/TWO-1'}});
+  await reload({background:true});
+  assert.deepEqual(context,{view:'board',projectId:'p1',taskId:'TWO-1'});
+  assert.deepEqual(toasts,[['You no longer have access to Two.','info']]);
+});
+
 test('the route decides the bootstrap view',()=>{
   assert.deepEqual(routeScope('#/task/ONE-1',null),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board',{context:()=>({board:{search:'x'}})}),{view:'metadata'});

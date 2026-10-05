@@ -705,6 +705,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   return Object.freeze({
     /** The unsaved value of a task field, which the task page shows instead of the saved one. */
     taskDraft(taskId,field){pruneDrafts();const draft=drafts.get(draftKey(taskId,field));return draft?{value:draft.value,unsaved:draft.unsaved}:null;},
+    /** Keep typed text that cannot be saved now, such as after edit rights ended, as a Not saved draft. */
+    keepTaskDraft(taskId,field,value){
+      const item=task(taskId),max={title:140,desc:4000}[field];if(!item||!max)return;
+      const next=text(value,max);if(next===(field==='title'?item.title:item.desc??''))return;
+      pruneDrafts();
+      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,unsaved:true,retryOnline:false});
+    },
     async invoke(action,payload){
       if(action==='date.rollover')return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});
       if(action==='task.assignees'){const item=task(payload.taskId);if(!item)return skipped();return saveAssignees(item,payload.assigneeIds);}

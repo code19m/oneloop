@@ -46,7 +46,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       return result;
     };
     try{
-      const previous=app?.context?.();
+      const previous=app?.context?.(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
         if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
         if(previous.view==='roadmap')return complete(await reads.roadmap(previous.projectId,{background:!!scope.background}));
@@ -59,7 +59,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         loaded=await bootstrap.load({view:'board',background:!!scope.background});
       }
       if(loaded?.stale||!app)return loaded;
-      if(leaveUnavailableProject(data,app,previous))return loaded;
+      if(leaveUnavailableProject(data,app,previous,previousName))return loaded;
       if(destinationError){
         // A caller that opens something from another page reports it there instead.
         if(scope.routeErrors===false)return {...loaded,unavailable:true};
