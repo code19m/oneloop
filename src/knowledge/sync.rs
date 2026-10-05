@@ -673,17 +673,6 @@ mod tests {
         );
     }
 
-    async fn stalled_git_host() -> tokio::net::TcpListener {
-        let mut host = None;
-        for port in 18730..18740 {
-            if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-                host = Some(listener);
-                break;
-            }
-        }
-        host.expect("a free test port in 18730–18739")
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
@@ -840,7 +829,7 @@ mod tests {
     #[tokio::test]
     async fn a_stopped_sync_ends_git_records_nothing_and_frees_the_project() {
         // A host that accepts the connection and never answers.
-        let host = stalled_git_host().await;
+        let host = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = host.local_addr().unwrap().port();
         let (_root, db, service) = fixture(&format!("https://127.0.0.1:{port}/docs.git")).await;
         let claim = Running::claim(&service.inner, "p1").unwrap();
