@@ -540,7 +540,7 @@ test('text kept when edit rights ended saves from its revision after they come b
 
 /** Run `body` with a FormData that reads a fake form's `fields`. */
 async function withFormData(body){
-  const original=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  const original=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}getAll(name){return [].concat(this.fields[name]??[]);}};
   try{await body();}finally{globalThis.FormData=original;}
 }
 /** A dialog's form: its `fields`, and the `controls` it finds by selector. */
@@ -569,6 +569,17 @@ test('a dialog whose conflict prompt closed without a choice saves again from th
   state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
   state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
   assert.deepEqual(sent,[1,1],'the dialog still shows the typed values, so it meets the other change again');
+}));
+
+test('a Pool promotion whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
+  const remembered=new Map([['pool:i1',1]]),sent=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'pool:i1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
+    resolveConflict:async()=>{state.data.pool[0].revision=2;return {handled:true,saved:false};}};
+  const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1'}},{recovery,gateway:{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}}});
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
+  const promote=()=>state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),querySelectorAll:()=>[]}});
+  promote();await tick();await tick();promote();await tick();await tick();
+  assert.deepEqual(sent,[1,1],'the dialog still shows the typed text, so it meets the change to the item again');
 }));
 
 test('a block reason conflict shows the saved reason in the reason field',()=>withFormData(async()=>{

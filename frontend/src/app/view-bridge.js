@@ -323,9 +323,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(recovery?.isRevisionConflict?.(error)&&!options.create){
         // A dialog shows what the person typed until they choose. Use latest
         // shows the saved values in it: in the one field the save changes, or
-        // by drawing the dialog again. Until then, it stays on the revision it
-        // was opened at, so saving it again still meets the other change.
-        const dialog=!options.coalesce&&operation!=='pool.promote'&&!!options.form?.closest?.('.modal'),field=conflictField(payload);
+        // by drawing the dialog again (a Pool promotion fills in the item's
+        // text below). Until then, it stays on the revision it was opened at,
+        // so saving it again still meets the other change.
+        const dialog=!options.coalesce&&!!options.form?.closest?.('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
         try{
           /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
@@ -334,9 +335,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             latestEntity:()=>latestEntity(operation,payload,entity),
             retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
             target:{
-              element:options.conflictElement??(dialog&&field?()=>dialogControl(options.form,field):undefined),
+              element:options.conflictElement??(showsLatest&&field?()=>dialogControl(options.form,field):undefined),
               latestValue:(item)=>conflictValue(operation,payload,item),
-              ...(dialog&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
+              ...(showsLatest&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
             },
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
