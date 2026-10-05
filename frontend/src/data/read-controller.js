@@ -119,7 +119,10 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     // Wait for a Board read someone started, then patch the cards it loaded.
     for(let active=slots.get('board');active&&!active.done&&!active.background;active=slots.get('board'))await active.promise?.catch(()=>{});
     if(pendingEpoch!==epoch)return {stale:true};
-    if(!boardState||boardState.projectId!==projectId||boardState.stamp!==stamp()||JSON.stringify(boardState.filters)!==JSON.stringify(common))return board(projectId,filters,{background:true});
+    if(!boardState)return board(projectId,filters,{background:true});
+    // The Board now shows other cards, loaded after this change; the hint is moot.
+    if(boardState.projectId!==projectId||JSON.stringify(boardState.filters)!==JSON.stringify(common))return {stale:true};
+    if(boardState.stamp!==stamp())return board(projectId,filters,{background:true});
     const ids=[...new Set(hints.map(hint=>hint.taskId??hint.entityId).filter(Boolean))];
     return read('board',target,true,async token=>{
       try{

@@ -221,3 +221,14 @@ test('idle waits only for reads someone started',async()=>{
   requests.calls.find(call=>call.name==='counts').resolve(counts);await count;await idle;
   assert.equal(settled,true,'a live read in flight does not hold up idle');
 });
+
+test('a live Board patch for filters the Board no longer shows does not bring them back',async()=>{
+  const data=createLegacyData(),views=[];
+  const reads=createReadController({data,api:{boardView:(_id,filters)=>new Promise(resolve=>views.push({filters,resolve})),task:async()=>({...task('one','done'),revision:2}),counts:async()=>counts}});
+  const first=reads.board('p1');views[0].resolve(boardView());await first;
+  const filtered=reads.board('p1',{search:'two'}),patch=reads.patchBoard('p1',{},[{entityId:'one'}]);
+  await new Promise(setImmediate);
+  views[1].resolve(boardView([task('two','planning')]));await filtered;
+  assert.equal((await patch).stale,true);
+  assert.equal(views.length,2,'no read of the old filters');assert.deepEqual(data.tasks.map(item=>item.internalId),['two']);
+});
