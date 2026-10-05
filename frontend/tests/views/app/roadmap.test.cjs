@@ -354,6 +354,20 @@ test('at the Weeks scale the axis shows a line and a date for each week instead 
   assert(r.d.querySelectorAll('.rm-month').length > 0);
 });
 
+test('task counts still loading keep their placeholder through a scale change, and show at that scale when they arrive', () => {
+  const r = wide({ prepare: D => Object.assign(D.epics.find(epic => epic.id === 'e6'), { counted: false, done: 0, total: 0 }) });
+  const meta = () => r.d.querySelector('[data-epic="e6"] .m');
+  r.A.setRoadmapScale('weeks');
+  assert(meta().textContent.includes('Loading task counts'), 'the zoom moves the bar and keeps what it says');
+  assert(!r.d.querySelector('[data-epic="e6"] .prog'));
+  Object.assign(r.D.epics.find(epic => epic.id === 'e6'), { counted: true, done: 21, total: 34 });
+  r.A.refreshRoadmap();
+  assert.equal(meta().textContent.trim(), '21/34');
+  assert(Math.abs(r.barWidth('e6') - 39 * 30) <= 1, 'the counts keep the Weeks zoom');
+  assert.deepEqual(scales(r.d), pressed('Weeks'));
+  assert(r.d.querySelectorAll('.rm-month-grid .rm-week').length > 3, 'and its week axis');
+});
+
 test('a scale change eases over a few frames, and a wheel zoom takes over where it is', () => {
   // Frames run when the test says, at the times it gives.
   const queue = new Map(); let next = 0;
