@@ -424,7 +424,7 @@ async fn described_client(
             // The page says only "invalid request", so that it can't be used
             // to probe the server's network; the log tells the admin why.
             if let AppError::Validation { message, .. } = error {
-                tracing::info!(client_id = %query.client_id, %message, "client metadata document refused");
+                tracing::info!(user_id = %actor.user_id, client_id = %query.client_id, %message, "client metadata document refused");
             }
         })?;
     let redirect = validate_redirect_uri(&query.redirect_uri, schemes)?;
@@ -1976,14 +1976,20 @@ mod tests {
         assert_eq!(codes, 0);
     }
 
-    #[tokio::test]
-    async fn a_client_described_by_its_document_connects_like_a_registered_one() {
-        use axum::body::{Body, to_bytes};
-        use axum::http::Request;
-        use tower::ServiceExt;
+    const LOCAL_CALLBACK: &str = "http://127.0.0.1:49152/callback";
 
-        const CLIENT: &str = "https://app.example.com/oauth/client.json";
-        const LOCAL_CALLBACK: &str = "http://127.0.0.1:49152/callback";
+    /// A server with client metadata documents turned on, and an admin who
+    /// is signed in and sees one project.
+    struct Described {
+        _root: tempfile::TempDir,
+        db: Db,
+        state: AppState,
+        app: axum::Router,
+        cookie: String,
+        user_id: String,
+    }
+
+    async fn described() -> Described {
         let root = tempfile::tempdir_in("target").unwrap();
         crate::db::migrate(root.path(), None).unwrap();
         let db = Db::open(root.path()).unwrap();
@@ -2021,7 +2027,62 @@ mod tests {
         else {
             panic!("the owner signs in");
         };
-        let cookie = format!("oneloop_session={}", session.token);
+        Described {
+            _root: root,
+            db,
+            app: crate::application(state.clone()).router,
+            state,
+            cookie: format!("oneloop_session={}", session.token),
+            user_id: session.actor.user_id,
+        }
+    }
+
+    fn authorize_request(
+        cookie: &str,
+        client: &str,
+        redirect: &str,
+        challenge: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client),
+                ("redirect_uri", redirect),
+                ("code_challenge", challenge),
+                ("code_challenge_method", "S256"),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+                ("state", "described"),
+            ])
+            .finish();
+        axum::http::Request::builder()
+            .uri(format!("/oauth/authorize?{query}"))
+            .header(header::COOKIE, cookie)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    async fn text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_client_described_by_its_document_connects_like_a_registered_one() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        const CLIENT: &str = "https://app.example.com/oauth/client.json";
+        let Described {
+            _root,
+            db,
+            state,
+            app,
+            cookie,
+            ..
+        } = described().await;
         let document = |name: &str| ClientDocument {
             client_id: CLIENT.into(),
             client_name: name.into(),
@@ -2032,16 +2093,6 @@ mod tests {
         state
             .client_documents
             .insert_for_test(document("Described App"));
-        let app = crate::application(state.clone()).router;
-        let text = |response: Response| async move {
-            String::from_utf8(
-                to_bytes(response.into_body(), usize::MAX)
-                    .await
-                    .unwrap()
-                    .to_vec(),
-            )
-            .unwrap()
-        };
 
         let response = app
             .clone()
@@ -2058,24 +2109,7 @@ mod tests {
 
         let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let authorize = |redirect: &str| {
-            let query = url::form_urlencoded::Serializer::new(String::new())
-                .extend_pairs([
-                    ("response_type", "code"),
-                    ("client_id", CLIENT),
-                    ("redirect_uri", redirect),
-                    ("code_challenge", challenge.as_str()),
-                    ("code_challenge_method", "S256"),
-                    ("resource", "http://127.0.0.1:8080/mcp"),
-                    ("state", "described"),
-                ])
-                .finish();
-            Request::builder()
-                .uri(format!("/oauth/authorize?{query}"))
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap()
-        };
+        let authorize = |redirect: &str| authorize_request(&cookie, CLIENT, redirect, &challenge);
         let response = app
             .clone()
             .oneshot(authorize("http://127.0.0.1:49152/elsewhere"))
@@ -2180,6 +2214,61 @@ mod tests {
         assert_eq!(
             (name.as_str(), renamed_at),
             ("Renamed App", created_at - 100)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_document_is_logged_with_the_person_who_asked() {
+        use tower::ServiceExt;
+        // With a second subscriber alive, tracing asks this thread's one about
+        // each log call; see tests/integration/errors.rs.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let capture = Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(capture.clone())
+                .finish(),
+        );
+        let described = described().await;
+        // The name resolves to this computer, so the fetch is refused.
+        let response = described
+            .app
+            .clone()
+            .oneshot(authorize_request(
+                &described.cookie,
+                "https://localhost/oneloop-test-client.json",
+                LOCAL_CALLBACK,
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("client metadata document refused"), "{log}");
+        assert!(
+            log.contains(&format!("user_id={}", described.user_id)),
+            "{log}"
         );
     }
 }
