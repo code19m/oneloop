@@ -13,7 +13,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     time::Instant,
 };
@@ -669,8 +669,8 @@ impl Git {
         })
     }
 
-    /// One framed stream, with bounded headers, stored contents and discarded
-    /// oversized blobs. No file path is resolved through the working volume.
+    /// The selected files' contents, from one `git cat-file --batch`. No file
+    /// path is resolved through the working volume.
     async fn read_blobs(
         &self,
         session: &Session<'_>,
@@ -686,11 +686,8 @@ impl Git {
         )?;
         let process = child.child.as_mut().expect("running git");
         let mut stdin = process.stdin.take().expect("piped stdin");
-        let mut stdout = BufReader::new(process.stdout.take().expect("piped stdout"));
+        let stdout = BufReader::new(process.stdout.take().expect("piped stdout"));
         let stderr = process.stderr.take().expect("piped stderr");
-        let io = |error: std::io::Error| {
-            SyncError::new(Failure::Failed, format!("read git blobs: {error}"))
-        };
         // Queue the bounded list while draining output. Waiting for a response
         // before sending each ID would add one pipe round trip per file.
         let mut requests = Vec::with_capacity(selected.len() * 65);
@@ -699,85 +696,19 @@ impl Git {
             requests.push(b'\n');
         }
         let send = async {
-            stdin.write_all(&requests).await.map_err(io)?;
+            stdin.write_all(&requests).await.map_err(batch_error)?;
             drop(stdin);
             Ok::<_, SyncError>(())
         };
-        let read = async {
-            let mut files = Vec::with_capacity(selected.len());
-            let mut header = Vec::with_capacity(128);
-            let mut received = 0u64;
-            let mut stored = 0u64;
-            let mut skipped = 0;
-            for (_, path, blob) in selected {
-                header.clear();
-                (&mut stdout)
-                    .take(128)
-                    .read_until(b'\n', &mut header)
-                    .await
-                    .map_err(io)?;
-                let fields = std::str::from_utf8(&header)
-                    .ok()
-                    .and_then(|text| text.strip_suffix('\n'))
-                    .map(|line| line.split_whitespace().collect::<Vec<_>>());
-                let size = match fields.as_deref() {
-                    Some([id, "blob", size]) if *id == blob => size.parse::<u64>().ok(),
-                    _ => None,
-                }
-                .ok_or_else(|| SyncError::new(Failure::Failed, "invalid Git batch header"))?;
-                received = received.saturating_add(size);
-                if received > limits.max_download_bytes {
-                    return Err(SyncError::new(
-                        Failure::TooLarge,
-                        "Git blob stream is larger than the download limit",
-                    ));
-                }
-                if size > limits.max_file_bytes {
-                    let copied =
-                        tokio::io::copy(&mut (&mut stdout).take(size), &mut tokio::io::sink())
-                            .await
-                            .map_err(io)?;
-                    if copied != size {
-                        return Err(SyncError::new(Failure::Failed, "truncated Git blob"));
-                    }
-                    skipped += 1;
-                } else {
-                    stored = stored.saturating_add(size);
-                    if stored > limits.max_total_bytes {
-                        return Err(SyncError::new(
-                            Failure::TooLarge,
-                            "the folder is larger than the limit",
-                        ));
-                    }
-                    let mut content = vec![0; size as usize];
-                    stdout.read_exact(&mut content).await.map_err(io)?;
-                    files.push(SnapshotFile {
-                        path,
-                        content,
-                        changed_at: None,
-                    });
-                }
-                if stdout.read_u8().await.map_err(io)? != b'\n' {
-                    return Err(SyncError::new(
-                        Failure::Failed,
-                        "invalid Git blob terminator",
-                    ));
-                }
-            }
-            if stdout.read(&mut [0]).await.map_err(io)? != 0 {
-                return Err(SyncError::new(
-                    Failure::Failed,
-                    "unexpected Git batch output",
-                ));
-            }
-            Ok((files, skipped))
-        };
         let run = async {
-            let (files, (), stderr) = tokio::try_join!(read, send, async {
-                drain_output(stderr, ERROR_OUTPUT_LIMIT).await.map_err(io)
-            })?;
+            let (files, (), stderr) =
+                tokio::try_join!(read_batch(stdout, selected, limits), send, async {
+                    drain_output(stderr, ERROR_OUTPUT_LIMIT)
+                        .await
+                        .map_err(batch_error)
+                })?;
             // As in ordinary commands, drain helpers before reaping their parent.
-            let status = process.wait().await.map_err(io)?;
+            let status = process.wait().await.map_err(batch_error)?;
             if !status.success() {
                 let stderr = String::from_utf8_lossy(&stderr);
                 return Err(SyncError::new(classify(&stderr), summary(&stderr)));
@@ -887,6 +818,86 @@ async fn drain_output(mut pipe: impl AsyncRead + Unpin, limit: u64) -> std::io::
     (&mut pipe).take(limit).read_to_end(&mut buffer).await?;
     tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await?;
     Ok(buffer)
+}
+
+/// The files in a `git cat-file --batch` stream that answers `selected` in
+/// order, and how many were skipped. Headers, the whole stream and the stored
+/// contents are bounded, and an oversized blob is read past without being kept.
+async fn read_batch(
+    mut output: impl AsyncBufRead + Unpin,
+    selected: Vec<(String, String, String)>,
+    limits: Limits,
+) -> Result<(Vec<SnapshotFile>, usize), SyncError> {
+    let mut files = Vec::with_capacity(selected.len());
+    let mut header = Vec::with_capacity(128);
+    let mut received = 0u64;
+    let mut stored = 0u64;
+    let mut skipped = 0;
+    for (_, path, blob) in selected {
+        header.clear();
+        (&mut output)
+            .take(128)
+            .read_until(b'\n', &mut header)
+            .await
+            .map_err(batch_error)?;
+        let fields = std::str::from_utf8(&header)
+            .ok()
+            .and_then(|text| text.strip_suffix('\n'))
+            .map(|line| line.split_whitespace().collect::<Vec<_>>());
+        let size = match fields.as_deref() {
+            Some([id, "blob", size]) if *id == blob => size.parse::<u64>().ok(),
+            _ => None,
+        }
+        .ok_or_else(|| SyncError::new(Failure::Failed, "invalid Git batch header"))?;
+        received = received.saturating_add(size);
+        if received > limits.max_download_bytes {
+            return Err(SyncError::new(
+                Failure::TooLarge,
+                "Git blob stream is larger than the download limit",
+            ));
+        }
+        if size > limits.max_file_bytes {
+            let copied = tokio::io::copy(&mut (&mut output).take(size), &mut tokio::io::sink())
+                .await
+                .map_err(batch_error)?;
+            if copied != size {
+                return Err(SyncError::new(Failure::Failed, "truncated Git blob"));
+            }
+            skipped += 1;
+        } else {
+            stored = stored.saturating_add(size);
+            if stored > limits.max_total_bytes {
+                return Err(SyncError::new(
+                    Failure::TooLarge,
+                    "the folder is larger than the limit",
+                ));
+            }
+            let mut content = vec![0; size as usize];
+            output.read_exact(&mut content).await.map_err(batch_error)?;
+            files.push(SnapshotFile {
+                path,
+                content,
+                changed_at: None,
+            });
+        }
+        if output.read_u8().await.map_err(batch_error)? != b'\n' {
+            return Err(SyncError::new(
+                Failure::Failed,
+                "invalid Git blob terminator",
+            ));
+        }
+    }
+    if output.read(&mut [0]).await.map_err(batch_error)? != 0 {
+        return Err(SyncError::new(
+            Failure::Failed,
+            "unexpected Git batch output",
+        ));
+    }
+    Ok((files, skipped))
+}
+
+fn batch_error(error: std::io::Error) -> SyncError {
+    SyncError::new(Failure::Failed, format!("read git blobs: {error}"))
 }
 
 async fn measure_working_copy(root: PathBuf) -> Result<u64, SyncError> {
@@ -1223,6 +1234,87 @@ mod tests {
             (1..=4).contains(&phases),
             "{phases} full walks outside the watchdog"
         );
+    }
+
+    #[tokio::test]
+    async fn batch_output_is_bounded_and_must_answer_every_request() {
+        let id = |n: u8| format!("{n:040x}");
+        let requests = || {
+            (0..3)
+                .map(|n| (format!("{n}.md"), format!("{n}.md"), id(n)))
+                .collect::<Vec<_>>()
+        };
+        let blob = |n: u8, content: &[u8]| {
+            let mut entry = format!("{} blob {}\n", id(n), content.len()).into_bytes();
+            entry.extend_from_slice(content);
+            entry.push(b'\n');
+            entry
+        };
+        // A stored file, one over the per-file limit, and another stored file.
+        let stream = [blob(0, b"abcd"), blob(1, b"too large"), blob(2, b"ef")].concat();
+        let limits = Limits {
+            max_files: 3,
+            max_file_bytes: 4,
+            max_total_bytes: 6,
+            max_download_bytes: 15,
+        };
+        let (files, skipped) = read_batch(&stream[..], requests(), limits).await.unwrap();
+        let read: Vec<_> = files
+            .iter()
+            .map(|file| (file.path.as_str(), file.content.as_slice()))
+            .collect();
+        assert_eq!(read, [("0.md", &b"abcd"[..]), ("2.md", &b"ef"[..])]);
+        assert_eq!(skipped, 1);
+
+        for (case, stream, limits, failure) in [
+            (
+                "stored files over the folder limit",
+                stream.clone(),
+                Limits {
+                    max_total_bytes: 5,
+                    ..limits
+                },
+                Failure::TooLarge,
+            ),
+            (
+                "a skipped file over the download limit",
+                stream.clone(),
+                Limits {
+                    max_download_bytes: 14,
+                    ..limits
+                },
+                Failure::TooLarge,
+            ),
+            (
+                "a size no download allows",
+                format!("{} blob 99999999999999\n", id(0)).into_bytes(),
+                limits,
+                Failure::TooLarge,
+            ),
+            (
+                "an early end",
+                stream[..stream.len() - 2].to_vec(),
+                limits,
+                Failure::Failed,
+            ),
+            (
+                "a missing object",
+                format!("{} missing\n", id(0)).into_bytes(),
+                limits,
+                Failure::Failed,
+            ),
+            (
+                "output after the last answer",
+                [&stream[..], b"x"].concat(),
+                limits,
+                Failure::Failed,
+            ),
+        ] {
+            let Err(error) = read_batch(&stream[..], requests(), limits).await else {
+                panic!("{case} must fail");
+            };
+            assert_eq!(error.failure, failure, "{case}: {}", error.detail);
+        }
     }
 
     #[cfg(unix)]
