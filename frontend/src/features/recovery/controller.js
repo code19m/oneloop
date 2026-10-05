@@ -46,7 +46,7 @@ const AUTOSAVE = '[data-autosave]';
 const AUTO_RELOAD = 'oneloop.autoReload';
 /** The versions a tab already reloaded itself for. */
 const RELOADED_FOR = 'oneloop.reloadedFor';
-const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000;
+const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
 
 /**
  * Whether an open editor holds text the person typed and has not saved or
@@ -209,12 +209,13 @@ export function presentDomConflict({target,locate=()=>null,latestValue,myValue,i
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
   reload = async (_scope={}) => ({}),
   presentConflict = presentDomConflict,
+  checkBuild = () => {},
   setTimer = globalThis.setTimeout.bind(globalThis),
   clearTimer = globalThis.clearTimeout.bind(globalThis),
   random = Math.random,
@@ -240,7 +241,7 @@ export function createRecoveryController({
   /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
   let writes=0;
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
-  let autoReloaded=false,autoReloadTimer=null,lastActivity=now();
+  let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now();
 
   function entityKey(entity){
     if(!entity)return null;
@@ -327,6 +328,28 @@ export function createRecoveryController({
    * reloads by itself once per page load and once per version, so servers
    * that disagree about the version can't make it loop.
    */
+  /**
+   * A hidden tab closes its live connection, whose opening is when a page
+   * compares its version with the server's. So with Reload after updates on,
+   * a hidden tab asks the server every minute instead, until it learns of an
+   * update.
+   */
+  function scheduleHiddenCheck(){
+    clearTimer(hiddenCheckTimer);hiddenCheckTimer=null;
+    const checking=()=>!disposed&&!updatedBuild&&autoReloadOn()&&documentObject?.visibilityState==='hidden';
+    if(!checking())return;
+    hiddenCheckTimer=setTimer(()=>{
+      hiddenCheckTimer=null;
+      if(checking())Promise.resolve().then(checkBuild).catch(()=>{}).finally(scheduleHiddenCheck);
+    },HIDDEN_BUILD_CHECK_MS);
+  }
+
+  /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
+  function visibilityChanged(){
+    if(documentObject?.visibilityState!=='hidden')noteActivity();
+    scheduleHiddenCheck();reloadWhenSafe();
+  }
+
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
     if(disposed||!updatedBuild||autoReloaded||!autoReloadOn())return;
@@ -649,7 +672,7 @@ export function createRecoveryController({
     buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
     /** Whether this browser reloads by itself after an update. */
     get autoReload(){return autoReloadOn();},
-    setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}reloadWhenSafe();},
+    setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}scheduleHiddenCheck();reloadWhenSafe();},
     reloadClient(){windowObject?.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
@@ -670,9 +693,9 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',reloadWhenSafe);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
 import {createRecoveryController,isRevisionConflict,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
+import {createBuildMonitor} from '../../../../src/app/build-info.js';
 const {JSDOM}=createRequire(import.meta.url)('../../../support/dom.cjs');
 
 function fixture(overrides={}){
@@ -329,20 +330,28 @@ test('removing an unresolved editor cancels its prompt without retaining a draft
 /**
  * A page that learns about an update, with storage, visibility and a clock
  * the test controls. `stores` is the tab's storage, which a reload keeps.
+ * The page checks the server's version the way the app does, with the build
+ * monitor; `server` is the version the server answers with.
  */
 function updatable({autoReload=true,hidden=false,stores={local:new Map(),session:new Map()}}={}){
-  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false;
+  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0;
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
   if(autoReload)stores.local.set('oneloop.autoReload','on');
   const documentObject={visibilityState:hidden?'hidden':'visible',activeElement:null,querySelectorAll:()=>[],addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);}};
   const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener(){}};
   const app={context:()=>({view:'board',projectId:'p1'}),refresh(){}};
+  let server=oldVersion;
+  const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
   const controller=createRecoveryController({data:{session:{id:'s1',userId:'u1'}},api:{counts:async()=>({})},gateway:{hasPending:()=>saving,invalidate(){}},getApp:()=>app,
-    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject});
+    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject,
+    checkBuild:()=>monitor.check()});
   controller.bind(app,{});
-  return {controller,stores,documentObject,get reloads(){return reloads;},set saving(value){saving=value;},
-    fire(type){for(const listener of listeners[type]??[])listener({});},
-    advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();}};
+  const fire=type=>{for(const listener of listeners[type]??[])listener({});};
+  return {controller,stores,documentObject,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
+    /** The tab hides, or shows again. */
+    show(visible){documentObject.visibilityState=visible?'visible':'hidden';fire('visibilitychange');},
+    /** Move the clock on, run the timers that are due, and let the checks they start finish. */
+    async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await microtask();}};
 }
 const newVersion={version:'0.2.0',revision:'b2'},oldVersion={version:'0.1.0',revision:'a1'};
 
@@ -352,12 +361,36 @@ test('with Reload after updates off, an update only shows the notice',()=>{
   assert.equal(page.reloads,0);assert.match(page.controller.connectionHtml(),/oneloop was updated/);
 });
 
-test('a hidden tab reloads after an update once no save is running',()=>{
-  const page=updatable({hidden:true});page.saving=true;
-  page.controller.buildChanged(newVersion);
-  assert.equal(page.reloads,0,'a save is still running');
+test('a hidden tab asks the server for its version every minute and reloads once no save is running',async()=>{
+  const page=updatable();await page.monitor.check();
+  page.show(false);page.saving=true;
+  await page.advance(60_000);
+  assert.equal(page.checks,2);assert.equal(page.reloads,0,'nothing changed yet');
+  page.server=newVersion;
+  await page.advance(59_000);assert.equal(page.checks,2);
+  await page.advance(1_000);
+  assert.equal(page.checks,3);assert.equal(page.reloads,0,'a save is still running');
   page.saving=false;page.controller.interactionPending('task.update:t1:title',false);
   assert.equal(page.reloads,1);
+});
+
+test('with Reload after updates off, a hidden tab never asks the server',async()=>{
+  const page=updatable({autoReload:false});await page.monitor.check();
+  page.show(false);page.server=newVersion;
+  await page.advance(10*60_000);
+  assert.equal(page.checks,1);assert.equal(page.reloads,0);
+});
+
+test('a tab that shows again counts as activity, so the person who comes back is not reloaded at once',async()=>{
+  const page=updatable();await page.monitor.check();
+  page.show(false);await page.advance(30_000);
+  page.server=newVersion;
+  // They come back before the next check; the live connection opens and checks.
+  page.show(true);await page.monitor.check();
+  assert.equal(page.reloads,0,'not in front of the person');
+  await page.advance(59_000);assert.equal(page.reloads,0);
+  await page.advance(60_000);
+  assert.equal(page.reloads,1,'a minute without activity');
 });
 
 test('a tab that is shown reloads only after a minute without activity',()=>{

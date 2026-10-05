@@ -80,21 +80,21 @@ const auth = createAuthController({
   },
 });
 
-recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection});
-globalThis.OneloopRecovery=recovery;
-globalThis.Recovery=recovery;
-
-installViewEventOwner(document.documentElement);
-installTooltips(document);
-
 const buildMonitor=createBuildMonitor({
   fetchBuild:async()=>{
     const response=await fetch('/healthz',{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json'},signal:AbortSignal.timeout(5000)});
     return response.ok?response.json():null;
   },
   onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version,build:value.revision});},
-  onUpdate:(value)=>recovery.buildChanged(value),
+  onUpdate:(value)=>recovery?.buildChanged(value),
 });
+recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
+globalThis.OneloopRecovery=recovery;
+globalThis.Recovery=recovery;
+
+installViewEventOwner(document.documentElement);
+installTooltips(document);
+
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
     ||change.type==='command'&&change.result?.entities?.some((/** @type {{entityType?:string}} */ entity)=>['project','membership','track','epic','milestone','task','taskBlock','poolItem'].includes(entity.entityType));
