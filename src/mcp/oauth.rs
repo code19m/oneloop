@@ -1623,18 +1623,13 @@ fn consent_html(
         .unwrap_or_else(|| presentation.redirect.to_owned());
     let destination = escape(&destination);
     let returns_to_this_computer = callback.as_ref().is_some_and(|url| url.scheme() != "https");
+    // The whole address: one host can serve documents for many authors.
     let client_source = match client_metadata::document_url(presentation.client_id) {
         Err(_) => "App name supplied by the client; identity is unverified.".to_owned(),
-        Ok(url) => {
-            let host = url.host_str().unwrap_or_default();
-            if returns_to_this_computer {
-                format!(
-                    "App name published by {host}. The app runs on your computer, where another app could use the same name. Continue only if you started this connection."
-                )
-            } else {
-                format!("App name published by {host}.")
-            }
-        }
+        Ok(url) if returns_to_this_computer => format!(
+            "App name from {url}. The app runs on your computer, where another app could use the same name. Continue only if you started this connection."
+        ),
+        Ok(url) => format!("App name from {url}."),
     };
     let error = presentation
         .retry
@@ -2137,9 +2132,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = text(response).await;
         assert!(html.contains("Connect <bdi>Described App</bdi>"), "{html}");
-        assert!(
-            html.contains("App name published by app.example.com. The app runs on your computer")
-        );
+        assert!(html.contains(&format!(
+            "App name from {CLIENT}. The app runs on your computer"
+        )));
         let request_id = html
             .split("name=request_id value=\"")
             .nth(1)

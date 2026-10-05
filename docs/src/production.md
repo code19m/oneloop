@@ -253,7 +253,8 @@ Turn on only what your clients need.
   `ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS=true`, an assistant may use an HTTPS
   address as its client ID. oneloop then fetches the document at that address
   for the app's name and callbacks, and the **Connect** page shows the
-  document's host. A fetch happens only for someone who is signed in. To
+  document's whole address, because one host can serve documents for many
+  authors. A fetch happens only for someone who is signed in. To
   protect your network, oneloop fetches only `https` addresses with a path, on
   the default port, and only when every address the host name resolves to is
   public; never a private, loopback, link-local or other special address. It

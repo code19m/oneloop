@@ -70,7 +70,8 @@ body{min-height:100vh;
   border-radius:8px;
   overflow-wrap:anywhere}
 .hint{font-size:12px;
-  color:#73736e}
+  color:#73736e;
+  overflow-wrap:anywhere}
 .actions{display:flex;
   justify-content:flex-end;
   gap:8px;
