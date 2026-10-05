@@ -65,6 +65,13 @@ function mapEpic(epic) {
   };
 }
 
+/** Only Roadmap reads carry epic task counts; other reads keep the last ones known. */
+function keepEpicCounts(mapped, view, previous) {
+  if (view.taskTotal !== undefined || !previous) return mapped;
+  for (const key of ['done','total','open','closedThisWeek','completedSinceStart','weekly']) mapped[key] = previous[key];
+  return mapped;
+}
+
 function mapMilestone(milestone) {
   return {
     id: milestone.id, projectId: milestone.projectId, name: milestone.title,
@@ -217,7 +224,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   const memberships = bootstrap.memberships ?? [];
   const identity = auth?.user ?? bootstrap.session;
   const sameUser=previousSession?.userId===(identity?.id??identity?.userId);
-  const history=new Map((sameUser?data.epics:[]).map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
+  const history=new Map((sameUser?data.epics:[]).map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item]));
   data.timeZone = bootstrap.timeZone || 'UTC';
   data.limits = bootstrap.limits ?? null;
   replace(data.users, (bootstrap.users ?? []).map(mapUser));
@@ -230,7 +237,7 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
     return mapped;
   }));
   replace(data.tracks, (bootstrap.tracks ?? []).map(mapTrack));
-  replace(data.epics, (bootstrap.epics ?? []).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]})));
+  replace(data.epics, (bootstrap.epics ?? []).map((/** @type {{id:string,taskTotal?:number}} */ view)=>keepEpicCounts({...mapEpic(view),activity:history.get(view.id)?.activity??[]},view,history.get(view.id))));
   replace(data.milestones, (bootstrap.milestones ?? []).map(mapMilestone));
   replace(data.tasks, (bootstrap.tasks ?? []).map(view=>retainTaskDetails(sameUser?previousTasks.get(view.id):null,mapTask(view))));
   if(!bootstrap.view)replace(data.pool, (bootstrap.pool ?? []).map(mapPoolItem));

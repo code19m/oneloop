@@ -17,9 +17,9 @@ use crate::{
 };
 
 use super::{
-    BlockView, BoardCounts, BoardView, BootstrapPageInfo, BootstrapView, DomainService, EpicView,
-    MembershipView, MilestoneView, Page, PoolItemView, ProjectView, SessionView, TaskView,
-    TrackView, UserView,
+    BlockView, BoardCounts, BoardView, BootstrapPageInfo, BootstrapView, DomainService,
+    EpicSummary, EpicView, MembershipView, MilestoneView, Page, PoolItemView, ProjectView,
+    SessionView, TaskView, TrackView, UserView,
 };
 
 const PAGE_SIZE: usize = 50;
@@ -233,7 +233,7 @@ impl DomainService {
                 Ok(json!({
                 "projectId":project_id,
                 "tracks":tracks(connection,&project_id)?,
-                "epics":epics(connection,&project_id,&time_zone)?,
+                "epics":epics(connection,&project_id,&time_zone,true)?,
                 "milestones":milestones(connection,&project_id)?
                 }))
             })
@@ -493,13 +493,41 @@ fn tracks(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<
     })?
     .collect::<Result<Vec<_>, _>>()?)
 }
+/// Epics in timeline order. Only the Roadmap shows task counts, so other
+/// views skip the summary, which reads every task of the project.
 fn epics(
     connection: &rusqlite::Connection,
     project_id: &str,
     timezone: &TimeZone,
+    with_summary: bool,
 ) -> AppResult<Vec<EpicView>> {
+    if !with_summary {
+        return epic_rows(connection, project_id);
+    }
     let today = timezone.rules().to_datetime(Timestamp::now()).date();
     epics_on(connection, project_id, timezone, today)
+}
+
+fn epic_rows(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<EpicView>> {
+    let mut statement = connection.prepare_cached("SELECT id,project_id,track_id,title,description,start_date,end_date,state,position,\
+                     revision FROM epics WHERE project_id=?1 AND deleted_at IS NULL ORDER BY start_date,position,id")?;
+    Ok(statement
+        .query_map([project_id], |row| {
+            Ok(EpicView {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                track_id: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get(4)?,
+                start_date: row.get(5)?,
+                end_date: row.get(6)?,
+                state: row.get(7)?,
+                position: row.get(8)?,
+                revision: row.get(9)?,
+                summary: None,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 fn epics_on(
@@ -515,31 +543,17 @@ fn epics_on(
     for offset in 0..8 {
         boundaries.push(local_midnight(timezone, trailing_start + offset.days())?);
     }
-    let mut statement = connection.prepare_cached("SELECT id,project_id,track_id,title,description,start_date,end_date,state,position,\
-                     revision FROM epics WHERE project_id=?1 AND deleted_at IS NULL ORDER BY start_date,position,id")?;
-    let mut result = statement
-        .query_map([project_id], |row| {
-            Ok(EpicView {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                track_id: row.get(2)?,
-                title: row.get(3)?,
-                description: row.get(4)?,
-                start_date: row.get(5)?,
-                end_date: row.get(6)?,
-                state: row.get(7)?,
-                position: row.get(8)?,
-                revision: row.get(9)?,
-                task_total: 0,
-                task_done: 0,
-                task_open: 0,
-                completed_this_week: 0,
-                completed_since_start: 0,
-                weekly_completions: vec![0; 7],
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
+    let mut result = epic_rows(connection, project_id)?;
+    for epic in &mut result {
+        epic.summary = Some(EpicSummary {
+            task_total: 0,
+            task_done: 0,
+            task_open: 0,
+            completed_this_week: 0,
+            completed_since_start: 0,
+            weekly_completions: vec![0; 7],
+        });
+    }
     let starts = result
         .iter()
         .map(|epic| {
@@ -571,15 +585,16 @@ fn epics_on(
     ])?;
     while let Some(row) = rows.next()? {
         let index = row.get::<_, i64>(0)? as usize;
-        let summary: [i64; 11] = serde_json::from_str(&row.get::<_, String>(1)?)
+        let counts: [i64; 11] = serde_json::from_str(&row.get::<_, String>(1)?)
             .map_err(|error| AppError::internal(format!("invalid epic summary: {error}")))?;
-        let epic = &mut result[index];
-        epic.task_total = summary[0];
-        epic.task_done = summary[1];
-        epic.task_open = epic.task_total - epic.task_done;
-        epic.completed_this_week = summary[2];
-        epic.completed_since_start = summary[3];
-        epic.weekly_completions.copy_from_slice(&summary[4..]);
+        result[index].summary = Some(EpicSummary {
+            task_total: counts[0],
+            task_done: counts[1],
+            task_open: counts[0] - counts[1],
+            completed_this_week: counts[2],
+            completed_since_start: counts[3],
+            weekly_completions: counts[4..].to_vec(),
+        });
     }
     Ok(result)
 }
@@ -1551,7 +1566,9 @@ fn bootstrap_snapshot(
         result.memberships = memberships(connection, project_id)?;
         result.users = users(connection, &actor, project_id)?;
         result.tracks = tracks(connection, project_id)?;
-        result.epics = epics(connection, project_id, time_zone)?;
+        // The Roadmap, and the legacy full projection, show epic task counts.
+        let summary = legacy || query.view.as_deref() == Some("roadmap");
+        result.epics = epics(connection, project_id, time_zone, summary)?;
         result.milestones = milestones(connection, project_id)?;
         let counts = board_counts_connection(connection, project_id)?;
         if legacy || query.view.as_deref() == Some("board") {

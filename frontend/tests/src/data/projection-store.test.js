@@ -81,6 +81,18 @@ test('paged and filtered task reads never overwrite authoritative epic aggregate
   assert.equal(data.epics[0].total,100);assert.equal(data.epics[0].done,20);
 });
 
+test('a bootstrap without epic counts keeps the counts the Roadmap read last',()=>{
+  const data=createLegacyData(),roadmap=bootstrap();
+  Object.assign(roadmap.epics[0],{taskTotal:12,taskDone:5,taskOpen:7,completedThisWeek:2,completedSinceStart:5,weeklyCompletions:[0,0,1,0,0,1,0]});
+  hydrateLegacyData(data,roadmap);
+  const board=bootstrap();delete board.epics[0].taskTotal;delete board.epics[0].taskDone;board.epics[0].title='Renamed';
+  hydrateLegacyData(data,board);
+  assert.equal(data.epics[0].title,'Renamed');
+  assert.deepEqual([data.epics[0].done,data.epics[0].total,data.epics[0].open,data.epics[0].closedThisWeek,data.epics[0].weekly],[5,12,7,2,[0,0,1,0,0,1,0]]);
+  const fresh=createLegacyData();hydrateLegacyData(fresh,board);
+  assert.deepEqual([fresh.epics[0].done,fresh.epics[0].total],[0,0]);
+});
+
 test('an explicitly empty roadmap clears stale project collections',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());
   replaceRoadmap(data,{projectId:'p1',tracks:[],epics:[],milestones:[]});

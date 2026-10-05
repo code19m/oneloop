@@ -66,13 +66,21 @@ pub struct EpicView {
     pub end_date: Option<String>,
     pub state: String,
     pub position: i64,
+    /// Task counts, read only where the Roadmap shows them.
+    #[serde(flatten)]
+    pub summary: Option<EpicSummary>,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpicSummary {
     pub task_total: i64,
     pub task_done: i64,
     pub task_open: i64,
     pub completed_this_week: i64,
     pub completed_since_start: i64,
     pub weekly_completions: Vec<i64>,
-    pub revision: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -133,6 +133,89 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
 }
 
 #[tokio::test]
+async fn epic_task_counts_come_only_with_the_roadmap() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Finished"}),
+                "counted",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let task_id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":task_id,"status":"done"}),
+                "counted-done",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let epic = |epics: &Value| {
+        epics
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|epic| epic["id"] == "e1")
+            .unwrap()
+            .clone()
+    };
+    for (view, task) in [
+        (Some("roadmap"), None),
+        (None, None),
+        (Some("board"), None),
+        (Some("task"), Some(task_id.clone())),
+        (Some("metadata"), None),
+    ] {
+        let bootstrap = f
+            .service
+            .bootstrap(
+                &f.member,
+                BootstrapQuery {
+                    project_id: Some("p1".into()),
+                    task_id: task,
+                    view: view.map(str::to_owned),
+                },
+            )
+            .await
+            .unwrap();
+        let epic = epic(&serde_json::to_value(bootstrap).unwrap()["epics"]);
+        let counted = matches!(view, None | Some("roadmap"));
+        for field in [
+            "taskTotal",
+            "taskDone",
+            "taskOpen",
+            "completedThisWeek",
+            "completedSinceStart",
+            "weeklyCompletions",
+        ] {
+            assert_eq!(epic.get(field).is_some(), counted, "{view:?} {field}");
+        }
+        if counted {
+            assert_eq!(
+                (&epic["taskTotal"], &epic["taskDone"]),
+                (&json!(1), &json!(1))
+            );
+        }
+        assert_eq!(epic["title"], "Open epic");
+    }
+    let roadmap = f.service.roadmap(&f.member, "p1".into()).await.unwrap();
+    let epic = epic(&roadmap["epics"]);
+    assert_eq!(epic["completedThisWeek"], 1);
+    assert_eq!(epic["weeklyCompletions"][6], 1);
+}
+
+#[tokio::test]
 async fn hidden_and_missing_resources_have_identical_http_errors() {
     let f = fixture().await;
     let task = f
