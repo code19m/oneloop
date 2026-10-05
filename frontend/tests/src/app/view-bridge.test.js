@@ -498,3 +498,11 @@ test('permission changes for two members save side by side',async()=>{
   assert.deepEqual(state.toasts,[['Access updated'],['Access updated']]);
   assert.deepEqual(state.data.projects[0].members.map(member=>member.permissions),[['manage_board'],['manage_board']]);
 });
+
+test('a value typed while a failing save ran is the one kept as Not saved',async()=>{
+  const state=taskPage({recovery:{handleCommandFailure:async()=>{}}});
+  state.app.updTask('ONE-1','desc','First text');state.app.updTask('ONE-1','desc','Second text');
+  state.requests[0].reject(new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await tick();await tick();
+  assert.equal(state.requests.length,1,'the newer value waits for the connection');
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Second text',unsaved:true});
+});

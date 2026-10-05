@@ -215,12 +215,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           for(const waiter of job.waiters)waiter.resolve(outcome);
         }catch(error){
           queue.active=false;
-          // A newer queued value of the field is not sent after a failure; a draft keeps it.
+          // A newer queued value of the field is not sent after a failure; its draft keeps it.
           const newer=queue.jobs.get(jobKey);if(newer){queue.jobs.delete(jobKey);job.waiters.push(...newer.waiters);}
-          if(draft&&drafts.get(job.options.draft)===draft&&sessionScope()===scope){
+          const latest=job.options.draft?drafts.get(job.options.draft):null;
+          if(latest&&sessionScope()===scope){
             if(/** @type {any} */(error)?.conflictChoice==='latest')drafts.delete(job.options.draft);
-            else Object.assign(draft,{unsaved:true,base:draft.base??job.base,retryOnline:['offline','network_error','timeout'].includes(/** @type {any} */(error)?.code)});
-            paintDrafts(draft.taskId);
+            else Object.assign(latest,{unsaved:true,base:latest.base??job.base,retryOnline:['offline','network_error','timeout'].includes(/** @type {any} */(error)?.code)});
+            paintDrafts(latest.taskId);
           }
           for(const waiter of job.waiters)waiter.reject(error);
         }
