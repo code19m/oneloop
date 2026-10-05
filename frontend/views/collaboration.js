@@ -269,10 +269,12 @@
  }
  // A comment being written when the session ended, kept for the same person's next sign-in.
  let resumedComment=null;
+ /** The comment text the person typed and hasn't sent; an edit counts once it differs from the saved comment. */
  function commentDraft(){
   capture();
   const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
   if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
+  if(commentMode.mode==='edit'&&commentEditor.text===task.comments?.find(c=>c.id===commentMode.target)?.text)return null;
   return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
  }
  // Put a kept comment back once its task page shows; a reply or an edit waits for

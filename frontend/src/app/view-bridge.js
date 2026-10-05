@@ -43,6 +43,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   let profileNameQueueScope='',avatarQueueScope='';
   const openPeek=app.openPeek.bind(app);
   const moveTaskOrder=app.moveTaskOrder.bind(app);
+  const nav=app.nav.bind(app);
 
   function fieldError(form,name,message){
     if(form&&typeof form.querySelector==='function'&&form.querySelector(`[name="${name}"]`)){
@@ -289,6 +290,31 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }
   }
   recovery?.whenOnline?.(retryDrafts);
+  // A draft lives in this tab only, so leaving oneloop before it saves loses it.
+  recovery?.trackUnsaved?.(()=>{pruneDrafts();return drafts.size>0;});
+
+  // Another page discards text typed into this one, so ask first. Drafts and
+  // saves that are running carry on, so they don't count.
+  const losesInput=()=>!!recovery?.hasUnsavedInput?.({leaving:false});
+  function askToDiscard(leave,stay=()=>{}){
+    if(app.confirm({title:'Discard changes?',text:'Text you typed on this page will be lost.',action:'Discard',local:true,confirm:leave,cancel:stay})===false)stay();
+  }
+  /** Resolves whether the page may change. */
+  const mayLeavePage=()=>losesInput()?new Promise((resolve)=>askToDiscard(()=>resolve(true),()=>resolve(false))):Promise.resolve(true);
+  // A page change someone asks for, from the sidebar, a menu or a back button.
+  // One that must happen, such as leaving a project that is gone, passes
+  // `discard`; one that follows the person's own change, such as deleting a
+  // task, calls `nav` directly. Neither asks.
+  app.nav=(view,options)=>{
+    if(options?.discard||!losesInput())return nav(view);
+    askToDiscard(()=>nav(view));
+  };
+  globalThis.document?.addEventListener?.('click',(event)=>{
+    const link=/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]');
+    if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
+    event.preventDefault();
+    askToDiscard(()=>{globalThis.location.hash=link.getAttribute('href');});
+  },true);
 
   async function execute(operation, payload, entity, message, options = {}) {
     const record=options.create?null:recordOf(operation,payload);
@@ -430,7 +456,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(context().view==='profile'){app.refresh();app.toast('Profile saved');}
       return response;
     });
-    profileNameQueue=request;return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
+    profileNameQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
   };
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
@@ -442,7 +468,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
       me.avatar=response.avatarUrl;if(context().view==='profile'){app.refresh();app.toast('Avatar updated');}return response;
     });
-    avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
   };
   app.removeAvatar=()=>{
     const me=data.users.find((item)=>item.id===data.session?.userId);if(!me)return false;
@@ -454,7 +480,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
         me.avatar=null;if(context().view==='profile'){app.refresh();app.toast('Avatar removed');}return {};
       });
-      avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+      avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
     }});
   };
   app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(()=>loadProfileAccess()).catch(report))});
@@ -563,7 +589,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
     }));
   };
-  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be permanently removed.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,'Task deleted',{reload:true}).then((result)=>ifCurrent(result,()=>app.nav('board'))))});};
+  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be permanently removed.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,'Task deleted',{reload:true}).then((result)=>ifCurrent(result,()=>nav('board'))))});};
   app.moveTaskOrder = (id,anchor,before) => {
     const item=task(id),target=task(anchor);if(!item||!target||app._boardMovePending)return false;
     const projectId=item.projectId,scope=sessionScope(),projectTasks=data.tasks.filter((entry)=>entry.projectId===projectId),index=projectTasks.indexOf(item),previousBefore=index>0?projectTasks[index-1]:null,previousAfter=projectTasks[index+1]||null,revision=item.revision;
@@ -635,7 +661,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
     // The new project opens only while its dialog is still the open one; a re-render keeps it open.
     const open=()=>completeForm(form,()=>{});
-    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)app.nav('roadmap');})));
+    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)nav('roadmap');})));
   };
   app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));
@@ -657,7 +683,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   };
   function showMemberOpenWork(project,userId,count=null){const user=data.users.find((item)=>item.id===userId),who=user?.name||userId;app.showBlocked?.('Member has open work',count?`Reassign ${count} unfinished task${count===1?'':'s'} before removing ${who} from this project.`:`Reassign this member’s unfinished tasks before removing ${who} from this project.`);}
   app.removeMember=(userId)=>{const project=data.projects.find((item)=>item.id===context().projectId),membership=project?.members.find((item)=>item.userId===userId);if(!membership)return;const assigned=data.tasks.filter((item)=>item.projectId===project.id&&item.state!=='done'&&(item.assignees||[]).includes(userId));if(assigned.length){showMemberOpenWork(project,userId,assigned.length);return false;}app.confirm({title:'Remove member?',text:'They will lose access to this project.',action:'Remove member',confirm:()=>fire(execute('membership.remove',{projectId:project.id,userId},membership,'Member removed',{handleError:(error)=>{if(!['member_has_open_tasks','precondition_failed'].includes(error?.code))return false;showMemberOpenWork(project,userId);return true;}}).catch(report))});};
-  app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>app.nav('roadmap'))).catch(report))});};
+  app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>nav('roadmap'))).catch(report))});};
 
   const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
   /**
@@ -769,6 +795,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
+        if(!await mayLeavePage())return {stale:true};
         const generation=++projectGeneration,scope=sessionScope();
         routeGeneration++;
         const loaded=await reloadBootstrap({projectId:payload.projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});

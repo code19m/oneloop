@@ -414,7 +414,8 @@
   document.addEventListener('visibilitychange', () => setToastPause('hidden', document.hidden));
 
   let pendingConfirmation = null;
-  function askConfirmation({ title, text, action, match, confirm, cancel }) {
+  // A `local` choice, such as discarding typed text, changes nothing on the server, so it works offline.
+  function askConfirmation({ title, text, action, match, confirm, cancel, local = false }) {
     if (pendingConfirmation) return false;
     closePop(true);
     const returnFocus = document.activeElement;
@@ -449,7 +450,7 @@
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (pendingConfirmation !== record || (match !== undefined && input.value !== match)) return;
-      if(window.Recovery && !Recovery.ensureOnline())return;
+      if(!local && window.Recovery && !Recovery.ensureOnline())return;
       accept.disabled = true; close(true); confirm();
     });
     function onKey(event) {
@@ -710,7 +711,7 @@
     const placeholder = def.disabled ? 'Not set' : def.placeholder || (label === 'Date' ? 'Select date' : 'Set ' + label.toLowerCase());
     return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${UIEscape(key)}">
       <input type="hidden" name="${def.name}" value="${esc(def.value || '')}">
-      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
+      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
       <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : `onclick="App.popDate(event,'${UIArg(key)}')"`}>${def.icon || I.cal}</button></div>
     </div>`;
   }
@@ -1459,7 +1460,7 @@
           </div>
         </div>
         ${field('Username', `<input class="ctl mono" value="${esc(userHandle(u))}" disabled>`)}
-        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
+        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
       </div>
       <div class="section">
         <h2>Password</h2>
@@ -1579,7 +1580,7 @@
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
         <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
@@ -1587,13 +1588,13 @@
           <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
           <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
-          <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
+          <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
           <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}" title="${formatInstant(t.created)}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
         </dl>
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
           <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
           ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
@@ -1647,8 +1648,8 @@
         <h2>Project</h2>
         <div class="project-fields">
           <div class="field-row">
-            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
-            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
+            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
+            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
           </div>
         </div>
       </div>
@@ -1661,8 +1662,8 @@
               <div class="member-person">${avatarHtml(u.id, 24)}<span><b title="${esc(u.name)}">${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
               <div class="member-grants">
                 ${u.admin ? '<span class="admin-access">Full access</span>' : `
-                  <label class="permission-check"><input type="checkbox" aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
-                  <label class="permission-check"><input type="checkbox" aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
               </div>
               <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" onclick="App.removeMember('${UIArg(u.id)}')">${I.close}</button>
             </div>`).join('') || `<div class="empty-note" style="border:0;text-align:left;padding:4px 0">${query?'No matching members':'No members yet'}</div>`}

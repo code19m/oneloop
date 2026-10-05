@@ -36,6 +36,29 @@ test('Enter posts a comment and a reply closes its inline composer after sending
   await expect(page.locator('#cmtIn')).toBeVisible();
 });
 
+test('an unsent comment asks before another page or a reload discards it', async ({ page, instance }) => {
+  await openApp(page, instance);
+  const composer = page.locator('#cmtIn');
+  await composer.fill('Half a thought');
+  await page.getByRole('button', { name: 'Back to Board' }).click();
+  const ask = page.getByRole('alertdialog', { name: 'Discard changes?' });
+  await ask.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(composer).toHaveValue('Half a thought');
+  // The browser asks before a reload; staying keeps the text.
+  const prompts = [];
+  page.on('dialog', dialog => { prompts.push(dialog.type()); void dialog.dismiss(); });
+  await page.evaluate(() => { location.reload(); });
+  await expect.poll(() => prompts).toEqual(['beforeunload']);
+  await expect(composer).toHaveValue('Half a thought');
+  await page.getByRole('button', { name: 'Back to Board' }).click();
+  await ask.getByRole('button', { name: 'Discard', exact: true }).click();
+  await expect(page.locator('.board')).toBeVisible();
+  // Nothing typed is left, so a reload goes ahead without asking.
+  await page.reload();
+  await expect(page.locator('.board')).toBeVisible();
+  expect(prompts).toEqual(['beforeunload']);
+});
+
 test('a failed block submission keeps its reason and the retry saves once', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/500.*\/api\/commands|Failed to load resource.*\/api\/commands/);
   await openApp(page, instance);

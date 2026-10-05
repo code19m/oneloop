@@ -34,6 +34,30 @@ function changedControl(element) {
   return element.value!==element.defaultValue || (element instanceof HTMLInputElement && element.checked!==element.defaultChecked);
 }
 
+/** Inputs that hold nothing to keep: passwords, files, buttons, hidden values and search boxes. */
+const NOT_TYPED = new Set(['password','file','submit','button','reset','image','hidden','search']);
+/** A field that saves itself when it loses focus, such as a task's title. */
+const AUTOSAVE = '[data-autosave]';
+
+/**
+ * Whether an open editor holds text the person typed and has not saved or
+ * sent: a changed field in a dialog, a drawer, the task page or a settings
+ * page. A field that saves itself counts only while it has focus with a value
+ * it has not saved yet. `skip` leaves out controls that keep their own state.
+ * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
+ * @param {(element:Element)=>boolean} [skip]
+ */
+export function hasTypedInput(doc, committed, skip = () => false) {
+  const active=doc.activeElement;
+  for (const root of doc.querySelectorAll(EDITOR_ROOT)) for (const element of root.querySelectorAll('input,textarea,select')) {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) || element.disabled || skip(element)) continue;
+    if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
+    if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
+    if (element===active && !(element instanceof HTMLSelectElement) && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
+  }
+  return false;
+}
+
 /**
  * Capture open editor state, only in memory. With `changedOnly`, only the
  * controls the person changed, and nothing when they changed none; `skip`
@@ -153,6 +177,10 @@ export function createRecoveryController({
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
+  // What each autosaved field saved when it last lost focus.
+  /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
+  /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
+  let writes=0;
 
   function entityKey(entity){
     if(!entity)return null;
@@ -195,6 +223,31 @@ export function createRecoveryController({
   function finishRevision(entityOrKey){
     const key=typeof entityOrKey==='string'?entityOrKey:entityKey(entityOrKey);if(!key)return;
     for(const root of documentObject?.querySelectorAll?.(EDITOR_ROOT)??[])EDITOR_REVISIONS.get(root)?.delete(key);
+  }
+
+  function rememberCommitted(event){
+    const target=event.target;
+    if(target?.matches?.(AUTOSAVE)&&typeof target.value==='string')committed.set(target,target.value);
+  }
+
+  /**
+   * Whether leaving now would lose text the person typed. Another page of
+   * oneloop loses only what open editors and the comment box hold; drafts and
+   * running saves carry on. Leaving oneloop (`leaving`) also loses drafts not
+   * saved yet, saves and uploads still running, and text kept for the next
+   * sign-in.
+   */
+  function hasUnsavedInput({leaving=true}={}){
+    // The comment box keeps its text across redraws, so it answers for itself.
+    if(documentObject&&hasTypedInput(documentObject,committed,(element)=>element.id==='cmtIn'))return true;
+    if(getApp()?.commentDraft?.())return true;
+    return leaving&&(!!resume||writes>0||!!gateway?.hasPending?.()||[...unsavedChecks].some((check)=>check()));
+  }
+
+  function warnBeforeUnload(event){
+    if(!hasUnsavedInput())return;
+    // The browser shows its own prompt; returnValue is for older browsers.
+    event.preventDefault();event.returnValue=true;
   }
 
   const requestContext=()=>({sessionGeneration,connectivityGeneration,sessionId:data.session?.id??null,userId:data.session?.userId??null});
@@ -494,6 +547,11 @@ export function createRecoveryController({
     activateNotice,
     /** Run `listener` each time saving works again after the connection was lost. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
+    hasUnsavedInput,
+    /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
+    trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
+    /** Count a save or upload that is not a command until it settles. */
+    trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
     buildChanged(){updatedBuild=true;updateNotice();},
     reloadClient(){windowObject?.location.reload();},
     reconnect,
@@ -515,9 +573,9 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',rememberCommitted,true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }
@@ -529,7 +587,8 @@ export function leaveUnavailableProject(data, app, previous, name) {
   if (!previous?.projectId || !['roadmap','board','task'].includes(previous.view)
       || data.projects.some((project) => project.id === previous.projectId)) return false;
   if(data.projects.length)app.selectProject(data.projects[0].id);
-  app.nav('board');
+  // Nothing typed there can be saved any more, so this never asks first.
+  app.nav('board',{discard:true});
   app.toast?.(name?`You no longer have access to ${name}.`:'You no longer have access to that project.','info');
   return true;
 }

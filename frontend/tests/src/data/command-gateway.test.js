@@ -84,3 +84,13 @@ test('responses and uncertain retries never cross browser sessions', async()=>{
   session='second';
   assert.equal(uncertain.hasUncertain('form:new'),false);
 });
+
+test('a command counts as pending until the server answers', async () => {
+  let release;
+  const gateway=createCommandGateway({api:{command:()=>new Promise(resolve=>{release=resolve;})},data:seededData()});
+  assert.equal(gateway.hasPending(),false);
+  const saving=gateway.execute('task.create',{projectId:'p1'},{interactionKey:'form:new'});
+  assert.equal(gateway.hasPending(),true);
+  release({entities:[],events:[],replayed:false});await saving;
+  assert.equal(gateway.hasPending(),false);
+});

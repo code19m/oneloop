@@ -53,7 +53,7 @@ export function installAttachmentTransport(
 
     const recovery = globalThis.OneloopRecovery;
     const requestContext = recovery?.requestContext?.();
-    return new Promise((resolve, reject) => {
+    const upload = new Promise((resolve, reject) => {
       const xhr = xhrFactory();
       let settled = false;
       const abort = () => xhr.abort();
@@ -118,6 +118,9 @@ export function installAttachmentTransport(
       signal?.addEventListener('abort', abort, { once: true });
       xhr.send(body);
     });
+    // Leaving the page while a file uploads would lose it.
+    recovery?.trackWrite?.(upload);
+    return upload;
   }
 
   const api = Object.freeze({ ...runtime.api, uploadAttachment });
