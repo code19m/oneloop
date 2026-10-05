@@ -1008,6 +1008,40 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
     retry.abort().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let begin =
+        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+        panic!("new upload must not replay")
+    };
+    pending.write_chunk(b"late").await.unwrap();
+    // A backup holds the data lock while it copies the database, here for
+    // longer than any request waits for it.
+    let backup = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.db.layout().data_lock())
+        .unwrap();
+    backup.try_lock().unwrap();
+    let finished = timeout(Duration::from_secs(10), pending.finish())
+        .await
+        .expect("the data lease wait is bounded");
+    assert!(
+        matches!(finished, Err(AppError::Unavailable(_))),
+        "{finished:?}"
+    );
+    sleep(Duration::from_secs(10)).await;
+    drop(backup);
+    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+        panic!("a failed upload must not replay")
+    };
+    retry.write_chunk(b"late").await.unwrap();
+    retry.finish().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
