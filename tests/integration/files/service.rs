@@ -1213,6 +1213,46 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
 }
 
 #[tokio::test]
+async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    service
+        .upload_avatar(&fixture.manager, png.clone())
+        .await
+        .unwrap();
+    let deletion_queue = |sql: &'static str| {
+        fixture.db.run(move |connection| {
+            connection.execute_batch(sql)?;
+            Ok(())
+        })
+    };
+    deletion_queue(
+        "CREATE TRIGGER queue_fails BEFORE INSERT ON file_deletion_jobs
+         BEGIN SELECT RAISE(ABORT, 'disk error'); END",
+    )
+    .await
+    .unwrap();
+    service.upload_avatar(&fixture.manager, png).await.unwrap();
+    service.remove_avatar(&fixture.manager).await.unwrap();
+    deletion_queue("DROP TRIGGER queue_fails").await.unwrap();
+    // Nothing refers to the replaced files, so reconciliation deletes both.
+    let report = service.reconcile().await.unwrap();
+    assert_eq!(report.deletion_jobs_completed, 2);
+    let blobs: i64 = fixture
+        .db
+        .run(|connection| {
+            Ok(connection.query_row("SELECT count(*) FROM file_blobs", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(blobs, 0);
+}
+
+#[tokio::test]
 async fn avatars_reserve_the_shared_storage_budget_before_writing() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100);
