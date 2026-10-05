@@ -7,6 +7,8 @@ mod avatar;
 mod maintenance;
 mod read;
 pub use read::ReadMode;
+mod thumbnail;
+pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
 
 use super::BlobState;
@@ -60,6 +62,7 @@ pub struct FileService {
     store: FileStore,
     storage_limit_bytes: u64,
     disk: DiskAdmission,
+    thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -251,6 +254,7 @@ impl FileService {
             store,
             storage_limit_bytes,
             disk,
+            thumbnails: Default::default(),
         }
     }
 
@@ -618,6 +622,7 @@ impl FileService {
                 "attachment deletion is pending and will be retried".into(),
             ));
         }
+        self.remove_thumbnail(&storage_key).await;
         FileStore::sync_deletion_parent(path).await?;
 
         // If this fails, reconciliation finishes the job and the receipt.
@@ -747,6 +752,7 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
     let preview = preview_kind_from_metadata(&name, &media)
         .filter(|kind| *kind != PreviewKind::Html || size <= MAX_HTML_PREVIEW_BYTES);
     let available = state == BlobState::Available;
+    let thumbnail = available && thumbnail::makes_thumbnail(&media);
     Ok(StoredFile {
         attachment: AttachmentView {
             id: id.clone(),
@@ -768,6 +774,7 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
             content_url: (available
                 && matches!(preview, Some(PreviewKind::Image | PreviewKind::Pdf)))
             .then(|| format!("/api/attachments/{id}/content")),
+            thumbnail_url: thumbnail.then(|| format!("/api/attachments/{id}/thumbnail")),
             source_url: (available
                 && matches!(
                     preview,
@@ -1076,6 +1083,15 @@ async fn tree_bytes(root: PathBuf) -> AppResult<u64> {
     .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
 }
 
+/// Decode limits for avatars and thumbnails.
+fn image_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(AVATAR_MAX_DIMENSION);
+    limits.max_image_height = Some(AVATAR_MAX_DIMENSION);
+    limits.max_alloc = Some(AVATAR_MAX_DECODE_BYTES);
+    limits
+}
+
 fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
     let format = image::guess_format(bytes)
         .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
@@ -1089,11 +1105,7 @@ fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
         ));
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(AVATAR_MAX_DIMENSION);
-    limits.max_image_height = Some(AVATAR_MAX_DIMENSION);
-    limits.max_alloc = Some(AVATAR_MAX_DECODE_BYTES);
-    reader.limits(limits);
+    reader.limits(image_limits());
     let image = reader.decode().map_err(|_| {
         AppError::validation("avatar", "image data is invalid or exceeds safe dimensions")
     })?;
@@ -1227,6 +1239,7 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
 }
+/// Image decodes at once: avatar uploads and the thumbnail worker together.
 static AVATAR_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {

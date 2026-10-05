@@ -84,9 +84,10 @@ The storage limit covers uploaded files (attachments and avatars), their
 previews and unfinished uploads. The database doesn't count, and neither do
 Knowledge files, which oneloop keeps in the database.
 
-When usage reaches 80% of the limit, oneloop removes temporary attachments that
-nobody has opened for 24 hours, until usage is back at 70%. It never removes
-other files by itself. It refuses new uploads when the limit is reached, or when
+When usage reaches 80% of the limit, oneloop removes all image thumbnails, then
+temporary attachments that nobody has opened for 24 hours, until usage is back
+at 70%. It makes a thumbnail again when someone views the image, unless usage
+is at 80%. It never removes other files by itself. It refuses new uploads when the limit is reached, or when
 an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
 Uploads, and Knowledge syncs that download a new commit, reserve space from the
 same disk budget before they start. A reservation stays in place until
@@ -149,12 +150,17 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Attachments per task | 25 |
 | Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
+| Image thumbnails | PNG, JPEG and WebP images up to 8192 px per side and about 40 megapixels; at most 256 × 256 px |
 | Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
 Text and Markdown previews require valid text throughout the file. A Markdown
 filename does not enable a text preview for binary content. Recognized images
 and PDFs can still preview.
+
+Tasks load the original file for other images, such as GIFs, and for images
+that oneloop can't read. A new image has its thumbnail a moment after the
+upload.
 
 **Knowledge**
 

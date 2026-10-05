@@ -551,6 +551,9 @@ async fn finalize_attachment_upload(
             if let Some(disk) = upload.disk.take() {
                 disk.published();
             }
+            if view.thumbnail_url.is_some() {
+                upload.service.queue_thumbnail(&upload.storage_key);
+            }
             Ok(view)
         }
         Err(error) => {

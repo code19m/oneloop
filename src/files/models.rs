@@ -52,6 +52,10 @@ pub struct AttachmentView {
     pub preview_kind: Option<PreviewKind>,
     pub download_url: Option<String>,
     pub content_url: Option<String>,
+    /// A small preview of a PNG, JPEG or WebP image. It serves the original
+    /// until the thumbnail is ready, or when one can't be made.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
     pub source_url: Option<String>,
     pub html_preview_url: Option<String>,
 }

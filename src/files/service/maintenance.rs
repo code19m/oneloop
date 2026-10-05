@@ -105,11 +105,16 @@ impl FileService {
                 Ok(s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
             })
             .await?;
+        let orphan_thumbnails = self.orphan_thumbnail_candidates(&referenced).await?;
         // Scan without blocking publication. Only apparent orphans need the gate;
         // their reference is rechecked under it before unlinking, so an upload
         // committed after the snapshot is never mistaken for an orphan.
         for path in unreferenced_files(self.store.layout().files(), referenced).await? {
             report.orphan_files_removed += u64::from(self.remove_if_unreferenced(&path).await?);
+        }
+        for path in orphan_thumbnails {
+            report.orphan_files_removed +=
+                u64::from(self.remove_thumbnail_if_orphaned(&path).await?);
         }
         let active_staging: HashSet<String> = self
             .db
@@ -457,6 +462,7 @@ impl FileService {
                 let path = self.store.file_path(&job.storage_key)?;
                 match self.store.remove_file_if_present(&path).await {
                     Ok(()) => {
+                        self.remove_thumbnail(&job.storage_key).await;
                         parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
                         removed.push((job, size));
                     }
@@ -755,6 +761,7 @@ impl FileService {
                         .await?;
                     continue;
                 }
+                self.remove_thumbnail(&job.storage_key).await;
                 parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
                 removed.push(job);
             }

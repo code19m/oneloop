@@ -8,21 +8,26 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now, files::AttachmentView};
+use oneloop::{
+    AppState, Db, application,
+    auth::unix_now,
+    files::{AttachmentView, FileService},
+};
 use rusqlite::params;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-struct Fixture {
-    _directory: TempDir,
-    app: Router,
-    db: Db,
-    manager_cookie: String,
+pub(super) struct Fixture {
+    pub(super) _directory: TempDir,
+    pub(super) app: Router,
+    pub(super) files: FileService,
+    pub(super) db: Db,
+    pub(super) manager_cookie: String,
     outsider_cookie: String,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let (directory, db) = crate::support::database();
         let manager = support::add_user(&db, "manager", false).await;
         let outsider = support::add_user(&db, "outsider", false).await;
@@ -70,16 +75,23 @@ impl Fixture {
         let mut config = support::config(directory.path(), "https://tasks.example.test", &[]);
         config.storage_limit_bytes = 100 * 1024 * 1024;
         config.disk_min_free_bytes = 0;
+        let application = application(AppState::new(config, db.clone()));
         Self {
             _directory: directory,
-            app: application(AppState::new(config, db.clone())).router,
+            app: application.router,
+            files: application.files,
             db,
             manager_cookie: format!("__Host-oneloop_session={}", manager.token),
             outsider_cookie: format!("__Host-oneloop_session={}", outsider.token),
         }
     }
 
-    async fn upload(&self, key: &str, name: &str, bytes: &[u8]) -> (StatusCode, Vec<u8>) {
+    pub(super) async fn upload(
+        &self,
+        key: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> (StatusCode, Vec<u8>) {
         let boundary = "oneloop-test-boundary";
         let mut body = format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"

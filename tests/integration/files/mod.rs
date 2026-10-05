@@ -3,3 +3,4 @@
 pub(crate) mod http;
 mod sanitizer;
 mod service;
+mod thumbnails;
