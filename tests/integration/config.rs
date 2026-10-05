@@ -331,6 +331,8 @@ fn ai_assistant_connection_settings_are_opt_in_and_checked() {
         ("ONELOOP_MCP_REDIRECT_SCHEMES", "JavaScript"),
         ("ONELOOP_MCP_REDIRECT_SCHEMES", "data"),
         ("ONELOOP_MCP_REDIRECT_SCHEMES", "file"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "web+mcp"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "Web+Cursor"),
         ("ONELOOP_MCP_ALLOWED_ORIGINS", "*"),
         ("ONELOOP_MCP_ALLOWED_ORIGINS", "null"),
         ("ONELOOP_MCP_ALLOWED_ORIGINS", "inspector.example"),

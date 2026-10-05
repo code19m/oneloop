@@ -241,7 +241,10 @@ Turn on only what your clients need.
   `ONELOOP_MCP_REDIRECT_SCHEMES`, for example `cursor`. Any app on a computer
   can claim a scheme, but a code it catches is useless without the secret that
   only the app that started the sign-in holds (PKCE). The **Connect** page shows
-  the whole callback address.
+  the whole callback address. List only the schemes of the AI apps you use:
+  anyone can register an app, so with a listed scheme they can send a person
+  who chooses **Connect** to any address in that scheme, and some schemes,
+  such as `ms-msdt`, start programs on the computer.
 - **Browser clients.** Tools that run in a web page, such as MCP Inspector, call
   oneloop from another site. List their exact origins in
   `ONELOOP_MCP_ALLOWED_ORIGINS`, for example `http://localhost:6274`. Only these
