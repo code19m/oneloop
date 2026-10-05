@@ -227,6 +227,6 @@ fn binary_migrates_backs_up_restores_and_reads_one_password_line() {
         .success()
         .stdout(contains(format!(
             "IANA timezone database {}",
-            chrono_tz::IANA_TZDB_VERSION
+            oneloop::timezone::built_in_version()
         )));
 }

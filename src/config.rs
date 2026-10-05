@@ -8,12 +8,12 @@ use std::{
     str::FromStr,
 };
 
-use chrono_tz::Tz;
 use ipnet::IpNet;
 use tracing::Level;
 use url::{Host, Url};
 
 use crate::error::{AppError, AppResult};
+use crate::timezone::TimeZone;
 
 pub const PUBLIC_URL_ENV: &str = "ONELOOP_PUBLIC_URL";
 pub const LISTEN_ENV: &str = "ONELOOP_LISTEN";
@@ -40,7 +40,7 @@ pub struct Config {
     pub public_url: Url,
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
-    pub timezone: Tz,
+    pub timezone: TimeZone,
     pub storage_limit_bytes: u64,
     pub disk_min_free_bytes: u64,
     pub trusted_proxies: Vec<IpNet>,
@@ -71,11 +71,8 @@ impl Config {
             .parse::<SocketAddr>()
             .map_err(|_| invalid_env(LISTEN_ENV, "expected an IP address and port"))?;
         let data_dir = resolve_data_dir(env.get(DATA_DIR_ENV).unwrap_or("./data"))?;
-        let timezone = env
-            .get(TIMEZONE_ENV)
-            .unwrap_or("UTC")
-            .parse::<Tz>()
-            .map_err(|_| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
+        let timezone = TimeZone::built_in(env.get(TIMEZONE_ENV).unwrap_or("UTC"))
+            .ok_or_else(|| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
         let storage_limit_bytes = parse_size(
             STORAGE_LIMIT_ENV,
             env.get(STORAGE_LIMIT_ENV).unwrap_or("10GiB"),

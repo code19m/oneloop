@@ -21,6 +21,7 @@ pub mod retention;
 pub mod runtime;
 pub mod state;
 mod text;
+pub mod timezone;
 
 pub mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));

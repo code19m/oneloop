@@ -104,7 +104,7 @@ async fn receivers(runtime: &CollaborationRuntime, expected: usize) {
 #[tokio::test]
 async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shutdown() {
     let (_root, db, alice, app, runtime) = app().await;
-    let cursor = DomainService::new(db.clone(), chrono_tz::UTC)
+    let cursor = DomainService::new(db.clone(), crate::support::utc())
         .sync_cursor(&alice)
         .await
         .unwrap();
@@ -285,7 +285,7 @@ async fn membership_removal_reconciles_and_session_revocation_closes_stream() {
     frame(&mut body).await;
     let mut admin = support::browser_actor("dave", "Dave", "sd", now());
     admin.is_admin = true;
-    DomainService::new(db.clone(), chrono_tz::UTC)
+    DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {
@@ -409,7 +409,7 @@ async fn project_deletion_reconciles_former_members_without_disclosing_context()
     db.transaction(|tx| {tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p2','Remaining','TWO',1,1)",[])?;Ok(())}).await.unwrap();
     let mut admin = support::browser_actor("dave", "Dave", "sd", now());
     admin.is_admin = true;
-    DomainService::new(db.clone(), chrono_tz::UTC)
+    DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {
