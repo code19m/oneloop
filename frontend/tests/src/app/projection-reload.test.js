@@ -4,6 +4,7 @@ import {createProjectionReload,routeScope} from '../../../src/app/projection-rel
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData,hydrateLegacyData} from '../../../src/data/projection-store.js';
+import {ApiError} from '../../../src/data/api-client.js';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const until=async check=>{while(!check())await new Promise(resolve=>setTimeout(resolve,1));};
@@ -83,4 +84,15 @@ test('the route decides the bootstrap view',()=>{
   assert.deepEqual(routeScope('#/task/ONE-1',null),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board',{context:()=>({board:{search:'x'}})}),{view:'metadata'});
   assert.deepEqual(routeScope('',null),{view:'roadmap'});
+});
+
+test('an unavailable destination is reported to the caller instead of the page when asked',async()=>{
+  const routeErrors=[],context={view:'inbox',projectId:'p1'};
+  const data=createLegacyData();hydrateLegacyData(data,projection('p1'));
+  const missing=new ApiError('task not found',{status:404,code:'not_found'});
+  const bootstrap={idle:async()=>{},load:async scope=>{if(scope.taskId)throw missing;return {stale:false};}};
+  const reload=createProjectionReload({data,bootstrap,reads:{idle:async()=>{}},getApp:()=>({context:()=>context,refresh(){},updateDocumentTitle(){}}),getBridge:()=>null,getRecovery:()=>({handleRouteError:error=>routeErrors.push(error),refreshSucceeded(){}}),location:{hash:'#/inbox'}});
+  assert.deepEqual(await reload({taskId:'gone',routeErrors:false}),{stale:false,unavailable:true});
+  assert.deepEqual(routeErrors,[]);
+  await reload({taskId:'gone'});assert.deepEqual(routeErrors,[missing]);
 });

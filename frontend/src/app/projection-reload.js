@@ -60,7 +60,11 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       }
       if(loaded?.stale||!app)return loaded;
       if(leaveUnavailableProject(data,app,previous))return loaded;
-      if(destinationError){recovery?.handleRouteError(destinationError,{background:!!scope.background});return loaded;}
+      if(destinationError){
+        // A caller that opens something from another page reports it there instead.
+        if(scope.routeErrors===false)return {...loaded,unavailable:true};
+        recovery?.handleRouteError(destinationError,{background:!!scope.background});return loaded;
+      }
       const current=app.context(),bridge=getBridge();
       const readOptions={background:!!scope.background};
       // The bootstrap replaces only its own projection. Reload every window

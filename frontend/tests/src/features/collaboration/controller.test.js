@@ -526,3 +526,18 @@ test('a second Save of an edited comment waits for the first reply and builds on
   reply(1);assert.deepEqual(await Promise.all([first,second,third]),[true,true,true]);
   assert.equal(pending.length,2);assert.equal(t.data.tasks[0].comments[0].text,'Third');
 });
+
+test('opening an Inbox item whose task was deleted keeps the Inbox and says so',async()=>{
+  const toasts=[],routeErrors=[],opened=[];let inboxReads=0;
+  const t=fixture({
+    app:{context:()=>({view:'inbox'}),toast:(...args)=>toasts.push(args),openTask:id=>opened.push(id)},
+    api:{inbox:async()=>{inboxReads++;return {items:[],nextCursor:null,unreadCount:0,filteredCount:0};}},
+    transport:{reload:async scope=>{if(scope.routeErrors!==false){routeErrors.push('404');return {stale:false};}return {stale:false,unavailable:true};}},
+  });
+  try{
+    await t.controller.openNotification({id:'n1',readAt:1,destinationAvailable:true,taskId:'gone-task'});
+    assert.deepEqual(routeErrors,[],'the page does not turn into Page not found');
+    assert.deepEqual(toasts,[['This item is no longer available','info']]);assert.deepEqual(opened,[]);
+    assert.equal(inboxReads,1,'the Inbox reloads so the item shows as unavailable');
+  }finally{t.controller.dispose();}
+});

@@ -313,8 +313,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
     try{
       if(!item.readAt)await execute('inbox.markRead',{notificationId:item.id},{interactionKey:`inbox.markRead:${item.id}`});
       if(!item.destinationAvailable||!item.taskId){app.toast('This item is no longer available','info');await readInbox(facade.filter());return;}
-      const loaded=await transport.reload({taskId:item.taskId});if(loaded?.stale)return;
-      const task=currentTask(item.taskId);if(!task){app.toast('This item is no longer available','info');return;}
+      // A task removed since the Inbox loaded is reported here; the Inbox stays.
+      const loaded=await transport.reload({taskId:item.taskId,routeErrors:false});if(loaded?.stale)return;
+      const task=loaded?.unavailable?null:currentTask(item.taskId);if(!task){app.toast('This item is no longer available','info');await readInbox(facade.filter());return;}
       facade?.target?.({commentId:item.commentId,blockId:item.blockId,rootId:item.rootId});
       app.openTask(task.id);
       if(item.commentId||item.blockId)await readTask(task,{targetCommentId:item.commentId,targetBlockId:item.blockId});
