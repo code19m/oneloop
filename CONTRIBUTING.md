@@ -91,7 +91,9 @@ Tests must not depend on sleeps, the wall clock, the host time zone or locale.
 Keep the suites fast. Warm `cargo test` should finish in under 60 seconds on a
 10-core laptop, frontend unit tests in under 10 seconds, the end-to-end smoke
 set in under 2 minutes, and the full end-to-end suite in a few minutes locally
-(about 12 on CI's two workers). CI timeouts enforce these budgets.
+(about 12 on CI's two workers). CI doesn't enforce these budgets: its job
+timeouts only stop runs that hang. When you add slow tests, compare the step
+times in CI.
 
 ## Pull requests
 
