@@ -176,8 +176,8 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database migrated from 16 to 3`. Until you do this,
-`oneloop serve` refuses to start.
+It prints something like `database in <data folder> migrated from 16 to 3`.
+Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back
 
