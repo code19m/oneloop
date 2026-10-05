@@ -683,7 +683,11 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
         .publishes
         .iter()
         .all(|name| is_plain_name(name) && !name.starts_with(".oneloop-"));
-    if owner.kind != "restore" || working.is_none() || !published {
+    if owner.kind != "restore"
+        || working.is_none()
+        || !published
+        || !names_claimed_file(&marker, &lock)?
+    {
         return Err(refused());
     }
     for name in working
@@ -698,15 +702,47 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
             Err(error) => return Err(error.into()),
         }
     }
-    // Closed first, as in `remove_claimed`, so that nothing stays behind.
-    drop(lock);
-    fs::remove_file(&marker)?;
+    if !remove_claimed_marker(&marker, lock)? {
+        return Err(refused());
+    }
     sync_directory(target)?;
     eprintln!(
         "removed what an interrupted restore left in {}; restoring again",
         target.display()
     );
     Ok(())
+}
+
+/// Whether `path` still names the file `claimed` has open. Another restore
+/// may have removed a claimed marker and written its own in its place.
+fn names_claimed_file(path: &Path, claimed: &File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let claimed = claimed.metadata()?;
+        match fs::symlink_metadata(path) {
+            Ok(current) => Ok(current.dev() == claimed.dev() && current.ino() == claimed.ino()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = claimed;
+        Ok(path.exists())
+    }
+}
+
+/// Closes a claimed restore marker and removes it (see `remove_claimed`),
+/// unless the path names another file by now. The check runs while the
+/// claimed file is still open, so its inode can't be in use by another.
+fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
+    let same = names_claimed_file(marker, &lock)?;
+    drop(lock);
+    if same {
+        fs::remove_file(marker)?;
+    }
+    Ok(same)
 }
 
 /// A single file or folder name, with no path separators or dot segments.

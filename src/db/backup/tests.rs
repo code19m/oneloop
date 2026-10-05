@@ -281,6 +281,34 @@ fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
 }
 
 #[test]
+fn a_restore_removes_only_the_marker_it_claimed() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let marker = root.path().join(crate::db::RESTORE_MARKER);
+    plant(&marker, &owner("restore", exited_pid()));
+    let (lock, _) = claim_abandoned(&marker).unwrap();
+    // Another restore removed the old marker and wrote its own meanwhile.
+    fs::remove_file(&marker).unwrap();
+    plant(&marker, &owner("restore", std::process::id()));
+    assert!(!remove_claimed_marker(&marker, lock).unwrap());
+    assert_eq!(
+        serde_json::from_slice::<WorkOwner>(&fs::read(&marker).unwrap())
+            .unwrap()
+            .pid,
+        std::process::id(),
+        "the other restore keeps its marker"
+    );
+    // The marker this restore claimed goes.
+    plant(&marker, &owner("restore", exited_pid()));
+    let mut claimed = None;
+    assert!(soon(|| {
+        claimed = claim_abandoned(&marker);
+        claimed.is_some()
+    }));
+    assert!(remove_claimed_marker(&marker, claimed.unwrap().0).unwrap());
+    assert!(!marker.exists());
+}
+
+#[test]
 fn restoring_again_removes_only_what_an_interrupted_restore_left() {
     let root = tempfile::tempdir_in("target").unwrap();
     let live = root.path().join("live");
