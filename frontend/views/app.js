@@ -511,8 +511,11 @@
       el.style.width = Math.min(anchor.width < 100 ? 208 : anchor.width, innerWidth - 16) + 'px';
       state.menu.x = anchor.left; state.menu.y = state.menu.projectMenu ? anchor.bottom + 6 : anchor.top;
     }
-    if(state.menu.commentId||state.menu.taskActions){
-      const anchor=state.menu.taskActions?document.querySelector('.task-actions-button'):[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
+    // Menus that belong to a button sit next to it, whether a mouse or a key opened them.
+    if(state.menu.commentId||state.menu.taskActions||state.menu.trackId){
+      const anchor=state.menu.taskActions?document.querySelector('.task-actions-button')
+        :state.menu.trackId?[...document.querySelectorAll('.lane[data-track]')].find(lane=>lane.dataset.track===state.menu.trackId)?.querySelector('.kebab')
+        :[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
       if(anchor){const r=anchor.getBoundingClientRect();state.menu.x=r.right-el.offsetWidth;state.menu.y=r.bottom+4;if(state.menu.y+el.offsetHeight>innerHeight-8)state.menu.y=r.top-el.offsetHeight-4;}
     }
     el.style.left = Math.max(8, Math.min(state.menu.x, innerWidth - el.offsetWidth - 8)) + 'px';
@@ -2974,7 +2977,7 @@
         { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; renderOverlays(); } },
         { sep: true },
         { label: 'Delete track', danger: true, fn: () => App.deleteTrack(id) },
-      ], ev.clientX - 140, ev.clientY + 8, {trigger:ev.currentTarget});
+      ], 0, 0, {trigger:ev.currentTarget, trackId:id});
     },
     _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
     menuAction(i) { const it = state.menu?.items[i];dismissMenu(false);it?.fn(); },

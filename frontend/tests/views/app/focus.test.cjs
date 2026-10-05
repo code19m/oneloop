@@ -163,3 +163,12 @@ test('a full render keeps focus on the epic drawer close button, not its scrim',
   t.A.refresh();
   assert.equal(t.d.activeElement,close());
 });
+
+test('a track menu opened from the keyboard sits at its button', () => {
+  const t=boot('roadmap'),kebab=t.d.querySelector('.lane[data-track] .kebab');
+  kebab.getBoundingClientRect=()=>({x:600,y:200,left:600,top:200,right:620,bottom:220,width:20,height:20});
+  // A click from the keyboard reports no pointer position.
+  kebab.focus();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},kebab.closest('.lane').dataset.track);
+  const menu=t.d.querySelector('#overlay-root > .menu');
+  assert.equal(menu.style.left,'620px');assert.equal(menu.style.top,'224px');
+});
