@@ -1,5 +1,7 @@
 // @ts-check
 
+import { trustedHTML } from './trusted-types.js';
+
 const EVENT_ATTRIBUTES = Object.freeze([
   'onclick', 'onsubmit', 'oninput', 'onchange', 'onblur', 'onfocus', 'onkeydown',
   'ondragstart', 'ondragend', 'ondragover', 'ondragleave', 'ondrop',
@@ -139,7 +141,7 @@ function migrateTree(root,onError,trusted=false){
 export function installViewEventOwner(root=document.documentElement,{onError=(error,context)=>console.error('Rejected view event handler',context,error)}={}){
   globalThis.OneloopEventAttribute=eventAttribute;
   globalThis.OneloopSetHTML=(element,source)=>{
-    const template=element.ownerDocument.createElement('template');template.innerHTML=source;
+    const template=element.ownerDocument.createElement('template');template.innerHTML=trustedHTML(source);
     migrateTree(template.content,onError,!element.closest?.('.markdown-body,.file-preview-body'));
     (element.tagName==='TEMPLATE'?element.content:element).replaceChildren(template.content);
   };

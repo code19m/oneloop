@@ -2307,9 +2307,9 @@
         axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="left:${bx}px"></div>`;
       }
     }
-    sc.querySelector('.rm-calendar-axis').innerHTML = axisSeps;
-    sc.querySelector('.rm-calendar-lines').innerHTML = seps;
-    sc.querySelector('.rm-month-grid').innerHTML = axisSeps + months;
+    setHTML(sc.querySelector('.rm-calendar-axis'), axisSeps);
+    setHTML(sc.querySelector('.rm-calendar-lines'), seps);
+    setHTML(sc.querySelector('.rm-month-grid'), axisSeps + months);
   }
 
   let roadmapGestureCleanup = () => {};

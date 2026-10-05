@@ -165,6 +165,11 @@ and an update here.
   that omits `allow-same-origin`, so preview scripts run in an opaque origin
   and can't read cookies or call the API. Downloads are
   `application/octet-stream` with `nosniff`.
+- **The app page runs and styles only its own code.** Its
+  `Content-Security-Policy` allows scripts and style elements from the app
+  only, and Trusted Types let HTML reach the page only through the app's
+  `oneloop` policy and DOMPurify. Mermaid lays out diagrams in a separate
+  document, `views/diagram-renderer.html`, the one page with inline styles.
 - **A write and its record commit together.** Data, audit activity and outbox
   messages share one transaction. Nothing reaches clients that was not
   committed.

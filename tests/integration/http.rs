@@ -175,6 +175,28 @@ async fn only_the_app_may_frame_the_diagram_renderer_which_keeps_its_own_policy(
 }
 
 #[tokio::test]
+async fn app_policy_refuses_inline_style_elements_and_html_strings() {
+    let (_directory, app, _token) = fixture().await;
+    let page = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let policy = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    for directive in [
+        "style-src-elem 'self';",
+        "style-src-attr 'unsafe-inline';",
+        "require-trusted-types-for 'script';",
+        "trusted-types oneloop dompurify default",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(policy.contains(directive), "{directive} in {policy}");
+    }
+}
+
+#[tokio::test]
 async fn distribution_notices_are_embedded_as_plain_text() {
     let (_directory, app, _token) = fixture().await;
     let response = app

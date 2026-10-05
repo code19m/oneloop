@@ -20,6 +20,9 @@ import { installCollaborationController } from '../features/collaboration/contro
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, routeScope as scopeOfRoute } from './projection-reload.js';
+import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+
+installTrustedTypes();
 
 const data = createLegacyData();
 globalThis.DATA = data;
@@ -128,7 +131,7 @@ async function loadViewDependencies() {
 
 function loadClassic(source) {
   return new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src=new URL(`../../${source.replace(/^\//,'')}`,import.meta.url).href;script.async=false;
+    const script=document.createElement('script');script.src=trustedScriptURL(new URL(`../../${source.replace(/^\//,'')}`,import.meta.url).href);script.async=false;
     const fail=()=>{clearTimeout(timer);script.remove();reject(new Error(`Could not load ${source}`));};
     const timer=setTimeout(fail,30_000);
     script.addEventListener('load',()=>{clearTimeout(timer);resolve();},{once:true});
