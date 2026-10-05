@@ -111,13 +111,25 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     await reloadBootstrap({projectId:context().projectId});app.refresh();
   }
 
-  function conflictValue(operation,payload,item){
-    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','projectId','userId','id','mentions']);
+  /** The one field a save changes, or null when it changes several. */
+  function conflictField(payload){
+    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','blockId','projectId','userId','id','mentions']);
     const keys=Object.keys(payload).filter((key)=>!ignored.has(key));
+    return keys.length===1?keys[0]:null;
+  }
+
+  function conflictValue(operation,payload,item){
+    const field=conflictField(payload);
     const aliases={description:'desc',startDate:'start',endDate:'end',milestoneDate:'date',taskPrefix:'key',status:'state',assigneeIds:'assignees'};
-    if(keys.length!==1)return undefined;
-    if(item===payload)return payload[keys[0]];
-    return item?.[aliases[keys[0]]??keys[0]];
+    if(!field)return undefined;
+    if(item===payload)return payload[field];
+    return item?.[aliases[field]??field];
+  }
+
+  /** The control of a dialog's field, in the dialog as it is drawn now. */
+  function dialogControl(form,field){
+    const live=form?.isConnected?form:globalThis.document?.querySelector?.('.modal form');
+    return live?.querySelector?.(`[name="${formFieldName(field)}"]`)??null;
   }
 
   function report(error, options = {}) {
@@ -309,6 +321,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
       if(isServerNoChange(error)){recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();}
       if(recovery?.isRevisionConflict?.(error)&&!options.create){
+        // A dialog shows what the person typed until they choose. Use latest
+        // shows the saved values in it: in the one field the save changes, or
+        // by drawing the dialog again. Until then, it stays on the revision it
+        // was opened at, so saving it again still meets the other change.
+        const dialog=!options.coalesce&&operation!=='pool.promote'&&!!options.form?.closest?.('.modal'),field=conflictField(payload);
         try{
           /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
@@ -316,7 +333,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             reloadLatest:()=>reloadConflict(operation,payload,entity,options),
             latestEntity:()=>latestEntity(operation,payload,entity),
             retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
-            target:{element:options.conflictElement,latestValue:(item)=>conflictValue(operation,payload,item)},
+            target:{
+              element:options.conflictElement??(dialog&&field?()=>dialogControl(options.form,field):undefined),
+              latestValue:(item)=>conflictValue(operation,payload,item),
+              ...(dialog&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
+            },
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
             // dialog is restored, from the moment the conflict came back.
@@ -325,7 +346,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           // Keep my changes saved the change on the latest revision, which the result names.
           if(resolved.saved)result={...resolved.result,retriedAt};
           else{
-            recovery?.finishRevision?.(revisionKey);
+            if(resolved.choice==='latest'||!dialog)recovery?.finishRevision?.(revisionKey);
             if(operation==='pool.promote'&&resolved.latest&&sessionScope()===scope&&context().modal?.poolId===payload.poolItemId){
               const form=options.form?.isConnected?options.form:globalThis.document?.querySelector('.pool-editor form');
               for(const [name,value] of [['title',resolved.latest.title],['desc',resolved.latest.desc??resolved.latest.description??'']]){

@@ -538,6 +538,51 @@ test('text kept when edit rights ended saves from its revision after they come b
   assert.equal(state.requests[0].command.expectedRevision,1);
 });
 
+/** Run `body` with a FormData that reads a fake form's `fields`. */
+async function withFormData(body){
+  const original=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  try{await body();}finally{globalThis.FormData=original;}
+}
+/** A dialog's form: its `fields`, and the `controls` it finds by selector. */
+const dialogForm=(fields,controls={})=>({fields,isConnected:true,closest:selector=>selector==='.modal'?{}:null,querySelector:selector=>controls[selector]??null});
+const epicDialog=()=>dialogForm({trackId:'r1',title:'Epic',desc:'My description',start:'2026-01-01',end:''});
+function epicPage(recovery,gateway,app={}){
+  const state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery,gateway,app});
+  state.data.tracks.push({id:'r1',projectId:'p1'});state.data.epics.push({id:'e1',projectId:'p1',trackId:'r1',title:'Epic',desc:'',start:'2026-01-01',end:null,revision:1});
+  return state;
+}
+
+test('Use latest in a dialog that saves several fields draws it again from the saved values',()=>withFormData(async()=>{
+  const redrawn=[],finished=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision:key=>finished.push(key),handleCommandFailure:async()=>{},
+    resolveConflict:async({target})=>{assert.equal(target.element,undefined,'no one field can show the saved values');target.acceptLatest({});return {handled:true,saved:false,choice:'latest'};}};
+  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  assert.deepEqual(redrawn,[true]);assert.deepEqual(finished,['epic:e1'],'the dialog now shows the latest revision');
+}));
+
+test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
+  const remembered=new Map([['epic:e1',1]]),sent=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
+    resolveConflict:async()=>{state.data.epics[0].revision=2;return {handled:true,saved:false};}};
+  const state=epicPage(recovery,{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}});
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  assert.deepEqual(sent,[1,1],'the dialog still shows the typed values, so it meets the other change again');
+}));
+
+test('a block reason conflict shows the saved reason in the reason field',()=>withFormData(async()=>{
+  const control={value:'My reason'};let target;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
+  globalThis.Collab={prepareBlock:()=>({mentions:[]})};
+  try{
+    const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
+    const block={id:'b1',reason:'Their reason',revision:2};state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block});
+    state.app.saveBlock({preventDefault(){},target:dialogForm({reason:'My reason'},{'[name="reason"]':control})},'ONE-1','block');await tick();await tick();
+    assert.equal(target.element(),control);assert.equal(target.latestValue(block),'Their reason');assert.equal(target.acceptLatest,undefined);
+  }finally{delete globalThis.Collab;}
+}));
+
 test('a task field edited while offline stays as typed and saves when the connection returns',async()=>{
   let online=false,reconnected;
   const recovery={ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}};

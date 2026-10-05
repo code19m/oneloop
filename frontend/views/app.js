@@ -3817,6 +3817,8 @@
     refresh: render,
     refreshBackground,
     refreshAfterDialog,
+    /** Draw the open dialog again from the saved values, dropping what was typed in it. */
+    redrawDialog(){if(state.modal)renderOverlays();},
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
