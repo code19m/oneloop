@@ -1263,3 +1263,216 @@ async fn legacy_status_history_reads_and_consolidates_without_rewriting_raw_valu
         "return to original status remains hidden"
     );
 }
+
+async fn mentioning_comment(fixture: &Fixture, key: &str) -> String {
+    let created = fixture
+        .service()
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"Secret @Bob","mentions":[{
+                    "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
+                }]}),
+                key,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    created.entities[0]["id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn undo_brings_back_a_deleted_comment_without_notifying_again() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service();
+    let runtime = CollaborationRuntime::new(fixture.db.clone());
+    let id = mentioning_comment(&fixture, "undo-create").await;
+    drain(&runtime).await;
+    let deleted = service
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.delete",
+                json!({"commentId":id}),
+                "undo-delete",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    // Hidden at once: no text, no mentions, no Inbox excerpt.
+    assert_eq!(deleted.entities[0]["content"], serde_json::Value::Null);
+    assert_eq!(deleted.entities[0]["mentions"], json!([]));
+    let page = service
+        .comments(&fixture.bob, "task", None, None)
+        .await
+        .unwrap();
+    assert!(page.items[0].content.is_none() && page.items[0].mentions.is_empty());
+    drain(&runtime).await;
+    let inbox = service
+        .inbox(&fixture.bob, InboxFilter::default(), None, None)
+        .await
+        .unwrap();
+    assert!(inbox.items[0].excerpt.is_none());
+
+    let restore = command(
+        "discussion.comment.restore",
+        json!({"commentId":id}),
+        "undo-restore",
+        Some(2),
+    );
+    let restored = service
+        .execute(&fixture.alice, restore.clone())
+        .await
+        .unwrap();
+    assert_eq!(restored.entities[0]["content"], "Secret @Bob");
+    assert_eq!(restored.entities[0]["revision"], 3);
+    assert_eq!(restored.events[0].event_type, "comment.restored");
+    assert!(
+        service
+            .execute(&fixture.alice, restore)
+            .await
+            .unwrap()
+            .replayed
+    );
+    let page = service
+        .comments(&fixture.bob, "task", None, None)
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].content.as_deref(), Some("Secret @Bob"));
+    assert_eq!(page.items[0].mentions.len(), 1);
+    drain(&runtime).await;
+    let inbox = service
+        .inbox(&fixture.bob, InboxFilter::default(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(inbox.items.len(), 1, "no second notification");
+    assert_eq!(inbox.items[0].excerpt.as_deref(), Some("Secret @Bob"));
+    // A retry of the original comment shows it again, not its tombstone.
+    let replay = service
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"Secret @Bob","mentions":[{
+                    "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
+                }]}),
+                "undo-create",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.entities[0]["content"], "Secret @Bob");
+}
+
+#[tokio::test]
+async fn only_people_who_could_delete_a_comment_restore_it_in_time() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service();
+    let id = mentioning_comment(&fixture, "guarded-create").await;
+    let restore = |key: &str, revision| {
+        command(
+            "discussion.comment.restore",
+            json!({"commentId":id}),
+            key,
+            Some(revision),
+        )
+    };
+    assert!(matches!(
+        service.execute(&fixture.alice, restore("live", 1)).await,
+        Err(AppError::Conflict(_))
+    ));
+    service
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.delete",
+                json!({"commentId":id}),
+                "guarded-delete",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        service
+            .execute(&fixture.bob, restore("not-author", 2))
+            .await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        service.execute(&fixture.alice, restore("stale", 1)).await,
+        Err(AppError::RevisionConflict { .. })
+    ));
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE comments SET deleted_at=deleted_at-?1",
+                [oneloop::domain::UNDO_WINDOW_SECONDS],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let late = service.execute(&fixture.alice, restore("late", 2)).await;
+    assert!(
+        matches!(&late, Err(AppError::PreconditionFailed(message)) if message.contains("5 minutes")),
+        "{late:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_purge_removes_deleted_comment_text_after_the_undo_window() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service();
+    let id = mentioning_comment(&fixture, "purged-create").await;
+    service
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.delete",
+                json!({"commentId":id}),
+                "purged-delete",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let stored = |id: String| {
+        fixture.db.run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT content,(SELECT count(*) FROM comment_mentions WHERE comment_id=?1) FROM comments WHERE id=?1",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )?)
+        })
+    };
+    assert_eq!(service.purge_deleted_comments(now()).await.unwrap(), 0);
+    assert_eq!(stored(id.clone()).await.unwrap(), ("Secret @Bob".into(), 1));
+    let later = now() + oneloop::domain::UNDO_WINDOW_SECONDS;
+    assert_eq!(service.purge_deleted_comments(later).await.unwrap(), 1);
+    assert_eq!(stored(id.clone()).await.unwrap(), (String::new(), 0));
+    assert_eq!(service.purge_deleted_comments(later).await.unwrap(), 0);
+    let plan: Vec<String> = fixture
+        .db
+        .run(|connection| {
+            let mut statement = connection.prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM comments
+                 WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT 500",
+            )?;
+            Ok(statement
+                .query_map([0], |row| row.get(3))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("comments_deleted_text_idx")),
+        "{plan:?}"
+    );
+}

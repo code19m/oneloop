@@ -730,6 +730,12 @@ impl OneloopMcp {
                 None,
             ));
         }
+        if input.operation == "discussion.comment.restore" {
+            return Err(ToolError::invalid_params(
+                "restoring a deleted comment is available only in the browser",
+                None,
+            ));
+        }
         let actor = actor(&parts)?;
         let result = self
             .state

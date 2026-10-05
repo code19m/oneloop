@@ -153,6 +153,14 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
             [],
         )
         .unwrap();
+    // Deleted on main just before the upgrade: main emptied the text at once.
+    connection
+        .execute(
+            "INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at,deleted_at,revision)
+             VALUES('emptied','p','t','u','emptied','',1,?1,2)",
+            [now],
+        )
+        .unwrap();
     drop(connection);
 
     assert!(
@@ -229,6 +237,21 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     assert!(
         matches!(restore_gone, Err(AppError::PreconditionFailed(_))),
         "{restore_gone:?}"
+    );
+    let restore_emptied = oneloop::collaboration::CollaborationService::new(db.clone())
+        .execute(
+            &owner,
+            oneloop::collaboration::CollaborationCommand {
+                operation: "discussion.comment.restore".into(),
+                payload: serde_json::json!({"commentId":"emptied"}),
+                idempotency_key: "undo-emptied".into(),
+                expected_revision: Some(2),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&restore_emptied, Err(AppError::PreconditionFailed(message)) if message.contains("text is gone")),
+        "{restore_emptied:?}"
     );
 }
 

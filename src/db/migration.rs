@@ -56,8 +56,8 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 5,
-        name: "attachment_undo",
-        sql: include_str!("../../migrations/0005_attachment_undo.sql"),
+        name: "undo",
+        sql: include_str!("../../migrations/0005_undo.sql"),
         hook_revision: "",
         hook: None,
         foreign_keys_off: false,

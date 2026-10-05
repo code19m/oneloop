@@ -109,6 +109,7 @@ impl OutboxWorker {
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> AppResult<()> {
         let mut runtime_shutdown = self.runtime.shutdown_receiver();
         let mut next_purge = 0_i64;
+        let mut next_comment_purge = 0_i64;
         let mut next_optimize = 0_i64;
         let mut next_retention = 0_i64;
         let mut next_throttle_prune = 0_i64;
@@ -168,6 +169,20 @@ impl OutboxWorker {
                         next_optimize = now.saturating_add(60);
                     }
                 }
+            }
+            if now >= next_comment_purge {
+                next_comment_purge = match CollaborationService::new(self.runtime.db().clone())
+                    .purge_deleted_comments(now)
+                    .await
+                {
+                    // A full batch suggests more are waiting.
+                    Ok(500..) => now,
+                    Ok(_) => now.saturating_add(60),
+                    Err(error) => {
+                        tracing::warn!(%error, "deleted comment purge failed; retrying in one minute");
+                        now.saturating_add(60)
+                    }
+                };
             }
             if now >= next_purge {
                 match CollaborationService::new(self.runtime.db().clone())
