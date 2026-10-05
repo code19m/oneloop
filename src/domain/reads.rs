@@ -30,6 +30,9 @@ pub struct BootstrapQuery {
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub view: Option<String>,
+    /// The order of the Board's Done page, when the bootstrap has Board pages.
+    #[serde(default)]
+    pub done_order: super::DoneOrder,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -66,6 +69,9 @@ pub struct BoardQuery {
     pub no_assignee: bool,
     #[serde(default)]
     pub blocked: bool,
+    /// Applies to the Done column; other columns keep their manual order.
+    #[serde(default)]
+    pub done_order: super::DoneOrder,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -84,6 +90,8 @@ pub struct BoardViewQuery {
     pub no_assignee: bool,
     #[serde(default)]
     pub blocked: bool,
+    #[serde(default)]
+    pub done_order: super::DoneOrder,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -183,6 +191,7 @@ impl DomainService {
                             assignee_ids: query.assignee_ids.clone(),
                             no_assignee: query.no_assignee,
                             blocked: query.blocked,
+                            done_order: query.done_order,
                         },
                         unfiltered.then_some(total),
                     )
@@ -699,13 +708,26 @@ fn board_page_with_total(
     require_read(connection, actor, &q.project_id)?;
     let limit = page_limit(q.limit);
     let generation = task_page_generation(connection, &q.project_id)?;
-    let scope = format!("board:{}:{}", q.project_id, q.status.as_str());
-    let cursor: Option<BoardCursor> = q.cursor.as_deref().map(decode_cursor).transpose()?;
-    if let Some(cursor) = &cursor {
-        check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
-    }
-    let cursor_position = cursor.as_ref().map(|c| c.position);
-    let cursor_id = cursor.as_ref().map(|c| c.id.clone());
+    // Only Done has a newest-first order; other columns ignore the choice.
+    let newest = q.status == super::TaskStatus::Done && q.done_order == super::DoneOrder::Completed;
+    let scope = if newest {
+        format!("board:{}:done:completed", q.project_id)
+    } else {
+        format!("board:{}:{}", q.project_id, q.status.as_str())
+    };
+    let start = match q.cursor.as_deref() {
+        None => None,
+        Some(raw) if newest => {
+            let cursor: CompletedCursor = decode_cursor(raw)?;
+            check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
+            Some(PageStart::Completed(cursor.completed_at, cursor.id))
+        }
+        Some(raw) => {
+            let cursor: BoardCursor = decode_cursor(raw)?;
+            check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
+            Some(PageStart::Position(cursor.position, cursor.id))
+        }
+    };
     let mut values = vec![
         rusqlite::types::Value::Text(q.project_id.clone()),
         rusqlite::types::Value::Text(q.status.as_str().into()),
@@ -777,42 +799,81 @@ fn board_page_with_total(
     } else {
         total
     };
-    let cursor_predicate = if let Some(position) = cursor_position {
-        values.push(position.into());
-        let n = values.len();
-        values.push(cursor_id.into());
-        format!(
-            " WHERE (t.position>?{n} OR (t.position=?{n} AND t.id>?{}))",
-            n + 1
-        )
-    } else {
-        String::new()
+    // Where the page starts, in the column's order. Newest first lists tasks
+    // without a completion time, which only very old data has, last, as
+    // SQLite sorts NULL last in a descending order.
+    let after = match &start {
+        Some(PageStart::Position(position, id)) => {
+            values.push((*position).into());
+            values.push(id.clone().into());
+            let n = values.len() - 1;
+            format!("(t.position>?{n} OR (t.position=?{n} AND t.id>?{}))", n + 1)
+        }
+        Some(PageStart::Completed(Some(completed), id)) => {
+            values.push((*completed).into());
+            values.push(id.clone().into());
+            let n = values.len() - 1;
+            format!(
+                "(t.completed_at<?{n} OR (t.completed_at=?{n} AND t.id<?{}) OR t.completed_at IS NULL)",
+                n + 1
+            )
+        }
+        Some(PageStart::Completed(None, id)) => {
+            values.push(id.clone().into());
+            format!("(t.completed_at IS NULL AND t.id<?{})", values.len())
+        }
+        None => String::new(),
     };
     values.push(((limit + 1) as i64).into());
     let limit_parameter = values.len();
     let (ids, total) = if let Some(total) = total {
         // Precomputed unfiltered totals retain the bounded index-only page path.
-        let cursor = cursor_predicate.replacen(" WHERE ", " AND ", 1);
-        let sql = format!(
-            "SELECT t.id FROM tasks t WHERE {predicate}{cursor} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
-        );
-        let mut statement = connection.prepare_cached(&sql)?;
-        let ids = statement
-            .query_map(rusqlite::params_from_iter(values.iter()), |row| row.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
+        let ids = if newest {
+            let start = match &start {
+                Some(PageStart::Completed(completed, id)) => Some((*completed, id.as_str())),
+                _ => None,
+            };
+            newest_done_ids(connection, &q.project_id, start, limit + 1)?
+        } else {
+            let after = if after.is_empty() {
+                after
+            } else {
+                format!(" AND {after}")
+            };
+            let sql = format!(
+                "SELECT t.id FROM tasks t WHERE {predicate}{after} ORDER BY t.position,t.id LIMIT ?{limit_parameter}"
+            );
+            let mut statement = connection.prepare_cached(&sql)?;
+            statement
+                .query_map(rusqlite::params_from_iter(values.iter()), |row| row.get(0))?
+                .collect::<Result<Vec<String>, _>>()?
+        };
         (ids, total)
     } else {
         // Materialize matching IDs once: expensive substring/member filters run
         // only once per row. Apply the cursor after counting the full match set.
         // A left join preserves the total even when the requested page is empty.
+        let after = if after.is_empty() {
+            after
+        } else {
+            format!(" WHERE {after}")
+        };
+        let (order, page_order) = if newest {
+            (
+                "t.completed_at DESC,t.id DESC",
+                "page.completed_at DESC,page.id DESC",
+            )
+        } else {
+            ("t.position,t.id", "page.position,page.id")
+        };
         let sql = format!(
             "WITH matches AS MATERIALIZED (
-            SELECT t.id,t.position FROM tasks t WHERE {predicate}
+            SELECT t.id,t.position,t.completed_at FROM tasks t WHERE {predicate}
         ), page AS (
-            SELECT t.id,t.position FROM matches t{cursor_predicate}
-            ORDER BY t.position,t.id LIMIT ?{limit_parameter}
+            SELECT t.id,t.position,t.completed_at FROM matches t{after}
+            ORDER BY {order} LIMIT ?{limit_parameter}
         ) SELECT page.id, totals.total FROM (SELECT COUNT(*) AS total FROM matches) totals
-          LEFT JOIN page ON true ORDER BY page.position,page.id"
+          LEFT JOIN page ON true ORDER BY {page_order}"
         );
         let mut statement = connection.prepare_cached(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
@@ -831,12 +892,21 @@ fn board_page_with_total(
     let items = task_views(connection, &ids, false)?;
     let next_cursor = if has_more {
         items.last().map(|t| {
-            encode_cursor(&BoardCursor {
-                generation,
-                scope,
-                position: t.position,
-                id: t.id.clone(),
-            })
+            if newest {
+                encode_cursor(&CompletedCursor {
+                    generation,
+                    scope,
+                    completed_at: t.completed_at,
+                    id: t.id.clone(),
+                })
+            } else {
+                encode_cursor(&BoardCursor {
+                    generation,
+                    scope,
+                    position: t.position,
+                    id: t.id.clone(),
+                })
+            }
         })
     } else {
         None
@@ -899,7 +969,7 @@ fn task_views(
     let encoded =
         serde_json::to_string(ids).map_err(|error| AppError::internal(error.to_string()))?;
     let mut statement=connection.prepare_cached("SELECT id,project_id,epic_id,task_number,task_key,title,CASE WHEN ?2 THEN description \
-                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision FROM tasks WHERE id \
+                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at FROM tasks WHERE id \
                      IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
     let mut tasks = statement
         .query_map(params![encoded, details], |r| {
@@ -916,6 +986,12 @@ fn task_views(
                 deadline: r.get(9)?,
                 created_at: r.get(10)?,
                 updated_at: r.get(11)?,
+                // Only a task in Done has a completion time to show.
+                completed_at: if r.get::<_, String>(7)? == "done" {
+                    r.get(13)?
+                } else {
+                    None
+                },
                 revision: r.get(12)?,
                 assignee_ids: Vec::new(),
                 active_block: None,
@@ -1002,6 +1078,68 @@ struct BoardCursor {
     position: i64,
     id: String,
 }
+
+/// A cursor in a newest-first Done column.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletedCursor {
+    generation: i64,
+    scope: String,
+    completed_at: Option<i64>,
+    id: String,
+}
+
+/// The card a Board page continues after.
+enum PageStart {
+    Position(i64, String),
+    Completed(Option<i64>, String),
+}
+
+/// One newest-first Done page of a project, read in order from the partial
+/// index. `start` is the completion time and ID of the card to continue after.
+fn newest_done_ids(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    start: Option<(Option<i64>, &str)>,
+    take: usize,
+) -> AppResult<Vec<String>> {
+    let read = |sql: &str, values: &[&dyn rusqlite::ToSql]| -> AppResult<Vec<String>> {
+        let mut statement = connection.prepare_cached(sql)?;
+        Ok(statement
+            .query_map(values, |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?)
+    };
+    let (mut ids, undated_after) = match start {
+        None => return read(NEWEST_DONE_SQL, params![project_id, take as i64]),
+        Some((Some(completed), id)) => (
+            read(
+                NEWEST_DONE_AFTER_SQL,
+                params![project_id, completed, id, take as i64],
+            )?,
+            None,
+        ),
+        Some((None, id)) => (Vec::new(), Some(id)),
+    };
+    // The row comparison skips tasks without a completion time; they follow.
+    if ids.len() < take {
+        let rest = (take - ids.len()) as i64;
+        ids.extend(read(
+            UNDATED_DONE_SQL,
+            params![project_id, undated_after, rest],
+        )?);
+    }
+    Ok(ids)
+}
+
+const NEWEST_DONE_SQL: &str =
+    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
+    ORDER BY completed_at DESC,id DESC LIMIT ?2";
+const NEWEST_DONE_AFTER_SQL: &str =
+    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
+    AND (completed_at,id)<(?2,?3) ORDER BY completed_at DESC,id DESC LIMIT ?4";
+const UNDATED_DONE_SQL: &str =
+    "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
+    AND completed_at IS NULL AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3";
 
 fn task_page_generation(connection: &rusqlite::Connection, project_id: &str) -> AppResult<i64> {
     Ok(connection.query_row(
@@ -1557,6 +1695,7 @@ fn bootstrap_snapshot(
         },
         selected_project_id: selected.clone(),
         view: query.view.clone(),
+        done_order: None,
         board_counts: None,
         board_pages: Default::default(),
         pool_counts: Default::default(),
@@ -1572,6 +1711,7 @@ fn bootstrap_snapshot(
         result.milestones = milestones(connection, project_id)?;
         let counts = board_counts_connection(connection, project_id)?;
         if legacy || query.view.as_deref() == Some("board") {
+            result.done_order = Some(query.done_order);
             for (status, total) in [
                 (super::TaskStatus::Planning, counts.planning),
                 (super::TaskStatus::InProgress, counts.in_progress),
@@ -1592,6 +1732,7 @@ fn bootstrap_snapshot(
                         assignee_ids: vec![],
                         no_assignee: false,
                         blocked: false,
+                        done_order: query.done_order,
                     },
                     Some(total),
                 )?;

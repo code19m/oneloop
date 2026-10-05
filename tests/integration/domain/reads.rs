@@ -32,6 +32,7 @@ async fn bootstrap_and_task_reads_enforce_membership_and_accept_readable_keys() 
                 project_id: Some("p1".into()),
                 task_id: Some(key),
                 view: None,
+                done_order: Default::default(),
             },
         )
         .await
@@ -65,6 +66,7 @@ async fn bootstrap_waits_for_delivery_and_redacts_deleted_task_context() {
         project_id: Some("p1".into()),
         task_id: None,
         view: None,
+        done_order: Default::default(),
     };
     let pending = f.service.bootstrap(&f.member, query()).await.unwrap();
     assert_eq!(pending.inbox_unread_count, 0);
@@ -185,6 +187,7 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
                     project_id: Some("p1".into()),
                     task_id: task,
                     view: view.map(str::to_owned),
+                    done_order: Default::default(),
                 },
             )
             .await

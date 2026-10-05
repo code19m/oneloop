@@ -1200,6 +1200,7 @@ fn board_query(input: &SearchTasksInput, status: crate::domain::TaskStatus) -> B
         assignee_ids: input.assignee_ids.clone(),
         no_assignee: input.no_assignee,
         blocked: input.blocked,
+        done_order: crate::domain::DoneOrder::Manual,
     }
 }
 

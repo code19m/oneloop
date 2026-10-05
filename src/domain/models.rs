@@ -111,6 +111,8 @@ pub struct TaskView {
     pub deadline: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When the task last moved to Done; null for open tasks.
+    pub completed_at: Option<i64>,
     pub revision: i64,
     pub assignee_ids: Vec<String>,
     pub active_block: Option<BlockView>,
@@ -192,6 +194,9 @@ pub struct BootstrapView {
     pub page_info: BootstrapPageInfo,
     pub selected_project_id: Option<String>,
     pub view: Option<String>,
+    /// The Done order of `board_pages`, present when the bootstrap has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_order: Option<super::DoneOrder>,
     pub board_counts: Option<BoardCounts>,
     #[serde(default)]
     pub board_pages: std::collections::BTreeMap<String, PageSummary>,

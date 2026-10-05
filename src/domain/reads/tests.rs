@@ -55,6 +55,37 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
 }
 
 #[test]
+fn newest_done_pages_read_the_partial_index_in_order() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    crate::db::migrate(root.path(), None).unwrap();
+    let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+    for (sql, values) in [
+        (NEWEST_DONE_SQL, params!["p", 51]),
+        (NEWEST_DONE_AFTER_SQL, params!["p", 1_800_000_000, "t", 51]),
+        (UNDATED_DONE_SQL, params!["p", "t", 51]),
+    ] {
+        let mut explain = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan = explain
+            .query_map(values, |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            !plan.contains("TEMP B-TREE") && plan.contains("tasks_project_done_completed_idx"),
+            "{sql}\n{plan}"
+        );
+    }
+    let mut explain = c
+        .prepare(&format!("EXPLAIN QUERY PLAN {NEWEST_DONE_AFTER_SQL}"))
+        .unwrap();
+    let plan: String = explain
+        .query_row(params!["p", 1_800_000_000, "t", 51], |r| r.get(3))
+        .unwrap();
+    assert!(plan.contains("(completed_at,id)<(?,?)"), "{plan}");
+}
+
+#[test]
 #[ignore = "manual 100,000-task summary timing probe"]
 fn epic_summary_scale_probe() {
     let root = tempfile::tempdir_in("target").unwrap();

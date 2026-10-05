@@ -11,8 +11,8 @@ use crate::{
     AppState,
     auth::Actor,
     domain::{
-        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, Page, PageQuery,
-        PoolItemView, PoolQuery, TaskView,
+        BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, Page,
+        PageQuery, PoolItemView, PoolQuery, TaskView,
     },
     error::AppResult,
 };
@@ -45,6 +45,8 @@ struct BoardViewParams {
     no_assignee: bool,
     #[serde(default)]
     blocked: bool,
+    #[serde(default)]
+    done_order: DoneOrder,
 }
 
 async fn board_counts(
@@ -78,6 +80,7 @@ async fn board_view(
                 assignee_ids: csv(query.assignee_ids),
                 no_assignee: query.no_assignee,
                 blocked: query.blocked,
+                done_order: query.done_order,
             },
         )
         .await
@@ -106,6 +109,9 @@ struct BoardParams {
     no_assignee: bool,
     #[serde(default)]
     blocked: bool,
+    /// The Board's Done order; columns other than Done ignore it.
+    #[serde(default)]
+    done_order: DoneOrder,
 }
 
 async fn board(
@@ -129,6 +135,7 @@ async fn board(
                 assignee_ids: csv(query.assignee_ids),
                 no_assignee: query.no_assignee,
                 blocked: query.blocked,
+                done_order: query.done_order,
             },
         )
         .await

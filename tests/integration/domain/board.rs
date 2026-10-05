@@ -33,6 +33,7 @@ async fn board_search_preserves_unicode_case_and_literal_punctuation() {
                     assignee_ids: vec![],
                     no_assignee: false,
                     blocked: false,
+                    done_order: Default::default(),
                 },
             )
             .await
@@ -98,6 +99,7 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
                 assignee_ids: vec![],
                 no_assignee: false,
                 blocked: false,
+                done_order: Default::default(),
             },
         )
         .await
@@ -123,6 +125,7 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
                 assignee_ids: vec![],
                 no_assignee: false,
                 blocked: true,
+                done_order: Default::default(),
             },
         )
         .await
@@ -228,6 +231,7 @@ async fn filtered_board_moves_use_server_validated_visible_anchors() {
                 assignee_ids: vec![],
                 no_assignee: false,
                 blocked: false,
+                done_order: Default::default(),
             },
         )
         .await
@@ -542,6 +546,7 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
                 project_id: Some("p1".into()),
                 task_id: None,
                 view: Some("board".into()),
+                done_order: Default::default(),
             },
         )
         .await
@@ -583,6 +588,7 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
                 assignee_ids: vec![],
                 no_assignee: false,
                 blocked: false,
+                done_order: Default::default(),
             },
         )
         .await
@@ -638,6 +644,7 @@ proptest::proptest! {
                     let page = f.service.board_page(&f.manager, BoardQuery {
                         project_id:"p1".into(), status:serde_json::from_value(json!(status)).unwrap(), limit:Some(50), cursor:None,
                         search:None, track_ids:vec![], epic_ids:vec![], assignee_ids:vec![], no_assignee:false, blocked:false,
+                        done_order: Default::default(),
                     }).await.unwrap();
                     assert_eq!(page.items.iter().map(|task|task.id.clone()).collect::<Vec<_>>(), model[column]);
                     assert!(page.items.windows(2).all(|pair| pair[0].position < pair[1].position));
@@ -882,6 +889,7 @@ async fn filtered_board_counts_survive_empty_cursor_pages_and_search_edits() {
         assignee_ids: vec![],
         no_assignee: true,
         blocked: false,
+        done_order: Default::default(),
     };
     let first = f.service.board_page(&f.member, query(None)).await.unwrap();
     assert_eq!(first.total, 4);
@@ -934,6 +942,219 @@ async fn filtered_board_counts_survive_empty_cursor_pages_and_search_edits() {
     );
 }
 
+async fn seed_done_column(f: &Fixture) {
+    // Completion times with a tie, and one task without a completion time,
+    // which only data from before completion times were kept can have.
+    f.db.transaction(|tx| {
+        for (number, id, completed) in [
+            (501, "done-a", Some(100)),
+            (502, "done-b", Some(300)),
+            (503, "done-c", Some(200)),
+            (504, "done-d", Some(300)),
+            (505, "done-e", None),
+            (506, "done-f", Some(50)),
+        ] {
+            tx.execute(
+                "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at)
+                 VALUES(?1,'p1','e1',?2,?3,'Finished work','done',?2,1,1,?4)",
+                params![id, number, format!("ONE-{number}"), completed],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+fn newest_done_query(cursor: Option<String>, search: Option<&str>) -> BoardQuery {
+    BoardQuery {
+        limit: Some(2),
+        search: search.map(str::to_owned),
+        done_order: DoneOrder::Completed,
+        ..board_query("done", cursor)
+    }
+}
+
+#[tokio::test]
+async fn newest_first_done_pages_follow_completion_time() {
+    let f = fixture().await;
+    seed_done_column(&f).await;
+    // The unfiltered read uses the index; a search reads the filtered matches.
+    for search in [None, Some("finished")] {
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = f
+                .service
+                .board_page(&f.member, newest_done_query(cursor, search))
+                .await
+                .unwrap();
+            assert_eq!(page.total, 6, "{search:?}");
+            seen.extend(page.items.iter().map(|task| task.id.clone()));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(
+            seen,
+            ["done-d", "done-b", "done-c", "done-a", "done-f", "done-e"],
+            "{search:?}"
+        );
+    }
+    let first = f
+        .service
+        .board_page(&f.member, newest_done_query(None, None))
+        .await
+        .unwrap();
+    assert_eq!(first.items[0].completed_at, Some(300));
+    let manual = f
+        .service
+        .board_page(&f.member, board_query("done", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        manual.items[0].id, "done-a",
+        "Manual order stays the default"
+    );
+}
+
+#[tokio::test]
+async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
+    let f = fixture().await;
+    seed_done_column(&f).await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Just finished"}),
+                "newest-create",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    assert!(created.entities[0]["completedAt"].is_null());
+    let moved = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":id,"status":"done"}),
+                "newest-move",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(moved.entities[0]["completedAt"].as_i64().unwrap() >= now() - 60);
+    let newest = f
+        .service
+        .board_page(&f.member, newest_done_query(None, None))
+        .await
+        .unwrap();
+    assert_eq!(newest.items[0].id, id);
+    let mut manual = board_query("done", None);
+    manual.limit = Some(50);
+    let manual = f.service.board_page(&f.member, manual).await.unwrap();
+    assert_eq!(manual.items.last().unwrap().id, id);
+    let reopened = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":id,"status":"in_review"}),
+                "newest-reopen",
+                Some(2),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(reopened.entities[0]["completedAt"].is_null());
+}
+
+#[tokio::test]
+async fn done_order_cursors_and_parameters_belong_to_their_order() {
+    let f = fixture().await;
+    seed_done_column(&f).await;
+    let newest = f
+        .service
+        .board_page(&f.member, newest_done_query(None, None))
+        .await
+        .unwrap();
+    let mut manual = board_query("done", None);
+    manual.limit = Some(2);
+    let manual = f.service.board_page(&f.member, manual).await.unwrap();
+    let mut mixed = board_query("done", newest.next_cursor.clone());
+    mixed.limit = Some(2);
+    assert!(f.service.board_page(&f.member, mixed).await.is_err());
+    assert!(
+        f.service
+            .board_page(&f.member, newest_done_query(manual.next_cursor, None))
+            .await
+            .is_err()
+    );
+    // Other columns keep their manual order whatever the Done order is.
+    seed_ordering_column(&f, 3).await;
+    let mut planning = board_query("planning", None);
+    planning.done_order = DoneOrder::Completed;
+    let planning = f.service.board_page(&f.member, planning).await.unwrap();
+    assert_eq!(
+        planning
+            .items
+            .iter()
+            .map(|task| task.position)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+
+    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
+    let app = oneloop::http::domain::read_router()
+        .layer(Extension(f.member.clone()))
+        .with_state(AppState::new(config, f.db.clone()));
+    let get = |uri: &str| {
+        app.clone().oneshot(
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let response = get("/api/projects/p1/board?status=done&doneOrder=completed&limit=2")
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let page: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(page["items"][0]["id"], "done-d");
+    let response = get("/api/projects/p1/board-view?doneOrder=completed&limit=2")
+        .await
+        .unwrap();
+    let view: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(view["done"]["items"][1]["id"], "done-b");
+    let response = get("/api/bootstrap?projectId=p1&view=board&doneOrder=completed")
+        .await
+        .unwrap();
+    let bootstrap: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(bootstrap["doneOrder"], "completed");
+    let done = bootstrap["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|task| task["status"] == "done")
+        .map(|task| task["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(done[..2], ["done-d", "done-b"]);
+    let response = get("/api/projects/p1/board?status=done&doneOrder=newest")
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+}
+
 /// Compare real Board read latency before and after search changes, without CI
 /// timing thresholds. The seeded project has 100,000 tasks and two full columns.
 #[tokio::test]
@@ -958,6 +1179,7 @@ async fn board_search_workload_reports_first_pages() {
                         assignee_ids: vec![],
                         no_assignee: false,
                         blocked: false,
+                        done_order: Default::default(),
                     },
                 )
                 .await
