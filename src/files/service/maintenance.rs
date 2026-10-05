@@ -182,26 +182,6 @@ impl FileService {
         Ok(true)
     }
 
-    // Caller holds the publication gate through reservation/publication. Staging
-    // is measured before free space: concurrent body writes can only make this
-    // conservative, never credit unwritten bytes against an older free reading.
-    pub(super) async fn check_reserved_disk_floor(&self, claimed: u64) -> AppResult<()> {
-        let capacity = self.capacity_usage().await?;
-        if disk_floor_deficit(
-            self.disk_min_free_bytes,
-            self.store.available_space()?,
-            capacity.unwritten_reserved_bytes,
-            claimed,
-        ) > 0
-        {
-            return Err(AppError::rule(
-                crate::error::RuleKind::StorageFull,
-                "storage safety floor would be exceeded",
-            ));
-        }
-        Ok(())
-    }
-
     pub(super) async fn prepare_capacity(&self) -> AppResult<CapacityUsage> {
         let usage = self.capacity_usage().await?;
         let report = self.cleanup_for_usage(&usage).await?;
@@ -466,7 +446,7 @@ impl FileService {
                     tx.execute(
                         "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
                          VALUES(?1,?2,?3,'cleanup',?4,?4,?5)", params![id,blob,key,now,run_tx])?;
-                    jobs.push((DeletionJob { id, blob_id: blob, storage_key: key, reason: "cleanup".into() }, size));
+                    jobs.push((DeletionJob { id, blob_id: blob, storage_key: key }, size));
                     claimed = claimed.saturating_add(size);
                 }
                 Ok(jobs)
@@ -487,7 +467,7 @@ impl FileService {
                 }
             }
             for path in parents.into_values() {
-                FileStore::sync_parent(path).await?;
+                FileStore::sync_deletion_parent(path).await?;
             }
             let (count, bytes) = self
                 .db
@@ -752,7 +732,6 @@ impl FileService {
                                 id: r.get(0)?,
                                 blob_id: r.get(1)?,
                                 storage_key: r.get(2)?,
-                                reason: r.get(3)?,
                             })
                         })?
                         .collect::<Result<Vec<_>, _>>()?)
@@ -775,7 +754,7 @@ impl FileService {
                 removed.push(job);
             }
             for path in parents.into_values() {
-                FileStore::sync_parent(path).await?;
+                FileStore::sync_deletion_parent(path).await?;
             }
             completed += self
                 .db
@@ -793,7 +772,7 @@ impl FileService {
 
     pub(super) async fn capacity_usage(&self) -> AppResult<CapacityUsage> {
         let now = unix_now()?;
-        let (blob_bytes, reserved_bytes, staging_keys, reservations) = self
+        let (blob_bytes, reserved_bytes, staging_keys) = self
             .db
             .run(move |connection| {
                 let blob: i64 = connection.query_row(SELECT_FILE_BLOBS_2_SQL, [], |r| r.get(0))?;
@@ -818,22 +797,13 @@ impl FileService {
                         .query_map([], |row| row.get(0))?
                         .collect::<Result<Vec<String>, _>>()?,
                 );
-                Ok((blob.max(0) as u64, reserved, staging, reservations))
+                Ok((blob.max(0) as u64, reserved, staging))
             })
             .await?;
         let mut staging_bytes = 0_u64;
-        let mut unwritten_reserved_bytes = reserved_bytes;
         let mut unreserved_staging_bytes = 0_u64;
         for (path, size) in regular_files(self.store.layout().staging()).await? {
             staging_bytes = staging_bytes.saturating_add(size);
-            if let Some(claimed) = path
-                .file_name()
-                .and_then(|v| v.to_str())
-                .and_then(|name| reservations.get(name))
-            {
-                unwritten_reserved_bytes =
-                    unwritten_reserved_bytes.saturating_sub(size.min(*claimed));
-            }
             if path
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -848,26 +818,6 @@ impl FileService {
             staging_bytes,
             preview_bytes: tree_bytes(self.store.previews()).await?,
             unreserved_staging_bytes,
-            unwritten_reserved_bytes,
         })
-    }
-}
-
-pub(super) fn disk_floor_deficit(floor: u64, free: u64, outstanding: u64, claimed: u64) -> u64 {
-    (u128::from(floor) + u128::from(outstanding) + u128::from(claimed))
-        .saturating_sub(u128::from(free))
-        .min(u128::from(u64::MAX)) as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn floor_deficit_counts_outstanding_bytes_without_wrapping() {
-        assert_eq!(disk_floor_deficit(100, 200, 75, 50), 25);
-        assert_eq!(disk_floor_deficit(100, 200, 0, 50), 0);
-        assert_eq!(disk_floor_deficit(100, 200, 50, 50), 0);
-        assert_eq!(disk_floor_deficit(u64::MAX, 0, 1, 1), u64::MAX);
-        assert_eq!(disk_floor_deficit(u64::MAX, u64::MAX, 1, 1), 2);
     }
 }

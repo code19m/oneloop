@@ -138,18 +138,23 @@ fn record_activity_inner(
         "visibility": visibility,
         "ownerUserId": private_owner,
     });
-    tx.execute(
-        "INSERT INTO outbox_messages
-         (id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
-         VALUES (?1,'domain.activity',?2,?3,?4,?5,?5)",
-        params![
-            Uuid::now_v7().to_string(),
-            input.entity_type,
-            input.entity_id,
-            payload.to_string(),
-            now
-        ],
-    )?;
+    // Live updates go to a project's audience or to the acting person. An
+    // event with neither, such as a system event whose project was deleted,
+    // stays in the audit trail only.
+    if input.project_id.is_some() || actor_user_id.is_some() {
+        tx.execute(
+            "INSERT INTO outbox_messages
+             (id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+             VALUES (?1,'domain.activity',?2,?3,?4,?5,?5)",
+            params![
+                Uuid::now_v7().to_string(),
+                input.entity_type,
+                input.entity_id,
+                payload.to_string(),
+                now
+            ],
+        )?;
+    }
     Ok(ActivityEvent {
         id,
         project_id: input.project_id.map(str::to_owned),

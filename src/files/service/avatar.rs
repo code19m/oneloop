@@ -23,12 +23,7 @@ impl FileService {
         self.store.ensure_directories().await?;
         let mut capacity = self.prepare_capacity().await?;
         let normalized_size = normalized.len() as u64;
-        let deficit = maintenance::disk_floor_deficit(
-            self.disk_min_free_bytes,
-            self.store.available_space()?,
-            capacity.unwritten_reserved_bytes,
-            normalized_size,
-        );
+        let deficit = self.disk.deficit(normalized_size)?;
         if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
             capacity = self.capacity_usage().await?;
         }
@@ -36,7 +31,7 @@ impl FileService {
         let non_database_bytes = capacity.non_database_bytes();
         let _lease = self.db.acquire_data_lease().await?;
         let maintenance_gate = self.acquire_file_maintenance_gate().await?;
-        self.check_reserved_disk_floor(normalized_size).await?;
+        let disk = self.disk.reserve(normalized_size)?;
         let storage_key = self.store.new_storage_key()?;
         let blob_id = Uuid::now_v7().to_string();
         let blob_id_tx = blob_id.clone();
@@ -87,6 +82,8 @@ impl FileService {
             }
         };
         let write_result: AppResult<()> = async {
+            disk.keep_until_removed(temporary.clone());
+            disk.keep_until_removed(destination.clone());
             let mut file = OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -140,6 +137,7 @@ impl FileService {
                 return Err(error);
             }
         };
+        disk.published();
         drop(maintenance_gate);
         if let Some(old_blob) = old_blob {
             self.schedule_blob_deletion(&old_blob, "rollback").await?;

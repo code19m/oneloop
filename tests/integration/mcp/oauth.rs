@@ -1,6 +1,147 @@
 use super::*;
 
 #[tokio::test]
+async fn repeated_resources_bind_every_value_and_singletons_remain_unique() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let client = register(&app).await;
+    let resource = "http://127.0.0.1:8080/mcp";
+    for (resources, singleton, expected) in [
+        (vec![resource], None, StatusCode::OK),
+        (vec![resource, resource], None, StatusCode::OK),
+        (
+            vec![resource, "https://elsewhere.test/mcp"],
+            None,
+            StatusCode::BAD_REQUEST,
+        ),
+        (vec![resource, ""], None, StatusCode::BAD_REQUEST),
+        (vec![], None, StatusCode::BAD_REQUEST),
+        (vec![resource], Some("client_id"), StatusCode::BAD_REQUEST),
+    ] {
+        let path = authorization_path(&client, "http://127.0.0.1:49152/callback");
+        let mut pairs: Vec<(String, String)> =
+            url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+                .filter(|(key, _)| key != "resource")
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+        pairs.extend(resources.into_iter().map(|r| ("resource".into(), r.into())));
+        if let Some(field) = singleton {
+            pairs.push((field.into(), client.clone()));
+        }
+        let query = serde_urlencoded::to_string(pairs).unwrap();
+        assert_eq!(
+            consent_page(&app, &session, &format!("/oauth/authorize?{query}"))
+                .await
+                .0,
+            expected
+        );
+    }
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let mut refresh = String::new();
+    for grant in ["authorization_code", "refresh_token"] {
+        let mut base = vec![("grant_type", grant), ("client_id", client.as_str())];
+        if grant == "authorization_code" {
+            base.extend([
+                ("code", code.as_str()),
+                ("redirect_uri", "http://127.0.0.1:49152/callback"),
+                ("code_verifier", verifier.as_str()),
+            ]);
+        } else {
+            base.push(("refresh_token", refresh.as_str()));
+        }
+        for (resources, duplicate, error) in [
+            (vec![], None, "invalid_target"),
+            (vec![""], None, "invalid_target"),
+            (vec![resource, ""], None, "invalid_target"),
+            (
+                vec![resource, "https://elsewhere.test/mcp"],
+                None,
+                "invalid_target",
+            ),
+            (
+                vec![resource],
+                Some(("client_id", client.as_str())),
+                "invalid_request",
+            ),
+            (
+                vec![resource],
+                Some(("grant_type", grant)),
+                "invalid_request",
+            ),
+        ] {
+            let mut pairs = base.clone();
+            pairs.extend(resources.into_iter().map(|r| ("resource", r)));
+            pairs.extend(duplicate);
+            let response = app
+                .clone()
+                .oneshot(form("/oauth/token", &pairs))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(body_json(response).await["error"], error);
+        }
+        base.extend([("resource", resource), ("resource", resource)]);
+        let response = app
+            .clone()
+            .oneshot(form("/oauth/token", &base))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        refresh = body_json(response).await["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    }
+}
+
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive_but_credentials_are_exact() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let access = tokens["access_token"].as_str().unwrap();
+    for scheme in ["Bearer", "bearer", "BEARER", "Basic"] {
+        let mut request = mcp_request(
+            access,
+            None,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+        );
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("{scheme} {access}").parse().unwrap(),
+        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if scheme == "Basic" {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::OK
+            }
+        );
+    }
+    for value in [
+        "Bearer".to_owned(),
+        "Bearer ".to_owned(),
+        format!("Bearer {access} extra"),
+        format!("Bearer x{access}"),
+    ] {
+        let mut request = mcp_request(
+            access,
+            None,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+        );
+        request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, value.parse().unwrap());
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
 async fn registration_quota_uses_trusted_caller_and_retains_global_ceiling() {
     let (_dir, db, app, _, _) = fixture_with_trusted_proxies("10.0.0.0/8").await;
     for _ in 0..10 {

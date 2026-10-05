@@ -10,7 +10,7 @@ pub(super) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<Prev
         Some(PreviewKind::Html)
     } else {
         let ext = extension(name);
-        if matches!(ext.as_str(), "md" | "markdown") {
+        if media.starts_with("text/") && matches!(ext.as_str(), "md" | "markdown") {
             Some(PreviewKind::Markdown)
         } else if media.starts_with("text/") {
             Some(PreviewKind::Text)

@@ -38,9 +38,17 @@ const MIGRATIONS: &[Migration] = &[
         hook: None,
         foreign_keys_off: false,
     },
+    Migration {
+        version: 3,
+        name: "file_deletion_provenance",
+        sql: include_str!("../../migrations/0003_file_deletion_provenance.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

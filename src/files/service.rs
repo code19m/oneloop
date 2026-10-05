@@ -10,6 +10,7 @@ pub use read::ReadMode;
 mod upload;
 
 use super::BlobState;
+use super::disk::{DiskAdmission, DiskReservation};
 use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
 use std::{
     collections::{HashMap, HashSet},
@@ -58,7 +59,7 @@ pub struct FileService {
     db: Db,
     store: FileStore,
     storage_limit_bytes: u64,
-    disk_min_free_bytes: u64,
+    disk: DiskAdmission,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -77,6 +78,7 @@ pub enum UploadStart {
 }
 
 pub struct PendingAttachmentUpload {
+    disk: Option<DiskReservation>,
     service: FileService,
     actor: Actor,
     reservation_id: String,
@@ -96,6 +98,7 @@ pub struct PendingAttachmentUpload {
 }
 
 struct FinalizeAttachmentUpload {
+    disk: Option<DiskReservation>,
     service: FileService,
     actor: Actor,
     data_lease: DataLease,
@@ -210,55 +213,19 @@ struct CapacityUsage {
     staging_bytes: u64,
     preview_bytes: u64,
     unreserved_staging_bytes: u64,
-    unwritten_reserved_bytes: u64,
 }
 
 struct DeleteActivityContext {
     id: String,
-    project_id: String,
-    task_id: String,
+    project_id: Option<String>,
+    task_id: Option<String>,
     name: String,
 }
 
-struct DeleteRetryRow {
-    attachment_id: String,
-    project_id: String,
-    task_id: String,
-    name: String,
-    user_id: String,
-    username: String,
-    display_name: String,
-    is_admin: bool,
-    must_change_password: bool,
-    grant_id: Option<String>,
-}
-
-impl DeleteRetryRow {
-    fn into_context(self) -> (DeleteActivityContext, Actor) {
-        let source = self.grant_id.map_or_else(
-            || ActorSource::BrowserSession {
-                session_id: String::new(),
-            },
-            |grant_id| ActorSource::McpGrant { grant_id },
-        );
-        (
-            DeleteActivityContext {
-                id: self.attachment_id,
-                project_id: self.project_id,
-                task_id: self.task_id,
-                name: self.name,
-            },
-            Actor {
-                user_id: self.user_id,
-                username: self.username,
-                display_name: self.display_name,
-                is_admin: self.is_admin,
-                must_change_password: self.must_change_password,
-                authenticated_at: 0,
-                source,
-            },
-        )
-    }
+struct DeletionCompletion {
+    cleanup_run_id: Option<String>,
+    reason: String,
+    activity: Option<(DeleteActivityContext, Option<Actor>)>,
 }
 
 impl CapacityUsage {
@@ -278,11 +245,12 @@ impl CapacityUsage {
 impl FileService {
     pub fn new(db: Db, storage_limit_bytes: u64, disk_min_free_bytes: u64) -> Self {
         let store = FileStore::new(db.layout().clone());
+        let disk = DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
         Self {
             db,
             store,
             storage_limit_bytes,
-            disk_min_free_bytes,
+            disk,
         }
     }
 
@@ -587,16 +555,20 @@ impl FileService {
                 }
                 let mut job_id = None;
                 if let Some(storage_key) = stored.storage_key.as_deref() {
-                    if stored.attachment.state==BlobState::Available{
-                        let created=Uuid::now_v7().to_string();
-                        tx.execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [&stored.blob_id])?;
-                        tx.execute("INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at) \
-                     VALUES (?1,?2,?3,'manual',?4,?4)",params![created, stored.blob_id, storage_key, now])?;
-                        job_id=Some(created);
-                    }else if stored.attachment.state==BlobState::Deleting{
-                        job_id=tx.query_row("SELECT id FROM file_deletion_jobs WHERE blob_id=?1",[&stored.blob_id],|r|r.get(0)).optional()?;
-                    }
+                    tx.execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [&stored.blob_id])?;
+                    tx.execute("INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
+                        VALUES(?1,?2,?3,'manual',?4,?4)", params![Uuid::now_v7().to_string(), stored.blob_id, storage_key, now])?;
+                    let id: String = tx.query_row("SELECT id FROM file_deletion_jobs WHERE blob_id=?1", [&stored.blob_id], |r| r.get(0))?;
+                    // Freeze the first deleting actor. A retry must not replace it.
+                    // A previously queued cleanup becomes a manual deletion.
+                    tx.execute("UPDATE file_deletion_jobs SET reason='manual',actor_user_id=?2,actor_mcp_grant_id=?3,
+                        actor_name=?4,project_id=?5,task_id=?6,attachment_id=?7,attachment_name=?8
+                        WHERE id=?1 AND attachment_id IS NULL",
+                        params![id, actor_owned.user_id, actor_owned.mcp_grant_id(), actor_owned.display_name,
+                            stored.attachment.project_id, stored.attachment.task_id, stored.attachment.id, stored.attachment.name])?;
+                    job_id=Some(id);
                 }
+
                 tx.execute(
                     "UPDATE idempotency_keys SET resource_type='attachment',resource_id=?1,response_json=?2
                      WHERE id=?3",
@@ -633,7 +605,7 @@ impl FileService {
                     "attachment deletion is pending and will be retried".into(),
                 ));
             }
-            FileStore::sync_parent(path).await?;
+            FileStore::sync_deletion_parent(path).await?;
         }
 
         let actor = actor.clone();
@@ -641,32 +613,29 @@ impl FileService {
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let removed = tx.execute("DELETE FROM task_attachments WHERE id=?1", [&attachment_id])?;
-                tx.execute("DELETE FROM file_blobs WHERE id=?1", [&stored.blob_id])?;
+                if let Some(job_id) = job_id {
+                    finish_deletion_job(tx, &DeletionJob {
+                        id: job_id, blob_id: stored.blob_id.clone(),
+                        storage_key: stored.storage_key.clone().expect("deletion job has bytes"),
+                    })?;
+                } else {
+                    // Cleaned files have no bytes to unlink, so their deletion
+                    // and audit record complete in this single transaction.
+                    let removed = tx.execute("DELETE FROM task_attachments WHERE id=?1", [&attachment_id])?;
+                    tx.execute("DELETE FROM file_blobs WHERE id=?1", [&stored.blob_id])?;
+                    if removed > 0 {
+                        record_attachment_deletion(tx, &DeleteActivityContext {
+                            id: attachment_id.clone(), project_id: Some(stored.attachment.project_id.clone()),
+                            task_id: Some(stored.attachment.task_id.clone()), name: stored.attachment.name.clone(),
+                        }, Some(&actor), now)?;
+                    }
+                }
                 crate::idempotency::succeed(tx, &idempotency_id, crate::idempotency::Receipt {
                     status: 204,
                     response: &json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string(),
                     resource_type: Some("attachment"), resource_id: Some(&attachment_id),
                     project_id: Some(&stored.attachment.project_id),
                 }, now)?;
-                if removed == 0 { return Ok(()); }
-                record_activity_tx(
-                    tx,
-                    &actor,
-                    ActivityInput {
-                        project_id: Some(&stored.attachment.project_id),
-                        entity_type: "attachment",
-                        entity_id: &attachment_id,
-                        task_id: Some(&stored.attachment.task_id),
-                        event_type: "attachment.deleted",
-                        field_key: None,
-                        before: Some(json!({"name": stored.attachment.name})),
-                        after: None,
-                        metadata: json!({"name": stored.attachment.name}),
-                        entity_revision: None,
-                    },
-                    now,
-                )?;
                 Ok(())
             })
             .await
@@ -898,42 +867,73 @@ fn upsert_running_idempotency(
     crate::idempotency::start(tx, actor, id, key, operation, hash, now)
 }
 
-fn retry_delete_context(
+fn record_attachment_deletion(
     tx: &Transaction<'_>,
-    blob_id: &str,
-) -> AppResult<Option<(DeleteActivityContext, Actor)>> {
-    let row: Option<DeleteRetryRow> = tx
-        .query_row(
-            "SELECT a.id,a.project_id,a.task_id,a.original_name,u.id,u.username,u.display_name,
-                    u.is_admin,u.must_change_password,i.actor_mcp_grant_id
-             FROM task_attachments a
-             JOIN users u ON u.id=(SELECT actor_user_id FROM idempotency_keys i2
-                                  WHERE i2.operation='attachment.delete'
-                                    AND i2.resource_type='attachment' AND i2.resource_id=a.id
-                                  ORDER BY i2.updated_at DESC,i2.id DESC LIMIT 1)
-             JOIN idempotency_keys i ON i.actor_user_id=u.id
-                                    AND i.operation='attachment.delete'
-                                    AND i.resource_type='attachment' AND i.resource_id=a.id
-             WHERE a.blob_id=?1
-             ORDER BY i.updated_at DESC,i.id DESC LIMIT 1",
-            [blob_id],
-            |row| {
-                Ok(DeleteRetryRow {
-                    attachment_id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    task_id: row.get(2)?,
-                    name: row.get(3)?,
-                    user_id: row.get(4)?,
-                    username: row.get(5)?,
-                    display_name: row.get(6)?,
-                    is_admin: row.get(7)?,
-                    must_change_password: row.get(8)?,
-                    grant_id: row.get(9)?,
-                })
+    attachment: &DeleteActivityContext,
+    actor: Option<&Actor>,
+    now: i64,
+) -> AppResult<()> {
+    let mut metadata = json!({"name": attachment.name});
+    if actor.is_none() {
+        // Only pre-upgrade jobs whose receipt was already lost lack an actor.
+        metadata["attributionUnavailable"] = json!(true);
+    }
+    let input = ActivityInput {
+        project_id: attachment.project_id.as_deref(),
+        entity_type: "attachment",
+        entity_id: &attachment.id,
+        task_id: attachment.task_id.as_deref(),
+        event_type: "attachment.deleted",
+        field_key: None,
+        before: Some(json!({"name":attachment.name})),
+        after: None,
+        metadata,
+        entity_revision: None,
+    };
+    match actor {
+        Some(actor) => record_activity_tx(tx, actor, input, now)?,
+        None => record_system_activity_tx(tx, input, now)?,
+    };
+    Ok(())
+}
+
+fn deletion_completion_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeletionCompletion> {
+    let activity = if let Some(id) = row.get::<_, Option<String>>(6)? {
+        let actor = if let Some(user_id) = row.get::<_, Option<String>>(1)? {
+            Some(Actor {
+                user_id,
+                username: String::new(),
+                display_name: row.get(3)?,
+                is_admin: false,
+                must_change_password: false,
+                authenticated_at: 0,
+                source: row.get::<_, Option<String>>(2)?.map_or_else(
+                    || ActorSource::BrowserSession {
+                        session_id: String::new(),
+                    },
+                    |grant_id| ActorSource::McpGrant { grant_id },
+                ),
+            })
+        } else {
+            None
+        };
+        Some((
+            DeleteActivityContext {
+                id,
+                project_id: row.get(4)?,
+                task_id: row.get(5)?,
+                name: row.get(7)?,
             },
-        )
-        .optional()?;
-    Ok(row.map(DeleteRetryRow::into_context))
+            actor,
+        ))
+    } else {
+        None
+    };
+    Ok(DeletionCompletion {
+        cleanup_run_id: row.get(0)?,
+        reason: row.get(8)?,
+        activity,
+    })
 }
 
 fn record_system_cleanup(
@@ -1242,23 +1242,23 @@ struct DeletionJob {
     id: String,
     blob_id: String,
     storage_key: String,
-    reason: String,
 }
 
 fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<bool> {
     // The delete is the completion claim. Rollback restores it on any failure.
     // Concurrent workers may unlink twice, but metadata/activity change once.
-    let run: Option<Option<String>> = tx
+    let completion = tx
         .query_row(
-            "DELETE FROM file_deletion_jobs WHERE id=?1 RETURNING cleanup_run_id",
+            "DELETE FROM file_deletion_jobs WHERE id=?1 RETURNING cleanup_run_id,
+                actor_user_id,actor_mcp_grant_id,actor_name,project_id,task_id,attachment_id,attachment_name,reason",
             [&job.id],
-            |r| r.get(0),
+            deletion_completion_row,
         )
         .optional()?;
-    let Some(run) = run else {
+    let Some(completion) = completion else {
         return Ok(false);
     };
-    if let Some(run) = run {
+    if let Some(run) = completion.cleanup_run_id {
         tx.execute(
             "UPDATE storage_cleanup_runs SET files=files+1,
             bytes=bytes+coalesce((SELECT size_bytes FROM file_blobs WHERE id=?2),0)
@@ -1267,7 +1267,7 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
         )?;
     }
     let blob = &job.blob_id;
-    let reason = &job.reason;
+    let reason = &completion.reason;
     let now = unix_now()?;
     if reason == "cleanup" {
         let attachment: Option<(String, u64)> = tx
@@ -1286,24 +1286,8 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
         if let Some((attachment, size)) = attachment {
             record_system_cleanup(tx, &attachment, size, now)?;
         }
-    } else if let Some((attachment, actor)) = retry_delete_context(tx, blob)? {
-        record_activity_tx(
-            tx,
-            &actor,
-            ActivityInput {
-                project_id: Some(&attachment.project_id),
-                entity_type: "attachment",
-                entity_id: &attachment.id,
-                task_id: Some(&attachment.task_id),
-                event_type: "attachment.deleted",
-                field_key: None,
-                before: Some(json!({"name":attachment.name})),
-                after: None,
-                metadata: json!({"name":attachment.name}),
-                entity_revision: None,
-            },
-            now,
-        )?;
+    } else if let Some((attachment, actor)) = completion.activity {
+        record_attachment_deletion(tx, &attachment, actor.as_ref(), now)?;
         tx.execute("UPDATE idempotency_keys SET state='succeeded',response_status=204,updated_at=?1 WHERE \
                      operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",params![now,attachment.id])?;
         tx.execute("DELETE FROM task_attachments WHERE blob_id=?1", [&blob])?;
@@ -1337,7 +1321,7 @@ const UPDATE_FILE_DELETION_JOBS_SQL: &str = "UPDATE file_deletion_jobs SET attem
                      available_at=unixepoch()+min(3600,30*(1<<min(attempt_count,7))),last_error=?1 WHERE id=?2";
 const INSERT_FILE_DELETION_JOBS_SQL: &str = "INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,\
                      available_at) VALUES(?1,?2,?3,?4,?5,?5)";
-const SELECT_FILE_DELETION_JOBS_SQL: &str = "SELECT id,blob_id,storage_key,reason FROM file_deletion_jobs WHERE available_at<=?1 AND \
+const SELECT_FILE_DELETION_JOBS_SQL: &str = "SELECT id,blob_id,storage_key FROM file_deletion_jobs WHERE available_at<=?1 AND \
                      locked_at IS NULL ORDER BY available_at,id LIMIT 200";
 const SELECT_FILE_BLOBS_2_SQL: &str = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available',\
                      'deleting')";

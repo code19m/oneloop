@@ -116,9 +116,6 @@ export function fileUrl(/** @type {string} */ projectId, /** @type {'content'|'t
   return `/api/projects/${encodeURIComponent(projectId)}/knowledge/${mode}?${new URLSearchParams({ path: file.path })}`;
 }
 
-/** The anchor the Markdown renderer gives a heading. */
-export const headingSlug = (/** @type {string} */ text) => text.toLowerCase().replace(/[^\p{L}\p{N}\p{M}_\-\s]/gu, '').replace(/\s/g, '-');
-
 export const searchTerms = (/** @type {string} */ query) => [...new Set(String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean))].slice(0, 8);
 
 const escapePattern = (/** @type {string} */ value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
