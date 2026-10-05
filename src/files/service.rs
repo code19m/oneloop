@@ -1394,9 +1394,11 @@ const SELECT_USERS_SQL: &str = "SELECT b.storage_key,b.size_bytes,b.checksum_sha
 const INSERT_FILE_LEASES_SQL: &str = "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at) VALUES(?1,?2,\
                      'preview',?3,?4,?5)";
 const SELECT_TASK_ATTACHMENTS_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.is_ephemeral=0 AND b.state='available' AND a.deleted_at IS NULL";
+                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=0 AND b.state='available' \
+                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
 const SELECT_TASK_ATTACHMENTS_2_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.is_ephemeral=1 AND b.state='available' AND a.deleted_at IS NULL";
+                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=1 AND b.state='available' \
+                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
 const SELECT_TASK_ATTACHMENTS_3_SQL: &str = "SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE \
                      b.state='cleaned' AND a.deleted_at IS NULL";
 const UPDATE_FILE_DELETION_JOBS_SQL: &str = "UPDATE file_deletion_jobs SET attempt_count=attempt_count+1,\

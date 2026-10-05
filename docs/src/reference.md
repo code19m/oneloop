@@ -98,9 +98,9 @@ files by itself.
 
 oneloop refuses an upload when the limit is reached, or when the upload would
 still leave less free disk space than `ONELOOP_DISK_MIN_FREE`. Space that
-running uploads and Knowledge downloads need counts as used. A deleted file
-still counts, as pending deletion, until oneloop removes it after the
-[Undo](user-guide.md#undo-a-deletion) window.
+running uploads and Knowledge downloads need counts as used. A deleted file,
+or a file of a deleted task, still counts, as pending deletion, until oneloop
+removes it after the [Undo](user-guide.md#undo-a-deletion) window.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of

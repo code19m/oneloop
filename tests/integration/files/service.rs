@@ -2243,6 +2243,60 @@ async fn storage_accounts_for_pending_deletion_separately() {
 }
 
 #[tokio::test]
+async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
+    let f = Fixture::new().await;
+    let service = f.service(1000);
+    upload(
+        &service,
+        &f.manager,
+        "kept-usage",
+        "kept.bin",
+        b"kept",
+        false,
+    )
+    .await;
+    upload(
+        &service,
+        &f.manager,
+        "temporary-usage",
+        "temporary.bin",
+        b"temporary",
+        true,
+    )
+    .await;
+    f.db.run(|connection| {
+        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut admin = f.manager.clone();
+    admin.is_admin = true;
+    let domain = oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc());
+    domain
+        .execute(
+            &admin,
+            oneloop::domain::CommandEnvelope {
+                operation: oneloop::domain::DomainOperation::DeleteTask,
+                payload: serde_json::json!({"id":"task"}),
+                idempotency_key: "delete-usage-parent".into(),
+                expected_revision: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let usage = service.storage_usage(&admin).await.unwrap();
+    assert_eq!(
+        (
+            usage.permanent_bytes,
+            usage.temporary_bytes,
+            usage.pending_deletion_bytes
+        ),
+        (0, 0, 13)
+    );
+}
+
+#[tokio::test]
 async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let f = Fixture::new().await;
     let service = f.service(1000000);

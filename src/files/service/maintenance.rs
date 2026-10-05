@@ -252,11 +252,14 @@ impl FileService {
                     connection.query_row(SELECT_TASK_ATTACHMENTS_SQL, [], |r| r.get(0))?;
                 let temporary: i64 =
                     connection.query_row(SELECT_TASK_ATTACHMENTS_2_SQL, [], |r| r.get(0))?;
-                // Deleted attachments keep their bytes for the Undo window.
+                // Deleted attachments, and the files of deleted tasks, keep
+                // their bytes for the Undo window.
                 let pending_deletion: i64 = connection.query_row(
                     "SELECT coalesce(sum(b.size_bytes),0) FROM file_blobs b WHERE b.state='deleting'
                        OR (b.state='available' AND EXISTS(SELECT 1 FROM task_attachments a
-                           WHERE a.blob_id=b.id AND a.deleted_at IS NOT NULL))",
+                           JOIN tasks t ON t.id=a.task_id
+                           WHERE a.blob_id=b.id
+                             AND (a.deleted_at IS NOT NULL OR t.deleted_at IS NOT NULL)))",
                     [],
                     |r| r.get(0),
                 )?;
