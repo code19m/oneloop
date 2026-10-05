@@ -2686,10 +2686,11 @@
       if (userId) [...content.querySelectorAll('.user-row')].find(el => el.dataset.userId === userId)?.focus({preventScroll:true});
     },
     validateFormDates,
-    /** Show or clear the Not saved notes without touching what is typed. */
-    // Show each field's draft, or its saved value once the draft is gone (such
-    // as after Use latest), and the draft's note. A field being edited keeps
-    // what the person is typing.
+    /**
+     * Show each title and description field's draft, or its saved value once
+     * the draft is gone (such as after Use latest), with its Not saved note.
+     * The field being edited keeps what the person is typing.
+     */
     refreshTaskDrafts(id) {
       if (state.view !== 'task' || state.taskId !== id) return;
       const t = taskById(id); if (!t) return;
