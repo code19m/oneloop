@@ -237,7 +237,7 @@ service to run `git` and `ssh` and to open outgoing connections.
   files.
 - Run oneloop under its own system account, and run maintenance commands as
   that account. The data directory holds password hashes, private files,
-  signing keys and the key that encrypts Knowledge credentials. oneloop makes
+  and `keys/knowledge.key`, which encrypts Knowledge credentials. oneloop makes
   it readable only by its owner, and it warns at startup if others can read it.
 - Keep backups and logs private. Backups contain everything, and logs contain
   usernames and IP addresses.

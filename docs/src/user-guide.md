@@ -167,7 +167,7 @@ read-only Board.
 - **@everyone** notifies all active members of the project except you. You can
   use it once a minute in each project.
 - When you edit a comment or block reason, only people you newly mention get a
-  notification. Mentions of people who have left stay.
+  notification. Editing keeps mentions of people who have left the project.
 
 ## Inbox
 
@@ -208,8 +208,8 @@ On your **Profile**:
 - **Connected apps** lists your AI assistants, and you can revoke them. See
   [AI assistants](mcp.md).
 
-A session ends after 7 days without use, and after 30 days at most. Background
-updates do not keep an idle session open.
+Sessions end by themselves after a while; see
+[session length](reference.md#limits).
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.
