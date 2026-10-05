@@ -626,22 +626,7 @@ impl KnowledgeService {
             .db
             .snapshot(move |connection| {
                 authorize_read(connection, &actor, &project_id)?;
-                let (media_type, kind, content): (String, Option<String>, Vec<u8>) = connection
-                    .query_row(
-                        "SELECT media_type,preview_kind,content FROM knowledge_files
-                         WHERE project_id=?1 AND path=?2",
-                        params![project_id, path],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "file" })?;
-                // Only files up to the HTML preview limit are classified as HTML.
-                if preview_kind(kind.as_deref(), &media_type) != Some(PreviewKind::Html) {
-                    return Err(AppError::NotFound {
-                        resource: "preview",
-                    });
-                }
-                Ok(content)
+                html_preview_bytes(connection, &project_id, &path)
             })
             .await?;
         crate::files::sanitized_html_preview(bytes).await
@@ -1449,6 +1434,31 @@ fn is_manager(actor: &Actor) -> bool {
     actor.is_admin && matches!(actor.source, ActorSource::BrowserSession { .. })
 }
 
+/// The bytes of an HTML file to preview. The file's kind is checked first, so
+/// a request for another file, up to 10 MiB, never loads it.
+fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> AppResult<Vec<u8>> {
+    let (rowid, media_type, kind): (i64, String, Option<String>) = connection
+        .query_row(
+            "SELECT rowid,media_type,preview_kind FROM knowledge_files
+             WHERE project_id=?1 AND path=?2",
+            params![project_id, path],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "file" })?;
+    // Only files up to the HTML preview limit are classified as HTML.
+    if preview_kind(kind.as_deref(), &media_type) != Some(PreviewKind::Html) {
+        return Err(AppError::NotFound {
+            resource: "preview",
+        });
+    }
+    Ok(connection.query_row(
+        "SELECT content FROM knowledge_files WHERE rowid=?1",
+        [rowid],
+        |row| row.get(0),
+    )?)
+}
+
 fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.
@@ -1499,6 +1509,62 @@ mod tests {
         assert_eq!(text, "first line");
         let (text, truncated) = cut("ééééé", 3);
         assert_eq!((text.as_str(), truncated), ("ééé", true));
+    }
+
+    #[test]
+    fn an_html_preview_reads_no_bytes_of_other_files() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let mut connection =
+            crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+        connection.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);").unwrap();
+        for (path, media_type, kind, content) in [
+            (
+                "data.bin",
+                "application/octet-stream",
+                None,
+                vec![7; 4 * 1024 * 1024],
+            ),
+            (
+                "page.html",
+                "text/html",
+                Some("html"),
+                b"<p>hi</p>".to_vec(),
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                     VALUES('p',?1,?2,?3,?4,'sum',1,?5)",
+                    params![path, content.len() as i64, media_type, kind, content],
+                )
+                .unwrap();
+        }
+        connection.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                    && sql.contains("content")
+                {
+                    CONTENT_READS.fetch_add(1, Ordering::Relaxed);
+                }
+            }),
+        );
+        let transaction = connection.transaction().unwrap();
+        assert!(matches!(
+            html_preview_bytes(&transaction, "p", "data.bin"),
+            Err(AppError::NotFound {
+                resource: "preview"
+            })
+        ));
+        assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            html_preview_bytes(&transaction, "p", "page.html").unwrap(),
+            b"<p>hi</p>"
+        );
+        assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
     }
 
     #[test]
