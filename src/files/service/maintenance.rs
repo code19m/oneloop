@@ -533,18 +533,7 @@ impl FileService {
                 if committed || succeeded {
                     return Ok(UploadCleanupDecision::PreserveCommitted);
                 }
-
-                tx.execute(
-                    "DELETE FROM upload_reservations WHERE id=?1 AND committed_at IS NULL",
-                    [&reservation_id],
-                )?;
-                tx.execute(
-                    "UPDATE idempotency_keys
-                     SET state='failed',updated_at=unixepoch()
-                     WHERE id=?1 AND state='running'
-                       AND resource_type='upload_reservation' AND resource_id=?2",
-                    params![idempotency_id, reservation_id],
-                )?;
+                release_upload_rows(tx, &reservation_id, &idempotency_id)?;
                 Ok(UploadCleanupDecision::RemoveUncommitted)
             })
             .await?;
@@ -560,6 +549,22 @@ impl FileService {
             FileStore::sync_parent(destination).await?;
         }
         Ok(())
+    }
+
+    /// Frees the reservation and retry key of an upload that never started to
+    /// publish its file, when the data lease is unavailable, for example
+    /// during a backup. The next reconciliation removes the staging file, which
+    /// no reservation owns any more.
+    pub(super) async fn release_upload_reservation(
+        &self,
+        reservation_id: &str,
+        idempotency_id: &str,
+    ) -> AppResult<()> {
+        let reservation_id = reservation_id.to_owned();
+        let idempotency_id = idempotency_id.to_owned();
+        self.db
+            .transaction(move |tx| release_upload_rows(tx, &reservation_id, &idempotency_id))
+            .await
     }
 
     pub(super) async fn release_file_lease(&self, lease_id: String) -> AppResult<()> {
@@ -820,4 +825,23 @@ impl FileService {
             unreserved_staging_bytes,
         })
     }
+}
+
+fn release_upload_rows(
+    tx: &Transaction<'_>,
+    reservation_id: &str,
+    idempotency_id: &str,
+) -> AppResult<()> {
+    tx.execute(
+        "DELETE FROM upload_reservations WHERE id=?1 AND committed_at IS NULL",
+        [reservation_id],
+    )?;
+    tx.execute(
+        "UPDATE idempotency_keys
+         SET state='failed',updated_at=unixepoch()
+         WHERE id=?1 AND state='running'
+           AND resource_type='upload_reservation' AND resource_id=?2",
+        params![idempotency_id, reservation_id],
+    )?;
+    Ok(())
 }

@@ -34,12 +34,18 @@ One timezone applies to the whole instance. It decides when a deadline day ends,
 where today is on the Roadmap, and how dates and times are shown. Use an IANA
 name, such as `Europe/Berlin` or `America/New_York`.
 
-oneloop has its own timezone database, so the server's clock settings and the
-`TZ` variable of a container have no effect. `oneloop serve --check` prints the
-version of this database, such as `2025b`. If your region changed its clock
-rules after that version, times can be an hour off until a new oneloop release
-brings newer data. Until then, you can set a fixed offset such as `Etc/GMT+7`,
-which means UTC−07 (the sign is reversed).
+oneloop takes the rules for this name from the server's timezone database, in
+`/usr/share/zoneinfo` or the folder that `TZDIR` names, when it is at least as
+new as the copy built into oneloop. Otherwise it uses the built-in copy.
+Browsers show dates and times with their own copy of the rules. The server's
+clock settings and the `TZ` variable have no effect. `oneloop serve --check`
+prints the copy in use and its version, such as `2026c (built in)`.
+
+If your region changes its clock rules, a newer `tzdata` package on the server
+brings them before a new oneloop release does; the Docker image includes the
+one of its Debian release. Until then, times can be an hour off, and you can
+set a fixed offset such as `Etc/GMT+7`, which means UTC−07 (the sign is
+reversed).
 
 ### Storage
 
@@ -76,14 +82,18 @@ Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 container, for example `docker compose exec oneloop oneloop backup create …`.
 
 - Results go to standard output; errors and logs go to standard error. The exit
-  code is `0` on success, `2` for a mistake in the command, the settings or the
-  input, and `1` for any other failure.
+  code is `0` on success, `2` for an invalid setting, argument or value, such as
+  an unknown `ONELOOP_` variable, a data directory that isn't a folder, or a
+  username with spaces, and `1` for anything else, such as a username that is
+  taken or a backup folder that already exists.
 - `serve` refuses to start if the database needs `db migrate`, or if another
   oneloop server uses the same data directory. `serve --check` never creates a
   database, opens a port or changes data. It also prints the versions of SQLite
   and of the timezone database.
-- `db migrate` needs the server to be stopped when it upgrades. There is no
-  downgrade.
+- `db migrate` needs the data directory to itself, even when there is nothing
+  to upgrade: stop the server, and wait for backups and other `oneloop`
+  commands to finish. `serve --check` works while the server runs and shows
+  whether an upgrade is needed. There is no downgrade.
 - `user add` and `user passwd` ask for the password twice. In scripts, use
   `--password-stdin` and send the password as one line, for example
   `oneloop user add ci-bot --password-stdin < password.txt`. oneloop removes the
@@ -183,8 +193,9 @@ Some emoji count as two characters.
 | Limit | Value |
 | --- | --- |
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
-| Request headers | Must arrive within 15 seconds |
-| Request body | 256 KiB for normal requests; 1 MiB for MCP calls |
-| Request body idle time | 60 seconds |
+| Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
+| Request body size | 256 KiB for normal requests; 1 MiB for MCP calls |
+| Request body speed | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
+| Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |

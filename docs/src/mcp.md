@@ -118,7 +118,8 @@ oneloop also ends a connection when:
 - you change your password, or an admin resets it;
 - an admin deactivates your account;
 - you lose access to one of its projects: you are removed from it (admins keep
-  access to every project), or it is deleted;
+  access to every project), you lose the admin role and aren't a member of it,
+  or it is deleted;
 - a backup is restored;
 - it isn't used for 30 days, or 90 days have passed since you connected it.
 

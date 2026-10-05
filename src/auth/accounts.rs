@@ -276,6 +276,8 @@ impl AuthService {
             ).map_err(map_admin_constraint)?;
             if changed != 1 { return Err(AppError::revision(update.expected_revision, existing.revision)); }
             if existing.is_active && !update.is_active { revoke_user_access(tx,&user_id,now)?; }
+            // Projects that only the admin role opened are lost, as by removal.
+            if existing.is_admin && !update.is_admin { revoke_lost_project_app_access(tx,&user_id,now)?; }
             if sensitive { security_event(tx,&user_id,Some(&actor_for_tx.user_id),"account.access_changed",
                 serde_json::json!({"isAdmin":update.is_admin,"isActive":update.is_active}),now)?; }
             Ok(AccountSummary { id:existing.id,username:existing.username,display_name,

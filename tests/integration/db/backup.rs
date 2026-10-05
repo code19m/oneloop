@@ -5,7 +5,7 @@ use std::{
 };
 
 use oneloop::{
-    AppError, Db,
+    Db,
     db::{create_backup, migrate, restore_backup, validate_backup},
 };
 use rusqlite::{Connection, params};
@@ -37,12 +37,8 @@ async fn database_calls_stay_responsive_while_backup_holds_the_file_lock() {
     .await
     .expect("ordinary writes must not wait for backup file coordination")
     .unwrap();
-    let started = std::time::Instant::now();
-    assert!(matches!(
-        db.acquire_data_lease().await,
-        Err(AppError::Unavailable(_))
-    ));
-    assert!(started.elapsed() < Duration::from_secs(7));
+    // errors::busy_data_lease_returns_a_safe_retryable_http_error covers file
+    // operations that wait for the lock.
     drop(lock);
     db.acquire_data_lease().await.unwrap();
 }

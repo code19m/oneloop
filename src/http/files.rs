@@ -335,7 +335,12 @@ async fn html_preview(
     Ok(html_preview_response(bytes))
 }
 
-/// Sanitized HTML for a sandboxed, same-origin preview frame.
+/// Sanitized HTML for the preview frame of an attachment or Knowledge file.
+/// It runs in an opaque origin without scripts, forms, popups or plugins, and
+/// loads nothing from other sites: only inline styles, and images and fonts
+/// embedded as data. The app's own `frame-src 'self'` stops the framed page
+/// from navigating to other sites; without scripts, the page opened on its own
+/// navigates only when someone follows a link.
 pub(super) fn html_preview_response(bytes: Vec<u8>) -> Response {
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
@@ -372,13 +377,11 @@ pub(super) fn html_preview_response(bytes: Vec<u8>) -> Response {
     headers.insert(
         "content-security-policy",
         HeaderValue::from_static(
-            "sandbox allow-scripts; default-src 'none'; base-uri 'none'; object-src 'none'; \
-             frame-src 'none'; child-src 'none'; frame-ancestors 'self'; form-action 'none'; \
-             script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; \
-             img-src data: blob: https:; font-src data: https:; connect-src 'none'; \
-             worker-src 'none'; media-src 'none'",
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; \
+             font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
         ),
     );
+    headers.insert("x-dns-prefetch-control", HeaderValue::from_static("off"));
     response
 }
 

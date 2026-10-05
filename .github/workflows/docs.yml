@@ -29,6 +29,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      released: ${{ steps.release.outputs.released }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,13 +44,25 @@ jobs:
       - run: mdbook build docs
       - name: Check links
         run: node scripts/check-doc-links.mjs
-      - if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      # Docs for a new version go live only once it is released. The Release
+      # workflow runs this workflow after it publishes the release.
+      - name: Check that this version is released
+        id: release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          released=$(node scripts/release-exists.mjs)
+          echo "released=$released" >> "$GITHUB_OUTPUT"
+          if [ "$released" = false ]; then echo "::notice::Not deployed: the version in Cargo.toml is not released yet."; fi
+      - if: steps.release.outputs.released == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/book
 
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: needs.build.outputs.released == 'true'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

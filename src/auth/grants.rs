@@ -246,3 +246,30 @@ pub(crate) fn revoke_project_app_access(
     )?;
     Ok(())
 }
+
+/// Revoke a person's connected apps, and drop their unexchanged authorization
+/// codes, for every project they can no longer open, for example after losing
+/// the admin role. As with removal from a project, getting access back later
+/// doesn't revive them.
+pub(crate) fn revoke_lost_project_app_access(
+    tx: &Transaction<'_>,
+    user_id: &str,
+    now: i64,
+) -> AppResult<()> {
+    let lost: Vec<String> = tx
+        .prepare(
+            "SELECT gp.project_id FROM mcp_grants g JOIN mcp_grant_projects gp ON gp.grant_id=g.id
+             WHERE g.user_id=?1 AND g.revoked_at IS NULL
+             UNION
+             SELECT p.value FROM oauth_authorization_codes c, json_each(c.projects_json) p
+             WHERE c.user_id=?1 AND c.used_at IS NULL
+             EXCEPT
+             SELECT project_id FROM project_memberships WHERE user_id=?1",
+        )?
+        .query_map([user_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for project_id in lost {
+        revoke_project_app_access(tx, &project_id, Some(user_id), now)?;
+    }
+    Ok(())
+}

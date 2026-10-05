@@ -81,8 +81,12 @@ async fn retention_batches_limit_writer_work() {
         tx.execute_batch("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1201) INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,delivered_at,created_at) SELECT 'outbox-'||i,'test','test','test','{}',1,2,1 FROM n;")?;
         Ok(())
     }).await.unwrap();
-    for expected in [701, 201, 1, 1] {
-        prune_transient_state(&db, 2_000_000_000).await.unwrap();
+    // A full batch asks for the next pass soon; the newest row stays as the cursor.
+    for (expected, more) in [(701, true), (201, true), (1, false), (1, false)] {
+        assert_eq!(
+            prune_transient_state(&db, 2_000_000_000).await.unwrap(),
+            more
+        );
         let count = db
             .run(|conn| {
                 Ok(

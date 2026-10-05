@@ -18,7 +18,7 @@ import {
 
 /** @typedef {import('./model.js').KnowledgeFile} KnowledgeFile */
 /** @typedef {{state:string,syncing:boolean,folder:string|null,checkedAt:number|null,skippedFiles:number,files:KnowledgeFile[],source?:any}} KnowledgeView */
-/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,version:number,unpainted:boolean,stale:boolean,refreshPending:boolean}} Cached */
+/** @typedef {{data:KnowledgeView|null,json:string,error:unknown,promise:Promise<void>|null,unpainted:boolean,stale:boolean,refreshPending:boolean}} Cached */
 
 const POLL_MS = 3000;
 const SEARCH_DELAY_MS = 120;
@@ -112,7 +112,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
 
   /** Load (or reload) one project's Knowledge view and repaint what shows it. */
   function load(/** @type {string} */ projectId, { background = false, invalidate = false } = {}) {
-    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, version: 0, unpainted: false, stale: false, refreshPending: false };
+    const entry = cache.get(projectId) ?? { data: null, json: '', error: null, promise: null, unpainted: false, stale: false, refreshPending: false };
     cache.set(projectId, entry);
     if (entry.promise) { if (invalidate) entry.refreshPending = true; return entry.promise; }
     entry.stale = false;
@@ -121,7 +121,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
         if (cache.get(projectId) !== entry) return;
         const json = JSON.stringify(data);
         entry.error = null;
-        if (json !== entry.json) { entry.data = data; entry.json = json; entry.version++; entry.unpainted = true; }
+        if (json !== entry.json) { entry.data = data; entry.json = json; entry.unpainted = true; }
         if (entry.unpainted) repaint(projectId);
       })
       .catch((/** @type {any} */ error) => {
@@ -195,18 +195,36 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     return S.projectId;
   }
 
-  const workspaceKey = (/** @type {string} */ projectId) => JSON.stringify([projectId, S.mode, S.path, S.valid, S.finding, S.query, S.scope, S.results?.query ?? null, cache.get(projectId)?.version ?? -1, !!cache.get(projectId)?.error]);
-
-  function render(/** @type {string} */ projectId) {
-    if (S.projectId !== projectId) { S.projectId = projectId; S.mode = 'tree'; S.path = ''; S.section = ''; S.valid = true; S.finding = false; S.query = ''; S.results = null; }
+  /** The workspace's markup. Previews mount into it later. */
+  function workspaceHtml(/** @type {string} */ projectId) {
     const entry = cache.get(projectId), data = entry?.data ?? null;
-    if (entry) entry.unpainted = false;
     const ready = !!data && data.files.length > 0;
     const toolbar = ready ? toolbarHtml() : '';
     let body;
     if (!data) body = entry?.error ? errorHtml(entry.error) : '<p class="knowledge-loading" role="status">Loading knowledge…</p>';
     else body = bannerHtml(data) + readerHtml(projectId, data);
-    return `<div class="knowledge-workspace" data-knowledge-key="${esc(workspaceKey(projectId))}">${toolbar}<div class="knowledge-reader" tabindex="-1">${body}</div></div>`;
+    return `${toolbar}<div class="knowledge-reader" tabindex="-1">${body}</div>`;
+  }
+
+  /**
+   * Identifies what the workspace shows, so a read that changes nothing on
+   * screen, such as a newer sync time, keeps the rendered previews and scroll.
+   */
+  const workspaceKey = (/** @type {string} */ html) => {
+    let a = 0x811c9dc5, b = 0x9e3779b9;
+    for (let index = 0; index < html.length; index++) {
+      const code = html.charCodeAt(index);
+      a = Math.imul(a ^ code, 0x01000193); b = Math.imul(b ^ code, 0x85ebca6b);
+    }
+    return `${html.length}:${(a >>> 0).toString(36)}:${(b >>> 0).toString(36)}`;
+  };
+
+  function render(/** @type {string} */ projectId) {
+    if (S.projectId !== projectId) { S.projectId = projectId; S.mode = 'tree'; S.path = ''; S.section = ''; S.valid = true; S.finding = false; S.query = ''; S.results = null; }
+    const entry = cache.get(projectId);
+    if (entry) entry.unpainted = false;
+    const html = workspaceHtml(projectId);
+    return `<div class="knowledge-workspace" data-knowledge-key="${workspaceKey(html)}">${html}</div>`;
   }
 
   function readerHtml(/** @type {string} */ projectId, /** @type {KnowledgeView} */ data) {
@@ -316,7 +334,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     documentObject.querySelector('[data-knowledge-search]')?.toggleAttribute('aria-controls', false);
     if (S.finding) documentObject.querySelector('[data-knowledge-search]')?.setAttribute('aria-controls', 'knowledge-results');
     const workspace = documentObject.querySelector('.knowledge-workspace');
-    if (workspace) workspace.setAttribute('data-knowledge-key', workspaceKey(S.projectId));
+    if (workspace) workspace.setAttribute('data-knowledge-key', workspaceKey(workspaceHtml(S.projectId)));
   }
 
   function openFinder() {

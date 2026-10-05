@@ -306,7 +306,7 @@ async fn upload_file(
             let mut received = 0_u64;
             let mut checksum = Sha256::new();
             while let Some(chunk) = deadline.read(stream.next()).await? {
-                let chunk = chunk.map_err(|e| AppError::Io(format!("read upload body: {e}")))?;
+                let chunk = chunk.map_err(body_error)?;
                 received = received.saturating_add(chunk.len() as u64);
                 if received > size {
                     return Err(AppError::validation(
@@ -336,13 +336,19 @@ async fn upload_file(
     };
     let mut stream = body.into_data_stream();
     while let Some(chunk) = deadline.read(stream.next()).await? {
-        let chunk = chunk.map_err(|e| AppError::Io(format!("read upload body: {e}")))?;
+        let chunk = chunk.map_err(body_error)?;
         upload.write_chunk(&chunk).await?;
     }
     let attachment = upload.finish().await?;
     Ok(axum::Json(ValueResponse {
         value: serde_json::to_value(attachment).map_err(|e| AppError::internal(e.to_string()))?,
     }))
+}
+
+/// A body that ends early or stalls is the client's failure, as for browser
+/// uploads; the server's request-body limit turns a stall into a 408.
+fn body_error(_: axum::Error) -> AppError {
+    AppError::validation("file", "upload stream ended unexpectedly")
 }
 
 async fn download_file(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {

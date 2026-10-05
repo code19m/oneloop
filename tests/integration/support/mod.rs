@@ -22,6 +22,7 @@ use oneloop::{
     Config, Db,
     auth::{Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user},
     db::{DataLayout, migrate},
+    timezone::TimeZone,
 };
 use tempfile::TempDir;
 
@@ -87,6 +88,48 @@ pub fn data_dir() -> TempDir {
     root
 }
 
+/// Creates `oneloop.sqlite3` in `root` at schema 2, the schema of 0.1.0-rc.2,
+/// and returns a connection for adding rows before an upgrade.
+pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
+    use sha2::{Digest, Sha256};
+    let connection = rusqlite::Connection::open(root.join("oneloop.sqlite3")).unwrap();
+    // Stored triggers need the server's Unicode lower-case function.
+    connection
+        .create_scalar_function(
+            "oneloop_lower",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| Ok(context.get::<String>(0)?.to_lowercase()),
+        )
+        .unwrap();
+    connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,checksum TEXT NOT NULL,applied_at INTEGER NOT NULL)").unwrap();
+    for (version, name, sql) in [
+        (
+            1,
+            "initial",
+            include_str!("../../../migrations/0001_initial.sql"),
+        ),
+        (
+            2,
+            "knowledge",
+            include_str!("../../../migrations/0002_knowledge.sql"),
+        ),
+    ] {
+        connection.execute_batch(sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations VALUES(?1,?2,?3,1)",
+                rusqlite::params![version, name, hex::encode(Sha256::digest(sql.as_bytes()))],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+    }
+    connection
+}
+
 /// A fresh migrated data directory and an open database handle.
 pub fn database() -> (TempDir, Db) {
     let root = data_dir();
@@ -102,6 +145,11 @@ pub fn config(root: &Path, public_url: &str, extra: &[(&str, &str)]) -> Config {
     ];
     values.extend_from_slice(extra);
     Config::from_os_iter(values).unwrap()
+}
+
+/// UTC from the timezone database built into oneloop.
+pub fn utc() -> TimeZone {
+    TimeZone::built_in("UTC").unwrap()
 }
 
 /// A loopback port that is free now, from the range reserved for servers

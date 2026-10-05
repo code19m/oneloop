@@ -92,6 +92,38 @@ impl Drop for Running {
     }
 }
 
+impl Inner {
+    /// Keep a project out of the next syncs for the retry interval. Its source
+    /// stays due, so it would otherwise run again as soon as a slot frees.
+    fn wait(&self, project_id: &str) {
+        let until =
+            tokio::time::Instant::now() + Duration::from_secs(RETRY_INTERVAL_SECONDS as u64);
+        self.waiting
+            .lock()
+            .expect("waiting set lock")
+            .insert(project_id.to_owned(), until);
+    }
+
+    fn is_waiting(&self, project_id: &str) -> bool {
+        let mut waiting = self.waiting.lock().expect("waiting set lock");
+        match waiting.get(project_id) {
+            Some(until) if *until > tokio::time::Instant::now() => true,
+            Some(_) => {
+                waiting.remove(project_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub(super) fn stop_waiting(&self, project_id: &str) {
+        self.waiting
+            .lock()
+            .expect("waiting set lock")
+            .remove(project_id);
+    }
+}
+
 impl KnowledgeService {
     /// Runs until shutdown, with a few syncs at once. A free slot takes the
     /// next due source, and commands wake the worker, so a new connection or a
@@ -138,6 +170,7 @@ impl KnowledgeService {
         };
         for claim in due
             .iter()
+            .filter(|project_id| !self.inner.is_waiting(project_id))
             .filter_map(|project_id| Running::claim(&self.inner, project_id))
             .take(free)
         {
@@ -146,8 +179,8 @@ impl KnowledgeService {
         }
     }
 
-    /// Syncs every source that is due and returns how many ran. Exposed for
-    /// deterministic tests.
+    /// Syncs every source that is due and not waiting after a failure, and
+    /// returns how many ran. Exposed for deterministic tests.
     #[doc(hidden)]
     pub async fn sync_due(&self) -> usize {
         let due = match self.due_projects().await {
@@ -159,6 +192,9 @@ impl KnowledgeService {
         };
         let mut finished = 0;
         for project_id in due {
+            if self.inner.is_waiting(&project_id) {
+                continue;
+            }
             if let Some(claim) = Running::claim(&self.inner, &project_id) {
                 self.sync_project(claim).await;
                 finished += 1;
@@ -204,6 +240,7 @@ impl KnowledgeService {
             Ok(None) => return,
             Err(error) => {
                 tracing::warn!(%error, project_id, "could not read the knowledge source");
+                self.inner.wait(&project_id);
                 return;
             }
         };
@@ -230,6 +267,7 @@ impl KnowledgeService {
             .await
         {
             tracing::warn!(%error, project_id, "could not store the knowledge sync result");
+            self.inner.wait(&project_id);
         }
     }
 
@@ -390,15 +428,15 @@ impl KnowledgeService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let current: Option<(String, i64, String, Option<String>)> = tx
+                let current: Option<(String, i64, String, Option<String>, i64)> = tx
                     .query_row(
-                        "SELECT generation,revision,state,error_code FROM knowledge_sources
+                        "SELECT generation,revision,state,error_code,skipped_files FROM knowledge_sources
                          WHERE project_id=?1",
                         [&project_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
                     )
                     .optional()?;
-                let Some((current_generation, revision, state, error_code)) = current else {
+                let Some((current_generation, revision, state, error_code, skipped)) = current else {
                     return Ok(());
                 };
                 if current_generation != generation {
@@ -422,7 +460,7 @@ impl KnowledgeService {
                         ("knowledge.synced", json!({}))
                     }
                     Ok(Fetched::Changed(snapshot, _)) => {
-                        let count = store_files(tx, &project_id, &snapshot)?;
+                        let changed = store_files(tx, &project_id, &snapshot)?;
                         tx.execute(
                             &format!(
                                 "UPDATE knowledge_sources SET state='ready',checked_at=?2,error_code=NULL,
@@ -430,11 +468,16 @@ impl KnowledgeService {
                             ),
                             params![project_id, now, started, snapshot.commit, snapshot.skipped as i64],
                         )?;
+                        // A commit that left the folder as it was, such as one
+                        // outside it, is no news for the people reading it.
+                        if !changed && state == "ready" && skipped == snapshot.skipped as i64 {
+                            return Ok(());
+                        }
                         (
                             "knowledge.synced",
                             json!({
                                 "commit": snapshot.commit.get(..12).unwrap_or(&snapshot.commit),
-                                "files": count,
+                                "files": snapshot.files.len(),
                                 "skippedFiles": snapshot.skipped,
                             }),
                         )
@@ -477,12 +520,14 @@ impl KnowledgeService {
 }
 
 /// Replace the stored files with the snapshot's, rewriting only files whose
-/// content changed. An unchanged file keeps its date.
+/// content changed. An unchanged file keeps its date. Returns whether any
+/// stored file changed.
 fn store_files(
     tx: &rusqlite::Transaction<'_>,
     project_id: &str,
     snapshot: &Snapshot,
-) -> AppResult<usize> {
+) -> AppResult<bool> {
+    let mut changed = false;
     let stored: HashMap<String, String> = {
         let mut statement =
             tx.prepare("SELECT path,checksum FROM knowledge_files WHERE project_id=?1")?;
@@ -496,7 +541,7 @@ fn store_files(
         let checksum = hex::encode(Sha256::digest(&file.content));
         let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
         if stored.get(&file.path) == Some(&checksum) {
-            tx.execute(
+            changed |= tx.execute(
                 "UPDATE knowledge_files SET media_type=?3,preview_kind=?4
                  WHERE project_id=?1 AND path=?2 AND (media_type<>?3 OR preview_kind IS NOT ?4)",
                 params![
@@ -505,9 +550,10 @@ fn store_files(
                     media_type,
                     kind.map(|kind| kind.as_str())
                 ],
-            )?;
+            )? > 0;
             continue;
         }
+        changed = true;
         tx.execute(
             "INSERT OR REPLACE INTO knowledge_files
              (project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
@@ -529,8 +575,9 @@ fn store_files(
             "DELETE FROM knowledge_files WHERE project_id=?1 AND path=?2",
             params![project_id, path],
         )?;
+        changed = true;
     }
-    Ok(snapshot.files.len())
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -845,6 +892,44 @@ mod tests {
         let _ = git.read_to_end(&mut Vec::new()).await;
         assert_eq!(stored(&db).await, (0, "pending".to_owned(), None));
         assert!(Running::claim(&service.inner, "p1").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_result_that_cannot_be_stored_waits_before_the_next_try() {
+        let source = tempfile::tempdir_in("target").unwrap();
+        docs_repository(source.path());
+        let (_root, db, _) = fixture(&format!("file://{}", source.path().display())).await;
+        // The database refuses to record any sync result.
+        db.run(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER refuse_results BEFORE UPDATE OF attempted_at ON knowledge_sources
+                 BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let service = KnowledgeService::new(db.clone(), 0).allowing_local_repositories();
+        assert_eq!(service.sync_due().await, 1);
+        assert_eq!(service.sync_due().await, 0, "the source waits");
+        // An administrator's retry still syncs at once.
+        let admin = Actor {
+            user_id: "admin".into(),
+            username: "admin".into(),
+            display_name: "Admin".into(),
+            is_admin: true,
+            must_change_password: false,
+            authenticated_at: 1,
+            source: ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        let project = serde_json::json!({"projectId": "p1"});
+        service
+            .execute(&admin, command("knowledge.sync", project, None))
+            .await
+            .unwrap();
+        assert_eq!(service.sync_due().await, 1);
     }
 
     #[tokio::test]

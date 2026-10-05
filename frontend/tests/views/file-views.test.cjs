@@ -64,15 +64,15 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
   assert(d.querySelector('.markdown-body img[src="https://example.invalid/image.png"]')); assert(!d.querySelector('[data-view-resources]')); close();
 });
 
-test('interactive HTML runs sandboxed, keeps resources and restarts from the same content', async () => {
-  const { w, d, open, close } = await taskWithFiles();
+test('HTML previews run no scripts, load nothing from other sites and restart from the same content', async () => {
+  const { d, open, close } = await taskWithFiles();
   open('report.html');
   let frame = d.querySelector('iframe');
-  assert.equal(frame.getAttribute('sandbox'), 'allow-scripts'); assert(frame.hasAttribute('credentialless'));
-  assert(frame.srcdoc.includes('https://example.invalid/style.css')); assert(frame.srcdoc.includes('https://example.invalid/pic.png')); assert(frame.srcdoc.includes('code.js'));
-  assert(!frame.srcdoc.includes('<iframe')); assert(frame.srcdoc.includes('onerror')); assert(frame.srcdoc.includes("connect-src 'none'")); assert(frame.srcdoc.includes("script-src 'unsafe-inline' https:"));
-  assert(!frame.srcdoc.includes('disabled')); assert(frame.srcdoc.includes("form-action 'none'")); assert(frame.srcdoc.includes("frame-src 'none'")); assert(!d.querySelector('[data-view-resources]'));
-  w.dispatchEvent(new w.MessageEvent('message', { source: w, data: { type: 'oneloop-preview-escape' } })); assert(d.querySelector('.file-dialog'));
+  assert.equal(frame.getAttribute('sandbox'), ''); assert(frame.hasAttribute('credentialless'));
+  const policy = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(frame.srcdoc)[1];
+  assert.equal(policy, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'");
+  assert(!frame.srcdoc.includes('<iframe')); assert(!frame.srcdoc.includes('<link')); assert(!frame.srcdoc.includes('oneloop-preview-escape'));
+  assert(frame.srcdoc.includes('onerror')); assert(!frame.srcdoc.includes('disabled')); assert(!d.querySelector('[data-view-resources]'));
   const contents = frame.srcdoc; d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(frame.srcdoc, contents);
   d.querySelector('[data-view-source]').click(); assert(!frame.isConnected); assert(!d.querySelector('.document-preview iframe')); assert(d.querySelector('[data-html-restart]').hidden);
   d.querySelector('[data-view-preview]').click(); assert(d.querySelector('.document-preview iframe')); assert(!d.querySelector('[data-html-restart]').hidden); close();
@@ -119,6 +119,36 @@ test('Markdown anchors stay unique when literal suffixes collide with repeated h
     assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), expected);
     host.remove();
   }
+});
+
+test('heading ids match the anchors the server gives search hits and MCP sections', async () => {
+  const { w, d } = boot();
+  const fixture = JSON.parse(fs.readFileSync(path.join(fixtures, 'heading-anchors.json'), 'utf8'));
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'guide.md' }, fixture.source, false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  assert.deepEqual([...host.querySelectorAll('.markdown-body :is(h1,h2,h3,h4,h5,h6)')].map(heading => heading.id), fixture.ids);
+  assert.equal(host.querySelectorAll('[data-md-heading]').length, 0);
+});
+
+test('a spoofed heading marker in uploaded HTML gives no server anchor', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'spoof.md' }, '<h2 data-md-heading="x-0">Fake</h2>\n\n## Setup\n', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), ['md-fake', 'md-setup']);
+});
+
+test('in-page links reach headings in any script', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const link = host.querySelector('.markdown-body a');
+  assert.equal(link.getAttribute('href'), '#md-оплата-и-сроки');
+  host.querySelector('.markdown-scroll').scrollTo = () => {};
+  link.click();
+  assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
 });
 
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
@@ -199,7 +229,7 @@ test('server HTML previews keep Source usable without parsing, and local srcdoc 
   const create = d.implementation.createHTMLDocument.bind(d.implementation);
   d.implementation.createHTMLDocument = (...args) => { parses++; return create(...args); };
   w.FileViews.html(host, { name: 'server.html', size: 20, htmlPreviewUrl: '/api/attachments/f/preview' }, '<h1>Source</h1>');
-  assert.equal(parses, 0); assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), 'allow-scripts');
+  assert.equal(parses, 0); assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
   host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click();
   assert(!host.querySelector('iframe')); assert.equal(host.querySelector('.html-source').textContent, '<h1>Source</h1>');
   host.querySelector('[data-view-preview]').click(); assert.equal(parses, 0);

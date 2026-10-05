@@ -315,6 +315,55 @@ async fn temporary_cleanup_keeps_metadata_while_permanent_bytes_survive() {
 }
 
 #[tokio::test]
+async fn failed_deletion_of_a_cleaned_attachment_can_retry_with_its_key() {
+    let fixture = Fixture::new().await;
+    let roomy = fixture.service(100 * 1024 * 1024);
+    let temporary = upload(&roomy, &fixture.manager, "temp", "old.bin", b"old", true).await;
+    let old = now() - 2 * 24 * 60 * 60;
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute(
+                "UPDATE task_attachments SET created_at=?1,last_accessed_at=?1",
+                [old],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    fixture.service(1).cleanup_to_low_watermark().await.unwrap();
+    let cleaned = roomy
+        .list_attachments(&fixture.manager, "task")
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(cleaned.state, oneloop::files::BlobState::Cleaned);
+    let set_failure = |sql: &'static str| {
+        fixture.db.run(move |connection| {
+            connection.execute_batch(sql)?;
+            Ok(())
+        })
+    };
+    set_failure(
+        "CREATE TRIGGER fail_once BEFORE DELETE ON task_attachments
+         BEGIN SELECT RAISE(ABORT, 'disk error'); END",
+    )
+    .await
+    .unwrap();
+    let delete =
+        || roomy.delete_attachment(&fixture.manager, &temporary.id, cleaned.revision, "gone");
+    assert!(delete().await.is_err());
+    set_failure("DROP TRIGGER fail_once").await.unwrap();
+    delete().await.unwrap();
+    let remaining = roomy
+        .list_attachments(&fixture.manager, "task")
+        .await
+        .unwrap();
+    assert!(remaining.items.is_empty());
+}
+
+#[tokio::test]
 async fn soft_deleted_tasks_are_reconciled_to_byte_and_metadata_removal() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
@@ -587,7 +636,7 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
     }).await.unwrap();
     let mut admin = f.manager.clone();
     admin.is_admin = true;
-    oneloop::domain::DomainService::new(f.db.clone(), chrono_tz::UTC)
+    oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {
@@ -640,6 +689,18 @@ async fn retention_and_deletion_require_current_revisions_but_replay_safely() {
         .await
         .unwrap();
     assert_eq!(changed.revision, file.revision + 1);
+    let retried = service
+        .set_ephemeral(
+            &fixture.manager,
+            &file.id,
+            AttachmentPatch {
+                is_ephemeral: true,
+                expected_revision: file.revision,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried, changed);
     assert!(matches!(
         service
             .set_ephemeral(
@@ -1008,6 +1069,40 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
     retry.abort().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let begin =
+        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+        panic!("new upload must not replay")
+    };
+    pending.write_chunk(b"late").await.unwrap();
+    // A backup holds the data lock while it copies the database, here for
+    // longer than any request waits for it.
+    let backup = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.db.layout().data_lock())
+        .unwrap();
+    backup.try_lock().unwrap();
+    let finished = timeout(Duration::from_secs(10), pending.finish())
+        .await
+        .expect("the data lease wait is bounded");
+    assert!(
+        matches!(finished, Err(AppError::Unavailable(_))),
+        "{finished:?}"
+    );
+    sleep(Duration::from_secs(10)).await;
+    drop(backup);
+    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+        panic!("a failed upload must not replay")
+    };
+    retry.write_chunk(b"late").await.unwrap();
+    retry.finish().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
@@ -1115,6 +1210,46 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     read.file.read_to_end(&mut downloaded).await.unwrap();
     assert_eq!(downloaded, bytes);
     assert_eq!(stored_file_count(&fixture.db.layout().files()), 1);
+}
+
+#[tokio::test]
+async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    service
+        .upload_avatar(&fixture.manager, png.clone())
+        .await
+        .unwrap();
+    let deletion_queue = |sql: &'static str| {
+        fixture.db.run(move |connection| {
+            connection.execute_batch(sql)?;
+            Ok(())
+        })
+    };
+    deletion_queue(
+        "CREATE TRIGGER queue_fails BEFORE INSERT ON file_deletion_jobs
+         BEGIN SELECT RAISE(ABORT, 'disk error'); END",
+    )
+    .await
+    .unwrap();
+    service.upload_avatar(&fixture.manager, png).await.unwrap();
+    service.remove_avatar(&fixture.manager).await.unwrap();
+    deletion_queue("DROP TRIGGER queue_fails").await.unwrap();
+    // Nothing refers to the replaced files, so reconciliation deletes both.
+    let report = service.reconcile().await.unwrap();
+    assert_eq!(report.deletion_jobs_completed, 2);
+    let blobs: i64 = fixture
+        .db
+        .run(|connection| {
+            Ok(connection.query_row("SELECT count(*) FROM file_blobs", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(blobs, 0);
 }
 
 #[tokio::test]
@@ -1659,7 +1794,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
             .len(),
         1
     );
-    oneloop::domain::DomainService::new(fixture.db.clone(), chrono_tz::UTC)
+    oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {

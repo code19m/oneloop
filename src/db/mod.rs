@@ -26,6 +26,7 @@ const INSTANCE_LOCK_FILE: &str = ".oneloop-instance.lock";
 const DEFAULT_POOL_SIZE: usize = 8;
 const MAX_PENDING_OPERATIONS: usize = 256;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug)]
 pub struct DataLayout {
@@ -84,22 +85,16 @@ impl DataLayout {
         Ok(())
     }
 
-    pub(crate) fn open_shared_lock(&self) -> AppResult<File> {
-        let file = open_lock_file(&self.data_lock())?;
-        wait_for_lock(&file, false, &self.data_lock())?;
-        Ok(file)
-    }
-
     pub(crate) fn open_exclusive_lock(&self) -> AppResult<File> {
         let file = open_lock_file(&self.data_lock())?;
-        wait_for_lock(&file, true, &self.data_lock())?;
+        wait_for_exclusive_lock(&file, &self.data_lock())?;
         Ok(file)
     }
 
     pub(crate) fn backup_lock(&self) -> AppResult<File> {
         let path = self.root.join(".oneloop-backup.lock");
         let file = open_lock_file(&path)?;
-        wait_for_lock(&file, true, &path)?;
+        wait_for_exclusive_lock(&file, &path)?;
         Ok(file)
     }
 
@@ -122,10 +117,7 @@ impl DataLayout {
             self.root.join("oneloop.sqlite3-shm"),
         ] {
             if path.exists() {
-                OpenOptions::new()
-                    .write(true)
-                    .open(&path)
-                    .map_err(|error| writable_error(&path, error))?;
+                ensure_writable_without_opening(&path)?;
                 warn_public_permissions(&path)?;
             }
         }
@@ -186,9 +178,10 @@ impl DataLayout {
         let file = open_lock_file(&self.instance_lock())?;
         file.try_lock().map_err(|error| match error {
             std::fs::TryLockError::Error(error) => AppError::from(error),
-            std::fs::TryLockError::WouldBlock => AppError::PreconditionFailed(
-                "exclusive data access is unavailable; stop the oneloop server first".into(),
-            ),
+            std::fs::TryLockError::WouldBlock => AppError::PreconditionFailed(format!(
+                "another oneloop server or command is using {}; stop the server and wait for backups and other oneloop commands to finish",
+                self.root.display()
+            )),
         })?;
         Ok(file)
     }
@@ -221,10 +214,7 @@ impl Db {
         let layout = DataLayout::new(data_dir);
         layout.ensure_restore_complete()?;
         if !layout.database().is_file() {
-            return Err(AppError::PreconditionFailed(format!(
-                "database is not initialized at {}; run `oneloop db migrate`",
-                layout.database().display()
-            )));
+            return Err(not_initialized(&layout));
         }
         layout.check_writable()?;
         let connection = Connection::open_with_flags(
@@ -253,10 +243,7 @@ impl Db {
         let layout = DataLayout::new(data_dir);
         layout.ensure_restore_complete()?;
         if !layout.database().is_file() {
-            return Err(AppError::PreconditionFailed(format!(
-                "database is not initialized at {}; run `oneloop db migrate`",
-                layout.database().display()
-            )));
+            return Err(not_initialized(&layout));
         }
         let instance_lock = layout.open_instance_shared_lock()?;
         layout.check_writable()?;
@@ -282,15 +269,31 @@ impl Db {
         &self.inner.layout
     }
 
+    /// Waits up to five seconds while a backup holds the data lock. Waiting
+    /// takes no blocking thread, so many requests can wait at once.
     pub async fn acquire_data_lease(&self) -> AppResult<DataLease> {
-        let layout = self.inner.layout.clone();
-        tokio::task::spawn_blocking(move || {
-            Ok(DataLease {
-                _lock: layout.open_shared_lock()?,
-            })
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("data lease worker failed: {error}")))?
+        let path = self.inner.layout.data_lock();
+        let file = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || open_lock_file(&path))
+                .await
+                .map_err(|error| {
+                    AppError::internal(format!("data lease worker failed: {error}"))
+                })??
+        };
+        let started = tokio::time::Instant::now();
+        loop {
+            match file.try_lock_shared() {
+                Ok(()) => return Ok(DataLease { _lock: file }),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < ADMISSION_TIMEOUT => {
+                    tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+                }
+                Err(std::fs::TryLockError::WouldBlock) => return Err(lock_busy_error(&path)),
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(lock_failed_error(&path, error));
+                }
+            }
+        }
     }
 
     pub async fn run<T, F>(&self, operation: F) -> AppResult<T>
@@ -478,20 +481,15 @@ fn return_connection(inner: &DbInner, connection: Connection) {
     }
 }
 
+/// Opens an existing database. Only SQLite may open the database file, -wal
+/// or -shm in a process that can hold connections: closing any other
+/// descriptor of them drops every POSIX lock the process holds there. An older
+/// SQLite client then believes no one uses the WAL and deletes it, so later
+/// writes are lost.
 pub(crate) fn open_connection(path: &Path) -> AppResult<Connection> {
-    // SQLite inherits the database mode for WAL/SHM; create privately first.
-    let file = private_file_options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|error| writable_error(path, error))?;
-    drop(file);
     let connection = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     if connection.is_readonly(rusqlite::MAIN_DB)? {
         return Err(writable_error(path, "SQLite opened the database read-only"));
@@ -579,7 +577,12 @@ pub(crate) fn create_private_directories(path: &Path) -> std::io::Result<()> {
     match builder.create(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("cannot create {}: {error}", path.display()),
+            ));
+        }
     }
     sync_directory(path)?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -604,6 +607,43 @@ pub(crate) fn private_file_options() -> OpenOptions {
     options
 }
 
+/// Creates a missing database file with private permissions, which SQLite
+/// copies to the -wal and -shm files. An existing file is never opened here.
+pub(crate) fn create_database_file(path: &Path) -> AppResult<()> {
+    match private_file_options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => {
+            drop(file);
+            if let Some(parent) = path.parent() {
+                sync_directory(parent)?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(writable_error(path, error)),
+    }
+}
+
+/// Checks write access by path, without a descriptor (see `open_connection`).
+fn ensure_writable_without_opening(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    let result =
+        rustix::fs::access(path, rustix::fs::Access::WRITE_OK).map_err(std::io::Error::from);
+    #[cfg(not(unix))]
+    let result = OpenOptions::new().write(true).open(path).map(drop);
+    result.map_err(|error| writable_error(path, error))
+}
+
+fn not_initialized(layout: &DataLayout) -> AppError {
+    AppError::PreconditionFailed(format!(
+        "database is not initialized at {}; check ONELOOP_DATA_DIR, or run `oneloop db migrate` to create a new instance",
+        layout.database().display()
+    ))
+}
+
 fn writable_error(path: &Path, error: impl std::fmt::Display) -> AppError {
     AppError::PreconditionFailed(format!(
         "{} is not writable by this process; check owner/mode of the file, -wal, -shm and data directory: {error}",
@@ -625,28 +665,31 @@ fn warn_public_permissions(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn wait_for_lock(file: &File, exclusive: bool, path: &Path) -> AppResult<()> {
+fn wait_for_exclusive_lock(file: &File, path: &Path) -> AppResult<()> {
     let start = Instant::now();
     loop {
-        let result = if exclusive {
-            file.try_lock()
-        } else {
-            file.try_lock_shared()
-        };
-        match result {
+        match file.try_lock() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::WouldBlock) => {
                 if start.elapsed() >= ADMISSION_TIMEOUT {
-                    return Err(AppError::Unavailable(format!(
-                        "data lease is busy at {}; retry shortly",
-                        path.display()
-                    )));
+                    return Err(lock_busy_error(path));
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(LOCK_RETRY_INTERVAL);
             }
-            Err(error) => return Err(AppError::Io(format!("lock {}: {error}", path.display()))),
+            Err(std::fs::TryLockError::Error(error)) => return Err(lock_failed_error(path, error)),
         }
     }
+}
+
+fn lock_busy_error(path: &Path) -> AppError {
+    AppError::Unavailable(format!(
+        "data lease is busy at {}; retry shortly",
+        path.display()
+    ))
+}
+
+fn lock_failed_error(path: &Path, error: std::io::Error) -> AppError {
+    AppError::Io(format!("lock {}: {error}", path.display()))
 }
 
 fn open_lock_file(path: &Path) -> AppResult<File> {
@@ -659,7 +702,16 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
         .read(true)
         .write(true)
         .open(path)
-        .map_err(AppError::from)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot open {}: {error}", path.display()),
+            )
+            .into()
+        })
 }
 
 use rusqlite::OptionalExtension;
+
+#[cfg(test)]
+mod tests;

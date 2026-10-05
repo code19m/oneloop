@@ -118,8 +118,9 @@ Click a file to preview it. oneloop shows images, PDFs, Markdown (with tables,
 math and Mermaid diagrams), HTML pages, text and code. You can download any
 file.
 
-HTML previews run in a sandbox. Their scripts can't reach oneloop or your
-account, but they can load images, styles and scripts from other HTTPS sites.
+HTML previews show the page without running its scripts or loading anything
+from other sites, such as images, styles and fonts. Styles, images and fonts
+inside the file still show. To use the page fully, download it.
 
 Mark a file **Temporary** if oneloop may remove it when storage runs low. A
 removed file then shows **Cleaned up**. oneloop never removes other files by

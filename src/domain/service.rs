@@ -33,6 +33,7 @@ use crate::{
         ActivityInput, NotificationInput, record_activity_tx, snapshot_notification_tx,
     },
     error::{AppError, AppResult},
+    timezone::TimeZone,
 };
 
 use super::{
@@ -58,11 +59,11 @@ const MILESTONE_DESCRIPTION_MAX: usize = 500;
 #[derive(Clone)]
 pub struct DomainService {
     pub(super) db: Db,
-    pub(super) time_zone: chrono_tz::Tz,
+    pub(super) time_zone: TimeZone,
 }
 
 impl DomainService {
-    pub fn new(db: Db, time_zone: chrono_tz::Tz) -> Self {
+    pub fn new(db: Db, time_zone: TimeZone) -> Self {
         Self { db, time_zone }
     }
 
@@ -850,7 +851,8 @@ const UPDATE_TASKS_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed
 
 const SELECT_USERS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
                      u.id=?1 AND u.is_active=1 AND m.project_id=?2)";
-const SELECT_TASK_BLOCKS_SQL: &str = "SELECT project_id,task_id,reason,revision FROM task_blocks WHERE id=?1 AND resolved_at IS NULL";
+const SELECT_TASK_BLOCKS_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
+    JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
 const SELECT_POOL_ITEMS_SQL: &str =
     "SELECT project_id,scope,owner_user_id,title,description,revision FROM pool_items WHERE id=?1";
 

@@ -95,7 +95,9 @@ clients then fetch what changed.
 - `text.rs`: validation for display text such as titles and comments.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
   transient rows and worker supervision.
-- `error.rs`: `AppError`. `clock.rs`: `unix_now`.
+- `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
+  timezone, with rules from the server's zoneinfo when it is at least as new as
+  the IANA database built into oneloop.
 
 ### `frontend/`
 
@@ -161,10 +163,11 @@ and an update here.
 - **Private data stays private, even from admins.** My Pool items and Inbox
   items are visible only to the person they belong to.
 - **Uploaded and synced HTML is never same-origin.** Previews of attachments
-  and Knowledge files are served with a `Content-Security-Policy: sandbox`
-  that omits `allow-same-origin`, so preview scripts run in an opaque origin
-  and can't read cookies or call the API. Downloads are
-  `application/octet-stream` with `nosniff`.
+  and Knowledge files are served with a `Content-Security-Policy` whose
+  `sandbox` allows neither scripts nor the same origin and that loads nothing
+  from other sites, so a preview can't read cookies, call the API or tell
+  another site it was opened. Downloads are `application/octet-stream` with
+  `nosniff`.
 - **A write and its record commit together.** Data, audit activity and outbox
   messages share one transaction. Nothing reaches clients that was not
   committed.
