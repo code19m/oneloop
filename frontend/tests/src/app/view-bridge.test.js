@@ -471,3 +471,16 @@ test('a block saved from the task page repaints before its counts read finishes'
     counted.resolve({stale:false});await tick();assert.deepEqual(state.paints,['after-dialog']);
   }finally{globalThis.FormData=originalFormData;void closed;}
 });
+
+test('a new project opens after a re-render of its dialog but not after the dialog closed',async()=>{
+  const originalFormData=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  try{
+    for(const closed of [false,true]){
+      const selected=[],navigated=[],background=[],modal={dataset:{openGeneration:'7'}},rerendered={dataset:{openGeneration:'7'}};
+      const form={fields:{name:'Atlas',key:'ATL'},isConnected:false,closest:()=>modal,ownerDocument:{querySelector:selector=>selector==='.modal'&&!closed?rerendered:null}};
+      const state=fixture({view:'roadmap',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[{entityType:'project',id:'p9'}],events:[]})},app:{selectProject:id=>selected.push(id),nav:view=>navigated.push(view),refreshBackground:()=>background.push(true)}});
+      state.app.saveProjectNew({preventDefault(){},target:form});await tick();await tick();
+      assert.deepEqual([selected,navigated,background.length],closed?[[],[],1]:[['p9'],['roadmap'],0]);
+    }
+  }finally{globalThis.FormData=originalFormData;}
+});
