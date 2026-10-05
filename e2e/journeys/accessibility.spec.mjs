@@ -1,7 +1,7 @@
 // Accessibility: automated scans, keyboard focus, announcements and layouts.
 import AxeBuilder from '@axe-core/playwright';
 import { randomUUID } from 'node:crypto';
-import { test, expect, openApp, command, useTheme } from '../support/test.mjs';
+import { test, expect, openApp, command, useTheme, holdResponses } from '../support/test.mjs';
 
 // Scan the entire page, including contrast and landmarks. Do not suppress rules.
 async function scan(page, label) {
@@ -194,6 +194,23 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: /^Pool(?: |$)/ }).click();
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
+});
+
+test('a slow task load and a live update keep focus on the task heading', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { task } = instance.projects[0];
+  await openApp(page, instance, 'board');
+  // A busy server: the task read outlasts the 120 ms before the loading skeleton shows.
+  const read = await holdResponses(page, url => url.pathname === `/api/tasks/${task.taskKey}`);
+  await page.locator('.card-title-button').first().focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.topbar h1')).toBeFocused();
+  await read.started;
+  await expect(page.locator('.loading-task')).toBeVisible();
+  await command(instance.writer, 'task.update', { taskId: task.id, deadline: '2030-01-02' }, task.revision);
+  await read.release();
+  await expect(page.locator('#tpDl-input')).toHaveValue('2030-01-02');
+  await expect(page.locator('.topbar h1')).toBeFocused();
 });
 
 test('page headings and the main area take focus without drawing a focus ring', async ({ page, instance }) => {

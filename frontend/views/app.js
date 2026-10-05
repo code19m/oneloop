@@ -2128,6 +2128,9 @@
       if(field&&t)bootWindow.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
     }
     const focusedControl=preserve&&!focused&&active?.closest('#app')?rememberOpener(active):null;
+    // The page heading and main area outlast any content render of the same page, such as
+    // a loading skeleton during a slow read, so a keyboard user keeps their place.
+    const landmark=active?.matches?.('.topbar h1')?'.topbar h1':active?.id==='main'?'#main':null,page=pageScope();
     const snapshot=focused?window.OneloopRecovery?.captureEditor?.():null;
     if(snapshot)snapshot.controls=snapshot.controls.filter(control=>control.key===snapshot.activeKey);
     rendering=true;
@@ -2147,6 +2150,7 @@
         if(target?.matches('input,textarea')){target.value=focused.value;target.scrollTop=focused.scrollTop;if(focused.opener.selection)try{target.setSelectionRange(...focused.opener.selection);}catch{}}
       }
       if(focusedControl && document.activeElement===document.body)restoreOpener(focusedControl);
+      if(landmark && document.activeElement===document.body && page===pageScope() && !document.querySelector('.modal,.peek'))document.querySelector(landmark)?.focus({preventScroll:true});
       const sidebar=document.querySelector('.sidebar');
       if(innerWidth<=900 && state.sideOpen && sidebar && !sidebar.inert && !sidebar.closest('[inert]') && document.activeElement===document.body)sidebar.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
     }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
