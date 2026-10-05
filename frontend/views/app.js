@@ -1889,7 +1889,7 @@
     } else if (m.type === 'knowledge') {
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
-      body = `<h2>${esc(m.title)}</h2><div class="sub">${m.text}</div>
+      body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
@@ -1901,7 +1901,7 @@
     if (!m) return '';
     const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${['light', 'dark'].map((theme) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.current === theme ? 'on' : ''}" aria-pressed="${window.Theme.current === theme}" onclick="App.setTheme('${UIArg(theme)}')"><span class="menu-icon" aria-hidden="true">${theme === 'light' ? I.sun : I.moon}</span>${theme === 'light' ? 'Light' : 'Dark'}</button>`).join('')}</div>`;
     const items = m.items.map((it) => it.theme ? themeControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" title="${esc(it.projectName)}" onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
-      `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${it.label}</button>`).join('');
+      `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
     return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="App.closeOverlays()"></div>
       <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
   }
@@ -2699,7 +2699,7 @@
       if (!isAdmin()) return;
       const assigned = tasks().filter((t) => t.state !== 'done' && (t.assignees || []).includes(uid));
       if (assigned.length) {
-        state.modal = { type: 'confirm', title: 'Member has open work', text: `Reassign ${assigned.length} open task${assigned.length === 1 ? '' : 's'} before removing ${esc(uid)} from this project.`, blocked: true };
+        state.modal = { type: 'confirm', title: 'Member has open work', text: `Reassign ${assigned.length} open task${assigned.length === 1 ? '' : 's'} before removing ${uid} from this project.`, blocked: true };
         render(); return;
       }
       const p = project();
@@ -2917,7 +2917,7 @@
     // menus
     projectMenu(ev) {
       const r = ev.currentTarget.getBoundingClientRect();
-      const items = visibleProjects().map((p) => ({ label: esc(p.name), projectId:p.id, projectName:p.name, fn: () => { if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('workspace.select',{projectId:p.id}).catch(bootWindow.OneloopRuntime.report);return;}App.selectProject(p.id); } }));
+      const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => { if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('workspace.select',{projectId:p.id}).catch(bootWindow.OneloopRuntime.report);return;}App.selectProject(p.id); } }));
       if (isAdmin()) items.push({ sep: true }, { label: 'New project', icon:I.plus, fn: () => { state.modal = { type: 'project' }; renderOverlays(); } });
       App._openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
     },
@@ -2990,7 +2990,7 @@
       const n = tasks().filter((t) => t.epicId === id).length;
       state.modal = n
         ? { type: 'confirm', title: 'This epic has tasks', text: `Move ${n} task${n > 1 ? 's' : ''} to another epic first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete epic?', text: `“${esc(epicById(id).title)}” will be removed.`, action: 'Delete epic', fn: () => { D.epics = D.epics.filter((e) => e.id !== id); state.peek = null; App.toast('Epic deleted'); } };
+        : { type: 'confirm', title: 'Delete epic?', text: `“${epicById(id).title}” will be removed.`, action: 'Delete epic', fn: () => { D.epics = D.epics.filter((e) => e.id !== id); state.peek = null; App.toast('Epic deleted'); } };
       render();
     },
 
@@ -3011,7 +3011,7 @@
     },
     deleteMilestone(id) {
       if (!App.require('manage_roadmap')) return;
-      state.modal = { type: 'confirm', title: 'Delete milestone?', text: `“${esc(D.milestones.find((m) => m.id === id).name)}” will be removed.`, action: 'Delete', fn: () => { D.milestones = D.milestones.filter((m) => m.id !== id); App.toast('Milestone deleted'); } };
+      state.modal = { type: 'confirm', title: 'Delete milestone?', text: `“${D.milestones.find((m) => m.id === id).name}” will be removed.`, action: 'Delete', fn: () => { D.milestones = D.milestones.filter((m) => m.id !== id); App.toast('Milestone deleted'); } };
       render();
     },
 
@@ -3030,7 +3030,7 @@
       const n = epics().filter((e) => e.trackId === id).length;
       state.modal = n
         ? { type: 'confirm', title: 'This track has epics', text: `Move ${n} epic${n > 1 ? 's' : ''} to another track first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete track?', text: `“${esc(trackById(id).name)}” will be removed.`, action: 'Delete track', fn: () => { D.tracks = D.tracks.filter((t) => t.id !== id); App.toast('Track deleted'); } };
+        : { type: 'confirm', title: 'Delete track?', text: `“${trackById(id).name}” will be removed.`, action: 'Delete track', fn: () => { D.tracks = D.tracks.filter((t) => t.id !== id); App.toast('Track deleted'); } };
       render();
     },
 
@@ -3333,7 +3333,7 @@
       if (!App.require('manage_board')) return;
       const t = taskById(id);
       if(!t){App.toast('This task is no longer available','error');return;}
-      state.modal = { type: 'confirm', title: 'Delete task?', text: `${esc(t.id)} will be removed.`, action: 'Delete task', fn: () => {
+      state.modal = { type: 'confirm', title: 'Delete task?', text: `${t.id} will be removed.`, action: 'Delete task', fn: () => {
         if(!D.tasks.includes(t)){App.toast('This task is no longer available','error');return;}
         if(!hasPermission('manage_board',trackById(epicById(t.epicId)?.trackId)?.projectId)){App.toast('You no longer have permission to delete this task','error');return;}
         const e = epicById(t.epicId);

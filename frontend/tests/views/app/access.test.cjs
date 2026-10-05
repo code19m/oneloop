@@ -23,6 +23,16 @@ test('Settings can page through the directory and add an eligible account from a
  assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
 });
 
+test('a member name with markup stays text in the Member has open work dialog',()=>{
+ const name=`<i id="planted" onclick="App.inboxBulk('archive')">Reassign</i><img src="//x.invalid/b">`;
+ const t=bootApp({route:'settings',prepare(D){D.users.find(user=>user.id==='robin').name=name;Object.assign(D.tasks.find(task=>task.state!=='done'),{projectId:'p1',assignees:['robin']});}});
+ installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ t.A.removeMember('robin');
+ const text=t.d.querySelector('.modal .sub');
+ assert.equal(text.textContent,`Reassign 1 unfinished task before removing ${name} from this project.`);
+ assert.equal(text.children.length,0);assert.equal(t.d.getElementById('planted'),null);assert.equal(t.d.querySelector('.modal img'),null);
+});
+
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
   prepare?.(D, w);
