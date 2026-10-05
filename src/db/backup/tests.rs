@@ -180,6 +180,19 @@ fn plant(path: &Path, owner: &WorkOwner) {
     fs::write(path, serde_json::to_vec(owner).unwrap()).unwrap();
 }
 
+/// Retries `step` for up to two seconds until it reports success. A process
+/// that another test starts holds a copy of every lock this process holds
+/// until the child runs its program, so a lock released here can stay taken
+/// for a moment. Backup and restore start no processes.
+fn soon(mut step: impl FnMut() -> bool) -> bool {
+    (0..200).any(|_| {
+        step() || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        }
+    })
+}
+
 #[test]
 fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
     let root = tempfile::tempdir_in("target").unwrap();
@@ -198,7 +211,7 @@ fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
         "the writer still holds its lock"
     );
     drop(writer);
-    assert!(claim_abandoned(&record).is_some());
+    assert!(soon(|| claim_abandoned(&record).is_some()));
     plant(&record, &owner("backup", std::process::id()));
     assert!(claim_abandoned(&record).is_none(), "the process still runs");
     let mut elsewhere = owner("backup", gone);
@@ -261,8 +274,10 @@ fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
         "the record goes only after everything else"
     );
     fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
-    reclaim_partial_copies(root.path());
-    assert!(!copy.exists());
+    assert!(soon(|| {
+        reclaim_partial_copies(root.path());
+        !copy.exists()
+    }));
 }
 
 #[test]
