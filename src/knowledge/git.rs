@@ -153,6 +153,18 @@ pub(crate) struct Git {
     work_root: PathBuf,
     known_hosts: PathBuf,
     allow_file: bool,
+    #[cfg(test)]
+    counts: std::sync::Arc<Counts>,
+}
+
+/// Work done by one `Git`, for tests that bound it.
+#[cfg(test)]
+#[derive(Default)]
+struct Counts {
+    /// Git programs started.
+    processes: std::sync::atomic::AtomicUsize,
+    /// Working-copy measurements after bounded phases, besides the watchdog's.
+    phase_walks: std::sync::atomic::AtomicUsize,
 }
 
 /// One run's private directory, credentials and the host a token may reach.
@@ -253,6 +265,8 @@ impl Git {
             work_root,
             known_hosts,
             allow_file,
+            #[cfg(test)]
+            counts: std::sync::Arc::default(),
         }
     }
 
@@ -322,7 +336,7 @@ impl Git {
         let repository = session.root.join("repository");
         let repository_arg = repository.to_string_lossy().into_owned();
         let budget = limits.max_download_bytes;
-        within(
+        self.within(
             &session.root,
             budget,
             self.run(
@@ -403,7 +417,7 @@ impl Git {
             .map_err(|error| {
                 SyncError::new(Failure::Failed, format!("write sparse checkout: {error}"))
             })?;
-        within(
+        self.within(
             &session.root,
             budget,
             self.run(
@@ -429,16 +443,17 @@ impl Git {
         let deepened = history_depth > 1 && partial && {
             let history_deadline = deadline.min(Instant::now() + HISTORY_TIMEOUT);
             let deepen = format!("--deepen={}", history_depth - 1);
-            let result = within(
-                &session.root,
-                budget,
-                self.output(
-                    &session,
-                    &in_repository(&repository_arg, &["fetch", "--quiet", &deepen, "origin"]),
-                    history_deadline,
-                ),
-            )
-            .await;
+            let result = self
+                .within(
+                    &session.root,
+                    budget,
+                    self.output(
+                        &session,
+                        &in_repository(&repository_arg, &["fetch", "--quiet", &deepen, "origin"]),
+                        history_deadline,
+                    ),
+                )
+                .await;
             match result {
                 Err(error) if error.failure == Failure::TooLarge => return Err(error),
                 result => result.is_ok_and(|output| output.success),
@@ -469,12 +484,13 @@ impl Git {
             }
         }
 
-        let (mut files, skipped) = within(
-            &session.root,
-            budget,
-            self.read_blobs(&session, &repository_arg, selected, limits, deadline),
-        )
-        .await?;
+        let (mut files, skipped) = self
+            .within(
+                &session.root,
+                budget,
+                self.read_blobs(&session, &repository_arg, selected, limits, deadline),
+            )
+            .await?;
         for file in &mut files {
             let repository_path = if folder.is_empty() {
                 file.path.clone()
@@ -637,17 +653,10 @@ impl Git {
     ) -> Result<GitProcess, SyncError> {
         let mut command = self.command(session);
         command.args(arguments).stdin(stdin);
-        tracing::debug!(
-            git_operation = arguments
-                .get(if arguments.first() == Some(&"-C") {
-                    2
-                } else {
-                    0
-                })
-                .copied()
-                .unwrap_or(""),
-            "starting knowledge git command"
-        );
+        #[cfg(test)]
+        self.counts
+            .processes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(GitProcess {
             disk: session.disk.clone(),
             child: Some(command.spawn().map_err(|error| {
@@ -835,6 +844,41 @@ impl Git {
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
+
+    /// Run `work`, stopping it once the working copy holds more than `budget`
+    /// bytes. Folders of large files, and hosts that ignore partial-clone
+    /// filters, would otherwise fill the data disk before the time limit.
+    async fn within<T>(
+        &self,
+        root: &Path,
+        budget: u64,
+        work: impl Future<Output = Result<T, SyncError>>,
+    ) -> Result<T, SyncError> {
+        let watched_root = root.to_path_buf();
+        let watch = async move {
+            loop {
+                tokio::time::sleep(WATCH_INTERVAL).await;
+                let size = measure_working_copy(watched_root.clone()).await?;
+                if size > budget {
+                    return Ok::<_, SyncError>(size);
+                }
+            }
+        };
+        tokio::select! {
+            result = work => {
+                #[cfg(test)]
+                self.counts.phase_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let size = measure_working_copy(root.to_path_buf()).await?;
+                if size > budget {
+                    Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
+                } else { result }
+            },
+            size = watch => {
+                let size = size?;
+                Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
+            },
+        }
+    }
 }
 
 /// Keep only a bounded prefix, but drain the pipe so helpers never block on it.
@@ -845,54 +889,13 @@ async fn drain_output(mut pipe: impl AsyncRead + Unpin, limit: u64) -> std::io::
     Ok(buffer)
 }
 
-/// Run `work`, stopping it once the working copy holds more than `budget`
-/// bytes. Folders of large files, and hosts that ignore partial-clone
-/// filters, would otherwise fill the data disk before the time limit.
-async fn within<T>(
-    root: &Path,
-    budget: u64,
-    work: impl Future<Output = Result<T, SyncError>>,
-) -> Result<T, SyncError> {
-    let watched_root = root.to_path_buf();
-    let watch = async move {
-        loop {
-            tokio::time::sleep(WATCH_INTERVAL).await;
-            let root = watched_root.clone();
-            let size = measure_working_copy(root, true).await?;
-            if size > budget {
-                return Ok::<_, SyncError>(size);
-            }
-        }
-    };
-    tokio::select! {
-        result = work => {
-            let root = root.to_path_buf();
-            let size = measure_working_copy(root, false).await?;
-            if size > budget {
-                Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
-            } else { result }
-        },
-        size = watch => {
-            let size = size?;
-            Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
-        },
-    }
+async fn measure_working_copy(root: PathBuf) -> Result<u64, SyncError> {
+    tokio::task::spawn_blocking(move || tree_size(&root))
+        .await
+        .map_err(|error| SyncError::new(Failure::Failed, format!("measure working copy: {error}")))
 }
 
-async fn measure_working_copy(root: PathBuf, watchdog: bool) -> Result<u64, SyncError> {
-    let dispatch = tracing::dispatcher::get_default(Clone::clone);
-    tokio::task::spawn_blocking(move || {
-        tracing::dispatcher::with_default(&dispatch, || tree_size(&root, watchdog))
-    })
-    .await
-    .map_err(|error| SyncError::new(Failure::Failed, format!("measure working copy: {error}")))
-}
-
-fn tree_size(root: &Path, watchdog: bool) -> u64 {
-    tracing::debug!(
-        working_copy_check = if watchdog { "watchdog" } else { "phase" },
-        "measuring knowledge working copy"
-    );
+fn tree_size(root: &Path) -> u64 {
     walkdir::WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
@@ -1126,42 +1129,12 @@ fn summary(stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     #[tokio::test]
     async fn reading_many_blobs_uses_bounded_processes_and_phase_walks() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
-        use tracing_subscriber::{Layer, prelude::*};
-        #[derive(Clone, Default)]
-        struct Counts {
-            processes: Arc<AtomicUsize>,
-            phases: Arc<AtomicUsize>,
-        }
-        impl<S: tracing::Subscriber> Layer<S> for Counts {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                if event.metadata().fields().field("git_operation").is_some() {
-                    self.processes.fetch_add(1, Ordering::Relaxed);
-                }
-                struct Check<'a>(&'a AtomicUsize);
-                impl tracing::field::Visit for Check<'_> {
-                    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {
-                    }
-                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                        if field.name() == "working_copy_check" && value == "phase" {
-                            self.0.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-                event.record(&mut Check(&self.phases));
-            }
-        }
         let root = tempfile::tempdir_in("target").unwrap();
         let repository = root.path().join("source");
         std::fs::create_dir(&repository).unwrap();
@@ -1215,9 +1188,6 @@ mod tests {
         let reservation = crate::files::disk::DiskAdmission::new(root.path(), 0)
             .reserve(400 * 1024 * 1024)
             .unwrap();
-        let counts = Counts::default();
-        let _subscriber =
-            tracing::subscriber::set_default(tracing_subscriber::registry().with(counts.clone()));
         let snapshot = git
             .snapshot(
                 &url,
@@ -1243,8 +1213,8 @@ mod tests {
             };
             assert_eq!(file.content, expected, "{}", file.path);
         }
-        let processes = counts.processes.load(Ordering::Relaxed);
-        let phases = counts.phases.load(Ordering::Relaxed);
+        let processes = git.counts.processes.load(Ordering::Relaxed);
+        let phases = git.counts.phase_walks.load(Ordering::Relaxed);
         assert!(
             (1..=20).contains(&processes),
             "{processes} Git processes for 64 files"
@@ -1473,22 +1443,27 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn downloads_stop_once_the_working_copy_passes_the_budget() {
         let root = tempfile::tempdir_in("target").unwrap();
+        let git = Git::new(
+            root.path().join("work"),
+            root.path().join("known_hosts"),
+            false,
+        );
         let write = |bytes: usize| std::fs::write(root.path().join("pack"), vec![0; bytes]);
 
-        let small = within(root.path(), 100, async {
+        let small = git.within(root.path(), 100, async {
             write(100).unwrap();
             tokio::time::sleep(WATCH_INTERVAL * 4).await;
             Ok(7)
         });
         assert_eq!(small.await.unwrap(), 7);
 
-        let large = within(root.path(), 100, async {
+        let large = git.within(root.path(), 100, async {
             write(101).unwrap();
             std::future::pending::<Result<(), SyncError>>().await
         });
         assert_eq!(large.await.unwrap_err().failure, Failure::TooLarge);
 
-        let fast = within(root.path(), 100, async {
+        let fast = git.within(root.path(), 100, async {
             write(101).unwrap();
             Ok(())
         });
