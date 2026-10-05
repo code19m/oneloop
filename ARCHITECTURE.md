@@ -70,8 +70,8 @@ small hints over SSE, and clients then fetch what changed.
   and the Inbox. `CollaborationRuntime` runs the outbox worker and the SSE fan
   out.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
-  capacity and cleanup, previews, read leases and crash recovery. `FileStore`
-  owns the bytes on disk.
+  capacity and cleanup, previews and thumbnails, read leases and crash
+  recovery. `FileStore` owns the bytes on disk.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
   project, read-only. Its commands manage the source, and each connect or
   change starts a new source generation; results from an older one are

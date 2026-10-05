@@ -88,8 +88,8 @@ When usage reaches 80% of the limit, oneloop removes all image thumbnails, then
 temporary attachments that nobody has opened for 24 hours, until usage is back
 at 70%. It also removes them, at any usage, when an upload would leave less
 free disk space than `ONELOOP_DISK_MIN_FREE`. It makes a thumbnail again when
-someone views the image, unless usage is at 80%. It never removes other files
-by itself.
+someone views the image, while usage stays under 80%. It never removes other
+files by itself.
 
 oneloop refuses an upload when the limit is reached, or when the upload would
 still leave less free disk space than `ONELOOP_DISK_MIN_FREE`. Space that
