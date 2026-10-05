@@ -3,11 +3,17 @@ use crate::{AppResult, Db};
 
 const DAY: i64 = 24 * 60 * 60;
 
+/// Rows removed per table and pass, so one pass never holds the writer long.
+const BATCH: usize = 500;
+
 /// At most 500 rows per table per pass; the worker retries errors after a minute.
+/// Returns whether a table had a full batch, so a backlog that grows faster
+/// than one batch an hour gets the next pass soon instead.
 /// Keep refresh-family evidence for 90 days after expiration/revocation, and
 /// keep any grant referenced by audit events so app attribution never disappears.
-pub async fn prune_transient_state(db: &Db, now: i64) -> AppResult<()> {
+pub async fn prune_transient_state(db: &Db, now: i64) -> AppResult<bool> {
     db.transaction(move |tx| {
+        let mut more = false;
         for (sql, cutoff) in [
             ("DELETE FROM outbox_messages WHERE rowid IN (SELECT rowid FROM outbox_messages WHERE delivered_at<=?1 AND rowid<>(SELECT MAX(rowid) FROM outbox_messages) LIMIT 500)", now - 7 * DAY),
             ("DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions WHERE MIN(COALESCE(revoked_at,absolute_expires_at),idle_expires_at,absolute_expires_at)<=?1 LIMIT 500)", now - 30 * DAY),
@@ -20,9 +26,9 @@ pub async fn prune_transient_state(db: &Db, now: i64) -> AppResult<()> {
             ("DELETE FROM oauth_clients WHERE rowid IN (SELECT rowid FROM oauth_clients WHERE last_used_at IS NULL AND created_at<=?1 LIMIT 500)", now - DAY),
             ("DELETE FROM mcp_file_transfers WHERE rowid IN (SELECT rowid FROM mcp_file_transfers WHERE expires_at<=?1 LIMIT 500)", now),
         ] {
-            tx.execute(sql, [cutoff])?;
+            more |= tx.execute(sql, [cutoff])? >= BATCH;
         }
-        Ok(())
+        Ok(more)
     }).await
 }
 
