@@ -79,7 +79,7 @@ pub fn application(state: AppState) -> Application {
         .fallback(http::assets::serve)
         .layer(DefaultBodyLimit::max(256 * 1024))
         // Inside the layers below, so a 408 gets the usual headers and request ID.
-        .layer(middleware::from_fn(http::server::bound_body_idle_time))
+        .layer(middleware::from_fn(http::server::pace_request_body))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             http::security::enforce_host,
