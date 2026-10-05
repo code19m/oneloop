@@ -83,11 +83,69 @@ test('stale task cursors replace the collection and retain Board filters',async(
   assert.deepEqual(data.tasks.map(t=>t.internalId),['fresh-2']);
 });
 
-test('stale epic task cursor restarts tasks without losing independent activity',async()=>{
-  const data=createLegacyData();data.epics.push({id:'e1',activity:[]});let reads=0;
-  const api={epicTasks:async(_id,options)=>{if(options.cursor)throw {code:'cursor_stale'};return {items:[task(`fresh-${++reads}`,'planning')],nextCursor:'page',total:2};},epicActivity:async()=>({items:[],nextCursor:'older'})};
-  const reader=createReadController({api,data});await reader.epic('e1');await reader.moreEpicTasks('e1');
-  assert.equal(reads,2);assert.deepEqual(data.epicPageInfo.e1.taskIds,['fresh-2']);assert.equal(data.epicPageInfo.e1.activityCursor,'older');
+/** An epic with `rows` tasks, two per page. Cursors carry the generation they were read at; a write makes older ones stale. */
+function epicTasks(rows){
+  const state={generation:1,rows,calls:[]};
+  const page=(from)=>({items:state.rows.slice(from,from+2),nextCursor:from+2<state.rows.length?`${state.generation}:${from+2}`:null,total:state.rows.length});
+  state.api={
+    epicTasks:async(_id,options)=>{state.calls.push(options.cursor??'first');if(!options.cursor)return page(0);const [at,from]=options.cursor.split(':').map(Number);if(at!==state.generation)throw {code:'cursor_stale'};return page(from);},
+    epicActivity:async()=>({items:[],nextCursor:'older'}),
+  };
+  return state;
+}
+const rows=count=>Array.from({length:count},(_,index)=>task(`row-${index}`,'planning'));
+
+test('a stale epic task cursor reads the drawer tasks again with one more page',async()=>{
+  const data=createLegacyData();data.epics.push({id:'e1',activity:[]});const epic=epicTasks(rows(6));
+  const reads=createReadController({api:epic.api,data});
+  await reads.epic('e1');await reads.moreEpicTasks('e1');
+  epic.generation++;
+  assert.equal((await reads.moreEpicTasks('e1')).stale,false);
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,epic.rows.map(item=>item.id),'the next page shows, read from fresh cursors');
+  assert.equal(data.epicPageInfo.e1.activityCursor,'older');
+});
+
+test('a live read of the epic drawer keeps the pages of tasks it shows',async()=>{
+  const data=createLegacyData();data.epics.push({id:'e1',activity:[]});const epic=epicTasks(rows(6));
+  const reads=createReadController({api:epic.api,data});
+  await reads.epic('e1');await reads.moreEpicTasks('e1');
+  // Someone adds a task at the top.
+  epic.rows=[task('new','in_progress'),...epic.rows];epic.generation++;
+  await reads.epic('e1',{background:true});
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,['new','row-0','row-1','row-2'],'as many tasks as before, read again');
+  await reads.moreEpicTasks('e1');
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,epic.rows.slice(0,6).map(item=>item.id),'Load more goes on from there');
+});
+
+test('a live read of the epic drawer waits for Load more instead of cancelling it',async()=>{
+  const data=createLegacyData();data.epics.push({id:'e1',activity:[]});const epic=epicTasks(rows(6)),requests=held();
+  const reads=createReadController({api:{...epic.api,epicTasks:(...args)=>args[1].cursor?requests.api('more')(...args):epic.api.epicTasks(...args)},data});
+  await reads.epic('e1');
+  const more=reads.moreEpicTasks('e1');await new Promise(setImmediate);
+  const live=reads.epic('e1',{background:true});await new Promise(setImmediate);
+  assert.equal(requests.calls[0].signal.aborted,false,'the live read leaves Load more running');
+  assert.deepEqual(epic.calls,['first'],'the live read has not started');
+  requests.calls[0].resolve(await epic.api.epicTasks('e1',{cursor:'1:2'}));
+  assert.equal((await more).stale,false);
+  while(!requests.calls[1])await new Promise(setImmediate);
+  requests.calls[1].resolve(await epic.api.epicTasks('e1',{cursor:'1:2'}));
+  assert.equal((await live).stale,false);
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,['row-0','row-1','row-2','row-3'],'the live read kept the page Load more added');
+});
+
+test('Load more in the epic drawer waits for a live read and goes on from what it read',async()=>{
+  const data=createLegacyData();data.epics.push({id:'e1',activity:[]});const epic=epicTasks(rows(6));let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const reads=createReadController({api:{...epic.api,epicActivity:async(_id,options)=>{if(options.background)await gate;return {items:[],nextCursor:null};}},data});
+  await reads.epic('e1');
+  epic.generation++;
+  const live=reads.epic('e1',{background:true});await new Promise(setImmediate);
+  const more=reads.moreEpicTasks('e1');await new Promise(setImmediate);
+  release();
+  assert.equal((await live).stale,false,'Load more did not cancel the live read');
+  assert.equal((await more).stale,false);
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,['row-0','row-1','row-2','row-3']);
+  assert(!epic.calls.includes('1:2'),'Load more used the cursor the live read brought');
 });
 
 test('three Board pages survive targeted hints, navigation and a bootstrap generation change',async()=>{

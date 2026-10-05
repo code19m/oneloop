@@ -15,7 +15,8 @@ function boardFilters(filters={}){
 
 /**
  * Reads behind the open views. Every read has a slot named after what it
- * loads: the Board, one task, or a project's counts, Roadmap or Pool scope.
+ * loads: the Board, one task, the epic drawer, or a project's counts, Roadmap
+ * or Pool scope.
  * A newer read of a slot replaces an older one; when both asked for the same
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
@@ -24,7 +25,6 @@ function boardFilters(filters={}){
  */
 export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
   let epoch=0;
-  let epicGeneration=0,epicController=null;
   let boardState=null,boardDirty=false,pageController=new AbortController();
   /** @type {Promise<any>|null} */ let boardPageRead=null;
   /** @type {Map<string,Token>} */ const slots=new Map();
@@ -233,23 +233,53 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     });
   }
 
+  /**
+   * The epic's tasks from the first page, until there are at least `count` or
+   * none are left. A write while reading makes the next cursor stale; the
+   * drawer then keeps the pages read so far.
+   * @param {string} epicId @param {number} count @param {Token} token @param {boolean} background
+   */
+  async function epicTasks(epicId,count,token,background){
+    const first=await api.epicTasks(epicId,{limit:50,signal:token.signal,background});
+    const items=[...first.items];let nextCursor=first.nextCursor,total=first.total;
+    while(items.length<count&&nextCursor){
+      let next;
+      try{next=await api.epicTasks(epicId,{cursor:nextCursor,limit:50,signal:token.signal,background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}
+      items.push(...next.items);nextCursor=next.nextCursor;total=next.total;
+    }
+    return {items,nextCursor,total,append:false};
+  }
+
+  /**
+   * The open epic drawer's tasks and activity, read in one slot. A newer read
+   * replaces an older one, but a live read waits for a read someone started
+   * and Load more waits for a live read, so neither cancels the other. A live
+   * read shows as many tasks as the drawer did, read again from the first.
+   */
   async function epic(epicId,{tasks=true,activity=true,appendTasks=false,appendActivity=false,background=false}={}){
-    epicController?.abort?.();
-    epicController=new AbortController();
-    const token={generation:++epicGeneration,signal:epicController.signal};
-    const currentEpic=()=>token.generation===epicGeneration;
-    const page=data.epicPageInfo[epicId];
-    try{
-      const [taskPage,activityPage]=await Promise.all([
-        tasks?api.epicTasks(epicId,{cursor:appendTasks?page?.tasksCursor:undefined,limit:50,signal:token.signal,background}):null,
-        activity?api.epicActivity(epicId,{cursor:appendActivity?page?.activityCursor:undefined,limit:50,signal:token.signal,background}):null,
-      ]);
-      if(!currentEpic())return {stale:true};
-      if(taskPage)mergeEpicTaskPage(data,epicId,taskPage.items,taskPage,appendTasks);
-      if(activityPage)mergeEpicActivityPage(data,epicId,(activityPage.items??[]).map((item)=>mapActivity(item,data.users)).filter(Boolean),activityPage.nextCursor,appendActivity);
-      onEpic(data.epicPageInfo[epicId]);
-      return {stale:false,page:data.epicPageInfo[epicId]};
-    }catch(error){if(!currentEpic()||error?.code==='aborted')return {stale:true};if(error?.code==='cursor_stale'&&appendTasks)return epic(epicId,{tasks,activity,appendTasks:false,appendActivity,background});onError(error);throw error;}
+    if(appendTasks||appendActivity)for(let active=slots.get('epic');active&&!active.done&&active.background;active=slots.get('epic'))await active.promise?.catch(()=>{});
+    const shown=data.epicPageInfo[epicId];
+    return read('epic',JSON.stringify([epicId,tasks,activity,appendTasks&&shown?.tasksCursor,appendActivity&&shown?.activityCursor]),background,async token=>{
+      const page=data.epicPageInfo[epicId],count=page?.taskIds?.length??0;
+      // Load more extends the tasks shown; a write since they were read makes
+      // its cursor stale, and then the drawer reads them again with more.
+      const readTasks=async()=>{
+        if(!appendTasks)return epicTasks(epicId,background?count:0,token,background);
+        try{return {...await api.epicTasks(epicId,{cursor:page?.tasksCursor,limit:50,signal:token.signal,background}),append:true};}
+        catch(error){if(error?.code!=='cursor_stale')throw error;return epicTasks(epicId,count+1,token,background);}
+      };
+      try{
+        const [taskPage,activityPage]=await Promise.all([
+          tasks?readTasks():null,
+          activity?api.epicActivity(epicId,{cursor:appendActivity?page?.activityCursor:undefined,limit:50,signal:token.signal,background}):null,
+        ]);
+        if(!current(token))return {stale:true};
+        if(taskPage)mergeEpicTaskPage(data,epicId,taskPage.items,taskPage,taskPage.append);
+        if(activityPage)mergeEpicActivityPage(data,epicId,(activityPage.items??[]).map((item)=>mapActivity(item,data.users)).filter(Boolean),activityPage.nextCursor,appendActivity);
+        onEpic(data.epicPageInfo[epicId]);
+        return {stale:false,page:data.epicPageInfo[epicId]};
+      }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
+    });
   }
 
   function moreEpicTasks(epicId){const page=data.epicPageInfo[epicId];return page?.tasksCursor?epic(epicId,{tasks:true,activity:false,appendTasks:true}):Promise.resolve({done:true});}
@@ -260,6 +290,6 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     /** Settles when the reads someone started before this call have finished. */
     idle(){return Promise.allSettled([...foreground]).then(()=>{});},
     /** Drop every read, for a new session. */
-    cancel(){epoch++;epicGeneration++;for(const token of slots.values())token.controller.abort();slots.clear();pageController.abort();epicController?.abort();boardState=null;boardDirty=false;poolStates.clear();},
+    cancel(){epoch++;for(const token of slots.values())token.controller.abort();slots.clear();pageController.abort();boardState=null;boardDirty=false;poolStates.clear();},
   });
 }
