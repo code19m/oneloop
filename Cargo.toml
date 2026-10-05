@@ -24,6 +24,7 @@ fs4 = { version = "1.1", default-features = false }
 getrandom = "0.4"
 hex = "0.4"
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
+icu_properties = "2.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 ipnet = "2.11"
 jiff = { version = "0.2.37", default-features = false, features = ["std"] }
@@ -32,7 +33,7 @@ jiff-tzdb = "0.1.8"
 mime_guess = "2.0"
 rmcp = { version = "3.4", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 rpassword = "7.4"
-rusqlite = { version = "0.40.2", features = ["backup", "bundled", "functions"] }
+rusqlite = { version = "0.40.2", features = ["backup", "blob", "bundled", "functions"] }
 rust-embed = { version = "8.7", features = ["include-exclude"] }
 schemars = "1"
 serde = { version = "1.0", features = ["derive"] }

@@ -4,7 +4,7 @@
 //! appear in command arguments.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     path::{Path, PathBuf},
     process::Stdio,
@@ -29,6 +29,8 @@ const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
 /// How often a download's working copy is measured against its budget.
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 const ERROR_OUTPUT_LIMIT: u64 = 64 * 1024;
+/// A `git log -z` record longer than this can't be a selected file's path.
+const HISTORY_RECORD_MAX: u64 = 4 * 1024;
 const PATH_MAX: usize = 1_024;
 /// `GIT_CONFIG_COUNT` arrived in Git 2.31.
 const MINIMUM_VERSION: (u32, u32) = (2, 31);
@@ -178,6 +180,8 @@ struct Session<'a> {
     ssh_key: Option<PathBuf>,
     credentials: &'a Credentials,
     origin: Option<String>,
+    /// Where Git stops looking for a repository above its working directory.
+    ceiling: Option<OsString>,
 }
 
 impl Drop for Session<'_> {
@@ -460,27 +464,17 @@ impl Git {
         };
         let mut changed_at = HashMap::new();
         if deepened || history_depth <= 1 {
-            let history = self
-                .output(
+            let wanted = selected.iter().map(|(path, ..)| path.as_str()).collect();
+            let history_deadline = deadline.min(Instant::now() + HISTORY_TIMEOUT);
+            changed_at = self
+                .change_times(
                     &session,
-                    &in_repository(
-                        &repository_arg,
-                        &[
-                            "log",
-                            "--format=%x1e%ct",
-                            "--name-only",
-                            "--no-renames",
-                            "HEAD",
-                            "--",
-                            pathspec,
-                        ],
-                    ),
-                    deadline,
+                    &repository_arg,
+                    pathspec,
+                    &wanted,
+                    history_deadline,
                 )
-                .await?;
-            if history.success {
-                changed_at = change_times(&history.stdout);
-            }
+                .await;
         }
 
         let (mut files, skipped) = self
@@ -506,6 +500,43 @@ impl Git {
             files,
             skipped,
         })
+    }
+
+    /// When each wanted file last changed, as far as the fetched history goes.
+    /// Best effort: the listing streams, stops once every file has a date and
+    /// has its own deadline, so a long or failing history never fails a sync.
+    /// Files it doesn't reach get the branch tip's time.
+    async fn change_times(
+        &self,
+        session: &Session<'_>,
+        repository: &str,
+        pathspec: &str,
+        wanted: &HashSet<&str>,
+        deadline: Instant,
+    ) -> HashMap<String, i64> {
+        if wanted.is_empty() {
+            return HashMap::new();
+        }
+        let arguments = in_repository(
+            repository,
+            &[
+                "log",
+                "-z",
+                "--format=%x00%x1e%ct",
+                "--name-only",
+                "--no-renames",
+                "HEAD",
+                "--",
+                pathspec,
+            ],
+        );
+        let Ok(mut child) = self.spawn(session, &arguments, Stdio::null(), Stdio::null()) else {
+            return HashMap::new();
+        };
+        let process = child.child.as_mut().expect("running git");
+        let log = BufReader::new(process.stdout.take().expect("piped stdout"));
+        // Dropping the process stops Git if it is still listing.
+        read_change_times(log, wanted, deadline).await
     }
 
     async fn require_version(
@@ -537,7 +568,7 @@ impl Git {
         if let Some(disk) = &disk {
             disk.keep_until_removed(root.clone());
         }
-        let session = Session {
+        let mut session = Session {
             disk,
             home: root.join("home"),
             global_config: root.join("gitconfig"),
@@ -547,10 +578,17 @@ impl Git {
             root,
             credentials,
             origin: url.origin(),
+            ceiling: None,
         };
         for directory in [&session.home, &session.hooks, &session.templates] {
             crate::db::create_private_directories(directory).map_err(io)?;
         }
+        // Commands outside the clone, such as `ls-remote`, would otherwise read
+        // the settings of a checkout that contains the data directory, such as
+        // `url.<base>.insteadOf`. A path with the list separator can't be a
+        // ceiling; Git then keeps looking upward, as without one.
+        let work_root = std::fs::canonicalize(&self.work_root).map_err(io)?;
+        session.ceiling = std::env::join_paths([work_root]).ok();
         if let Some(parent) = self.known_hosts.parent() {
             crate::db::create_private_directories(parent).map_err(io)?;
         }
@@ -587,6 +625,9 @@ impl Git {
             )
             .env("LC_ALL", "C")
             .env("LANG", "C");
+        if let Some(ceiling) = &session.ceiling {
+            command.env("GIT_CEILING_DIRECTORIES", ceiling);
+        }
         let mut settings: Vec<(String, OsString)> = [
             ("credential.helper", OsString::new()),
             ("core.hooksPath", session.hooks.clone().into_os_string()),
@@ -649,9 +690,10 @@ impl Git {
         session: &Session<'_>,
         arguments: &[&str],
         stdin: Stdio,
+        stderr: Stdio,
     ) -> Result<GitProcess, SyncError> {
         let mut command = self.command(session);
-        command.args(arguments).stdin(stdin);
+        command.args(arguments).stdin(stdin).stderr(stderr);
         #[cfg(test)]
         self.counts
             .processes
@@ -681,6 +723,7 @@ impl Git {
         let mut child = self.spawn(
             session,
             &in_repository(repository, &["cat-file", "--batch"]),
+            Stdio::piped(),
             Stdio::piped(),
         )?;
         let process = child.child.as_mut().expect("running git");
@@ -742,7 +785,7 @@ impl Git {
         arguments: &[&str],
         deadline: Instant,
     ) -> Result<Output, SyncError> {
-        let mut child = self.spawn(session, arguments, Stdio::null())?;
+        let mut child = self.spawn(session, arguments, Stdio::null(), Stdio::piped())?;
         let process = child.child.as_mut().expect("running git");
         let mut stdout = process.stdout.take().expect("piped stdout");
         let mut stderr = process.stderr.take().expect("piped stderr");
@@ -988,21 +1031,71 @@ pub(crate) fn valid_relative_path(path: &str) -> bool {
         })
 }
 
-/// When each path last changed, from `git log --format=%x1e%ct --name-only`.
-/// In a shallow history the oldest commit appears to add every file, which
-/// dates files older than the window to that commit.
-fn change_times(log: &[u8]) -> HashMap<String, i64> {
+/// Dates from `git log -z --format=%x00%x1e%ct --name-only`: each commit is an
+/// empty record and its time, then its paths, the first after a line break.
+/// The newest commit that lists a path dates it. In a shallow history the
+/// oldest commit appears to add every file, which dates files older than the
+/// window to that commit. Only wanted paths are kept, and reading stops once
+/// each has a date or at the deadline.
+async fn read_change_times(
+    mut log: impl AsyncBufRead + Unpin,
+    wanted: &HashSet<&str>,
+    deadline: Instant,
+) -> HashMap<String, i64> {
     let mut times = HashMap::new();
-    let mut current = None;
-    for line in String::from_utf8_lossy(log).lines() {
-        if let Some(time) = line.strip_prefix('\u{1e}') {
-            current = time.trim().parse::<i64>().ok();
-        } else if let Some(time) = current
-            && !line.is_empty()
-        {
-            times.entry(line.to_owned()).or_insert(time);
+    let read = async {
+        let mut record = Vec::new();
+        let (mut time, mut next_is_time, mut first) = (None, false, false);
+        while times.len() < wanted.len() {
+            record.clear();
+            if (&mut log)
+                .take(HISTORY_RECORD_MAX)
+                .read_until(0, &mut record)
+                .await?
+                == 0
+            {
+                break;
+            }
+            let complete = record.pop_if(|byte| *byte == 0).is_some();
+            if !complete {
+                // Longer than any selected path: read past the rest of it.
+                let mut rest = Vec::new();
+                while (&mut log)
+                    .take(HISTORY_RECORD_MAX)
+                    .read_until(0, &mut rest)
+                    .await?
+                    > 0
+                    && rest.pop_if(|byte| *byte == 0).is_none()
+                {
+                    rest.clear();
+                }
+            }
+            if complete && record.is_empty() {
+                next_is_time = true;
+                continue;
+            }
+            if std::mem::take(&mut next_is_time) {
+                time = record
+                    .strip_prefix(b"\x1e")
+                    .and_then(|digits| std::str::from_utf8(digits).ok())
+                    .and_then(|digits| digits.parse::<i64>().ok());
+                first = true;
+                continue;
+            }
+            let path = if std::mem::take(&mut first) {
+                record.strip_prefix(b"\n").unwrap_or(&record)
+            } else {
+                &record[..]
+            };
+            if let (true, Some(time), Ok(path)) = (complete, time, std::str::from_utf8(path))
+                && wanted.contains(path)
+            {
+                times.entry(path.to_owned()).or_insert(time);
+            }
         }
-    }
+        Ok::<_, std::io::Error>(())
+    };
+    let _ = tokio::time::timeout_at(deadline, read).await;
     times
 }
 
@@ -1402,6 +1495,29 @@ pub(super) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_checkout_around_the_data_directory_cannot_change_git_settings() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), "# Docs\n").unwrap();
+        let commit = commit_all(&source);
+        let url = GitUrl::parse(&format!("file://{}", source.display()), true).unwrap();
+        // The data directory sits in a checkout whose settings send the URL elsewhere.
+        let checkout = root.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        git(&checkout, &["init", "--quiet"]);
+        let elsewhere = format!(
+            "url.file://{}.insteadOf",
+            root.path().join("missing").display()
+        );
+        git(&checkout, &["config", &elsewhere, &url.fetch_url()]);
+        let data = checkout.join("data");
+        let git = Git::new(data.join("knowledge"), data.join("known_hosts"), true);
+        let head = git.remote_head(&url, "main", &Credentials::None).await;
+        assert_eq!(head.map_err(|error| error.detail).unwrap(), commit);
+    }
+
     fn listing(entries: &[(&str, &str, &str)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for (mode, kind, path) in entries {
@@ -1474,12 +1590,52 @@ pub(super) mod tests {
         assert!(valid_relative_path("guides/Qo‘llanma.md"));
     }
 
-    #[test]
-    fn change_times_keep_the_newest_commit_per_file() {
-        let log = b"\x1e300\n\ndocs/a.md\n\x1e200\n\ndocs/a.md\ndocs/b.md\n";
-        let times = change_times(log);
+    #[tokio::test]
+    async fn change_times_keep_the_newest_commit_per_file_and_any_name() {
+        // A merge lists no paths; names are neither quoted nor split at line breaks.
+        let log = b"\0\x1e400\0\0\x1e300\0\ndocs/a.md\0docs/say \"hi\".md\0\
+                    \0\x1e200\0\ndocs/a.md\0docs/b.md\0docs/new\nline.md\0";
+        let wanted = HashSet::from(["docs/a.md", "docs/say \"hi\".md", "docs/b.md", "docs/c.md"]);
+        let times = read_change_times(&log[..], &wanted, Instant::now() + HISTORY_TIMEOUT).await;
+        let expected = [
+            ("docs/a.md", 300),
+            ("docs/say \"hi\".md", 300),
+            ("docs/b.md", 200),
+        ];
+        assert_eq!(
+            times,
+            expected.map(|(path, time)| (path.to_owned(), time)).into()
+        );
+    }
+
+    #[tokio::test]
+    async fn change_times_stop_reading_once_every_file_has_a_date() {
+        let log = b"\0\x1e300\0\ndocs/a.md\0".chain(tokio::io::repeat(b'x'));
+        let wanted = HashSet::from(["docs/a.md"]);
+        let read = read_change_times(
+            BufReader::new(log),
+            &wanted,
+            Instant::now() + HISTORY_TIMEOUT,
+        );
+        let times = tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .unwrap();
         assert_eq!(times["docs/a.md"], 300);
-        assert_eq!(times["docs/b.md"], 200);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_history_keeps_the_dates_it_found() {
+        let (mut git, log) = tokio::io::duplex(1024);
+        git.write_all(b"\0\x1e300\0\ndocs/a.md\0").await.unwrap();
+        let wanted = HashSet::from(["docs/a.md", "docs/b.md"]);
+        let times = read_change_times(
+            BufReader::new(log),
+            &wanted,
+            Instant::now() + HISTORY_TIMEOUT,
+        )
+        .await;
+        assert_eq!(times, HashMap::from([("docs/a.md".to_owned(), 300)]));
+        drop(git);
     }
 
     #[test]

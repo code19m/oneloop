@@ -135,6 +135,7 @@ fn reference_sanitizer(bytes: &[u8]) -> Vec<u8> {
                 | "object"
                 | "embed"
                 | "base"
+                | "link"
                 | "portal"
                 | "fencedframe"
         ) || (name == "meta" && tag.contains("http-equiv"));

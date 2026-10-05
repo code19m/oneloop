@@ -47,6 +47,14 @@ test('relative Markdown links and images resolve inside the knowledge base only'
   assert.equal(resolveImage('../README.md', 'guides/onboarding.md', files, 'p1'), null);
 });
 
+test('links to the knowledge base root open its listing, not the current file', () => {
+  for (const [href, from] of [['../', 'guides/onboarding.md'], ['..', 'guides/onboarding.md'], ['./', 'README.md'], ['.', 'README.md'], ['../#top', 'guides/onboarding.md']]) {
+    assert.equal(resolveLink(href, from, files, 'p1'), '#/knowledge/p1/tree', `${href} from ${from}`);
+  }
+  assert.equal(resolveLink('?plain', 'guides/onboarding.md', files, 'p1'), '#/knowledge/p1/blob/guides/onboarding.md', 'a link without a path stays on its file');
+  assert.equal(resolveImage('./', 'README.md', files, 'p1'), null);
+});
+
 test('search words are marked inside escaped text', () => {
   assert.deepEqual(searchTerms('  Short  short MONTHS '), ['short', 'months']);
   assert.equal(highlight('<b>Short</b> months', ['short'], esc), '&lt;b&gt;<mark>Short</mark>&lt;/b&gt; months');
