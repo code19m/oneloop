@@ -764,6 +764,12 @@ div.ms-label {cursor:default}
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  /* A zoom sizes and moves the Roadmap, then sets its scroll position and
+     reads where things are. Even a 0.01ms transition keeps the old sizes and
+     places until the next frame, so the browser would clamp the scroll
+     position to the old width and the next scale change would start from old
+     places. */
+  .rm-canvas, .rm-canvas * { transition-property: none !important; }
 }
 
 /* Theme changes stay within the open profile menu. */

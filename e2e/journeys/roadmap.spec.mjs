@@ -89,6 +89,37 @@ test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in vie
   await expect.poll(todayShows).toBe(true);
 });
 
+test.describe('with Reduce motion', () => {
+  test.use({ reducedMotion: 'reduce' });
+
+  test('a scale change keeps today, then the selected epic, where they were', async ({ page, instance }) => {
+    const { project, track } = instance.projects[0];
+    const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    // A long epic leaves room to scroll on both sides of today, even at Quarters.
+    await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Platform migration', startDate: day(-365), endDate: day(365) });
+    // Four weeks fit the view at Weeks and are wider than the shortest bar at Quarters.
+    await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Holiday freeze', startDate: day(70), endDate: day(98) });
+    await openApp(page, instance, 'roadmap');
+    const scale = page.getByRole('group', { name: 'Timeline scale' });
+    const left = locator => locator.evaluate(element => element.getBoundingClientRect().left);
+    const middle = locator => locator.evaluate(element => { const box = element.getBoundingClientRect(); return (box.left + box.right) / 2; });
+    const keeps = async (measure, label) => {
+      const before = await measure();
+      for (const name of ['Weeks', 'Quarters', 'Months']) {
+        await scale.getByRole('button', { name }).click();
+        await expect(scale.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+        expect(Math.abs(await measure() - before), `${label} after ${name}`).toBeLessThanOrEqual(2);
+      }
+    };
+    await page.getByRole('button', { name: 'Today', exact: true }).click();
+    await keeps(() => left(page.locator('.today-pill')), 'today');
+    const bar = page.locator('[data-epic]').filter({ hasText: 'Holiday freeze' });
+    await bar.focus();
+    await bar.evaluate(element => element.scrollIntoView({ block: 'nearest', inline: 'center' }));
+    await keeps(() => middle(bar), 'the selected epic');
+  });
+});
+
 test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
   const { epic, task } = instance.projects[0];
   await openApp(page, instance, 'roadmap');
