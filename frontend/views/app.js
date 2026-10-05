@@ -1038,8 +1038,17 @@
     logAct(t, `moved it to ${STATUS[col]}`, {field:'state',before:prev,after:col});
   }
 
+  // Scroll a lane's head into the Roadmap's view, below its sticky date axis.
+  function revealLane(lane) {
+    const scroll = document.getElementById('rmScroll'), head = lane?.querySelector('.lane-head');
+    if (!scroll || !head) return;
+    const view = scroll.getBoundingClientRect(), top = view.top + (scroll.querySelector('.rm-axis')?.offsetHeight || 0), box = head.getBoundingClientRect();
+    if (box.top < top) scroll.scrollTop -= top - box.top;
+    else if (box.bottom > view.bottom) scroll.scrollTop += Math.min(box.bottom - view.bottom, box.top - top);
+  }
   function focusMovedTrack(id) {
     const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id);
+    revealLane(lane);
     lane?.querySelector('.grip')?.focus({preventScroll:true});
     announce(`${trackById(id)?.name || 'Track'} moved to position ${tracks().findIndex(track=>track.id===id)+1}`);
   }

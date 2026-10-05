@@ -75,3 +75,28 @@ test('a track move paints at once, sends one optimistic command and skips a no-o
   t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);
   assert.equal(t.calls.length,calls);
 });
+
+test('a track moved with the keyboard scrolls into view below the date axis', () => {
+  // Lay out 160 px lanes under a 90 px sticky axis in a 400 px tall Roadmap.
+  const AXIS = 90, LANE = 160, VIEW = { top: 100, bottom: 500 };
+  const t = boot('roadmap', { prepare: (_D, w) => {
+    const box = (top, height) => ({ x: 0, left: 0, right: 300, width: 300, y: top, top, bottom: top + height, height });
+    w.Element.prototype.getBoundingClientRect = function () {
+      if (this.id === 'rmScroll') return box(VIEW.top, VIEW.bottom - VIEW.top);
+      const lane = this.closest?.('.lane[data-track]');
+      if (!lane) return box(0, 0);
+      const index = [...this.ownerDocument.querySelectorAll('.lane[data-track]')].indexOf(lane);
+      return box(VIEW.top + AXIS + index * LANE - this.ownerDocument.getElementById('rmScroll').scrollTop, LANE);
+    };
+    Object.defineProperty(w.HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.classList.contains('rm-axis') ? AXIS : 0; } });
+  } });
+  const view = () => {
+    const grip = t.d.activeElement, head = grip.closest('.lane-head').getBoundingClientRect();
+    return { grip: grip.classList.contains('grip'), below: head.top >= VIEW.top + AXIS, above: head.bottom <= VIEW.bottom };
+  };
+  const first = t.d.querySelector('.lane[data-track]').dataset.track, last = t.D.tracks.filter(track => track.projectId === t.A.context().projectId).length - 1;
+  t.A.moveTrack(first, last);
+  assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved to the bottom');
+  t.A.moveTrack(first, 0);
+  assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved back to the top');
+});
