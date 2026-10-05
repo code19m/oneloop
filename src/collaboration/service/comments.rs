@@ -104,7 +104,7 @@ pub(super) fn edit_comment(
     expected_revision: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    let before = comment_view_tx(tx, &input.comment_id)?;
+    let before = changeable_comment_tx(tx, &input.comment_id)?;
     require_participation(tx, actor, &before.project_id)?;
     require_comment_owner_or_admin(tx, actor, &before.author_id)?;
     if before.deleted_at.is_some() {
@@ -204,7 +204,7 @@ pub(super) fn delete_comment(
     expected_revision: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    let before = comment_view_tx(tx, &input.comment_id)?;
+    let before = changeable_comment_tx(tx, &input.comment_id)?;
     require_participation(tx, actor, &before.project_id)?;
     require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
     require_comment_owner_or_admin(tx, actor, &before.author_id)?;
@@ -429,4 +429,21 @@ fn invalidate_comment_inboxes_tx(
         enqueue_inbox_change_tx(tx, &owner, now)?;
     }
     Ok(())
+}
+
+/// A deleted task takes its comments with it: changing one is refused as not
+/// found, like a new comment on that task.
+fn changeable_comment_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentView> {
+    let comment = comment_view_tx(tx, comment_id)?;
+    let task_exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND deleted_at IS NULL)",
+        [&comment.task_id],
+        |row| row.get(0),
+    )?;
+    if !task_exists {
+        return Err(AppError::NotFound {
+            resource: "comment",
+        });
+    }
+    Ok(comment)
 }
