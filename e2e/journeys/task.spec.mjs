@@ -264,3 +264,22 @@ test('a live change re-reads the task page in the background, so it does not cou
   await expect.poll(() => reads.filter(read => read.path.endsWith('/attachments')).length).toBeGreaterThanOrEqual(1);
   expect(reads.filter(read => !read.background)).toEqual([]);
 });
+
+test('descriptions and comments take each paragraph\'s direction from its own text', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.update', { taskId: task.id, description: 'وصف المهمة بالعربية.\nAn English line.' }, task.revision);
+  for (const content of ['تعليق باللغة العربية، هل يظهر بشكل صحيح؟', 'An English comment.']) {
+    await command(instance.api, 'discussion.comment.create', { taskId: task.id, content, mentions: [] });
+  }
+  await openApp(page, instance);
+  // Where a text sits in its box: right-aligned when it reads right to left.
+  const sides = locator => locator.evaluate(element => {
+    const range = document.createRange(), box = element.getBoundingClientRect();
+    range.selectNodeContents(element);
+    return [...range.getClientRects()].map(line => Math.round(box.right - line.right) < Math.round(line.left - box.left) ? 'right' : 'left');
+  });
+  await expect.poll(() => sides(page.locator('.cmt-body').filter({ hasText: 'تعليق' }))).toEqual(['right']);
+  expect(await sides(page.locator('.cmt-body').filter({ hasText: 'An English comment.' }))).toEqual(['left']);
+  const description = await page.locator('#task-description').evaluate(element => getComputedStyle(element).unicodeBidi);
+  expect(description).toBe('plaintext');
+});
