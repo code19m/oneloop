@@ -357,7 +357,7 @@ async fn authorize_inner(
         Err(error) => return Err(error),
     };
     // Only someone signed in can make oneloop fetch a metadata document.
-    let document = described_client(&state, &query).await?;
+    let document = described_client(&state, &actor, &query).await?;
     let projects = accessible_projects(&state, &actor).await?;
     let request_id = random_token(24)?;
     let stored_id = hash_token(&request_id);
@@ -407,6 +407,7 @@ async fn authorize_inner(
 /// the requested callback checked against the callbacks it lists.
 async fn described_client(
     state: &AppState,
+    actor: &Actor,
     query: &AuthorizationQuery,
 ) -> AppResult<Option<ClientDocument>> {
     if !client_metadata::is_document_client_id(&query.client_id) {
@@ -415,7 +416,7 @@ async fn described_client(
     let schemes = &state.config.mcp_redirect_schemes;
     let document = state
         .client_documents
-        .document(&query.client_id, |value| {
+        .document(&actor.user_id, &query.client_id, |value| {
             validate_redirect_uri(value, schemes)
         })
         .await

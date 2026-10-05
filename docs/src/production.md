@@ -260,7 +260,8 @@ Turn on only what your clients need.
   connects to an address it checked, follows no redirects, and reads at most
   5 KiB within 5 seconds. It keeps a document as long as its `Cache-Control`
   header says, from 1 to 60 minutes (10 minutes if it doesn't say), and fetches
-  at most 30 documents a minute. The server needs outgoing HTTPS for this.
+  at most 30 documents a minute, 10 of them for one person. The server needs
+  outgoing HTTPS for this.
   oneloop connects directly, without a proxy, and trusts the system's
   certificate authorities, which the Docker image includes. It refuses to start
   with this setting if it finds none. Turning the setting off stops new

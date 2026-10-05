@@ -43,6 +43,9 @@ const DEFAULT_CACHE: Duration = Duration::from_secs(10 * 60);
 const LONGEST_CACHE: Duration = Duration::from_secs(60 * 60);
 const PARALLEL_FETCHES: usize = 4;
 const FETCHES_PER_MINUTE: u32 = 30;
+/// One person's share of `FETCHES_PER_MINUTE`, so that one person can't
+/// keep everyone else from connecting.
+const FETCHES_PER_PERSON_MINUTE: u32 = 10;
 
 /// A client described by its metadata document, checked and normalized.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +61,24 @@ pub(crate) struct ClientDocuments {
     enabled: bool,
     cache: Mutex<HashMap<String, (ClientDocument, Instant)>>,
     parallel: Semaphore,
-    window: Mutex<(Instant, u32)>,
+    window: Mutex<FetchWindow>,
+}
+
+/// The fetches of the current minute, in all and for each person.
+struct FetchWindow {
+    started: Instant,
+    total: u32,
+    people: HashMap<String, u32>,
+}
+
+impl FetchWindow {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            total: 0,
+            people: HashMap::new(),
+        }
+    }
 }
 
 impl ClientDocuments {
@@ -67,7 +87,7 @@ impl ClientDocuments {
             enabled,
             cache: Mutex::new(HashMap::new()),
             parallel: Semaphore::new(PARALLEL_FETCHES),
-            window: Mutex::new((Instant::now(), 0)),
+            window: Mutex::new(FetchWindow::new()),
         }
     }
 
@@ -75,10 +95,11 @@ impl ClientDocuments {
         self.enabled
     }
 
-    /// The document of `client_id`, from the cache or fetched now.
-    /// `redirect_uri` checks each callback the document lists.
+    /// The document of `client_id`, from the cache or fetched now for
+    /// `person`, a user ID. `redirect_uri` checks each callback it lists.
     pub(crate) async fn document(
         &self,
+        person: &str,
         client_id: &str,
         redirect_uri: impl Fn(&str) -> AppResult<String>,
     ) -> AppResult<ClientDocument> {
@@ -90,7 +111,7 @@ impl ClientDocuments {
             return Ok(document);
         }
         let _permit = self.parallel.try_acquire().map_err(|_| busy())?;
-        self.spend_fetch()?;
+        self.spend_fetch(person)?;
         let (bytes, lifetime) = tokio::time::timeout(FETCH_TIME, fetch(&url))
             .await
             .map_err(|_| refused("did not answer within 5 seconds"))??;
@@ -126,15 +147,22 @@ impl ClientDocuments {
         cache.insert(document.client_id.clone(), (document, now + lifetime));
     }
 
-    fn spend_fetch(&self) -> AppResult<()> {
+    fn spend_fetch(&self, person: &str) -> AppResult<()> {
         let mut window = self.window.lock().map_err(|_| busy())?;
-        if window.0.elapsed() >= Duration::from_secs(60) {
-            *window = (Instant::now(), 0);
+        let elapsed = window.started.elapsed();
+        if elapsed >= Duration::from_secs(60) {
+            *window = FetchWindow::new();
         }
-        if window.1 >= FETCHES_PER_MINUTE {
+        if window.people.get(person).copied().unwrap_or(0) >= FETCHES_PER_PERSON_MINUTE {
+            return Err(AppError::RateLimited {
+                retry_after: 60_u64.saturating_sub(elapsed.as_secs()).max(1),
+            });
+        }
+        if window.total >= FETCHES_PER_MINUTE {
             return Err(busy());
         }
-        window.1 += 1;
+        window.total += 1;
+        *window.people.entry(person.to_owned()).or_default() += 1;
         Ok(())
     }
 

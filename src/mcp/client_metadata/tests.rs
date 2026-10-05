@@ -360,7 +360,7 @@ async fn an_exchange_reads_one_bounded_response() {
 async fn documents_are_used_only_when_turned_on_and_the_cache_is_bounded() {
     let off = ClientDocuments::new(false);
     assert!(
-        off.document(CLIENT_ID, accept_https_or_loopback)
+        off.document("alice", CLIENT_ID, accept_https_or_loopback)
             .await
             .is_err()
     );
@@ -373,7 +373,7 @@ async fn documents_are_used_only_when_turned_on_and_the_cache_is_bounded() {
     .unwrap();
     on.insert_for_test(template.clone());
     assert_eq!(
-        on.document(CLIENT_ID, accept_https_or_loopback)
+        on.document("alice", CLIENT_ID, accept_https_or_loopback)
             .await
             .unwrap(),
         template
@@ -388,8 +388,29 @@ async fn documents_are_used_only_when_turned_on_and_the_cache_is_bounded() {
         );
     }
     assert!(on.cache.lock().unwrap().len() <= CACHE_ENTRIES);
-    for _ in 0..FETCHES_PER_MINUTE {
-        on.spend_fetch().unwrap();
+}
+
+#[test]
+fn each_person_gets_a_share_of_the_fetches() {
+    let documents = ClientDocuments::new(true);
+    for _ in 0..FETCHES_PER_PERSON_MINUTE {
+        documents.spend_fetch("mallory").unwrap();
     }
-    assert!(matches!(on.spend_fetch(), Err(AppError::Unavailable(_))));
+    assert!(matches!(
+        documents.spend_fetch("mallory"),
+        Err(AppError::RateLimited { .. })
+    ));
+    // Others can still connect their apps, within the server's limit.
+    let mut people = 0;
+    while documents.spend_fetch(&format!("person-{people}")).is_ok() {
+        people += 1;
+    }
+    assert_eq!(
+        people,
+        (FETCHES_PER_MINUTE - FETCHES_PER_PERSON_MINUTE) as usize
+    );
+    assert!(matches!(
+        documents.spend_fetch("alice"),
+        Err(AppError::Unavailable(_))
+    ));
 }
