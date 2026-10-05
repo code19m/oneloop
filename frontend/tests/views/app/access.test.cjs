@@ -23,6 +23,16 @@ test('Settings can page through the directory and add an eligible account from a
  assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
 });
 
+test('a member name with markup stays text in the Member has open work dialog',()=>{
+ const name=`<i id="planted" onclick="App.inboxBulk('archive')">Reassign</i><img src="//x.invalid/b">`;
+ const t=bootApp({route:'settings',prepare(D){D.users.find(user=>user.id==='robin').name=name;Object.assign(D.tasks.find(task=>task.state!=='done'),{projectId:'p1',assignees:['robin']});}});
+ installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ t.A.removeMember('robin');
+ const text=t.d.querySelector('.modal .sub');
+ assert.equal(text.textContent,`Reassign 1 unfinished task before removing ${name} from this project.`);
+ assert.equal(text.children.length,0);assert.equal(t.d.getElementById('planted'),null);assert.equal(t.d.querySelector('.modal img'),null);
+});
+
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
   prepare?.(D, w);
@@ -168,4 +178,145 @@ test('temporary passwords show the account, copy exactly, report clipboard failu
     assert.equal(t.A.context().modal,null);assert.equal(t.d.getElementById('tmpPw'),null);
     t.A.showTemporaryPassword(user.id,password);t.D.session={...session,id:'replacement-session'};t.A.refresh();
     assert.equal(t.A.context().modal,null);assert.equal(t.d.getElementById('tmpPw'),null);
+});
+
+test('a temporary password stays reachable when its New user dialog closed while saving',async()=>{
+ const t=bootApp({route:'users',prepare(D){D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
+ const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
+ try{
+ let release;
+ const api={createUser:()=>new Promise(resolve=>{release=resolve;})};
+ installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
+ const save=()=>{t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value='newcomer';form.querySelector('[name="name"]').value='New Comer';t.A.saveUser({target:form,preventDefault(){}},'');};
+ const answer=(id,temporaryPassword)=>release({user:{id,username:'newcomer',displayName:'New Comer',isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword});
+ save();t.A.closeOverlays();answer('u-new','Shown-Once-1');await settle();
+ assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-1','the password opens once nothing else is open');
+ t.A.closeOverlays();
+ save();t.A.closeOverlays();t.A.openModal('user','robin');answer('u-next','Shown-Once-2');await settle();
+ assert.equal(t.d.querySelector('.modal h2').textContent,'Edit user','another open dialog is not replaced');
+ t.A.closeOverlays();
+ assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-2','it opens when that dialog closes');
+ }finally{globalThis.FormData=originalFormData;}
+});
+
+test('Escape in the password prompt closes only the prompt and keeps the dialog behind it',async()=>{
+ const t=bootApp({route:'users'});
+ const {createAuthController}=require('../../../src/auth/auth-controller.js');
+ const previous={document:globalThis.document,HTMLElement:globalThis.HTMLElement};
+ Object.assign(globalThis,{document:t.d,HTMLElement:t.w.HTMLElement});
+ try{
+  const auth=createAuthController({api:{serverNow:()=>Date.now()},data:t.D,refresh(){},loadBootstrap:async()=>{},reportError(){}});
+  t.A.openModal('user');t.d.querySelector('.modal [name="name"]').value='Typed name';
+  t.D.session.authenticatedAt=Date.now()-31*60_000;
+  const pending=auth.withRecentAuth(async()=>{});
+  t.d.getElementById('reauth-password').dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  await assert.rejects(pending,error=>error.code==='reauth_cancelled');
+  assert.equal(t.d.querySelector('.reauth-layer'),null);
+  assert.equal(t.d.querySelector('.modal [name="name"]')?.value,'Typed name');
+ }finally{Object.assign(globalThis,previous);}
+});
+
+test('Users counts loaded accounts as a lower bound and lists a new account only in its place',async()=>{
+ const t=bootApp({route:'users',prepare(D){for(const user of D.users)user.username=user.id;D.adminUsers={ids:['blairq','danaell','robin'],loaded:true,nextCursor:'robin'};}});
+ const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
+ try{
+  let next;
+  installViewBridge({app:t.A,data:t.D,api:{createUser:async()=>next},reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
+  const count=()=>t.d.querySelector('.users-count').textContent,listed=()=>[...t.d.querySelectorAll('.user-row')].map(row=>row.dataset.userId);
+  const create=async username=>{
+   next={user:{id:`u-${username}`,username,displayName:username,isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword:'Shown-Once'};
+   t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value=username;form.querySelector('[name="name"]').value=username;
+   t.A.saveUser({target:form,preventDefault(){}},'');await settle();t.A.closeOverlays();
+  };
+  assert.equal(count(),'3+');
+  await create('zz.new');
+  assert.deepEqual(listed(),['blairq','danaell','robin'],'an account after the loaded pages waits for its page');assert.equal(count(),'3+');
+  await create('carol');
+  assert.deepEqual(listed(),['blairq','u-carol','danaell','robin']);assert.equal(count(),'4+');
+ }finally{globalThis.FormData=originalFormData;}
+});
+
+/** End the session the way the auth controller does: private data goes, the page signs out. */
+function endSession(t) {
+ const session = t.D.session;
+ t.w.Recovery.sessionExpired();
+ t.D.session = null; t.w.Recovery.sessionChanged(null); t.A.refresh();
+ return session;
+}
+function signInAgain(t, session) { t.D.session = session; t.w.Recovery.sessionChanged(session); t.A.refresh(); }
+
+test('text typed when the session ends waits for the same person to sign in again', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ const description = t.d.getElementById('task-description');
+ description.focus(); description.value = 'A description typed before the session ended';
+ const comment = t.d.getElementById('cmtIn'); comment.value = 'A comment that took ten minutes to write';
+ comment.focus();
+ const session = endSession(t);
+ const heading = t.d.querySelector('.auth-card h1');
+ assert.equal(t.d.activeElement, heading, 'typing goes nowhere instead of into Username');
+ assert.equal(t.d.querySelector('[name="username"]').hasAttribute('autofocus'), false);
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in again to keep what you typed.');
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.getElementById('cmtIn').value, 'A comment that took ten minutes to write');
+ assert.equal(t.d.getElementById('task-description').value, 'A description typed before the session ended');
+ assert.equal(t.d.activeElement, t.d.getElementById('cmtIn'));
+ assert.equal(t.w.Recovery.keepsInput, false, 'it is put back once');
+});
+
+test('text typed when the session ends is dropped when someone else signs in', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
+ const session = endSession(t);
+ signInAgain(t, { ...session, id: 'other-session', userId: 'robin' });
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, session);
+ assert.equal(t.d.getElementById('cmtIn')?.value ?? '', '');
+});
+
+test('a dialog open when the session ends comes back with its text for the same person', () => {
+ const t = bootApp({ route: 'board' });
+ t.A.openModal('task');
+ const title = t.d.querySelector('.modal [name="title"]'); title.focus(); title.value = 'A task typed before the session ended';
+ const session = endSession(t);
+ assert.equal(t.d.querySelector('.modal'), null);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.querySelector('.modal [name="title"]').value, 'A task typed before the session ended');
+ assert.equal(t.d.activeElement, t.d.querySelector('.modal [name="title"]'));
+ assert.equal(t.w.Recovery.keepsInput, false);
+});
+
+test('a kept comment that waits for its task goes when its writer signs out', () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
+ const session = endSession(t);
+ // The writer signs in again but can no longer read the task, so the comment waits.
+ const task = t.D.tasks.find(item => item.id === 'BIR-079');
+ t.D.tasks.splice(t.D.tasks.indexOf(task), 1);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.w.Recovery.keepsInput, false, 'the comment was handed to the task page');
+ t.D.session = null; t.w.Recovery.sessionChanged(null); t.A.refresh();
+ t.D.tasks.push(task);
+ signInAgain(t, { userId: 'robin', id: 'robin-session', authenticatedAt: Date.now() });
+ t.A.openTask('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value, '', 'someone else never sees it');
+});
+
+test('the sign-in page still focuses Username when nothing typed is waiting', () => {
+ const t = bootApp({ route: 'board' });
+ endSession(t);
+ assert.equal(t.d.activeElement, t.d.querySelector('[name="username"]'));
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in to continue.');
+});
+
+test('a reply typed when the session ends comes back as a reply, and as a comment once its target is gone', () => {
+ for (const removed of [false, true]) {
+  const t = bootApp({ route: 'task/BIR-079', prepare(D) { D.tasks.find(task => task.id === 'BIR-079').comments = [{ id: 'c1', who: 'robin', ts: Date.now() - 60_000, text: 'Question', mentions: [], parentId: null }]; } });
+  t.A.replyComment('BIR-079', 'c1');
+  const input = t.d.getElementById('cmtIn'); input.value = 'My answer'; input.focus();
+  const session = endSession(t);
+  if (removed) t.D.tasks.find(task => task.id === 'BIR-079').comments = [];
+  signInAgain(t, session);
+  assert.equal(t.d.getElementById('cmtIn').value, 'My answer');
+  assert.equal(!!t.d.querySelector('.collaboration-composer .reply-context'), !removed, removed ? 'a reply to a removed comment' : 'a reply');
+ }
 });

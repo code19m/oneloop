@@ -246,3 +246,40 @@ test('large task and Inbox renderer workloads preserve unchanged rows', async ({
   // Timings are diagnostics for reviewers, not assertions.
   await testInfo.attach('renderer-scale.json', { body: JSON.stringify({ task: taskMetrics, inbox: inboxMetrics }, null, 2), contentType: 'application/json' });
 });
+
+test('a live change re-reads the task page in the background, so it does not count as use', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await openApp(page, instance);
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(page.locator('.attachment-dropzone')).toBeVisible();
+  const reads = [];
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'GET' && path.startsWith('/api/') && path !== '/api/events') reads.push({ path, background: request.headers()['x-oneloop-background'] === '1' });
+  });
+  await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed elsewhere' }, task.revision);
+  await expect(page.locator('.tp-title')).toHaveValue('Renamed elsewhere');
+  // The discussion is read again twice: for the live change, and after the task was replaced.
+  await expect.poll(() => reads.filter(read => read.path.endsWith('/comments')).length).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => reads.filter(read => read.path.endsWith('/attachments')).length).toBeGreaterThanOrEqual(1);
+  expect(reads.filter(read => !read.background)).toEqual([]);
+});
+
+test('descriptions and comments take each paragraph\'s direction from its own text', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.update', { taskId: task.id, description: 'وصف المهمة بالعربية.\nAn English line.' }, task.revision);
+  for (const content of ['تعليق باللغة العربية، هل يظهر بشكل صحيح؟', 'An English comment.']) {
+    await command(instance.api, 'discussion.comment.create', { taskId: task.id, content, mentions: [] });
+  }
+  await openApp(page, instance);
+  // Where a text sits in its box: right-aligned when it reads right to left.
+  const sides = locator => locator.evaluate(element => {
+    const range = document.createRange(), box = element.getBoundingClientRect();
+    range.selectNodeContents(element);
+    return [...range.getClientRects()].map(line => Math.round(box.right - line.right) < Math.round(line.left - box.left) ? 'right' : 'left');
+  });
+  await expect.poll(() => sides(page.locator('.cmt-body').filter({ hasText: 'تعليق' }))).toEqual(['right']);
+  expect(await sides(page.locator('.cmt-body').filter({ hasText: 'An English comment.' }))).toEqual(['left']);
+  const description = await page.locator('#task-description').evaluate(element => getComputedStyle(element).unicodeBidi);
+  expect(description).toBe('plaintext');
+});

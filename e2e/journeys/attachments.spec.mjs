@@ -87,6 +87,26 @@ test('every page, theme, icon and preview type loads from the embedded assets', 
   expect(missing).toEqual([]);
 });
 
+test('previews render under a policy that refuses HTML strings and inline style elements', async ({ page, instance, allowedConsoleErrors }) => {
+  await page.addInitScript(() => { window.violations = []; document.addEventListener('securitypolicyviolation', event => window.violations.push(event.effectiveDirective)); });
+  await openApp(page, instance);
+  await attach(page, 'policy.md', 'text/markdown', '# Policy\n\n$x^2$\n\n```js\nconst answer = 42;\n```\n\n```mermaid\nsequenceDiagram\n A->>B: Hello\n```');
+  await page.locator('.attachment-title').filter({ hasText: 'policy.md' }).click();
+  await expect(page.locator('.markdown-body .katex')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.markdown-body code.hljs')).toBeVisible();
+  await expect.poll(() => page.locator('.markdown-diagram img').evaluate(image => image.naturalWidth), { timeout: 15_000 }).toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Close file preview' }).click();
+  await attach(page, 'policy.pdf', 'application/pdf', pdf);
+  await page.locator('.attachment-title').filter({ hasText: 'policy.pdf' }).click();
+  await expect(page.locator('.pdf-surface canvas')).toBeVisible({ timeout: 15_000 });
+  expect(await page.evaluate(() => window.violations)).toEqual([]);
+  // Each browser reports the two probes below in its own words.
+  allowedConsoleErrors.push(/TrustedHTML|Sink type mismatch|trusted-types|inline style|style-src-elem|Refused to apply a stylesheet/i);
+  expect(await page.evaluate(() => { try { document.createElement('div').innerHTML = '<b>untrusted</b>'; return 'accepted'; } catch (error) { return error.name; } })).toBe('TypeError');
+  expect(await page.evaluate(() => { const style = document.createElement('style'); style.textContent = 'body { visibility: hidden }'; document.head.append(style); return getComputedStyle(document.body).visibility; })).toBe('visible');
+  await expect.poll(() => page.evaluate(() => window.violations)).toEqual(['require-trusted-types-for', 'style-src-elem']);
+});
+
 const outside = 'https://outside.invalid';
 const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const hostile = `<!doctype html><title>Isolation probe</title><link rel="stylesheet" href="${outside}/style.css"><link rel="preconnect" href="${outside}">

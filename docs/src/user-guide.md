@@ -25,7 +25,8 @@ The Roadmap shows epics and milestones on a timeline, with one row for each
 track. It is the first page you see after you sign in.
 
 - Scroll to move through time. To zoom, hold Ctrl (Cmd on macOS) while you
-  scroll, or pinch on a touch screen. **Today** takes you back to today.
+  scroll, or pinch on a touchpad or touch screen. **Today** takes you back to
+  today.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
@@ -95,6 +96,8 @@ Click a card to open the task. Your changes save automatically.
 - If someone else changes a task field or comment while you are editing it,
   oneloop keeps your text and shows theirs next to it. Choose **Use latest** or
   **Keep my changes**.
+- A title or description you change while offline stays on the page, marked
+  **Not saved**, and saves when the connection returns.
 - To delete a task, use the **⋯** menu at the top of the page.
 
 ### Blocking
@@ -211,6 +214,10 @@ On your **Profile**:
 
 Sessions end by themselves after a while; see
 [session length](reference.md#limits).
+
+If your session ends while you type, sign in again in the same tab and your
+text comes back. The tab keeps it only in memory, and drops it if someone else
+signs in there.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

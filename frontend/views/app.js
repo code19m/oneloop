@@ -436,7 +436,7 @@
       inerted.forEach(([el, wasInert]) => { el.inert = wasInert; });
       if (!accepted) cancel?.();
       if (restoreFocus) {
-        const focus = returnFocus?.isConnected && !returnFocus.closest('[inert]') ? returnFocus :
+        const focus = returnFocus?.isConnected && returnFocus !== document.body && !returnFocus.closest('[inert]') ? returnFocus :
           [...document.querySelectorAll('.modal button,.peek button,.me-chip,.menu-btn')].find(el => !el.closest('[inert]') && !el.disabled);
         focus?.focus({preventScroll:true});
       }
@@ -511,8 +511,11 @@
       el.style.width = Math.min(anchor.width < 100 ? 208 : anchor.width, innerWidth - 16) + 'px';
       state.menu.x = anchor.left; state.menu.y = state.menu.projectMenu ? anchor.bottom + 6 : anchor.top;
     }
-    if(state.menu.commentId||state.menu.taskActions){
-      const anchor=state.menu.taskActions?document.querySelector('.task-actions-button'):[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
+    // Menus that belong to a button sit next to it, whether a mouse or a key opened them.
+    if(state.menu.commentId||state.menu.taskActions||state.menu.trackId){
+      const anchor=state.menu.taskActions?document.querySelector('.task-actions-button')
+        :state.menu.trackId?[...document.querySelectorAll('.lane[data-track]')].find(lane=>lane.dataset.track===state.menu.trackId)?.querySelector('.kebab')
+        :[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
       if(anchor){const r=anchor.getBoundingClientRect();state.menu.x=r.right-el.offsetWidth;state.menu.y=r.bottom+4;if(state.menu.y+el.offsetHeight>innerHeight-8)state.menu.y=r.top-el.offsetHeight-4;}
     }
     el.style.left = Math.max(8, Math.min(state.menu.x, innerWidth - el.offsetWidth - 8)) + 'px';
@@ -604,6 +607,16 @@
     if (kind === 'key') return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
     return value.replace(input.tagName === 'TEXTAREA' ? /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g : /[\x00-\x1f\x7f]/g, '');
   }
+  // Cut text to `max` UTF-16 units, as maxlength counts them, without splitting
+  // a character: half of a surrogate pair cannot be saved.
+  function clampText(text, max) {
+    if (text.length <= max) return text;
+    const head = text.slice(0, max + 32);
+    const parts = typeof Intl.Segmenter === 'function' ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(head), part => part.segment) : Array.from(head);
+    let out = '';
+    for (const part of parts) { if (out.length + part.length > max) break; out += part; }
+    return out;
+  }
   function insertCleanText(input, text) {
     const kind = inputKind(input), old = input.value;
     const from = input.selectionStart ?? old.length, to = input.selectionEnd ?? from;
@@ -611,7 +624,7 @@
       : kind === 'key' ? text.toUpperCase().replace(/[^A-Z0-9]/g, '')
       : sanitizeInputValue(input, text);
     if (!fragment && text) return;
-    if (input.maxLength >= 0) fragment = fragment.slice(0, Math.max(0, input.maxLength - (old.length - (to - from))));
+    if (input.maxLength >= 0) fragment = clampText(fragment, Math.max(0, input.maxLength - (old.length - (to - from))));
     const prefix = old.slice(0, from) + fragment;
     input.value = sanitizeInputValue(input, prefix + old.slice(to));
     const caret = Math.min(sanitizeInputValue(input, prefix).length, input.value.length);
@@ -726,47 +739,119 @@
   }
 
   // ---------- roadmap geometry ----------
+  // The model holds dates as whole days from the range start; pixels are days
+  // times the zoom level (pixels per day). A zoom step rewrites the positions
+  // of the existing elements instead of rebuilding the Roadmap, and the same
+  // functions produce them for the render and for every step.
   let RAIL = 208;
-  const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60;
+  const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
+  const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
 
+  /** The data's dates: `start` anchors day 0 and `end` is the last date the timeline must reach before it fills the view. */
   function rmRange() {
     let min = today, max = new Date(today.getTime() + 60 * DAY);
     epics().forEach((e) => {
-      const s = d(e.start); if (s < min) min = s;
+      // An ongoing epic's start also extends the range, or a late one would fall past the end.
+      const s = d(e.start); if (s < min) min = s; if (s > max) max = s;
       if (e.end) { const en = d(e.end); if (en > max) max = en; }
     });
     milestones().forEach((m) => { const md = d(m.date); if (md < min) min = md; if (md > max) max = md; });
-    const start = new Date(min.getTime() - 10 * DAY);
-    const viewport = document.querySelector('.content')?.clientWidth || window.innerWidth;
-    const visibleDays = Math.max(0, viewport - RAIL) / state.pxPerDay;
-    const end = new Date(Math.max(max.getTime() + 45 * DAY, +start + visibleDays * DAY));
-    return { start, end };
+    return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
   }
 
-  function epicGeometry(e, x, rangeEnd) {
-    const left = x(d(e.start));
-    return { left, width: e.end ? Math.max(x(d(e.end)) - left, EPIC_MIN_WIDTH) : Math.max(x(rangeEnd) - left, EPIC_MIN_WIDTH) };
-  }
-  function packRows(list, rangeEnd, x) {
-    const rows = [];
-    const sorted = [...list].sort((a, b) => d(a.start) - d(b.start));
-    sorted.forEach((e) => {
-      const start = d(e.start), end = e.end ? d(e.end) : rangeEnd;
-      const { left, width } = epicGeometry(e, x, rangeEnd);
-      // Date intervals and minimum card widths must both fit before reusing a row.
-      let row = rows.findIndex((last) => start > last.end && left >= last.right + EPIC_GAP);
-      if (row < 0) row = rows.length;
-      rows[row] = { end, right: left + width };
-      e._row = row;
+  /** The Roadmap's tracks, epics and milestones as day offsets; nothing here depends on the zoom level. */
+  function roadmapModel() {
+    const { start, end } = rmRange();
+    const day = (dt) => Math.round((dt - start) / DAY);
+    const all = epics();
+    const lanes = tracks().map((track) => ({
+      track,
+      epics: all.filter((e) => e.trackId === track.id).sort((a, b) => d(a.start) - d(b.start))
+        .map((epic) => ({ epic, from: day(d(epic.start)), to: epic.end ? day(d(epic.end)) : null })),
+    }));
+    const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
+      const date = d(m.date);
+      const days = Math.round((date.getTime() - today.getTime()) / DAY);
+      const past = days < 0;
+      const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
+      const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
+      const width = Math.min(240, Math.max(112, name.length * (past ? 7.5 : 8.5) + (past ? 50 : 62), dateLabel.length * 6 + (past ? 50 : 62)));
+      return { m, past, name, dateLabel, width, at: day(date) };
     });
-    return { list: sorted, rows: Math.max(rows.length, 1) };
+    return { start, span: day(end), today: day(today), lanes, goals };
   }
 
-  function epicBar(e, x, rangeEnd, padTop, barHeight = BAR_H) {
-    const s = d(e.start);
-    const ongoing = !e.end;
-    const { left, width } = epicGeometry(e, x, rangeEnd);
-    const top = padTop + e._row * (barHeight + ROW_GAP);
+  /**
+   * The parts of the layout that change at a zoom level: which row each epic
+   * and goal label takes, the lane heights and the axis height. `width` and
+   * `height` are the content area's size.
+   */
+  function roadmapLayout(model, ppd, { barHeight, width, height }) {
+    const x = (days) => dayX(days, ppd);
+    const timeline = timelineWidth(model, ppd, width);
+    // Goal labels pack independently of epic lanes, including room for Today.
+    const todayX = x(model.today);
+    const labelRows = [[{ left: todayX - 34, right: todayX + 34 }]];
+    const goalRows = model.goals.map((goal) => {
+      const left = Math.max(6, Math.min(x(goal.at) - goal.width / 2, timeline - goal.width - 6));
+      let row = labelRows.findIndex((items) => items.every((other) => left + goal.width + 12 <= other.left || left >= other.right + 12));
+      if (row < 0) { row = labelRows.length; labelRows.push([]); }
+      labelRows[row].push({ left, right: left + goal.width });
+      return row;
+    });
+    const axisHeight = AXIS + (labelRows.length - 1) * GOAL_ROW;
+    // Date intervals and minimum card widths must both fit before reusing a row.
+    // An ongoing epic runs to the end of the range, so nothing later shares its row.
+    const packed = model.lanes.map((lane) => {
+      const rows = [];
+      const assigned = lane.epics.map((item) => {
+        const left = x(item.from);
+        const right = item.to === null ? Infinity : left + Math.max(x(item.to) - left, EPIC_MIN_WIDTH);
+        let row = rows.findIndex((last) => item.from > last.to && left >= last.right + EPIC_GAP);
+        if (row < 0) row = rows.length;
+        rows[row] = { to: item.to ?? Infinity, right };
+        return row;
+      });
+      return { assigned, count: Math.max(rows.length, 1) };
+    });
+    // Packed minimum heights, then leftover viewport height shared evenly.
+    const rowsHeight = (count) => count * barHeight + (count - 1) * ROW_GAP;
+    const minHs = packed.map((lane) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88));
+    const availH = height - axisHeight - MONTH_ROW - 8;
+    const extra = packed.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / packed.length, 0) : 0;
+    const lanes = packed.map((lane, i) => {
+      const laneHeight = Math.round(minHs[i] + extra);
+      return { rows: lane.assigned, count: lane.count, height: laneHeight, pad: Math.round((laneHeight - rowsHeight(lane.count)) / 2) };
+    });
+    return { ppd, axisHeight, goalRows, lanes };
+  }
+
+  /** The zoom factor of one wheel event, as a natural logarithm. */
+  const WHEEL_NOTCH = Math.log(1.15), MAC_WHEEL_LINE = 4.000244140625;
+  function wheelZoom(event) {
+    const delta = event.deltaY;
+    if (!delta) return 0;
+    // A mouse notch zooms 15%: line or page deltas, large pixel deltas, or the
+    // multiples of 4.000244140625 px that macOS sends. A touchpad pinch arrives
+    // as many small pixel deltas (100 × the log of its scale), so the Roadmap
+    // follows the fingers.
+    const notch = event.deltaMode !== 0 || Math.abs(delta) >= 50 || Math.abs(delta) % MAC_WHEEL_LINE === 0;
+    return notch ? -Math.sign(delta) * WHEEL_NOTCH : Math.max(-WHEEL_NOTCH, Math.min(WHEEL_NOTCH, -delta / 100));
+  }
+  const clampZoom = (ppd) => Math.round(Math.min(Math.max(ppd, ZOOM_MIN), ZOOM_MAX) * 1e4) / 1e4;
+  // Horizontal places at a zoom level, in whole pixels so text stays on the pixel grid.
+  const dayX = (days, ppd) => Math.round(days * ppd);
+  const barLeft = (item, ppd) => `${dayX(item.from, ppd)}px`;
+  /** An ongoing bar has no width: CSS runs it to the end of its lane. */
+  const barWidth = (item, ppd) => `${Math.max(dayX(item.to, ppd) - dayX(item.from, ppd), EPIC_MIN_WIDTH)}px`;
+  const barTop = (lane, row, barHeight) => `${lane.pad + row * (barHeight + ROW_GAP)}px`;
+  const timelineWidth = (model, ppd, width) => Math.max(dayX(model.span, ppd), width - RAIL);
+  /** A goal label's center: under its date, but kept inside the timeline. */
+  const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
+
+  function epicBar(item, ppd, top) {
+    const e = item.epic, s = d(e.start);
+    const ongoing = item.to === null;
     const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
 
@@ -782,7 +867,7 @@
     const prog = (ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
-    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${left}px;top:${top}px;width:${width}px" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
+    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
       <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
       <div class="m">${meta}</div>${prog}</div>`;
   }
@@ -840,56 +925,33 @@
     probe.remove();
     return height;
   }
+  /** @type {{model:any,layout:any,metrics:{barHeight:number,width:number,height:number}}|null} The latest rendered Roadmap, which mountRoadmap binds. */
+  let renderedRoadmap = null;
   function renderRoadmap() {
     const barHeight = measureEpicHeight();
     RAIL = window.innerWidth <= 900 ? 132 : 208;
-    const trs = tracks();
-    const { start, end } = rmRange();
-    const ppd = state.pxPerDay;
-    const x = (dt) => Math.round((dt - start) / DAY * ppd);
-    const tlWidth = x(end);
-
-    // Pack goal labels independently of epic lanes, including room for Today.
-    const todayX = x(today);
-    const labelRows = [[{ left: todayX - 34, right: todayX + 34 }]];
-    const goalLabels = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
-      const date = d(m.date);
-      const days = Math.round((date.getTime() - today.getTime()) / DAY);
-      const past = days < 0;
-      const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
-      const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
-      const width = Math.min(240, Math.max(112, name.length * (past ? 7.5 : 8.5) + (past ? 50 : 62), dateLabel.length * 6 + (past ? 50 : 62)));
-      const cx = x(date);
-      const left = Math.max(6, Math.min(cx - width / 2, tlWidth - width - 6));
-      let row = labelRows.findIndex((items) => items.every((other) => left + width + 12 <= other.left || left >= other.right + 12));
-      if (row < 0) { row = labelRows.length; labelRows.push([]); }
-      labelRows[row].push({ left, right: left + width });
-      return { m, past, name, dateLabel, width, cx, left, row };
-    });
-    const axisHeight = AXIS + (labelRows.length - 1) * 58;
-
-    // Calendar cells are mounted for the viewport, independent of date span.
-    // lanes — packed minimum heights, then leftover viewport height shared evenly
-    const packs = trs.map((t) => packRows(epics().filter((e) => e.trackId === t.id), end, x));
-    const minHs = packs.map((p) => Math.max(2 * LANE_PAD + p.rows * barHeight + (p.rows - 1) * ROW_GAP, 88));
+    const model = roadmapModel();
     const contentEl = document.querySelector('.content');
     roadmapHeight=contentEl ? contentEl.clientHeight : window.innerHeight - 80;
-    const availH = (roadmapHeight) - axisHeight - MONTH_ROW - 8;
-    const extra = trs.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / trs.length, 0) : 0;
+    const metrics = { barHeight, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
+    const ppd = state.pxPerDay;
+    const layout = roadmapLayout(model, ppd, metrics);
+    const { axisHeight } = layout;
+    renderedRoadmap = { model, layout, metrics };
+
+    // Calendar cells are mounted for the viewport, independent of date span.
     let lanes = '';
-    trs.forEach((t, ti) => {
-      const packed = packs[ti];
-      const h = Math.round(minHs[ti] + extra);
-      const rowsContent = packed.rows * barHeight + (packed.rows - 1) * ROW_GAP;
-      const padTop = Math.round((h - rowsContent) / 2);
-      const active = packed.list.filter((e) => e.state === 'active').length;
-      const doneN = packed.list.filter((e) => e.state === 'done').length;
-      const cont = packed.list.some((e) => !e.end);
-      const sub = packed.list.length
-        ? `${packed.list.length} epic${packed.list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
+    model.lanes.forEach(({ track: t, epics: items }, ti) => {
+      const lane = layout.lanes[ti];
+      const list = items.map((item) => item.epic);
+      const active = list.filter((e) => e.state === 'active').length;
+      const doneN = list.filter((e) => e.state === 'done').length;
+      const cont = list.some((e) => !e.end);
+      const sub = list.length
+        ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
         : 'no epics yet';
-      const bars = packed.list.map((e) => epicBar(e, x, end, padTop, barHeight)).join('');
-      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${h}px">
+      const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
+      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
           <h2 class="name" title="${esc(t.name)}">${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
@@ -897,53 +959,68 @@
             <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
           </div>` : ''}
         </div>
-        <div class="lane-body" style="width:${tlWidth}px">${bars}</div>
+        <div class="lane-body">${bars}</div>
       </div>`;
     });
 
     // milestones + today (labels live in the sticky axis; lines span the canvas)
+    const timeline = timelineWidth(model, ppd, metrics.width);
     let msHtml = '', msLabels = '';
-    goalLabels.forEach(({ m, past, name, dateLabel, width, cx, left, row }) => {
-      msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + cx}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
-      msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${cx}px;top:${12 + row * 58 + 54}px;bottom:-1px"></div>`;
-      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${left + width / 2}px;top:${12 + row * 58}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
+    model.goals.forEach((goal, i) => {
+      const { m, past, name, dateLabel, width, at } = goal, row = layout.goalRows[i];
+      msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + dayX(at, ppd)}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
+      msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${dayX(at, ppd)}px;top:${12 + row * GOAL_ROW + 54}px;bottom:-1px"></div>`;
+      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
         ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${dateLabel}</span></span></button>`;
     });
-    const tx = RAIL + x(today);
-    const todayHtml = `<div class="today-line" style="left:${tx}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
+    const todayX = dayX(model.today, ppd);
+    const todayHtml = `<div class="today-line" style="left:${RAIL + todayX}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
     const todayPill = `<div class="today-line today-connector" aria-hidden="true" style="left:${todayX}px;top:32px;bottom:-1px"></div><div class="today-pill" style="left:${todayX}px;top:12px">${human(today)}</div>`;
 
-    const emptyProject = trs.length === 0;
-    return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+start)}" data-range-end="${UIEscape(+end)}" data-axis-height="${UIEscape(axisHeight)}">
-      <div class="rm-canvas" style="width:${RAIL + tlWidth}px">
-        <div class="rm-axis" style="width:${RAIL + tlWidth}px;height:${axisHeight}px">
+    // Month cells are day offsets that their container's --ppd scales.
+    const calendar = `--ppd:${ppd}`, calendarLines = `${calendar};--rm-rail:${RAIL}px;--rm-axis-h:${axisHeight}px;--rm-month-h:${MONTH_ROW}px`;
+    const emptyProject = model.lanes.length === 0;
+    return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+model.start)}">
+      <div class="rm-canvas" style="width:${RAIL + dayX(model.span, ppd)}px">
+        <div class="rm-axis" style="height:${axisHeight}px">
           <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" onclick="App.openModal('track')">${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
-          <div class="rm-axis-labels"><span class="rm-calendar-axis"></span>${msLabels}${todayPill}</div>
+          <div class="rm-axis-labels"><span class="rm-calendar-axis" style="${calendar}"></span>${msLabels}${todayPill}</div>
         </div>
-        <span class="rm-calendar-lines"></span>${msHtml}${todayHtml}${lanes}
+        <span class="rm-calendar-lines" style="${calendarLines}"></span>${msHtml}${todayHtml}${lanes}
         ${emptyProject ? `<div style="position:sticky;left:0;width:100%;padding:60px 0;text-align:center;color:var(--ink-ghost);font-size:var(--text-body)">No tracks yet.</div>` : ''}
-        <div class="rm-month-row" style="height:${MONTH_ROW}px"><div class="rail-cell" style="width:${RAIL}px"></div><div class="rm-month-grid"></div></div>
+        <div class="rm-month-row" style="height:${MONTH_ROW}px"><div class="rail-cell" style="width:${RAIL}px"></div><div class="rm-month-grid" style="${calendar}"></div></div>
       </div>
     </div>`;
   }
 
-  function taskMovePlan(t, col, beforeId = null) {
+  /** The cards a Board column shows, in order. */
+  const shownColumn = (col) => boardTasks().filter((item) => item.state === col).slice(0, state.boardLimits[col] || 50);
+  /** Whether a column shows its last card: the server has no more, and every loaded card is drawn. */
+  function columnEndShown(col, except) {
+    const page = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[col] : null;
+    return !page?.nextCursor && boardTasks().filter((item) => item.state === col && item !== except).length <= (state.boardLimits[col] || 50);
+  }
+  // Without a target card, a card follows the last card its column shows, or
+  // goes to the top with `atTop`.
+  function taskMovePlan(t, col, beforeId = null, atTop = false) {
     const originalColumn = tasks().filter((item) => item.state === col);
     const destination = originalColumn.filter((item) => item !== t);
-    const index = beforeId ? destination.findIndex((item) => item.id === beforeId) : destination.length;
+    const last = beforeId || atTop ? null : shownColumn(col).filter((item) => item !== t).at(-1) ?? destination.at(-1);
+    const index = beforeId ? destination.findIndex((item) => item.id === beforeId) : last ? destination.indexOf(last) + 1 : 0;
     if (beforeId && index < 0) return null;
     const nextColumn = [...destination]; nextColumn.splice(index, 0, t);
     if (t.state === col && originalColumn.length === nextColumn.length && originalColumn.every((item, at) => item === nextColumn[at])) return null;
     const placement = beforeId
       ? { beforeTaskId: taskById(beforeId)?.internalId || beforeId }
-      : destination.length
-        ? { afterTaskId: destination.at(-1).internalId || destination.at(-1).id }
+      : last
+        ? { afterTaskId: last.internalId || last.id }
         : { position: 0 };
     return { destination, index, placement };
   }
 
-  function applyTaskMove(t, col, beforeId = null) {
-    const plan = taskMovePlan(t, col, beforeId); if (!plan) return null;
+  function applyTaskMove(t, col, beforeId = null, atTop = false) {
+    const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
+    const shownBefore = shownColumn(col).filter((item) => item !== t);
     const previousState = t.state, projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId, sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
     const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
     const previousProjectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),taskIndex=previousProjectTasks.indexOf(t);
@@ -956,11 +1033,14 @@
     const affectedEpics = new Map();
     for (const id of new Set([t.epicId])) { const item = epicById(id); if (item) affectedEpics.set(id, { item, state:item.state, done:item.done }); }
     D.tasks.splice(D.tasks.indexOf(t), 1);
-    const anchor = beforeId ? taskById(beforeId) : plan.destination.at(-1);
-    const at = anchor ? D.tasks.indexOf(anchor) + (beforeId ? 0 : 1) : D.tasks.length;
+    const next = plan.destination[plan.index], previous = plan.destination[plan.index - 1];
+    const at = next ? D.tasks.indexOf(next) : previous ? D.tasks.indexOf(previous) + 1 : D.tasks.length;
     D.tasks.splice(Math.max(0, at), 0, t);
     t.state = col;
     for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
+    // The column keeps showing every card it showed, and shows the moved card too.
+    const column = boardTasks().filter((item) => item.state === col);
+    state.boardLimits[col] = Math.max(state.boardLimits[col] || 50, ...[t, ...shownBefore].map((item) => column.indexOf(item) + 1));
     const epic = epicById(t.epicId);
     if (epic) {
       if (col === 'done') epic.done += 1;
@@ -1012,7 +1092,8 @@
     if (t.state === col) return;
     if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
     if (bootWindow.OneloopRuntime) {
-      const change=applyTaskMove(t,col);if(!change)return false;submitTaskMove(change);return;
+      // A column that does not show its end takes the card at the top, where it stays in view.
+      const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);return;
     }
     const prev = t.state;
     t.state = col;
@@ -1025,14 +1106,24 @@
     logAct(t, `moved it to ${STATUS[col]}`, {field:'state',before:prev,after:col});
   }
 
+  // Scroll a lane's head into the Roadmap's view, below its sticky date axis.
+  function revealLane(lane) {
+    const scroll = document.getElementById('rmScroll'), head = lane?.querySelector('.lane-head');
+    if (!scroll || !head) return;
+    const view = scroll.getBoundingClientRect(), top = view.top + (scroll.querySelector('.rm-axis')?.offsetHeight || 0), box = head.getBoundingClientRect();
+    if (box.top < top) scroll.scrollTop -= top - box.top;
+    else if (box.bottom > view.bottom) scroll.scrollTop += Math.min(box.bottom - view.bottom, box.top - top);
+  }
   function focusMovedTrack(id) {
     const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id);
+    revealLane(lane);
     lane?.querySelector('.grip')?.focus({preventScroll:true});
     announce(`${trackById(id)?.name || 'Track'} moved to position ${tracks().findIndex(track=>track.id===id)+1}`);
   }
   function focusMovedTask(id) {
     if (state.view !== 'board' || state.modal) return;
     const card = [...document.querySelectorAll('.card[data-task]')].find(el=>el.dataset.task===id);
+    card?.scrollIntoView?.({block:'nearest',inline:'nearest'});
     (card?.querySelector('.card-move') || card?.querySelector('.card-title-button') || document.getElementById('main'))?.focus({preventScroll:true});
     announce(`${id} moved to ${STATUS[taskById(id)?.state] || 'new position'}`);
   }
@@ -1237,6 +1328,8 @@
 
   // ---------- auth ----------
   function renderAuth(mode) {
+    // Someone typing when their session ended keeps typing into nothing, not into Username.
+    const keptInput = !!window.Recovery?.keepsInput;
     const inner = mode === 'change'
       ? `<h1 tabindex="-1">Set a new password</h1>
         <form novalidate onsubmit="return App.setPassword(event)">
@@ -1247,12 +1340,12 @@
         </form>`
       : `<h1 tabindex="-1">Sign in</h1>
         <form novalidate onsubmit="return App.login(event)">
-          ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username" autofocus>`)}
+          ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username"${keptInput ? '' : ' autofocus'}>`)}
           ${field('Password', `<input class="ctl" type="password" name="password" autocomplete="current-password">`)}
           <div class="modal-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Sign in</button></div>
         </form>`;
     return `<main class="auth-wrap" id="main" tabindex="-1"><div class="auth-card">
-      <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?'<p class="auth-notice">Your session ended. Sign in to continue.</p>':''}${inner}</div></main>`;
+      <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?`<p class="auth-notice" role="alert">${keptInput?'Your session ended. Sign in again to keep what you typed.':'Your session ended. Sign in to continue.'}</p>`:''}${inner}</div></main>`;
   }
 
   // ---------- shared descriptions ----------
@@ -1465,17 +1558,27 @@
           <div class="cmt-body">${esc(it.text)}</div></div>`).join('');
 
   }
+  // A title or description that is not saved yet stays as typed, with Save.
+  const taskDraft = (t, field) => bootWindow.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
+  function taskDraftNote(t, field) {
+    if (!taskDraft(t, field)?.unsaved) return '';
+    if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
+    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>`;
+  }
+  // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
+  const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
   function renderTask() {
     const t = taskById(state.taskId);
     if (!t) { state.view = 'board'; return renderBoard(); }
     const canEdit = canBoard();
+    const title = taskDraft(t, 'title')?.value ?? t.title, desc = taskDraft(t, 'desc')?.value ?? t.desc ?? '';
     const atts = window.Uploads?.renderAttachments(t,canEdit) || '';
 
     const feed = taskActivityHtml(t);
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : 'disabled'}>${esc(t.title)}</textarea></div>
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
         <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
@@ -1489,8 +1592,8 @@
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : 'disabled'}>${esc(t.desc || '')}</textarea></div>
-          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button></div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
+          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
           ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
           ${atts}<div class="upload-list"></div></div>
@@ -1580,7 +1683,8 @@
 
   function usersCountLabel() {
     if(window.OneloopTransport&&!D.adminUsers?.loaded)return D.adminUsers?.loading?'…':'';
-    return String(D.adminUsers?.loaded?D.adminUsers.ids.length:D.users.length);
+    // While more pages wait on the server, the loaded count is only a lower bound.
+    return D.adminUsers?.loaded?`${D.adminUsers.ids.length}${D.adminUsers.nextCursor?'+':''}`:String(D.users.length);
   }
   function renderUsers() {
     const awaiting = D.adminUsers?.loading && !D.adminUsers.loaded;
@@ -1889,7 +1993,7 @@
     } else if (m.type === 'knowledge') {
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
-      body = `<h2>${esc(m.title)}</h2><div class="sub">${m.text}</div>
+      body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
@@ -1901,7 +2005,7 @@
     if (!m) return '';
     const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${['light', 'dark'].map((theme) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.current === theme ? 'on' : ''}" aria-pressed="${window.Theme.current === theme}" onclick="App.setTheme('${UIArg(theme)}')"><span class="menu-icon" aria-hidden="true">${theme === 'light' ? I.sun : I.moon}</span>${theme === 'light' ? 'Light' : 'Dark'}</button>`).join('')}</div>`;
     const items = m.items.map((it) => it.theme ? themeControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" title="${esc(it.projectName)}" onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
-      `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${it.label}</button>`).join('');
+      `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
     return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="App.closeOverlays()"></div>
       <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
   }
@@ -1930,7 +2034,8 @@
     if (!target && record?.id) target = document.getElementById(record.id);
     if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
     if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
-    if (!target && record?.action) target = [...app.querySelectorAll(`[${bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'}]`)].find(el => el.getAttribute(bootWindow.OneloopEventAttribute?.('onclick') || 'onclick') === record.action);
+    // A scrim and a close button can share an action; prefer the same kind of control in the same place.
+    if (!target && record?.action) { const attribute = bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'; target = [...app.querySelectorAll(`${record.scope} [${attribute}]`), ...app.querySelectorAll(`[${attribute}]`)].find(el => el.tagName === record.tag && el.getAttribute(attribute) === record.action); }
     if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
     if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
     if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);
@@ -2060,7 +2165,7 @@
     // WebKit may blur an editor without focusing the pressed button. Keep its
     // DOM target alive through pointer release/click, including slow presses.
     const busy=POP.el||state.modal||state.peek||pendingConfirmation||document.activeElement?.closest('.task-page,.peek,.modal')||pressedTaskControl;
-    if(authorized&&busy&&!(state.view==='task'&&!canBoard()&&document.querySelector('.tp-title:not(:disabled)'))){backgroundRenderTimer=setTimeout(refreshBackground,100);return;}
+    if(authorized&&busy&&!(state.view==='task'&&!canBoard()&&document.querySelector('.tp-title:not(:disabled):not([readonly])'))){backgroundRenderTimer=setTimeout(refreshBackground,100);return;}
     render();
   }
   // Snapshot immediately around the DOM swap, never across an awaited read.
@@ -2070,7 +2175,15 @@
     const scope=renderScope(),active=document.activeElement;
     const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
     const focused=preserve&&active?.matches('input:not([type=file]),textarea')?{opener:rememberOpener(active),value:active.value,scrollTop:active.scrollTop}:null;
+    // Text typed into a task field whose edit rights just ended stays as a Not saved draft.
+    if(focused&&state.view==='task'&&!active.disabled&&!active.readOnly&&!canBoard()){
+      const field=active.matches('.tp-title')?'title':active.id==='task-description'?'desc':null,t=taskById(state.taskId);
+      if(field&&t)bootWindow.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
+    }
     const focusedControl=preserve&&!focused&&active?.closest('#app')?rememberOpener(active):null;
+    // The page heading and main area outlast any content render of the same page, such as
+    // a loading skeleton during a slow read, so a keyboard user keeps their place.
+    const landmark=active?.matches?.('.topbar h1')?'.topbar h1':active?.id==='main'?'#main':null,page=pageScope();
     const snapshot=focused?window.OneloopRecovery?.captureEditor?.():null;
     if(snapshot)snapshot.controls=snapshot.controls.filter(control=>control.key===snapshot.activeKey);
     rendering=true;
@@ -2080,7 +2193,7 @@
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
       migrateEvents?.();
       if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
-        const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]');
+        const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
         target?.focus({preventScroll:true});
       }
       if(scope===renderScope()&&focused){
@@ -2090,11 +2203,19 @@
         if(target?.matches('input,textarea')){target.value=focused.value;target.scrollTop=focused.scrollTop;if(focused.opener.selection)try{target.setSelectionRange(...focused.opener.selection);}catch{}}
       }
       if(focusedControl && document.activeElement===document.body)restoreOpener(focusedControl);
+      if(landmark && document.activeElement===document.body && page===pageScope() && !document.querySelector('.modal,.peek'))document.querySelector(landmark)?.focus({preventScroll:true});
       const sidebar=document.querySelector('.sidebar');
       if(innerWidth<=900 && state.sideOpen && sidebar && !sidebar.inert && !sidebar.closest('[inert]') && document.activeElement===document.body)sidebar.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
     }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
+    window.Recovery?.resumeEditing?.();
+  }
+  /** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
+  const waitingPasswords=[];
+  function showWaitingPassword(){
+    while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
   }
   function renderOverlays(){
+    showWaitingPassword();
     const root=document.getElementById('overlay-root');
     if(!root||!D.session||!me()?.active){render();return;}
     const oldModalElement=/** @type {HTMLElement|null} */(root.querySelector('.modal')),oldPeekElement=/** @type {HTMLElement|null} */(root.querySelector('.peek')),oldFocus=document.activeElement;
@@ -2123,6 +2244,7 @@
     const oldModalKey = oldModalElement?.dataset.motionKey,oldPeekKey = oldPeekElement?.dataset.motionKey;
     const oldPanelFocus = (oldModalElement || oldPeekElement)?.contains(oldFocus) ? rememberOpener(oldFocus) : null;
     fieldSequence = 0;
+    showWaitingPassword();
     if(state.modal?.type==='temppw'&&(!D.session||state.modal.ownerSession!==D.session.id||state.modal.ownerId!==me()?.id||!isAdmin()))state.modal=null;
     if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
     today.setTime(instanceToday().getTime());
@@ -2215,55 +2337,152 @@
   }
 
   // ---------- roadmap mount: scroll + zoom ----------
-  function mountRoadmapCalendar(sc) {
-    const start = new Date(Number(sc.dataset.rangeStart)), end = new Date(Number(sc.dataset.rangeEnd));
-    const ppd = state.pxPerDay, width = sc.clientWidth || window.innerWidth;
-    const x = dt => Math.round((dt - start) / DAY * ppd);
-    // One viewport of overscan each way keeps scrolling smooth with bounded DOM.
-    const first = new Date(Math.max(+start, +start + (sc.scrollLeft - width - RAIL) / ppd * DAY));
-    const last = new Date(Math.min(+end, +start + (sc.scrollLeft + width * 2) / ppd * DAY));
-    first.setUTCDate(1); first.setUTCHours(0, 0, 0, 0);
-    const key = `${first.getUTCFullYear()}:${first.getUTCMonth()}:${last.getUTCFullYear()}:${last.getUTCMonth()}`;
-    if (sc.dataset.calendarKey === key) return;
-    sc.dataset.calendarKey = key;
-    let months = '', seps = '', axisSeps = '';
-    for (let m = new Date(first); m < last; m.setUTCMonth(m.getUTCMonth() + 1)) {
-      const next = new Date(m); next.setUTCMonth(next.getUTCMonth() + 1);
-      const ms = new Date(Math.max(+m, +start)), me = new Date(Math.min(+next, +end));
-      const label = m.toLocaleDateString('en-US', { timeZone:'UTC', month: 'short' }) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + String(m.getUTCFullYear()).slice(2) : '');
-      if (x(me) - x(ms) > 46) months += `<div class="rm-month" style="left:${x(ms)}px;width:${x(me) - x(ms)}px">${label}</div>`;
-      const bx = x(next);
-      if (next < end) {
-        seps += `<div style="position:absolute;left:${RAIL + bx}px;top:${sc.dataset.axisHeight}px;bottom:${MONTH_ROW}px;width:1px;background:var(--line-soft)"></div>`;
-        axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="left:${bx}px"></div>`;
-      }
+  /**
+   * The mounted Roadmap: what was rendered, the elements a zoom step moves,
+   * and the calendar window currently in the DOM.
+   * @typedef {{sc:HTMLElement,canvas:HTMLElement,axis:HTMLElement,model:any,layout:any,metrics:{barHeight:number,width:number,height:number},ppd:number,
+   *   lanes:{lane:HTMLElement,bars:{el:HTMLElement,item:any}[]}[],goals:{goal:any,line:HTMLElement,connector:HTMLElement,label:HTMLElement}[],
+   *   today:HTMLElement[],cells:{axis:HTMLElement,lines:HTMLElement,months:HTMLElement},calendar:{from:number,to:number,labels:string}|null,zoomLeft:number}} RoadmapView
+   */
+  /** @returns {RoadmapView} */
+  function bindRoadmap(sc, rendered) {
+    const all = (/** @type {string} */ selector) => /** @type {HTMLElement[]} */([...sc.querySelectorAll(selector)]);
+    const lines = all('.rm-canvas > .ms-line'), connectors = all('.goal-connector'), labels = all('.ms-label');
+    const laneEls = all('.lane');
+    return {
+      sc, canvas: sc.querySelector('.rm-canvas'), axis: sc.querySelector('.rm-axis'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN,
+      lanes: rendered.model.lanes.map((lane, i) => {
+        const bars = /** @type {HTMLElement[]} */([...(laneEls[i]?.querySelector('.lane-body')?.children || [])]);
+        return { lane: laneEls[i], bars: lane.epics.map((item, j) => ({ el: bars[j], item })).filter((bar) => bar.el) };
+      }),
+      goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i], label: labels[i] })).filter((goal) => goal.line && goal.connector && goal.label),
+      today: [sc.querySelector('.rm-canvas > .today-line'), sc.querySelector('.today-connector'), sc.querySelector('.today-pill')],
+      cells: { axis: sc.querySelector('.rm-calendar-axis'), lines: sc.querySelector('.rm-calendar-lines'), months: sc.querySelector('.rm-month-grid') },
+    };
+  }
+
+  /** Apply a zoom level's rows and heights, writing only what changed. */
+  function applyRoadmapLayout(view, next) {
+    const prev = view.layout, { barHeight } = view.metrics;
+    if (next.axisHeight !== prev.axisHeight) {
+      const top = `${next.axisHeight}px`;
+      view.axis.style.height = top;
+      for (const el of [...view.goals.map((goal) => goal.line), view.today[0]]) if (el) el.style.top = top;
+      view.cells.lines?.style.setProperty('--rm-axis-h', top);
     }
-    sc.querySelector('.rm-calendar-axis').innerHTML = axisSeps;
-    sc.querySelector('.rm-calendar-lines').innerHTML = seps;
-    sc.querySelector('.rm-month-grid').innerHTML = axisSeps + months;
+    view.goals.forEach(({ connector, label }, i) => {
+      const row = next.goalRows[i];
+      if (row === prev.goalRows[i]) return;
+      connector.style.top = `${12 + row * GOAL_ROW + 54}px`;
+      label.style.top = `${12 + row * GOAL_ROW}px`;
+    });
+    next.lanes.forEach((lane, i) => {
+      const before = prev.lanes[i], bound = view.lanes[i];
+      if (!bound?.lane) return;
+      if (lane.height !== before.height) bound.lane.style.height = `${lane.height}px`;
+      bound.bars.forEach((bar, j) => { if (lane.pad !== before.pad || lane.rows[j] !== before.rows[j]) bar.el.style.top = barTop(lane, lane.rows[j], barHeight); });
+    });
+    view.layout = next;
+  }
+
+  /**
+   * One zoom step: move and size the mounted elements for `ppd`, move the
+   * rows that the new widths change, and keep `day` at `cx` pixels from the
+   * scroller's left edge. Only the positioned elements change, so the browser
+   * restyles those and not the text inside them.
+   */
+  function zoomRoadmap(view, ppd, day, cx) {
+    const { sc, model } = view;
+    if (ppd !== view.ppd) {
+      view.ppd = state.pxPerDay = ppd;
+      view.canvas.style.width = `${RAIL + dayX(model.span, ppd)}px`;
+      for (const lane of view.lanes) for (const { el, item } of lane.bars) {
+        el.style.left = barLeft(item, ppd);
+        if (item.to !== null) el.style.width = barWidth(item, ppd);
+      }
+      const timeline = timelineWidth(model, ppd, view.metrics.width);
+      for (const { goal, line, connector, label } of view.goals) {
+        const x = dayX(goal.at, ppd);
+        line.style.left = `${RAIL + x}px`;
+        connector.style.left = `${x}px`;
+        label.style.left = goalCenter(goal, ppd, timeline);
+      }
+      const [line, connector, pill] = view.today, todayX = dayX(model.today, ppd);
+      if (line) line.style.left = `${RAIL + todayX}px`;
+      for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
+      for (const el of Object.values(view.cells)) el?.style.setProperty('--ppd', String(ppd));
+      applyRoadmapLayout(view, roadmapLayout(model, ppd, view.metrics));
+    }
+    const left = Math.max(0, RAIL + day * ppd - cx);
+    if (Math.abs(sc.scrollLeft - left) >= 0.5) sc.scrollLeft = left;
+    state.rmScrollLeft = view.zoomLeft = sc.scrollLeft;
+    mountRoadmapCalendar(view);
+  }
+
+  const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:'short' });
+  /**
+   * Month labels and lines cover the visible dates plus one view of overscan
+   * each way, so the DOM stays bounded at every zoom level. The cells follow
+   * --ppd, so this redraws them only when the view nears the window's edge,
+   * the window becomes much wider than needed or passes the end of the range,
+   * or a partial month at either end gains or loses its label.
+   */
+  function mountRoadmapCalendar(view) {
+    const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
+    const end = Math.max(model.span, (view.metrics.width - RAIL) / ppd);
+    const day = (/** @type {Date} */ dt) => (dt - start) / DAY;
+    const labeled = (/** @type {number} */ from, /** @type {number} */ to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
+    const startMonth = new Date(start); startMonth.setUTCDate(1); startMonth.setUTCMonth(startMonth.getUTCMonth() + 1);
+    const endMonth = new Date(+start + end * DAY); endMonth.setUTCDate(1); endMonth.setUTCHours(0, 0, 0, 0);
+    const labels = `${labeled(0, Math.min(day(startMonth), end))}:${labeled(Math.max(day(endMonth), 0), end)}`;
+    const margin = width / 2 / ppd;
+    const need = { from: Math.max(0, sc.scrollLeft / ppd - margin), to: Math.min(end, (sc.scrollLeft + width - RAIL) / ppd + margin) };
+    const shown = view.calendar;
+    if (shown && shown.from <= need.from && shown.to >= need.to && shown.to <= end && shown.to - shown.from <= 4 * (width + RAIL) / ppd + 62 && shown.labels === labels) return;
+    const first = new Date(+start + Math.max(0, (sc.scrollLeft - width - RAIL) / ppd) * DAY);
+    first.setUTCDate(1); first.setUTCHours(0, 0, 0, 0);
+    const last = Math.min(end, (sc.scrollLeft + width * 2) / ppd);
+    let months = '', seps = '', axisSeps = '', covered = Math.max(0, day(first));
+    for (const m = new Date(first); day(m) < last; m.setUTCMonth(m.getUTCMonth() + 1)) {
+      const next = new Date(m); next.setUTCMonth(next.getUTCMonth() + 1);
+      const from = Math.max(day(m), 0), to = Math.min(day(next), end);
+      const label = monthFormatter.format(m) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + String(m.getUTCFullYear()).slice(2) : '');
+      if (labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
+      if (day(next) < end) {
+        seps += `<div class="rm-month-line" aria-hidden="true" style="--d:${day(next)}"></div>`;
+        axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${day(next)}"></div>`;
+      }
+      covered = to;
+    }
+    view.calendar = { from: Math.max(0, day(first)), to: covered, labels };
+    setHTML(view.cells.axis, axisSeps);
+    setHTML(view.cells.lines, seps);
+    setHTML(view.cells.months, axisSeps + months);
   }
 
   let roadmapGestureCleanup = () => {};
   function mountRoadmap() {
     roadmapGestureCleanup();
-    const sc = document.getElementById('rmScroll');
-    if (!sc) return;
-    if (state.rmScrollLeft === null) {
-      const { start } = rmRange();
-      state.rmScrollLeft = Math.max(RAIL + (today - start) / DAY * state.pxPerDay - sc.clientWidth * 0.42, 0);
-    }
+    const sc = /** @type {HTMLElement|null} */(document.getElementById('rmScroll'));
+    if (!sc || !renderedRoadmap) return;
+    const view = bindRoadmap(sc, renderedRoadmap);
+    if (state.rmScrollLeft === null) state.rmScrollLeft = Math.max(RAIL + view.model.today * view.ppd - sc.clientWidth * 0.42, 0);
     sc.scrollLeft = state.rmScrollLeft;
     sc.scrollTop = state.rmScrollTop;
-    mountRoadmapCalendar(sc);
+    mountRoadmapCalendar(view);
+    /** @type {{kind:'wheel'|'pinch'|'gesture',left:number,cx:number,day:number,ppd0:number,log:number,target:number|null,distance:number,cy:number,dy:number}|null} The zoom gesture in progress. */
+    let gesture = null;
     let calendarFrame = 0;
     sc.addEventListener('scroll', () => {
       state.rmScrollLeft = sc.scrollLeft; state.rmScrollTop = sc.scrollTop;
+      // A scroll the zoom did not make, such as a touchpad pan during a
+      // pinch, moves the content under the pointer: zoom around that day now.
+      if (gesture && Math.abs(sc.scrollLeft - view.zoomLeft) > 1) { gesture.day = (sc.scrollLeft + gesture.cx - RAIL) / view.ppd; view.zoomLeft = sc.scrollLeft; }
       if (!calendarFrame) calendarFrame = requestAnimationFrame(() => {
         calendarFrame = 0;
-        if (sc.isConnected) mountRoadmapCalendar(sc);
+        if (sc.isConnected) mountRoadmapCalendar(view);
       });
     });
-    const canvas = /** @type {HTMLElement} */(sc.querySelector('.rm-canvas'));
     const sample = sc.querySelector('.bar');
     /** @type {number|null} */ let sizeFrame = null;
     const sizeObserver = typeof ResizeObserver === 'undefined' || !sample ? null : new ResizeObserver(() => {
@@ -2272,75 +2491,92 @@
       }
     });
     if(sample)sizeObserver?.observe(sample);
-    /** @type {{kind:string,cx:number,start:Date,ppd0:number,next:number,date:number,distance?:number}|null} */ let gesture = null;
-    /** @type {number|null} */ let frame = null;
-    /** @type {number|null} */ let idle = null;
-    const clamp = (/** @type {number} */ value) => Math.min(Math.max(value, 2.2), 42);
-    /** @param {number} cx @param {string} kind */
-    function begin(cx, kind) {
+
+    // Zoom: input events update one gesture, and one frame applies it. A
+    // gesture keeps the day under the pointer, or under the pinch center as it
+    // moves, in place.
+    let frame = 0, pointerX = NaN;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */ let idle;
+    const begin = (/** @type {'wheel'|'pinch'|'gesture'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
       hideEpicTip();
-      const {start} = rmRange();
-      gesture = {kind, cx, start, ppd0:state.pxPerDay, next:state.pxPerDay,
-        date:+start + (sc.scrollLeft + cx - RAIL) / state.pxPerDay * DAY};
-      canvas.style.transformOrigin = (sc.scrollLeft + cx) + 'px 0';
-      canvas.style.willChange = 'transform';
-    }
-    function paint() {
-      frame = null;
-      if (!gesture || !sc.isConnected) return;
-      const scale = gesture.next / gesture.ppd0;
-      canvas.style.transform = `scaleX(${scale})`;
-      sc.querySelectorAll(/** @type {'div'} */('.rail-cell')).forEach(el => {
-        el.style.transformOrigin = '0 0'; el.style.transform = `scaleX(${1 / scale})`;
-      });
-    }
-    const schedule = () => { if (frame === null) frame = requestAnimationFrame(paint); };
-    function finish() {
-      if (!gesture) return;
-      const current = gesture; gesture = null;
-      cleanup();
-      if (!sc.isConnected || state.view !== 'roadmap') return;
-      state.pxPerDay = current.next;
-      state.rmScrollLeft = Math.max(RAIL + (current.date-current.start) / DAY * current.next-current.cx, 0);
-      App.refreshRoadmap({zoom:true});
-    }
-    const movePinch = (/** @type {TouchEvent} */ e) => {
-      if (gesture?.kind !== 'pinch' || e.touches.length !== 2) return;
-      e.preventDefault();
-      gesture.next = clamp(gesture.ppd0 * dist(e.touches) / gesture.distance);
-      schedule();
+      const cx = clientX - left;
+      view.zoomLeft = sc.scrollLeft;
+      gesture = { kind, left, cx, day: (view.zoomLeft + cx - RAIL) / view.ppd, ppd0: view.ppd, log: 0, target: null, distance: 0, cy: 0, dy: 0 };
+      return gesture;
     };
-    function cleanup() {
-      if(calendarFrame)cancelAnimationFrame(calendarFrame);
-      sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;
-      clearTimeout(idle); if (frame !== null) cancelAnimationFrame(frame);
-      frame = null; sc.removeEventListener('touchmove', movePinch);
-      canvas.style.transform = ''; canvas.style.willChange = '';
-      sc.querySelectorAll(/** @type {'div'} */('.rail-cell')).forEach(el => el.style.transform = '');
+    const step = () => {
+      frame = 0;
+      const current = gesture;
+      if (!current || !sc.isConnected) return;
+      const ppd = clampZoom(current.target ?? view.ppd * Math.exp(current.log));
+      current.log = 0;
+      zoomRoadmap(view, ppd, current.day, current.cx);
+      if (current.dy) { sc.scrollTop -= current.dy; current.dy = 0; }
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(step); };
+    function end() {
+      clearTimeout(idle);
+      if (frame) { cancelAnimationFrame(frame); step(); }
+      gesture = null;
+      sc.removeEventListener('touchmove', movePinch);
     }
-    roadmapGestureCleanup = cleanup;
     sc.addEventListener('wheel', e => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      if (gesture?.kind === 'pinch') return;
-      const cx = e.clientX-sc.getBoundingClientRect().left;
-      if (!gesture) begin(cx, 'wheel');
-      // Re-anchor on the same date under a moving pointer at the pending scale.
-      gesture.date += (cx-gesture.cx) / gesture.next * DAY;
-      gesture.cx = cx;
-      gesture.next = clamp(gesture.next * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
-      schedule(); clearTimeout(idle); idle = setTimeout(finish, 120);
+      if (gesture && gesture.kind !== 'wheel') return;
+      const current = gesture || begin('wheel', e.clientX), cx = e.clientX - current.left;
+      // A pointer that moved between events zooms around the day now under it.
+      if (cx !== current.cx) { current.day = (sc.scrollLeft + cx - RAIL) / view.ppd; current.cx = cx; }
+      current.log += wheelZoom(e);
+      schedule();
+      clearTimeout(idle); idle = setTimeout(end, 120);
     }, {passive:false});
-    const dist = (/** @type {TouchList} */ touches) => Math.hypot(touches[0].clientX-touches[1].clientX, touches[0].clientY-touches[1].clientY);
+    const center = (/** @type {TouchList} */ touches) => ({ x:(touches[0].clientX + touches[1].clientX) / 2, y:(touches[0].clientY + touches[1].clientY) / 2 });
+    const spread = (/** @type {TouchList} */ touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+    function movePinch(/** @type {TouchEvent} */ e) {
+      if (gesture?.kind !== 'pinch' || e.touches.length !== 2) return;
+      e.preventDefault();
+      const point = center(e.touches);
+      gesture.target = gesture.ppd0 * spread(e.touches) / gesture.distance;
+      gesture.cx = point.x - gesture.left;
+      gesture.dy += point.y - gesture.cy; gesture.cy = point.y;
+      schedule();
+    }
     sc.addEventListener('touchstart', e => {
-      if (e.touches.length !== 2 || !dist(e.touches) || gesture) return;
-      const cx = (e.touches[0].clientX+e.touches[1].clientX)/2-sc.getBoundingClientRect().left;
-      begin(cx, 'pinch'); gesture.distance = dist(e.touches);
+      if (e.touches.length !== 2 || !spread(e.touches) || gesture?.kind === 'pinch') return;
+      if (gesture) end();
+      const point = center(e.touches), current = begin('pinch', point.x);
+      current.distance = spread(e.touches); current.cy = point.y;
       sc.addEventListener('touchmove', movePinch, {passive:false});
     }, {passive:true});
-    const endPinch = () => { if (gesture?.kind === 'pinch') finish(); };
+    const endPinch = (/** @type {TouchEvent} */ e) => { if (gesture?.kind === 'pinch' && e.touches.length < 2) end(); };
     sc.addEventListener('touchend', endPinch, {passive:true});
     sc.addEventListener('touchcancel', endPinch, {passive:true});
+    // Safari reports a touchpad pinch as gesture events, not ctrl+wheel. On
+    // touch screens, touch events already drive the pinch.
+    sc.addEventListener('pointermove', e => { pointerX = e.clientX; }, {passive:true});
+    const pinchGesture = (/** @type {Event & {scale?:number,clientX?:number}} */ e) => {
+      e.preventDefault();
+      if (gesture?.kind === 'pinch') return;
+      if (e.type === 'gesturestart') {
+        if (gesture) end();
+        const left = sc.getBoundingClientRect().left;
+        begin('gesture', Number.isFinite(e.clientX) ? e.clientX : Number.isFinite(pointerX) ? pointerX : left + sc.clientWidth / 2, left);
+        return;
+      }
+      if (gesture?.kind !== 'gesture') return;
+      if (Number.isFinite(e.scale) && e.scale > 0) gesture.target = gesture.ppd0 * e.scale;
+      if (Number.isFinite(e.clientX)) gesture.cx = e.clientX - gesture.left;
+      schedule();
+      if (e.type === 'gestureend') end();
+    };
+    for (const type of ['gesturestart', 'gesturechange', 'gestureend']) sc.addEventListener(type, pinchGesture);
+    roadmapGestureCleanup = () => {
+      if(calendarFrame)cancelAnimationFrame(calendarFrame);
+      sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;
+      clearTimeout(idle); if (frame) cancelAnimationFrame(frame);
+      frame = 0; gesture = null; sc.removeEventListener('touchmove', movePinch);
+    };
   }
 
   // Layout motion uses the current painted positions, so a new drag can interrupt it.
@@ -2396,7 +2632,7 @@
   // ---------- actions ----------
   const App = {
     /** Production compatibility boundary. New modules must not reach private state directly. */
-    context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
+    context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
     updateDocumentTitle,
     refreshCounts() {
       const badge=document.querySelector('.sidebar .nav-item[title="Board"] .end');
@@ -2450,13 +2686,36 @@
       if (userId) [...content.querySelectorAll('.user-row')].find(el => el.dataset.userId === userId)?.focus({preventScroll:true});
     },
     validateFormDates,
+    /**
+     * Show each title and description field's draft, or its saved value once
+     * the draft is gone (such as after Use latest), with its Not saved note.
+     * The field being edited keeps what the person is typing.
+     */
+    refreshTaskDrafts(id) {
+      if (state.view !== 'task' || state.taskId !== id) return;
+      const t = taskById(id); if (!t) return;
+      for (const [field, selector, control] of [['title', '.task-title-field', '.tp-title'], ['desc', '.task-description', '#task-description']]) {
+        const host = document.querySelector(`.task-page ${selector}`); if (!host) continue;
+        const input = host.querySelector(control), value = taskDraft(t, field)?.value ?? (field === 'title' ? t.title : t.desc ?? '');
+        if (input && input !== document.activeElement && input.value !== value) { input.value = value; if (field === 'title') sizeTaskTitle(); else sizeDescription(); }
+        host.querySelector('[data-draft-note]')?.remove();
+        const template = document.createElement('template'); setHTML(template, taskDraftNote(t, field));
+        host.append(template.content);
+      }
+    },
     noteTaskSaving: taskSaving,
     clearTaskSaving,
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
     confirm: askConfirmation,
     fieldError: failField,
     showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
-    showTemporaryPassword(id, password) { state.modal = { type:'temppw', id, pw:password, ownerSession:D.session?.id, ownerId:me()?.id }; renderOverlays(); },
+    // With `wait`, a password that arrives while another dialog is open shows
+    // when that dialog closes, so it neither replaces the dialog nor gets lost.
+    showTemporaryPassword(id, password, { wait = false } = {}) {
+      const modal = { type:'temppw', id, pw:password, ownerSession:D.session?.id, ownerId:me()?.id };
+      if (wait && state.modal && !(state.modal.type === 'user' && state.modal.id === id)) { waitingPasswords.push(modal); return false; }
+      state.modal = modal; renderOverlays(); return true;
+    },
     async copyTemporaryPassword() {
       const modal=state.modal;
       if(modal?.type!=='temppw'||!isAdmin()||modal.ownerSession!==D.session?.id||modal.ownerId!==me()?.id)return;
@@ -2470,13 +2729,13 @@
     selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
     // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
     refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
-    refreshRoadmap({zoom=false}={}) {
+    refreshRoadmap() {
       refreshEpicSummary();
       if(state.view!=='roadmap'){refreshBackground();return;}
       const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
       if(!content||!scroll){render();return;}
       roadmapGestureCleanup();
-      const before=zoom?null:motionRects('.lane'),left=zoom?state.rmScrollLeft:scroll.scrollLeft,top=scroll.scrollTop;
+      const before=motionRects('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
       const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
       setHTML(content,renderRoadmap());mountRoadmap();
       const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
@@ -2699,7 +2958,7 @@
       if (!isAdmin()) return;
       const assigned = tasks().filter((t) => t.state !== 'done' && (t.assignees || []).includes(uid));
       if (assigned.length) {
-        state.modal = { type: 'confirm', title: 'Member has open work', text: `Reassign ${assigned.length} open task${assigned.length === 1 ? '' : 's'} before removing ${esc(uid)} from this project.`, blocked: true };
+        state.modal = { type: 'confirm', title: 'Member has open work', text: `Reassign ${assigned.length} open task${assigned.length === 1 ? '' : 's'} before removing ${uid} from this project.`, blocked: true };
         render(); return;
       }
       const p = project();
@@ -2867,7 +3126,9 @@
       const sc = document.getElementById('rmScroll');
       const { start } = rmRange();
       state.rmScrollLeft = Math.max(RAIL + (today - start) / DAY * state.pxPerDay - (sc ? sc.clientWidth : 900) * 0.42, 0);
-      render();
+      // Scroll the mounted Roadmap in place; rebuilding the page would only repeat it.
+      if (sc && state.view === 'roadmap' && Number(sc.dataset.rangeStart) === +start) sc.scrollLeft = state.rmScrollLeft;
+      else render();
     },
     epicHover(ev, id, keyboard = false, kind = 'epic') {
       if (!keyboard && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
@@ -2917,7 +3178,7 @@
     // menus
     projectMenu(ev) {
       const r = ev.currentTarget.getBoundingClientRect();
-      const items = visibleProjects().map((p) => ({ label: esc(p.name), projectId:p.id, projectName:p.name, fn: () => { if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('workspace.select',{projectId:p.id}).catch(bootWindow.OneloopRuntime.report);return;}App.selectProject(p.id); } }));
+      const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => { if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('workspace.select',{projectId:p.id}).catch(bootWindow.OneloopRuntime.report);return;}App.selectProject(p.id); } }));
       if (isAdmin()) items.push({ sep: true }, { label: 'New project', icon:I.plus, fn: () => { state.modal = { type: 'project' }; renderOverlays(); } });
       App._openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
     },
@@ -2933,10 +3194,12 @@
         { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; renderOverlays(); } },
         { sep: true },
         { label: 'Delete track', danger: true, fn: () => App.deleteTrack(id) },
-      ], ev.clientX - 140, ev.clientY + 8, {trigger:ev.currentTarget});
+      ], 0, 0, {trigger:ev.currentTarget, trackId:id});
     },
-    _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
-    menuAction(i) { const it = state.menu?.items[i];dismissMenu(false);it?.fn(); },
+    // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
+    _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
+    // The action starts from the menu's button, so a dialog it opens returns focus there.
+    menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
 
     // CRUD — epics
     saveEpic(ev, id) {
@@ -2990,7 +3253,7 @@
       const n = tasks().filter((t) => t.epicId === id).length;
       state.modal = n
         ? { type: 'confirm', title: 'This epic has tasks', text: `Move ${n} task${n > 1 ? 's' : ''} to another epic first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete epic?', text: `“${esc(epicById(id).title)}” will be removed.`, action: 'Delete epic', fn: () => { D.epics = D.epics.filter((e) => e.id !== id); state.peek = null; App.toast('Epic deleted'); } };
+        : { type: 'confirm', title: 'Delete epic?', text: `“${epicById(id).title}” will be removed.`, action: 'Delete epic', fn: () => { D.epics = D.epics.filter((e) => e.id !== id); state.peek = null; App.toast('Epic deleted'); } };
       render();
     },
 
@@ -3011,7 +3274,7 @@
     },
     deleteMilestone(id) {
       if (!App.require('manage_roadmap')) return;
-      state.modal = { type: 'confirm', title: 'Delete milestone?', text: `“${esc(D.milestones.find((m) => m.id === id).name)}” will be removed.`, action: 'Delete', fn: () => { D.milestones = D.milestones.filter((m) => m.id !== id); App.toast('Milestone deleted'); } };
+      state.modal = { type: 'confirm', title: 'Delete milestone?', text: `“${D.milestones.find((m) => m.id === id).name}” will be removed.`, action: 'Delete', fn: () => { D.milestones = D.milestones.filter((m) => m.id !== id); App.toast('Milestone deleted'); } };
       render();
     },
 
@@ -3030,7 +3293,7 @@
       const n = epics().filter((e) => e.trackId === id).length;
       state.modal = n
         ? { type: 'confirm', title: 'This track has epics', text: `Move ${n} epic${n > 1 ? 's' : ''} to another track first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete track?', text: `“${esc(trackById(id).name)}” will be removed.`, action: 'Delete track', fn: () => { D.tracks = D.tracks.filter((t) => t.id !== id); App.toast('Track deleted'); } };
+        : { type: 'confirm', title: 'Delete track?', text: `“${trackById(id).name}” will be removed.`, action: 'Delete track', fn: () => { D.tracks = D.tracks.filter((t) => t.id !== id); App.toast('Track deleted'); } };
       render();
     },
 
@@ -3333,7 +3596,7 @@
       if (!App.require('manage_board')) return;
       const t = taskById(id);
       if(!t){App.toast('This task is no longer available','error');return;}
-      state.modal = { type: 'confirm', title: 'Delete task?', text: `${esc(t.id)} will be removed.`, action: 'Delete task', fn: () => {
+      state.modal = { type: 'confirm', title: 'Delete task?', text: `${t.id} will be removed.`, action: 'Delete task', fn: () => {
         if(!D.tasks.includes(t)){App.toast('This task is no longer available','error');return;}
         if(!hasPermission('manage_board',trackById(epicById(t.epicId)?.trackId)?.projectId)){App.toast('You no longer have permission to delete this task','error');return;}
         const e = epicById(t.epicId);
@@ -3368,7 +3631,7 @@
     },
     editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate onsubmit="return App.savePoolDescription(event,'${UIArg(id)}')"><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" onkeydown="App.poolDescriptionKey(event,'${UIArg(id)}')" placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" onclick="App.cancelPoolDescription('${UIArg(id)}')">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
     cancelPoolDescription(id,focus=true){const row=document.querySelector(`[data-pool-item="${UIEscape(id)}"]`);if(!row)return;const before=row.getBoundingClientRect().height;row.querySelector('.pool-description-editor')?.remove();const toggle=row.querySelector('.pool-note-toggle');toggle?.setAttribute('aria-expanded','false');UIMotion.height(row,before);if(focus)toggle?.focus({preventScroll:true});},
-    savePoolDescription(ev,id){ev.preventDefault();const item=poolItems(state.poolTab).find(p=>p.id===id);if(!item||!me()?.active||(item.scope==='mine'?item.ownerId!==me().id:!canBoard())){App.toast('You no longer have permission to edit this item','error');return false;}const desc=cleanStr(new FormData(ev.target).get('desc'),2000);if(desc!==item.desc){item.desc=desc;App.toast('Description saved');}const row=ev.target.closest('[data-pool-item]');row.outerHTML=poolRowHtml(item);document.querySelector(`[data-pool-item="${UIEscape(id)}"] .pool-note-toggle`)?.focus({preventScroll:true});return false;},
+    savePoolDescription(ev,id){ev.preventDefault();const item=poolItems(state.poolTab).find(p=>p.id===id);if(!item||!me()?.active||(item.scope==='mine'?item.ownerId!==me().id:!canBoard())){App.toast('You no longer have permission to edit this item','error');return false;}const desc=cleanStr(new FormData(ev.target).get('desc'),2000);if(desc!==item.desc){item.desc=desc;App.toast('Description saved');}const row=ev.target.closest('[data-pool-item]'),next=document.createElement('template');setHTML(next,poolRowHtml(item));row.replaceWith(next.content);document.querySelector(`[data-pool-item="${UIEscape(id)}"] .pool-note-toggle`)?.focus({preventScroll:true});return false;},
     promotePool(id) {
       if (!App.require('manage_board')) return;
       const item = poolItems(state.poolTab).find((x) => x.id === id);
@@ -3561,6 +3824,8 @@
     refresh: render,
     refreshBackground,
     refreshAfterDialog,
+    /** Draw the open dialog again from the saved values, dropping what was typed in it. */
+    redrawDialog(){if(state.modal)renderOverlays();},
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},

@@ -1,7 +1,8 @@
 // views/app.js: keyboard focus across dialogs, drawers, menus and refreshes.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, waitFor } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 // Every element reports the same box, so geometry-based focus code has a layout.
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
@@ -154,4 +155,68 @@ test('permission checkboxes and task controls have descriptive labels', () => {
   }
   t.A.openTask('BIR-079');assert.equal(t.d.querySelector('[title="Back to Board"]').getAttribute('aria-label'),'Back to Board');
   assert.equal(t.d.querySelector('.attachment-dropzone').getAttribute('aria-label'),'Drag & drop or browse files');
+});
+
+test('a full render keeps focus on the epic drawer close button, not its scrim', () => {
+  const t=boot('roadmap');t.A.openPeek(t.D.epics[0].id);
+  const close=()=>t.d.querySelector('.peek [aria-label="Close epic"]');
+  close().focus();assert.equal(t.d.activeElement,close());
+  t.A.refresh();
+  assert.equal(t.d.activeElement,close());
+});
+
+test('a track menu opened from the keyboard sits at its button', () => {
+  const t=boot('roadmap'),kebab=t.d.querySelector('.lane[data-track] .kebab');
+  kebab.getBoundingClientRect=()=>({x:600,y:200,left:600,top:200,right:620,bottom:220,width:20,height:20});
+  // A click from the keyboard reports no pointer position.
+  kebab.focus();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},kebab.closest('.lane').dataset.track);
+  const menu=t.d.querySelector('#overlay-root > .menu');
+  assert.equal(menu.style.left,'620px');assert.equal(menu.style.top,'224px');
+});
+
+test('backing out of a dialog opened from a menu returns focus to the menu button', () => {
+  const choose=(t,label)=>{const button=[...t.d.querySelectorAll('#overlay-root > .menu button')].find(item=>item.textContent.trim()===label);t.A.menuAction(Number(button.getAttribute('onclick').match(/\d+/)[0]));};
+  const trackMenu=(t,button)=>t.A.trackMenu({currentTarget:button,clientX:0,clientY:0,stopPropagation(){}},button.closest('.lane').dataset.track);
+  const flows=[
+    ['roadmap',t=>t.d.querySelector('.lane[data-track] .kebab'),trackMenu,'Rename track'],
+    ['roadmap',t=>t.d.querySelector('.lane[data-track] .kebab'),trackMenu,'Delete track'],
+    ['board',t=>t.d.querySelector('.switcher-btn'),(t,button)=>t.A.projectMenu({currentTarget:button}),'New project'],
+    ['task/BIR-079',t=>t.d.querySelector('.task-actions-button'),(t,button)=>t.A.taskActions({currentTarget:button},'BIR-079'),'Delete task'],
+  ];
+  // The production bridge asks for confirmation in its own layer; the views alone use a dialog.
+  for(const production of [false,true])for(const [route,find,open,label] of flows){
+    const t=boot(route),name=`${label}${production?' (production)':''}`;
+    if(production)installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:t.w.Recovery,reloadBootstrap:async()=>({})});
+    const button=find(t);button.focus();open(t,button);choose(t,label);
+    assert(t.d.querySelector('.modal,.confirmation-layer'),name);key(t,'Escape');assert.equal(t.d.querySelector('.modal,.confirmation-layer'),null,name);
+    assert.equal(t.d.activeElement.getAttribute('aria-label'),button.getAttribute('aria-label'),name);
+  }
+});
+
+test('the task heading keeps focus while a slow task load shows its skeleton', async () => {
+  const t=boot('board'),task=t.D.tasks.find(item=>item.state!=='done');
+  t.A.openTask(task.id);
+  const heading=()=>t.d.querySelector('.topbar h1');
+  assert.equal(t.d.activeElement,heading(),'opening a task focuses its heading');
+  // The route loads after the hash change; a read slower than 120 ms then shows the loading skeleton.
+  await new Promise(resolve=>t.w.addEventListener('hashchange',resolve,{once:true}));
+  t.w.Recovery.beginRouteLoad();
+  await waitFor(()=>t.d.querySelector('.loading-task'),'the loading skeleton shows');
+  assert.equal(t.d.activeElement,heading());
+  t.w.Recovery.clearPageError();t.A.openTask(task.id);
+  assert.equal(t.d.querySelector('.loading-task'),null);
+  assert.equal(t.d.activeElement,heading());
+  t.d.getElementById('main').focus();t.w.Recovery.beginRouteLoad();
+  await waitFor(()=>t.d.querySelector('.loading-task'),'the loading skeleton shows again');
+  assert.equal(t.d.activeElement,t.d.getElementById('main'),'the main area keeps focus too');
+});
+
+test('one Escape closes a track menu opened while an epic tooltip showed', () => {
+  const t=boot('roadmap'),bar=t.d.querySelector('.bar[data-epic]'),kebab=t.d.querySelector('.lane[data-track] .kebab');
+  bar.focus();t.A.epicHover({currentTarget:bar},bar.dataset.epic,true);assert(t.d.querySelector('.epic-tooltip'),'focus shows the tooltip');
+  // The menu opens before the tooltip's own delay hides it.
+  kebab.focus();t.A.epicLeave();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},kebab.closest('.lane').dataset.track);
+  assert(t.d.querySelector('#overlay-root > .menu'));
+  key(t,'Escape');
+  assert.equal(t.d.querySelector('#overlay-root > .menu'),null);assert.equal(t.d.activeElement,kebab);
 });

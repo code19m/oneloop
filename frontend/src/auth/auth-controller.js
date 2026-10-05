@@ -188,55 +188,65 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     async revokeSession(id) { await api.revokeSession(id); },
     async revokeOtherSessions() { return api.revokeOtherSessions(); },
     withRecentAuth(run) {
-      if(Date.now()-(data.session?.authenticatedAt||0)<30*60_000)return Promise.resolve().then(run);
-      const authGeneration=generation;
-      return new Promise((resolve,reject)=>{
-        if(document.querySelector('.reauth-layer')){reject(new ApiError('Authentication is already in progress',{code:'reauth_pending'}));return;}
-        const previous=document.activeElement,appRoot=document.getElementById('app');if(appRoot)appRoot.inert=true;
-        const layer=document.createElement('div');layer.className='confirmation-layer reauth-layer';
-        const scrim=document.createElement('div');scrim.className='scrim';
-        const wrap=document.createElement('div');wrap.className='confirmation-wrap';
-        const form=document.createElement('form');form.className='confirm-dialog';form.setAttribute('role','dialog');form.setAttribute('aria-modal','true');
-        const heading=document.createElement('h2');heading.id='reauth-title';heading.textContent='Confirm your identity';form.setAttribute('aria-labelledby',heading.id);
-        const label=document.createElement('label');label.htmlFor='reauth-password';label.textContent='Current password';
-        const input=document.createElement('input');input.className='ctl';input.id='reauth-password';input.name='password';input.type='password';input.autocomplete='current-password';input.required=true;
-        const actions=document.createElement('div');actions.className='modal-actions';
-        const cancel=document.createElement('button');cancel.className='btn quiet';cancel.type='button';cancel.textContent='Cancel';
-        const submit=document.createElement('button');submit.className='btn primary';submit.type='submit';submit.textContent='Continue';
-        actions.append(cancel,submit);form.append(heading,label,input,actions);wrap.append(form);layer.append(scrim,wrap);document.body.append(layer);
-        let closed=false,phase='password';
-        const authController=new AbortController();
-        const keydown=(event)=>{if(event.key==='Escape'&&!cancel.disabled){event.preventDefault();cancel.click();}else if(event.key==='Tab'){const controls=[input,cancel,submit].filter((control)=>!control.disabled),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}};
-        document.addEventListener('keydown',keydown,true);
-        const close=()=>{if(closed)return;closed=true;document.removeEventListener('keydown',keydown,true);if(appRoot)appRoot.inert=false;layer.remove();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
-        cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
-        form.addEventListener('submit',async(event)=>{
-          event.preventDefault();
-          if(phase!=='password'||isFormRetryPending(form))return;
-          phase='authenticating';submit.disabled=true;
-          let response;
-          try{response=await api.recentAuth(input.value,{signal:authController.signal});}
-          catch(error){
-            if(phase==='cancelled'||closed)return;
-            if(!current(authGeneration)){close();reject(error);return;}
-            phase='password';submit.disabled=false;
-            if(!['incorrect_password','rate_limited','unavailable'].includes(error?.code)
-              || !presentFormError(form,error,globalThis.App)) reportError(error,form);
-            return;
-          }
-          if(phase==='cancelled'||closed)return;
-          if(!current(authGeneration)){close();reject(new ApiError('The session changed during authentication',{code:'stale_session'}));return;}
-          if(data.session)data.session.authenticatedAt=response.authenticatedAt*1000;
-          input.value='';phase='action';input.disabled=true;cancel.disabled=true;
-          try{
-            const result=await run();
-            if(!current(authGeneration)){close();reject(new ApiError('The session changed while saving',{code:'stale_session'}));return;}
-            close();resolve(result);
-          }
-          catch(error){close();reject(error);}
-        });
-        input.focus();
-      });
+      // The sign-in time comes from the server, so compare it with the server's clock.
+      const now=api.serverNow?.()??Date.now();
+      if(now-(data.session?.authenticatedAt||0)<30*60_000){
+        // If the server still asks for the password, ask once and try again.
+        return Promise.resolve().then(run).catch((error)=>{if(error?.code==='recent_auth_required'&&data.session)return confirmIdentity(run);throw error;});
+      }
+      return confirmIdentity(run);
     },
   });
+
+  function confirmIdentity(run) {
+    const authGeneration=generation;
+    return new Promise((resolve,reject)=>{
+      if(document.querySelector('.reauth-layer')){reject(new ApiError('Authentication is already in progress',{code:'reauth_pending'}));return;}
+      const previous=document.activeElement,appRoot=document.getElementById('app');if(appRoot)appRoot.inert=true;
+      const layer=document.createElement('div');layer.className='confirmation-layer reauth-layer';
+      const scrim=document.createElement('div');scrim.className='scrim';
+      const wrap=document.createElement('div');wrap.className='confirmation-wrap';
+      const form=document.createElement('form');form.className='confirm-dialog';form.setAttribute('role','dialog');form.setAttribute('aria-modal','true');
+      const heading=document.createElement('h2');heading.id='reauth-title';heading.textContent='Confirm your identity';form.setAttribute('aria-labelledby',heading.id);
+      const label=document.createElement('label');label.htmlFor='reauth-password';label.textContent='Current password';
+      const input=document.createElement('input');input.className='ctl';input.id='reauth-password';input.name='password';input.type='password';input.autocomplete='current-password';input.required=true;
+      const actions=document.createElement('div');actions.className='modal-actions';
+      const cancel=document.createElement('button');cancel.className='btn quiet';cancel.type='button';cancel.textContent='Cancel';
+      const submit=document.createElement('button');submit.className='btn primary';submit.type='submit';submit.textContent='Continue';
+      actions.append(cancel,submit);form.append(heading,label,input,actions);wrap.append(form);layer.append(scrim,wrap);document.body.append(layer);
+      let closed=false,phase='password';
+      const authController=new AbortController();
+      // Escape belongs to this prompt only; the dialog behind it stays open.
+      const keydown=(event)=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(!cancel.disabled)cancel.click();}else if(event.key==='Tab'){const controls=[input,cancel,submit].filter((control)=>!control.disabled),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}};
+      document.addEventListener('keydown',keydown,true);
+      const close=()=>{if(closed)return;closed=true;document.removeEventListener('keydown',keydown,true);if(appRoot)appRoot.inert=false;layer.remove();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
+      cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
+      form.addEventListener('submit',async(event)=>{
+        event.preventDefault();
+        if(phase!=='password'||isFormRetryPending(form))return;
+        phase='authenticating';submit.disabled=true;
+        let response;
+        try{response=await api.recentAuth(input.value,{signal:authController.signal});}
+        catch(error){
+          if(phase==='cancelled'||closed)return;
+          if(!current(authGeneration)){close();reject(error);return;}
+          phase='password';submit.disabled=false;
+          if(!['incorrect_password','rate_limited','unavailable'].includes(error?.code)
+            || !presentFormError(form,error,globalThis.App)) reportError(error,form);
+          return;
+        }
+        if(phase==='cancelled'||closed)return;
+        if(!current(authGeneration)){close();reject(new ApiError('The session changed during authentication',{code:'stale_session'}));return;}
+        if(data.session)data.session.authenticatedAt=response.authenticatedAt*1000;
+        input.value='';phase='action';input.disabled=true;cancel.disabled=true;
+        try{
+          const result=await run();
+          if(!current(authGeneration)){close();reject(new ApiError('The session changed while saving',{code:'stale_session'}));return;}
+          close();resolve(result);
+        }
+        catch(error){close();reject(error);}
+      });
+      input.focus();
+    });
+  }
 }

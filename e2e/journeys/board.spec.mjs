@@ -269,6 +269,25 @@ test('a dropped card settles into its new column, not back to its old one', asyn
   expect(Math.abs(targets[0].top - card.top)).toBeLessThanOrEqual(2);
 });
 
+test('on a narrow Board a card held at the edge scrolls to a column off screen', async ({ page, instance }) => {
+  await page.setViewportSize({ width: 600, height: 800 });
+  await openApp(page, instance, 'board');
+  await expect(page.locator('[data-col="done"]')).not.toBeInViewport();
+  const title = page.locator('.card .card-title-button').first(), box = await title.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // Columns snap on narrow screens; the drag still scrolls the Board under the held card.
+  await page.mouse.move(594, box.y + 40, { steps: 12 });
+  const done = page.locator('[data-col="done"]');
+  await expect(done).toBeInViewport({ ratio: 1, timeout: 15_000 });
+  const target = await done.boundingBox();
+  await page.mouse.move(target.x + target.width / 2, target.y + 70, { steps: 4 });
+  await expect(page.locator('.col.drop[data-col="done"]')).toHaveCount(1);
+  await page.mouse.up();
+  await expect.poll(async () => (await (await instance.api.get(`/api/tasks/${instance.projects[0].task.id}`)).json()).status).toBe('done');
+  await expect(page.locator('[data-col="done"] .card')).toHaveCount(1);
+});
+
 test('touch and pen grips reorder without taking away card-body scrolling', async ({ page, instance, browserName }) => {
   test.skip(browserName !== 'chromium', 'CDP supplies native touch and pen input');
   await page.emulateMedia({ reducedMotion: 'reduce' });

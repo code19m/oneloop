@@ -18,7 +18,11 @@ import { createReadController } from '../data/read-controller.js';
 import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
 import { installCollaborationController } from '../features/collaboration/controller.js';
 import { installKnowledgeController } from '../features/knowledge/controller.js';
-import { createRecoveryController, leaveUnavailableProject } from '../features/recovery/controller.js';
+import { createRecoveryController } from '../features/recovery/controller.js';
+import { createProjectionReload, routeScope as scopeOfRoute } from './projection-reload.js';
+import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+
+installTrustedTypes();
 
 const data = createLegacyData();
 globalThis.DATA = data;
@@ -49,7 +53,10 @@ const bootstrap = createBootstrapController({ api, data, onReady: (projection) =
   reportError(error);
 } });
 const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.userId??''}:${data.session?.id??''}`,onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
-const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refresh(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:()=>app?.refresh(),onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
+// A read repaints only the view that shows what it loaded.
+const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
+const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
+const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 runtimeHooks = installAttachmentTransport(runtimeHooks);
 globalThis.OneloopTransport = runtimeHooks;
@@ -115,66 +122,6 @@ try {
   showStartupError(error);
 }
 
-function routeScope() {
-  const route=location.hash.replace(/^#\/?/,'');
-  if(route.startsWith('task/')){
-    try{return {taskId:decodeURIComponent(route.slice(5)),view:'task'};}catch{return {view:'metadata'};}
-  }
-  const filters=app?.context?.().board;
-  const filtered=filters&&(filters.search||filters.blocked||filters.trackIds?.length||filters.epicIds?.length||filters.assigneeIds?.length);
-  return {view:route==='board'&&!filtered?'board':route==='roadmap'||!route?'roadmap':'metadata'};
-}
-
-let projectionGeneration=0;
-function projectionScope(){
-  const context=app?.context?.()??{};
-  return JSON.stringify([data.session?.id,data.session?.userId,location.hash,context.view,context.projectId,context.taskId]);
-}
-
-async function reloadProjection(scope={}){
-  const generation=++projectionGeneration,requestedScope=projectionScope();
-  const requestIsCurrent=()=>generation===projectionGeneration&&requestedScope===projectionScope();
-  const complete=(result)=>{
-    if(requestIsCurrent()&&!result?.stale){recovery?.refreshSucceeded();app?.updateDocumentTitle?.();}
-    return result;
-  };
-  try{
-    const previous=app?.context?.();
-    if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
-      if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
-      if(previous.view==='roadmap')return complete(await reads.roadmap(previous.projectId,{background:!!scope.background}));
-    }
-    reads.cancel({preserveBoard:true});
-    let loaded,destinationError;
-    try { loaded=await bootstrap.load({projectId:app?.context?.().projectId,...routeScope(),...scope}); }
-    catch(error) {
-      if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
-      destinationError=error;
-      loaded=await bootstrap.load({view:'board',background:!!scope.background});
-    }
-    if(loaded?.stale||!app)return loaded;
-    if(leaveUnavailableProject(data,app,previous))return loaded;
-    if(destinationError){recovery?.handleRouteError(destinationError,{background:!!scope.background});return loaded;}
-    const current=app.context();
-    const readOptions={background:!!scope.background};
-    if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
-      await reads.board(current.projectId,current.board,readOptions);
-    }
-    else if(current.view==='roadmap')app.refreshRoadmap();
-    else if(bridge&&['profile','users','settings'].includes(current.view)){
-      const result=await bridge.loadCurrentRoute();
-      if(result?.stale)return result;
-    }
-    else if(data.projects.some((item)=>item.id===current.projectId)){app.refreshCounts();if(current.view==='task')app.refreshBackground();}
-    else app.refresh();
-    if(current.modal?.type==='pool'||current.modal?.poolId)await reads.pool(current.projectId,current.poolTab==='project'?'team':'personal');
-    return complete(loaded);
-  }catch(error){
-    if(scope.background&&requestIsCurrent())recovery?.refreshFailed(error);
-    throw error;
-  }
-}
-
 async function loadViewDependencies() {
   await Promise.all([
     '/views/motion.js','/vendor/js-sha256/sha256.js','/views/activity.js',
@@ -184,7 +131,7 @@ async function loadViewDependencies() {
 
 function loadClassic(source) {
   return new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src=new URL(`../../${source.replace(/^\//,'')}`,import.meta.url).href;script.async=false;
+    const script=document.createElement('script');script.src=trustedScriptURL(new URL(`../../${source.replace(/^\//,'')}`,import.meta.url).href);script.async=false;
     const fail=()=>{clearTimeout(timer);script.remove();reject(new Error(`Could not load ${source}`));};
     const timer=setTimeout(fail,30_000);
     script.addEventListener('load',()=>{clearTimeout(timer);resolve();},{once:true});

@@ -13,7 +13,13 @@ import {
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
 
-const text = (value, max) => String(value ?? '').trim().slice(0, max);
+/** The server's username order: SQLite's binary collation, not the browser's locale. */
+const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+/** Cut at `max` UTF-16 units, as maxlength does, without splitting a surrogate pair. */
+const text = (value, max) => {
+  const cut = String(value ?? '').trim().slice(0, max);
+  return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
+};
 
 /** @param {{app:import('../data/contracts.js').LegacyApp,data:import('../data/contracts.js').LegacyData,gateway:import('../data/contracts.js').CommandGateway,api:import('../data/contracts.js').ApiClient,auth:any,reads:any,recovery:any,reloadBootstrap:Function}} options */
 export function installViewBridge({ app, data, gateway, auth, api, reads, recovery, reloadBootstrap }) {
@@ -24,9 +30,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const poolItem = (id) => data.pool.find((item) => item.id === id);
   const context = () => app.context();
   const sessionScope=()=>`${data.session?.id??''}:${data.session?.userId??''}`;
-  let usersAfter=null;
+  let usersAfter=null,usersDepth=1;
   const assigneeSaves=new Map();
-  const fieldSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
   const pendingPoolCaptures = new WeakSet();
@@ -53,7 +58,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function skipped(){return {entities:[],events:[],replayed:false,skipped:true};}
   function stale(result={}){return {...result,stale:true};}
   function ifCurrent(result,effect){return result?.stale?result:effect(result);}
-  function noteTaskSaved(result,id){if(!result?.stale&&!result?.skipped&&!recovery?.isSavingTask?.())app.noteTaskSaved?.(id);return result;}
+  function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery?.isSavingTask?.()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved?.(id);return result;}
   const sameAssignees=(left,right)=>left.length===right.length&&left.every((id)=>right.includes(id));
 
   function saveAssignees(item,assigneeIds){
@@ -106,13 +111,25 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     await reloadBootstrap({projectId:context().projectId});app.refresh();
   }
 
-  function conflictValue(operation,payload,item){
-    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','projectId','userId','id','mentions']);
+  /** The one field a save changes, or null when it changes several. */
+  function conflictField(payload){
+    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','blockId','projectId','userId','id','mentions']);
     const keys=Object.keys(payload).filter((key)=>!ignored.has(key));
+    return keys.length===1?keys[0]:null;
+  }
+
+  function conflictValue(operation,payload,item){
+    const field=conflictField(payload);
     const aliases={description:'desc',startDate:'start',endDate:'end',milestoneDate:'date',taskPrefix:'key',status:'state',assigneeIds:'assignees'};
-    if(keys.length!==1)return undefined;
-    if(item===payload)return payload[keys[0]];
-    return item?.[aliases[keys[0]]??keys[0]];
+    if(!field)return undefined;
+    if(item===payload)return payload[field];
+    return item?.[aliases[field]??field];
+  }
+
+  /** The control of a dialog's field, in the dialog as it is drawn now. */
+  function dialogControl(form,field){
+    const live=form?.isConnected?form:globalThis.document?.querySelector?.('.modal form');
+    return live?.querySelector?.(`[name="${formFieldName(field)}"]`)??null;
   }
 
   function report(error, options = {}) {
@@ -143,37 +160,143 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     else (app.refreshAfterDialog??app.refresh)();
   }
 
-  function saveField(operation,payload,entity,message,options){
-    const scope=sessionScope(),key=`${scope}:${commandInteractionKey(operation,payload,entity)}`;
-    const pending=fieldSaves.get(key);
-    if(pending){pending.next={payload,options};return pending.promise;}
-    const state={next:{payload,options},promise:null};fieldSaves.set(key,state);
-    state.promise=(async()=>{
-      let result=skipped(),expectedRevision;
-      try{
-        while(state.next){
-          const next=state.next;state.next=null;
-          if(sessionScope()!==scope)return stale();
-          const current=latestEntity(operation,next.payload,entity)??entity;
-          const saved=await execute(operation,next.payload,current,null,{...next.options,coalesce:false,expectedRevision,paint:false});
-          if(saved?.stale)return saved;
-          if(!saved?.skipped)result=saved;
-          // Only advance from our acknowledged write, not a newer live projection.
-          const acknowledged=saved?.entities?.find(item=>item.id===(entity.internalId??entity.id));
-          expectedRevision=acknowledged?.revision??expectedRevision;
-        }
-        if(!result.skipped){
-          if(options.paint!==false&&!result.refreshError)paintCommand(operation);
-          if(message)app.toast(message);
-        }
-        return result;
-      }finally{fieldSaves.delete(key);}
-    })();
-    return state.promise;
+  // Saves of one record run one at a time, and each builds on the revision the
+  // previous save was acknowledged at. Two fields saved close together never
+  // conflict with each other, while a change made by someone else still does.
+  // A newer value of an autosaved field replaces its queued value.
+  /** @type {Map<string,{jobs:Map<string,any>,active:boolean,running:Promise<void>|null}>} */
+  const records=new Map();
+  /** Revisions this browser moved a record to, by the revision each save was based on. */
+  /** @type {Map<string,Map<number,number>>} */
+  const acknowledged=new Map();
+  // A task field value that is not saved yet. The task page shows it instead of
+  // the saved value, so a refresh never replaces what the person typed, and
+  // offers Save when the save failed.
+  /** @type {Map<string,{taskId:string,field:string,value:string,base:number|undefined,scope:string,unsaved:boolean,retryOnline:boolean}>} */
+  const drafts=new Map();
+  let jobSequence=0;
+  const RECORD_FIELDS={task:'taskId',epic:'epicId',track:'trackId',milestone:'milestoneId',pool:'poolItemId',project:'projectId'};
+  function recordOf(operation,payload){
+    if(operation.startsWith('task.block.'))return payload.blockId?`taskBlock:${payload.blockId}`:null;
+    const type=operation.split('.')[0];
+    if(type==='membership')return payload.projectId&&payload.userId?`membership:${payload.projectId}:${payload.userId}`:null;
+    const id=payload[RECORD_FIELDS[type]]??payload.id;
+    return id?`${type}:${id}`:null;
+  }
+  // Drafts belong to one person: they survive the end of a session and come
+  // back when the same person signs in again; anyone else never sees them.
+  const draftKey=(taskId,field)=>`${data.session?.userId??''}|${taskId}|${field}`;
+  function pruneDrafts(){if(!data.session)return;const scope=`${data.session.userId}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  // A save the end of a session cut off leaves its draft Not saved.
+  function unsaved(draft){if(draft&&sessionScope()!==draft.scope)draft.unsaved=true;}
+  const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
+  const unsavedDraft=(taskId)=>[...drafts.values()].some(draft=>draft.taskId===taskId&&draft.unsaved&&drafts.get(draftKey(taskId,draft.field))===draft);
+  function paintDrafts(taskId){const item=task(taskId);if(item)app.refreshTaskDrafts?.(item.id);}
+
+  function enqueue(record,operation,payload,entity,message,options){
+    const scope=sessionScope(),key=`${scope}|${record}`;
+    let queue=records.get(key);
+    if(!queue){queue={jobs:new Map(),active:false,running:null};records.set(key,queue);}
+    const jobKey=options.coalesce?commandInteractionKey(operation,payload,entity):`job:${++jobSequence}`;
+    const replaced=queue.jobs.get(jobKey);
+    // The base is the revision the person saw when they made this change.
+    const base=options.expectedRevision??recovery?.expectedRevision?.(recovery?.revisionKey?.(entity),entity?.revision)??entity?.revision;
+    const job={jobKey,operation,payload,entity,message,options,base,waiters:replaced?.waiters??[],carry:replaced?.carry??null};
+    const done=new Promise((resolve,reject)=>job.waiters.push({resolve,reject}));
+    queue.jobs.set(jobKey,job);
+    queue.running??=drain(queue,key,scope);
+    return done;
   }
 
+  async function drain(queue,key,scope){
+    let chain=acknowledged.get(key);if(!chain){chain=new Map();acknowledged.set(key,chain);}
+    try{
+      while(queue.jobs.size){
+        const [jobKey,job]=queue.jobs.entries().next().value;queue.jobs.delete(jobKey);
+        const draft=job.options.draft?drafts.get(job.options.draft):null;
+        if(sessionScope()!==scope){unsaved(draft);for(const waiter of job.waiters)waiter.resolve(stale());continue;}
+        let base=job.base;while(chain.has(base))base=chain.get(base);
+        const current=latestEntity(job.operation,job.payload,job.entity)??job.entity;
+        queue.active=true;
+        try{
+          const result=await run(job.operation,job.payload,current,job.options.coalesce?null:job.message,{...job.options,expectedRevision:base,paint:job.options.coalesce?false:job.options.paint});
+          queue.active=false;
+          const saved=result?.entities?.find(item=>item.id===(current?.internalId??current?.id))?.revision;
+          // Keep my changes saved on top of someone else's revision. Only that
+          // revision leads to the save, so other fields typed before it still
+          // meet the other person's change.
+          const from=result?.retriedAt??base;
+          if(!result?.stale&&!result?.skipped&&Number.isSafeInteger(from)&&Number.isSafeInteger(saved)&&saved!==from)chain.set(from,saved);
+          const carry=!result?.stale&&!result?.skipped?result:job.carry;
+          const newer=queue.jobs.get(jobKey);
+          // A newer value of this field is still queued: its callers learn the outcome together.
+          // After Keep my changes, it builds on the revision the person chose to keep their value over.
+          if(newer&&!result?.stale){if(Number.isSafeInteger(result?.retriedAt))newer.base=result.retriedAt;newer.waiters.unshift(...job.waiters);newer.carry=carry;continue;}
+          const outcome=result?.stale||!carry?result:carry;
+          if(result?.stale)unsaved(draft);
+          if(draft&&!result?.stale&&drafts.get(job.options.draft)===draft&&draft.value===job.options.draftValue){drafts.delete(job.options.draft);paintDrafts(draft.taskId);}
+          if(job.options.coalesce&&carry&&!outcome?.stale){
+            if(job.options.paint!==false&&!carry.refreshError)paintCommand(job.operation);
+            if(job.message)app.toast(job.message);
+          }
+          for(const waiter of job.waiters)waiter.resolve(outcome);
+        }catch(error){
+          queue.active=false;
+          // A newer queued value of the field is not sent after a failure; its draft keeps it.
+          const newer=queue.jobs.get(jobKey);if(newer){queue.jobs.delete(jobKey);job.waiters.push(...newer.waiters);}
+          const latest=job.options.draft?drafts.get(job.options.draft):null;
+          unsaved(latest);
+          if(latest&&sessionScope()===scope){
+            if(/** @type {any} */(error)?.conflictChoice==='latest')drafts.delete(job.options.draft);
+            else Object.assign(latest,{unsaved:true,base:latest.base??job.base,retryOnline:['offline','network_error','timeout'].includes(/** @type {any} */(error)?.code)});
+            paintDrafts(latest.taskId);
+          }
+          for(const waiter of job.waiters)waiter.reject(error);
+        }
+      }
+    }finally{queue.active=false;queue.running=null;if(records.get(key)===queue&&!queue.jobs.size)records.delete(key);}
+  }
+
+  /**
+   * Save a task field from the task page. A title or description keeps a draft until it is saved.
+   * @param {any} item @param {string} field @param {any} value @param {{base?:number}} [options]
+   */
+  function saveTaskField(item,field,value,{base}={}){
+    const form=globalThis.document?.querySelector?.('.task-page');
+    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
+    if(!names[field])return false;
+    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
+    if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
+    if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
+    if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
+    let draft;pruneDrafts();
+    if(field==='title'||field==='desc'){
+      draft=draftKey(item.internalId,field);
+      const previous=drafts.get(draft);
+      // The field shows a Not saved draft instead of newer saved text, so text
+      // typed over it still builds on the revision the draft was typed on.
+      if(previous?.unsaved)base??=previous.base;
+      if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
+      else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
+    }
+    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+  }
+  function retryDrafts(){
+    for(const draft of [...drafts.values()]){
+      const item=task(draft.taskId);
+      if(item&&draft.unsaved&&draft.retryOnline&&drafts.get(draftKey(draft.taskId,draft.field))===draft)saveTaskField(item,draft.field,draft.value,{base:draft.base});
+    }
+  }
+  recovery?.whenOnline?.(retryDrafts);
+
   async function execute(operation, payload, entity, message, options = {}) {
-    if(options.coalesce)return saveField(operation,payload,entity,message,options);
+    const record=options.create?null:recordOf(operation,payload);
+    if(!record)return run(operation,payload,entity,message,options);
+    return enqueue(record,operation,payload,entity,message,options);
+  }
+
+  async function run(operation, payload, entity, message, options = {}) {
     if(isFormRetryPending(options.form)){
       const error=new ApiError('Wait before trying again.',{code:'rate_limited'});
       /** @type {any} */(error).oneloopReported=true;
@@ -187,7 +310,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();
     }
     const interactionKey=options.interactionKey ?? commandInteractionKey(operation,payload,entity);
-    const editorSnapshot=recovery?.captureEditor?.();
     const expectedRevision=options.create?undefined:(options.expectedRevision??recovery?.expectedRevision?.(revisionKey,entity?.revision)??entity?.revision);
     let result;
     try {
@@ -199,19 +321,33 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
       if(isServerNoChange(error)){recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();}
       if(recovery?.isRevisionConflict?.(error)&&!options.create){
+        // A dialog shows what the person typed until they choose. Use latest
+        // shows the saved values in it: in the one field the save changes, or
+        // by drawing the dialog again (a Pool promotion fills in the item's
+        // text below). Until then, it stays on the revision it was opened at,
+        // so saving it again still meets the other change.
+        const dialog=!options.coalesce&&!!options.form?.closest?.('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
         try{
+          /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
             error,
             reloadLatest:()=>reloadConflict(operation,payload,entity,options),
             latestEntity:()=>latestEntity(operation,payload,entity),
-            retry:(expectedRevision)=>{if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
-            target:{element:options.conflictElement,latestValue:(item)=>conflictValue(operation,payload,item)},
+            retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
+            target:{
+              element:options.conflictElement??(showsLatest&&field?()=>dialogControl(options.form,field):undefined),
+              latestValue:(item)=>conflictValue(operation,payload,item),
+              ...(showsLatest&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
+            },
             myValue:conflictValue(operation,payload,payload),
-            snapshot:editorSnapshot,
+            // A task field keeps the person's other fields as they are now; only a
+            // dialog is restored, from the moment the conflict came back.
+            snapshot:options.coalesce?false:null,
           });
-          if(resolved.saved)result=resolved.result;
+          // Keep my changes saved the change on the latest revision, which the result names.
+          if(resolved.saved)result={...resolved.result,retriedAt};
           else{
-            recovery?.finishRevision?.(revisionKey);
+            if(resolved.choice==='latest'||!dialog)recovery?.finishRevision?.(revisionKey);
             if(operation==='pool.promote'&&resolved.latest&&sessionScope()===scope&&context().modal?.poolId===payload.poolItemId){
               const form=options.form?.isConnected?options.form:globalThis.document?.querySelector('.pool-editor form');
               for(const [name,value] of [['title',resolved.latest.title],['desc',resolved.latest.desc??resolved.latest.description??'']]){
@@ -220,7 +356,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
               // Focusing the retained editor records the newly accepted source revision.
               form?.querySelector('[name="title"]')?.focus({preventScroll:true});
             }
-            if(error&&typeof error==='object')error.oneloopReported=true;throw error;
+            if(error&&typeof error==='object'){error.oneloopReported=true;error.conflictChoice=resolved.choice==='latest'?'latest':'cancelled';}
+            // A prompt that closed without a choice (the page changed) still says so; a draft shows it in place.
+            if(resolved.choice!=='latest'&&!options.draft&&sessionScope()===scope)app.toast('Your change was not saved. Review the latest version and try again.','error');
+            throw error;
           }
         }catch(recoveryError){
           if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
@@ -239,10 +378,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     options.onAccepted?.(result);
     if (message) app.toast(message);
     recovery?.finishRevision?.(revisionKey);
+    // The accepted change paints at once; reads that follow repaint their own parts.
+    if(!options.reload&&options.paint!==false)paintCommand(operation);
     const refreshContext={...context()};
     try {
       if (options.reload) {
-        reads.cancel({preserveBoard:true});
         const loaded=await reloadBootstrap();if(loaded?.stale)return stale(result);
         const current=context();
         if(data.projects.some((item)=>item.id===current.projectId)){
@@ -254,7 +394,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       }
       if(options.poolScope&&(await reads.pool(context().projectId,options.poolScope))?.stale)return stale(result);
       if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale(result);}
-      if(options.paint!==false)paintCommand(operation);
+      if(options.reload&&options.paint!==false)paintCommand(operation);
       return result;
     } catch (error) {
       if(sessionScope()!==scope)return stale(result);
@@ -317,9 +457,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
     }});
   };
-  app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(loadProfileAccess).catch(report))});
-  app.revokeOtherSessions = () => app.confirm({title:'Sign out other sessions?',text:'All other browser sessions will end.',action:'Sign out other sessions',confirm:()=>fire(auth.revokeOtherSessions().then(loadProfileAccess).catch(report))});
-  app.revokeAppAccess=(id)=>app.confirm({title:'Revoke connected app?',text:'The app will lose its authorized access.',action:'Revoke access',confirm:()=>fire(api.revokeConnectedApp(id).then(loadProfileAccess).catch(report))});
+  app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(()=>loadProfileAccess()).catch(report))});
+  app.revokeOtherSessions = () => app.confirm({title:'Sign out other sessions?',text:'All other browser sessions will end.',action:'Sign out other sessions',confirm:()=>fire(auth.revokeOtherSessions().then(()=>loadProfileAccess()).catch(report))});
+  app.revokeAppAccess=(id)=>app.confirm({title:'Revoke connected app?',text:'The app will lose its authorized access.',action:'Revoke access',confirm:()=>fire(api.revokeConnectedApp(id).then(()=>loadProfileAccess()).catch(report))});
   /** @param {any} error @param {string} scope @param {string} id @param {HTMLFormElement|null} form */
   async function recoverUser(error,scope,id,form=null) {
     if(sessionScope()!==scope)return;
@@ -341,16 +481,18 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const form=event.target,values=formValues(event),displayName=text(values.get('name'),80),scope=sessionScope();
     if(!displayName)return fieldError(form,'name','Give the user a name.');
     if(id){
-      const item=data.users.find((entry)=>entry.id===id);if(!item)return false;
+      const item=data.users.find((entry)=>entry.id===id);if(!item)return fieldError(form,'name','This user is no longer listed. Reload Users and try again.');
       const isAdmin=form.querySelector?.('[name="admin"]')?.disabled?item.admin:values.has('admin'),isActive=form.querySelector?.('[name="active"]')?.disabled?item.active:values.has('active');
       if(item.name===displayName&&item.admin===isAdmin&&item.active===isActive){app.closeOverlays();return false;}
       const sensitive=item.admin!==isAdmin||item.active!==isActive;
       const expectedRevision=item.revision;
+      // A refresh may replace the cached row, so look the account up by id.
       const save=()=>{
-        if(sessionScope()!==scope||!data.users.includes(item)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
+        if(sessionScope()!==scope||!data.users.some(user=>user.id===id)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
         return api.updateUser(id,{displayName,isAdmin,isActive,expectedRevision}).then((user)=>{
-        if(sessionScope()!==scope||!data.users.includes(item))return;
-        Object.assign(item,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers?.();app.toast('User saved');
+        const latest=data.users.find(entry=>entry.id===id);
+        if(sessionScope()!==scope||!latest)return;
+        Object.assign(latest,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers?.();app.toast('User saved');
         });
       };
       const apply=()=>fire((sensitive?auth.withRecentAuth(save):save()).catch((/** @type {any} */ error)=>recoverUser(error,scope,id,form)));
@@ -363,25 +505,33 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const create=()=>api.createUser({username:text(values.get('username'),32),displayName,isAdmin:values.has('admin')}).then(({user,temporaryPassword})=>{
       if(sessionScope()!==scope)return;
       const account=mapAccount(user);
-      if(data.adminUsers.loaded){mergeAdminUsersPage(data,[account],{append:true,nextCursor:data.adminUsers.nextCursor});data.adminUsers.ids.sort((left,right)=>(data.users.find((item)=>item.id===left)?.username??'').localeCompare(data.users.find((item)=>item.id===right)?.username??''));}
+      if(data.adminUsers.loaded){
+        // Users list in the server's username order, a page at a time. A new
+        // account joins only the loaded range; otherwise its own page brings it.
+        const name=(id)=>data.users.find((item)=>item.id===id)?.username??'',last=name(data.adminUsers.ids.at(-1));
+        if(!data.adminUsers.nextCursor||compareUsernames(account.username,last)<0){
+          mergeAdminUsersPage(data,[account],{append:true,nextCursor:data.adminUsers.nextCursor});
+          data.adminUsers.ids.sort((left,right)=>compareUsernames(name(left),name(right)));
+        }else data.users.push(account);
+      }
       else data.users.push(account);
-      app.refreshUsers?.();if(!completeForm(form,()=>app.showTemporaryPassword(user.id,temporaryPassword)))app.toast('User created. Reset their password in Users to get a temporary password.');
+      app.refreshUsers?.();
+      // The password is shown once, so a closed dialog must not lose it.
+      if(!completeForm(form,()=>app.showTemporaryPassword(user.id,temporaryPassword))&&app.showTemporaryPassword(user.id,temporaryPassword,{wait:true})===false)app.toast('User created. Its temporary password appears when this dialog closes.');
     });
     return fire((values.has('admin')?auth.withRecentAuth(create):create()).catch(reportFor(scope,{form})));
   };
-  app.resetPassword=(id)=>{const scope=sessionScope();return app.confirm({title:'Reset password?',text:'Existing sessions and connected app access will be revoked.',action:'Reset password',confirm:()=>fire(auth.withRecentAuth(()=>api.resetUserPassword(id)).then(({temporaryPassword})=>{if(sessionScope()===scope)app.showTemporaryPassword(id,temporaryPassword);}).catch((/** @type {any} */ error)=>recoverUser(error,scope,id)))});};
+  app.resetPassword=(id)=>{const scope=sessionScope();return app.confirm({title:'Reset password?',text:'Existing sessions and connected app access will be revoked.',action:'Reset password',confirm:()=>fire(auth.withRecentAuth(()=>api.resetUserPassword(id)).then(({temporaryPassword})=>{if(sessionScope()===scope&&app.showTemporaryPassword(id,temporaryPassword,{wait:true})===false)app.toast('Password reset. The temporary password appears when this dialog closes.');}).catch((/** @type {any} */ error)=>recoverUser(error,scope,id)))});};
 
   app.updTask = (id, field, value) => {
     if(app.isRendering?.())return false;
-    const item=task(id),form=globalThis.document?.querySelector?.('.task-page');if(!item)return false;
-    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
-    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
-    if(!names[field])return false;
-    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
-    if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
-    if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
-    if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
-    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    const item=task(id);if(!item)return false;
+    return saveTaskField(item,field,value);
+  };
+  app.saveTaskDraft=(id,field)=>{
+    const item=task(id),draft=item&&drafts.get(draftKey(item.internalId,field));
+    if(!draft?.unsaved)return false;
+    return saveTaskField(item,field,draft.value,{base:draft.base});
   };
   app.saveTask = (event) => {
     event.preventDefault();
@@ -481,7 +631,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:item.scope==='project'?'team':'personal',form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
   app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 
-  app.saveProjectNew=(event)=>{const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(form.isConnected===false){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||form.isConnected===false)return;app.selectProject(created.id);}if(sessionScope()===scope)app.nav('roadmap');})));};
+  app.saveProjectNew=(event)=>{
+    const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
+    // The new project opens only while its dialog is still the open one; a re-render keeps it open.
+    const open=()=>completeForm(form,()=>{});
+    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)app.nav('roadmap');})));
+  };
   app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));
   app.setMemberPermission=(userId,permission,enabled,input)=>{
@@ -494,7 +649,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||context().projectId!==project.id||!data.users.find(user=>user.id===data.session?.userId)?.admin)return false;
       const latest=project.members.find(item=>item.userId===userId);if(!latest)return false;
       const current=new Set(latest.permissions);enabled?current.add(permission):current.delete(permission);
-      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(report));
+      // A change that fails shows the saved permission again.
+      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(error=>{report(error);if(sessionScope()===scope)app.refreshUsers?.();}));
     };
     if(!enabled)return app.confirm({title:'Remove permission?',text:`${data.users.find(user=>user.id===userId)?.name||userId} will lose permission to manage ${permission==='manage_board'?'Board':'Roadmap'} in ${project.name}.`,action:'Remove permission',confirm:apply});
     return apply();
@@ -504,31 +660,36 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>app.nav('roadmap'))).catch(report))});};
 
   const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
-  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null)){
+  /**
+   * A refresh with `keepDepth` reloads as many pages as were loaded, so the list keeps its place.
+   * A `background` (live) refresh is passive: it never counts as the person using the session.
+   */
+  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null),{keepDepth=false,background=false}={}){
     const generation=++usersGeneration,expectedSession=sessionScope();usersController?.abort();usersController=new AbortController();
+    const depth=keepDepth&&data.adminUsers.loaded?usersDepth:1;
     data.adminUsers.loading=true;data.adminUsers.error=null;app.refreshUsers?.({loadingOnly:true});
-    let response;
+    let response,pages=1;
     try{
-      response=await api.users({afterUsername:append?usersAfter:undefined,background:false,signal:usersController.signal});
-      while(throughUser&&!response.users.some((/** @type {any} */ user)=>user.id===throughUser)&&response.nextCursor){
+      response=await api.users({afterUsername:append?usersAfter:undefined,background,signal:usersController.signal});
+      while((throughUser&&!response.users.some((/** @type {any} */ user)=>user.id===throughUser)||pages<depth)&&response.nextCursor){
         if(generation!==usersGeneration||expectedSession!==sessionScope())return {stale:true};
-        const page=await api.users({afterUsername:response.nextCursor,background:false,signal:usersController.signal});
-        response={...page,users:[...response.users,...page.users]};
+        const page=await api.users({afterUsername:response.nextCursor,background,signal:usersController.signal});
+        response={...page,users:[...response.users,...page.users]};pages++;
       }
     }
     catch(error){if(generation!==usersGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};data.adminUsers.loading=false;data.adminUsers.error='Could not load users.';app.refreshUsers?.();return {error};}
     if(generation!==usersGeneration||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};
-    const mapped=response.users.map(mapAccount);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
+    const mapped=response.users.map(mapAccount);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
   }
   app.retryUsers=()=>fire(loadUsers(false).catch(report));
   app.loadMoreUsers=()=>{if(usersAfter&&!data.adminUsers.loading)return fire(loadUsers(true).catch(report));};
 
   app.retryProfileAccess=()=>fire(loadProfileAccess().catch(report));
-  async function loadProfileAccess(){
+  async function loadProfileAccess({background=false}={}){
     const generation=++profileGeneration,expectedSession=sessionScope();profileController?.abort();profileController=new AbortController();
     let sessionResponse,appResponse;
     app.refreshProfileAccess?.({loading:true});
-    try{[sessionResponse,appResponse]=await Promise.all([api.sessions({signal:profileController.signal}),api.connectedApps({signal:profileController.signal})]);}
+    try{[sessionResponse,appResponse]=await Promise.all([api.sessions({signal:profileController.signal,background}),api.connectedApps({signal:profileController.signal,background})]);}
     catch(error){if(generation!==profileGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};app.refreshProfileAccess?.({error:'Could not load account access. Try again.'});return {error};}
     if(generation!==profileGeneration||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};
     const userId=data.session?.userId;
@@ -538,17 +699,17 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return {stale:false};
   }
 
-  async function loadCurrentRoute({reuseBootstrap=false}={}){
+  /** A `background` (live) load reads passively, so it never keeps an idle session open. */
+  async function loadCurrentRoute({reuseBootstrap=false,refresh=false,background=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
     if(!data.session)return;
-    reads.cancel({preserveBoard:true});
     const routeHash=globalThis.location?.hash;
     const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===globalThis.location?.hash;
     if(!['users','settings'].includes(current.view)){usersGeneration++;usersController?.abort();}
     if(current.view!=='profile'){profileGeneration++;profileController?.abort();}
     try{
-      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard?.(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true});}
-      else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId);}
+      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard?.(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
+      else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
           if(current.view!=='task'){recovery?.clearPageError?.();app.openTask(task(current.taskId).id);}
@@ -566,11 +727,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           recovery?.clearPageError?.();app.openTask(loaded.task.id);
         }
       }
-      else if(current.view==='users'||current.view==='settings')await loadUsers(false);
-      else if(current.view==='profile')await loadProfileAccess();
+      else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh,background});
+      else if(current.view==='profile')await loadProfileAccess({background});
       if(!stillCurrent())return {stale:true};
       const projectId=context().projectId;
-      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId);
+      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId,{background});
       return {stale:!stillCurrent()};
     }catch(error){
       if(!stillCurrent())return {stale:true};
@@ -579,6 +740,15 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   return Object.freeze({
+    /** The unsaved value of a task field, which the task page shows instead of the saved one. */
+    taskDraft(taskId,field){pruneDrafts();const draft=drafts.get(draftKey(taskId,field));return draft?{value:draft.value,unsaved:draft.unsaved}:null;},
+    /** Keep typed text that cannot be saved now, such as after edit rights ended, as a Not saved draft. */
+    keepTaskDraft(taskId,field,value){
+      const item=task(taskId),max={title:140,desc:4000}[field];if(!item||!max)return;
+      const next=text(value,max);if(next===(field==='title'?item.title:item.desc??''))return;
+      pruneDrafts();
+      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,scope:sessionScope(),unsaved:true,retryOnline:false});
+    },
     async invoke(action,payload){
       if(action==='date.rollover')return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});
       if(action==='task.assignees'){const item=task(payload.taskId);if(!item)return skipped();return saveAssignees(item,payload.assigneeIds);}
@@ -593,18 +763,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='board.more'){const result=await reads.moreBoard(payload.status);if(!result.stale)app.acceptMoreBoard(payload.status);return result;}
       if(action==='pool.open'){
         const projectId=context().projectId;
-        for(const scope of ['personal','team']){
-          const result=await reads.pool(projectId,scope);
-          if(result?.stale||context().projectId!==projectId)return {stale:true};
-        }
-        return {stale:false};
+        const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
+        return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
       }
       if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
         const generation=++projectGeneration,scope=sessionScope();
         routeGeneration++;
-        reads.cancel({preserveBoard:true});
         const loaded=await reloadBootstrap({projectId:payload.projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});
         if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
         app.selectProject(payload.projectId);
