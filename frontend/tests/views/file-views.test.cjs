@@ -121,6 +121,24 @@ test('Markdown anchors stay unique when literal suffixes collide with repeated h
   }
 });
 
+test('heading ids match the anchors the server gives search hits and MCP sections', async () => {
+  const { w, d } = boot();
+  const fixture = JSON.parse(fs.readFileSync(path.join(fixtures, 'heading-anchors.json'), 'utf8'));
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'guide.md' }, fixture.source, false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  assert.deepEqual([...host.querySelectorAll('.markdown-body :is(h1,h2,h3,h4,h5,h6)')].map(heading => heading.id), fixture.ids);
+  assert.equal(host.querySelectorAll('[data-md-heading]').length, 0);
+});
+
+test('a spoofed heading marker in uploaded HTML gives no server anchor', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'spoof.md' }, '<h2 data-md-heading="x-0">Fake</h2>\n\n## Setup\n', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), ['md-fake', 'md-setup']);
+});
+
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);

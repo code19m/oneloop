@@ -25,6 +25,7 @@ fs4 = { version = "1.1", default-features = false }
 getrandom = "0.4"
 hex = "0.4"
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
+icu_properties = "2.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 ipnet = "2.11"
 mime_guess = "2.0"

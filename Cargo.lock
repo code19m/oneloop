@@ -1562,6 +1562,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "hyper-util",
+ "icu_properties",
  "image",
  "ipnet",
  "mime_guess",
