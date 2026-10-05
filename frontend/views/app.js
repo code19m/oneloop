@@ -687,6 +687,8 @@
     def.value = value;
     wrap.querySelector('input[type="hidden"]').value = value;
     wrap.querySelector('.date-text').value = value || '';
+    // A date that saves itself saved now, though it may keep focus, as after Enter.
+    if (def.autosave) window.Recovery?.markSaved?.(wrap.querySelector('.date-text'));
     dateFieldError(wrap, '');
     // A corrected range can resolve the other field's error as well.
     const scope = wrap.closest('form') || wrap.parentElement;

@@ -261,7 +261,7 @@
   const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
   const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
   if(broadcast&&Date.now()-(broadcasts[rateKey]||0)<60000){feedback('Please wait a minute before mentioning everyone again.');return false;}
-  if(production&&productionApi){productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:d.interactionId});return false;}
+  if(production&&productionApi){const interaction=d.interactionId;sendingComments.add(interaction);Promise.resolve(productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;}
   const c=existing||{id:id('comment'),who:me().id,ts:Date.now(),parentId:target?(target.parentId||target.id):null,replyToId:target?.id||null,notifiedRecipients:[]};
   c.text=text;c.mentions=selected;if(existing){if(changed){c.editedAt=Date.now();hooks.log?.(task,'edited a comment',{field:'comment-content:'+c.id,before,after});}}else(task.comments ||= []).push(c);
   const recipients=new Map();if(broadcast){for(const uid of eligible)recipients.set(uid,'everyone');broadcasts[rateKey]=Date.now();c.broadcastSent=true;}if(target)recipients.set(target.who,'reply');for(const m of selected)if(changed&&m.id!=='everyone')recipients.set(m.id,'mention');
@@ -270,13 +270,18 @@
  }
  // A comment being written when the session ended, kept for the same person's next sign-in.
  let resumedComment=null;
- /** The comment text the person typed and hasn't sent; an edit counts once it differs from the saved comment. */
+ // The texts being sent, by their interaction: typing more starts a new one.
+ const sendingComments=new Set();
+ /**
+  * The comment text the person typed and hasn't sent; an edit counts once it
+  * differs from the saved comment. `sending` says the text is on its way.
+  */
  function commentDraft(){
   capture();
   const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
   if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
   if(commentMode.mode==='edit'&&commentEditor.text===task.comments?.find(c=>c.id===commentMode.target)?.text)return null;
-  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
+  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision,sending:sendingComments.has(commentEditor.interactionId)};
  }
  // Put a kept comment back once its task page shows; a reply or an edit waits for
  // its comment, and becomes a new comment when that comment is gone. Only the

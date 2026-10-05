@@ -28,10 +28,14 @@ function controlKey(root, element) {
   return element.getAttribute('name') ? `[name="${CSS.escape(element.getAttribute('name') || '')}"]:${index}` : null;
 }
 
+/** A checkbox or a radio button, which changes by being ticked; its value stays the same. @param {Element} element */
+const isTick = (element) => element instanceof HTMLInputElement && (element.type==='checkbox' || element.type==='radio');
+
 /** @param {HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement} element */
 function changedControl(element) {
   if (element instanceof HTMLSelectElement) return [...element.options].some((option)=>option.selected!==option.defaultSelected);
-  return element.value!==element.defaultValue || (element instanceof HTMLInputElement && element.checked!==element.defaultChecked);
+  if (isTick(element)) return /** @type {HTMLInputElement} */ (element).checked!==/** @type {HTMLInputElement} */ (element).defaultChecked;
+  return element.value!==element.defaultValue;
 }
 
 /** Inputs that hold nothing to keep: passwords, files, buttons, hidden values and search boxes. */
@@ -48,7 +52,8 @@ const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000;
  * Whether an open editor holds text the person typed and has not saved or
  * sent: a changed field in a dialog, a drawer, the task page or a settings
  * page. A field that saves itself counts only while it has focus with a value
- * it has not saved yet. `skip` leaves out controls that keep their own state.
+ * it has not saved yet; a checkbox that saves itself never counts, because it
+ * saves when it changes. `skip` leaves out controls that keep their own state.
  * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
  * @param {(element:Element)=>boolean} [skip]
  */
@@ -58,7 +63,8 @@ export function hasTypedInput(doc, committed, skip = () => false) {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) || element.disabled || skip(element)) continue;
     if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
     if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
-    if (element===active && !(element instanceof HTMLSelectElement) && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
+    if (isTick(element) || element instanceof HTMLSelectElement) continue;
+    if (element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
   }
   return false;
 }
@@ -229,7 +235,7 @@ export function createRecoveryController({
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
-  // What each autosaved field saved when it last lost focus.
+  // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
   /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
   let writes=0;
@@ -279,8 +285,8 @@ export function createRecoveryController({
     for(const root of documentObject?.querySelectorAll?.(EDITOR_ROOT)??[])EDITOR_REVISIONS.get(root)?.delete(key);
   }
 
-  function rememberCommitted(event){
-    const target=event.target;
+  /** @param {any} target a field, or anything else an event targets */
+  function rememberCommitted(target){
     if(target?.matches?.(AUTOSAVE)&&typeof target.value==='string')committed.set(target,target.value);
   }
 
@@ -294,7 +300,9 @@ export function createRecoveryController({
   function hasUnsavedInput({leaving=true}={}){
     // The comment box keeps its text across redraws, so it answers for itself.
     if(documentObject&&hasTypedInput(documentObject,committed,(element)=>element.id==='cmtIn'))return true;
-    if(getApp()?.commentDraft?.())return true;
+    // A comment being sent is on its way; it counts again if the send fails.
+    const comment=getApp()?.commentDraft?.();
+    if(comment&&!comment.sending)return true;
     return leaving&&(!!resume||writes>0||!!gateway?.hasPending?.()||[...unsavedChecks].some((check)=>check()));
   }
 
@@ -631,6 +639,8 @@ export function createRecoveryController({
     /** Run `listener` each time saving works again after the connection was lost. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
     hasUnsavedInput,
+    /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
+    markSaved(element){rememberCommitted(element);},
     /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
     trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
     /** Count a save or upload that is not a command until it settles. */
@@ -660,7 +670,7 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',rememberCommitted,true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',reloadWhenSafe);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',reloadWhenSafe);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };

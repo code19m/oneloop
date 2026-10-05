@@ -57,6 +57,51 @@ test('search boxes and fields that saved when they lost focus never count', () =
   assert.equal(leaveWarns(settings), false, 'focusing it again without typing');
 });
 
+test('an untouched New user or Edit user dialog leaves quietly; a ticked checkbox counts', () => {
+  const t = bootApp({ route: 'users' });
+  for (const id of [undefined, 'robin']) {
+    t.A.openModal('user', id);
+    assert.equal(leaveWarns(t), false, id ? 'Edit user' : 'New user');
+    t.d.querySelector('.modal [name="admin"]').click();
+    assert.equal(leaveWarns(t), true, 'the person changed Admin');
+    t.A.closeOverlays();
+  }
+});
+
+test('a permission checkbox saves when it changes, so it never counts, also while it has focus', () => {
+  const t = bootApp({ route: 'settings' });
+  const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]');
+  box.focus();
+  assert.equal(t.d.activeElement, box);
+  assert.equal(leaveWarns(t), false);
+});
+
+test('a deadline saved with Enter stops counting, though it keeps focus', () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  const deadline = t.d.getElementById('tpDl-input');
+  type(deadline, '2026-12-24');
+  assert.equal(pageWarns(t), true, 'typed and not saved yet');
+  t.A.dateKey({ key: 'Enter', target: deadline, preventDefault() {}, stopPropagation() {} }, 'tpDl');
+  assert.equal(t.D.tasks.find(task => task.id === 'BIR-079').deadline, '2026-12-24');
+  assert.equal(t.d.activeElement, deadline);
+  assert.equal(leaveWarns(t), false);
+});
+
+test('a comment that is being sent does not count, and counts again if the send fails', async () => {
+  let finish;
+  const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
+    w.OneloopTransport = {};
+    w.OneloopCollaboration = { bind() { return { saveComment() { return new Promise(resolve => { finish = resolve; }); } }; } };
+  } });
+  type(t.d.getElementById('cmtIn'), 'On its way');
+  assert.equal(pageWarns(t), true);
+  t.A.addComment('BIR-079');
+  assert.equal(t.d.getElementById('cmtIn').value, 'On its way', 'the text shows until the send settles');
+  assert.equal(pageWarns(t), false, 'the comment is being sent');
+  finish(false); await settle();
+  assert.equal(pageWarns(t), true, 'the person keeps the text of a send that failed');
+});
+
 test('opening a comment for editing counts only once its text changes', () => {
   const t = bootApp({ route: 'task/BIR-079', prepare(D) { D.tasks.find(task => task.id === 'BIR-079').comments = [{ id: 'c1', who: D.session.userId, ts: Date.now() - 60_000, text: 'Saved text', mentions: [], parentId: null }]; } });
   t.A.editComment('BIR-079', 'c1');
