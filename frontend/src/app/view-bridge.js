@@ -24,7 +24,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const poolItem = (id) => data.pool.find((item) => item.id === id);
   const context = () => app.context();
   const sessionScope=()=>`${data.session?.id??''}:${data.session?.userId??''}`;
-  let usersAfter=null;
+  let usersAfter=null,usersDepth=1;
   const assigneeSaves=new Map();
   const fieldSaves=new Map();
   const pendingTaskForms = new WeakSet();
@@ -242,7 +242,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const refreshContext={...context()};
     try {
       if (options.reload) {
-        reads.cancel({preserveBoard:true});
         const loaded=await reloadBootstrap();if(loaded?.stale)return stale(result);
         const current=context();
         if(data.projects.some((item)=>item.id===current.projectId)){
@@ -341,16 +340,18 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const form=event.target,values=formValues(event),displayName=text(values.get('name'),80),scope=sessionScope();
     if(!displayName)return fieldError(form,'name','Give the user a name.');
     if(id){
-      const item=data.users.find((entry)=>entry.id===id);if(!item)return false;
+      const item=data.users.find((entry)=>entry.id===id);if(!item)return fieldError(form,'name','This user is no longer listed. Reload Users and try again.');
       const isAdmin=form.querySelector?.('[name="admin"]')?.disabled?item.admin:values.has('admin'),isActive=form.querySelector?.('[name="active"]')?.disabled?item.active:values.has('active');
       if(item.name===displayName&&item.admin===isAdmin&&item.active===isActive){app.closeOverlays();return false;}
       const sensitive=item.admin!==isAdmin||item.active!==isActive;
       const expectedRevision=item.revision;
+      // A refresh may replace the cached row, so look the account up by id.
       const save=()=>{
-        if(sessionScope()!==scope||!data.users.includes(item)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
+        if(sessionScope()!==scope||!data.users.some(user=>user.id===id)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
         return api.updateUser(id,{displayName,isAdmin,isActive,expectedRevision}).then((user)=>{
-        if(sessionScope()!==scope||!data.users.includes(item))return;
-        Object.assign(item,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers?.();app.toast('User saved');
+        const latest=data.users.find(entry=>entry.id===id);
+        if(sessionScope()!==scope||!latest)return;
+        Object.assign(latest,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers?.();app.toast('User saved');
         });
       };
       const apply=()=>fire((sensitive?auth.withRecentAuth(save):save()).catch((/** @type {any} */ error)=>recoverUser(error,scope,id,form)));
@@ -504,21 +505,23 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>app.nav('roadmap'))).catch(report))});};
 
   const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
-  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null)){
+  /** A refresh with `keepDepth` reloads as many pages as were loaded, so the list keeps its place. */
+  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null),{keepDepth=false}={}){
     const generation=++usersGeneration,expectedSession=sessionScope();usersController?.abort();usersController=new AbortController();
+    const depth=keepDepth&&data.adminUsers.loaded?usersDepth:1;
     data.adminUsers.loading=true;data.adminUsers.error=null;app.refreshUsers?.({loadingOnly:true});
-    let response;
+    let response,pages=1;
     try{
       response=await api.users({afterUsername:append?usersAfter:undefined,background:false,signal:usersController.signal});
-      while(throughUser&&!response.users.some((/** @type {any} */ user)=>user.id===throughUser)&&response.nextCursor){
+      while((throughUser&&!response.users.some((/** @type {any} */ user)=>user.id===throughUser)||pages<depth)&&response.nextCursor){
         if(generation!==usersGeneration||expectedSession!==sessionScope())return {stale:true};
         const page=await api.users({afterUsername:response.nextCursor,background:false,signal:usersController.signal});
-        response={...page,users:[...response.users,...page.users]};
+        response={...page,users:[...response.users,...page.users]};pages++;
       }
     }
     catch(error){if(generation!==usersGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};data.adminUsers.loading=false;data.adminUsers.error='Could not load users.';app.refreshUsers?.();return {error};}
     if(generation!==usersGeneration||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};
-    const mapped=response.users.map(mapAccount);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
+    const mapped=response.users.map(mapAccount);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
   }
   app.retryUsers=()=>fire(loadUsers(false).catch(report));
   app.loadMoreUsers=()=>{if(usersAfter&&!data.adminUsers.loading)return fire(loadUsers(true).catch(report));};
@@ -538,10 +541,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return {stale:false};
   }
 
-  async function loadCurrentRoute({reuseBootstrap=false}={}){
+  async function loadCurrentRoute({reuseBootstrap=false,refresh=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
     if(!data.session)return;
-    reads.cancel({preserveBoard:true});
     const routeHash=globalThis.location?.hash;
     const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===globalThis.location?.hash;
     if(!['users','settings'].includes(current.view)){usersGeneration++;usersController?.abort();}
@@ -566,7 +568,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           recovery?.clearPageError?.();app.openTask(loaded.task.id);
         }
       }
-      else if(current.view==='users'||current.view==='settings')await loadUsers(false);
+      else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh});
       else if(current.view==='profile')await loadProfileAccess();
       if(!stillCurrent())return {stale:true};
       const projectId=context().projectId;
@@ -593,18 +595,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='board.more'){const result=await reads.moreBoard(payload.status);if(!result.stale)app.acceptMoreBoard(payload.status);return result;}
       if(action==='pool.open'){
         const projectId=context().projectId;
-        for(const scope of ['personal','team']){
-          const result=await reads.pool(projectId,scope);
-          if(result?.stale||context().projectId!==projectId)return {stale:true};
-        }
-        return {stale:false};
+        const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
+        return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
       }
       if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
         const generation=++projectGeneration,scope=sessionScope();
         routeGeneration++;
-        reads.cancel({preserveBoard:true});
         const loaded=await reloadBootstrap({projectId:payload.projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});
         if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
         app.selectProject(payload.projectId);

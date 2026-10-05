@@ -106,7 +106,7 @@ test('three Board pages survive targeted hints, navigation and a bootstrap gener
   await reads.patchBoard('p1',{},[{entityType:'task',entityId:'5'}]);
   assert.deepEqual(calls,['task:5','counts']);assert.equal(data.tasks.length,6);
   assert.equal(data.tasks.find(row=>row.internalId==='5').title,'Changed');assert.equal(data.boardPageInfo.pages.done.nextCursor,'6');
-  reads.cancel({preserveBoard:true});calls.length=0;
+  await reads.task('5');calls.length=0;
   await reads.board('p1',{}, {skipUnchanged:true});assert.deepEqual(calls,[]);assert.equal(data.tasks.length,6);
   data.projectionGeneration++;data.tasks.splice(0);
   await reads.board('p1',{}, {skipUnchanged:true});assert.deepEqual(calls,['view','page:2','page:4']);assert.equal(data.tasks.length,6);
@@ -144,4 +144,80 @@ test('a stale deep Board cursor discards the old window before restarting',async
   await reads.moreBoard('planning');
   assert.deepEqual(data.tasks.map(item=>item.internalId),['head-2']);
   assert.equal(pages,2,'restart does not follow cursors from the old loaded depth');
+});
+
+function held(){const calls=[];const api=(name)=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,signal:args.at(-1)?.signal,resolve,reject}));return {calls,api};}
+const counts={planning:1,inProgress:0,inReview:0,done:0,blocked:0};
+const boardView=(items=[task('one','planning')])=>({planning:{items,nextCursor:null,total:items.length},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[],total:0},counts});
+
+test('reads of different things never cancel each other',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{boardView:async()=>boardView(),task:requests.api('task'),counts:requests.api('counts'),pool:requests.api('pool'),roadmap:requests.api('roadmap')}});
+  await reads.board('p1');
+  const opening=reads.task('BIR-1'),pool=reads.pool('p1','personal'),count=reads.counts('p1'),roadmap=reads.roadmap('p1'),patch=reads.patchBoard('p1',{},[{entityId:'one'}]);
+  await new Promise(setImmediate);
+  assert.deepEqual(requests.calls.map(call=>call.signal.aborted),requests.calls.map(()=>false));
+  for(const call of requests.calls){
+    if(call.name==='task')call.resolve({...task(call.args[0]==='one'?'one':'bir-1','planning'),taskKey:call.args[0]==='one'?'BIR-one':'BIR-1'});
+    else if(call.name==='counts')call.resolve(counts);
+    else if(call.name==='pool')call.resolve({items:[],nextCursor:null,total:0});
+    else call.resolve({projectId:'p1',tracks:[],epics:[],milestones:[]});
+  }
+  for(const result of await Promise.all([opening,pool,count,roadmap,patch]))assert.equal(result.stale,false);
+  assert.equal(data.poolPageInfo['p1:mine'].loading,undefined);
+});
+
+test('a newer read of the same task answers the earlier caller too',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{task:requests.api('task')}});
+  const first=reads.task('BIR-1'),second=reads.task('BIR-1');
+  assert.equal(requests.calls[0].signal.aborted,true);
+  requests.calls[0].reject(Object.assign(new Error('cancelled'),{code:'aborted'}));
+  requests.calls[1].resolve({...task('bir-1','planning'),taskKey:'BIR-1',title:'Latest'});
+  assert.equal((await first).task.title,'Latest');assert.equal((await second).task.title,'Latest');
+});
+
+test('a live Board read waits for the Board read someone started instead of replacing it',async()=>{
+  const data=createLegacyData(),views=[];
+  const reads=createReadController({data,api:{boardView:(_id,_filters,options)=>new Promise(resolve=>views.push({options,resolve}))}});
+  const opening=reads.board('p1'),live=reads.board('p1',{},{background:true});
+  await new Promise(setImmediate);
+  assert.equal(views.length,1,'the live read has not started');assert.equal(views[0].options.signal.aborted,false);
+  views[0].resolve(boardView());assert.equal((await opening).stale,false);
+  await new Promise(setImmediate);views[1].resolve(boardView([task('two','planning')]));
+  assert.equal((await live).stale,false);assert.deepEqual(data.tasks.map(item=>item.internalId),['two']);
+});
+
+test('a live Board patch that lands while a task is open still shows on the Board afterwards',async()=>{
+  const data=createLegacyData(),requests=held();let views=0;
+  const reads=createReadController({data,api:{boardView:async()=>{views++;return boardView();},task:requests.api('task'),counts:async()=>counts}});
+  await reads.board('p1');
+  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await new Promise(setImmediate);
+  const opening=reads.task('BIR-9');await new Promise(setImmediate);
+  const [hint,open]=requests.calls;
+  assert.equal(hint.signal.aborted,false,'opening a task leaves the live patch running');
+  hint.resolve({...task('one','in_progress'),revision:2});open.resolve({...task('nine','planning'),taskKey:'BIR-9'});
+  assert.equal((await patch).stale,false);await opening;
+  await reads.board('p1',{},{skipUnchanged:true});
+  assert.equal(views,1);assert.equal(data.tasks.find(item=>item.internalId==='one').state,'progress');
+});
+
+test('a live read that spans a newer projection is dropped and the Board reads again',async()=>{
+  const data=createLegacyData(),pending=[];let views=0;
+  const reads=createReadController({data,api:{boardView:async()=>{views++;return boardView();},task:()=>new Promise(resolve=>pending.push(resolve)),counts:async()=>counts}});
+  await reads.board('p1');
+  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await new Promise(setImmediate);
+  data.projectionGeneration++;pending[0]({...task('one','done'),revision:2});
+  assert.equal((await patch).stale,true);assert.equal(data.tasks[0].state,'planning');
+  await reads.board('p1',{},{skipUnchanged:true});assert.equal(views,2);
+});
+
+test('idle waits only for reads someone started',async()=>{
+  const data=createLegacyData(),requests=held();
+  const reads=createReadController({data,api:{roadmap:requests.api('roadmap'),counts:requests.api('counts')}});
+  void reads.roadmap('p1',{background:true});const count=reads.counts('p1');
+  let settled=false;const idle=reads.idle().then(()=>{settled=true;});
+  await new Promise(setImmediate);assert.equal(settled,false);
+  requests.calls.find(call=>call.name==='counts').resolve(counts);await count;await idle;
+  assert.equal(settled,true,'a live read in flight does not hold up idle');
 });

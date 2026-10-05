@@ -363,3 +363,40 @@ test('admin revision conflict reloads through the affected page and retries with
     assert.deepEqual(revisions,[1,4]);assert.equal(state.closed,1);
   }finally{globalThis.FormData=OriginalFormData;}
 });
+
+test('opening the Pool reads both scopes side by side',async()=>{
+  const requested=[],pending=[];
+  const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:(_project,scope)=>{requested.push(scope);return new Promise(resolve=>pending.push(resolve));}}});
+  const opening=state.bridge.invoke('pool.open',{});
+  assert.deepEqual(requested,['personal','team'],'a slow scope does not hold up the other');
+  pending[0]({stale:true});pending[1]({stale:false});
+  assert.equal((await opening).stale,true);
+});
+
+test('a Users refresh reloads every page already shown',async()=>{
+  const cursors=[];const context={view:'users',projectId:'p1',board:{}};
+  const page=(from)=>({users:Array.from({length:50},(_,index)=>({id:`u${from+index}`,username:`user${String(from+index).padStart(3,'0')}`,displayName:`User ${from+index}`,isAdmin:false,isActive:true,revision:1})),nextCursor:from<100?`user${from+49}`:null});
+  const state=fixture(context,{api:{users:async({afterUsername})=>{cursors.push(afterUsername);return page(afterUsername?Number(afterUsername.slice(4))+1:0);}}});
+  await state.bridge.loadCurrentRoute();state.app.loadMoreUsers();await tick();
+  assert.equal(state.data.adminUsers.ids.length,100);
+  cursors.length=0;await state.bridge.loadCurrentRoute({refresh:true});
+  assert.deepEqual(cursors,[undefined,'user49']);assert.equal(state.data.adminUsers.ids.length,100);
+  cursors.length=0;await state.bridge.loadCurrentRoute();
+  assert.deepEqual(cursors,[undefined],'opening Users again starts from the first page');
+});
+
+test('Save in Edit user finds the account after a refresh replaced its row',async()=>{
+  const OriginalFormData=globalThis.FormData,fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],errors=[];
+  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
+  globalThis.FormData=class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}};
+  try{
+    const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{fieldError:(_form,name,message)=>errors.push([name,message])},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {displayName:input.displayName,isAdmin:false,isActive:true,revision:2};}}});
+    state.data.users.push({id:'u1',admin:true,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    state.app.saveUser({target:form,preventDefault(){}},'u2');
+    state.data.users.splice(1,1,{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    await tick();
+    assert.deepEqual(saved,[['u2','Renamed']]);assert.equal(state.closed,1);assert.equal(state.data.users[1].name,'Renamed');
+    state.app.saveUser({target:form,preventDefault(){}},'gone');
+    assert.deepEqual(errors,[['name','This user is no longer listed. Reload Users and try again.']]);
+  }finally{globalThis.FormData=OriginalFormData;}
+});

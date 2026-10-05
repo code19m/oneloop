@@ -2396,7 +2396,7 @@
   // ---------- actions ----------
   const App = {
     /** Production compatibility boundary. New modules must not reach private state directly. */
-    context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
+    context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
     updateDocumentTitle,
     refreshCounts() {
       const badge=document.querySelector('.sidebar .nav-item[title="Board"] .end');

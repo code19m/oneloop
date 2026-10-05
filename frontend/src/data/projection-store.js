@@ -218,9 +218,14 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   const identity = auth?.user ?? bootstrap.session;
   const sameUser=previousSession?.userId===(identity?.id??identity?.userId);
   const history=new Map((sameUser?data.epics:[]).map((/** @type {ReturnType<typeof mapEpic>} */ item)=>[item.id,item.activity]));
+  // A bootstrap lists only the selected project's people. An administrator's
+  // loaded account pages stay until the Users or Settings page reloads them.
+  const directory=sameUser&&identity?.isAdmin&&data.adminUsers?.loaded?data.adminUsers:null;
+  const listed=new Map(directory?data.users.filter((/** @type {{id:string}} */ user)=>directory.ids.includes(user.id)).map((/** @type {{id:string}} */ user)=>[user.id,user]):[]);
   data.timeZone = bootstrap.timeZone || 'UTC';
   data.limits = bootstrap.limits ?? null;
   replace(data.users, (bootstrap.users ?? []).map(mapUser));
+  for (const [id, user] of listed) if (!data.users.some((item) => item.id === id)) data.users.push(user);
   replace(data.projects, (bootstrap.projects ?? []).map((project) => {
     const mapped=mapProject(project,memberships),actorId=identity?.id??identity?.userId;
     // Other accessible projects carry actor capabilities, not their member lists.
@@ -233,6 +238,14 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   replace(data.epics, (bootstrap.epics ?? []).map((/** @type {{id:string}} */ view)=>({...mapEpic(view),activity:history.get(view.id)??[]})));
   replace(data.milestones, (bootstrap.milestones ?? []).map(mapMilestone));
   replace(data.tasks, (bootstrap.tasks ?? []).map(view=>retainTaskDetails(sameUser?previousTasks.get(view.id):null,mapTask(view))));
+  // An epic drawer keeps its loaded tasks until it reads them again. Board
+  // cards must match the Board's loaded window, so a bootstrap that carries
+  // them keeps no other tasks.
+  const epicPages=sameUser?Object.entries(data.epicPageInfo??{}).filter(([id])=>data.epics.some((/** @type {{id:string}} */ item)=>item.id===id)):[];
+  if(!Object.keys(bootstrap.boardPages??{}).length)for(const [,page] of epicPages)for(const id of page.taskIds??[]){
+    const kept=previousTasks.get(id);
+    if(kept&&!data.tasks.some((item)=>item.internalId===id)&&data.projects.some((project)=>project.id===kept.projectId))data.tasks.push(kept);
+  }
   if(!bootstrap.view)replace(data.pool, (bootstrap.pool ?? []).map(mapPoolItem));
   else replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
   if(!bootstrap.view)replace(data.notifications, (bootstrap.notifications ?? []).map(mapInboxItem));
@@ -256,8 +269,8 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
     const page=setPoolPageInfo(data,projectId,scope,{total:bootstrap.poolCounts[scope]??0});page.loaded=false;
   }
-  data.epicPageInfo=sameUser?Object.fromEntries(data.epics.filter((/** @type {{id:string}} */ item)=>data.epicPageInfo[item.id]).map((/** @type {{id:string}} */ item)=>[item.id,{...data.epicPageInfo[item.id],taskIds:[],tasksCursor:null,loaded:false}])):{};
-  data.adminUsers={ids:[],nextCursor:null,loaded:false};
+  data.epicPageInfo=Object.fromEntries(epicPages);
+  data.adminUsers=directory??{ids:[],nextCursor:null,loaded:false};
   data.session = identity ? {
     id: auth?.sessionId ?? bootstrap.sessionId ?? previousSession?.id ?? null,
     userId: identity.id ?? identity.userId,
