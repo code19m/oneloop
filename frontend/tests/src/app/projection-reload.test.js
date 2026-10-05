@@ -3,7 +3,7 @@ import test from 'node:test';
 import {createProjectionReload,createSignInLoad,routeScope} from '../../../src/app/projection-reload.js';
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
-import {createLegacyData,hydrateLegacyData} from '../../../src/data/projection-store.js';
+import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -18,7 +18,7 @@ const view=(id,projectId='p1')=>({id,projectId,epicId:'e1',taskKey:id.toUpperCas
 function page(context){
   const data=createLegacyData();hydrateLegacyData(data,projection(context.projectId));
   const calls=[],held=name=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,options:args.at(-1),resolve,reject}));
-  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity')};
+  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
   const app={context:()=>context,refresh(){},refreshCounts(){},refreshBackground(){},refreshRoadmap(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
@@ -137,4 +137,26 @@ test('a project the account can no longer open loads the default project, and a 
   const task=signInPage({view:'task',projectId:'p2',taskId:'TWO-1',hash:'#/task/TWO-1'},async scope=>{if(scope.taskId)throw gone;return {stale:false};});
   task.signIn.sessionEnded();await task.signIn.load();
   assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
+});
+
+test('a live task change re-reads the open epic drawer with the Roadmap, after a Load more someone started',async()=>{
+  const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
+  mergeEpicTaskPage(t.data,'e1',[view('t1'),view('t2')],{nextCursor:'after-t2',total:3});
+  const more=t.reads.moreEpicTasks('e1');
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'t1'}]});
+  await tick();
+  const loading=t.next('epicTasks');assert.equal(loading.options.cursor,'after-t2');
+  assert.deepEqual(t.calls.map(call=>call.name),['epicTasks'],'the live read waits for Load more');
+  loading.resolve({items:[view('t3')],nextCursor:null,total:3});
+  assert.equal((await more).stale,false);assert.equal(loading.options.signal.aborted,false,'Load more is never cancelled');
+  // A bounded wait: without the drawer read the calls never come.
+  for(let i=0;i<200&&t.calls.length<4;i++)await new Promise(resolve=>setTimeout(resolve,1));
+  assert.deepEqual(t.calls.map(call=>call.name).sort(),['epicActivity','epicTasks','epicTasks','roadmap'],'the Roadmap and the drawer are read again');
+  t.next('roadmap').resolve(projection('p1'));
+  const drawer=t.next('epicTasks');assert.equal(drawer.options.cursor,undefined,'the drawer reads its tasks again from the first');
+  drawer.resolve({items:[{...view('t1'),title:'Renamed by a teammate'},view('t2'),view('t3')],nextCursor:null,total:3});
+  t.next('epicActivity').resolve({items:[],nextCursor:null});
+  assert.equal((await live).stale,false);
+  assert.deepEqual(t.data.epicPageInfo.e1.taskIds,['t1','t2','t3'],'as many tasks as the drawer showed');
+  assert.equal(t.data.tasks.find(task=>task.internalId==='t1').title,'Renamed by a teammate');
 });

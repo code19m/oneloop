@@ -74,7 +74,15 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       const previous=app?.context?.(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
         if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
-        if(previous.view==='roadmap')return complete(await reads.roadmap(previous.projectId,{background:!!scope.background}));
+        if(previous.view==='roadmap'){
+          // An open epic drawer lists tasks, so it reads them again too. A
+          // live read waits for a Load more someone started instead of
+          // cancelling it.
+          const views=[reads.roadmap(previous.projectId,{background:!!scope.background})];
+          if(previous.peek&&data.epics.some((item)=>item.id===previous.peek))views.push(reads.epic(previous.peek,{background:!!scope.background}));
+          const results=await Promise.all(views);
+          return complete(results.find((result)=>result?.stale)??results[0]);
+        }
       }
       let loaded,destinationError;
       try { loaded=await bootstrap.load({projectId:app?.context?.().projectId,...routeScope(location.hash,app),...scope}); }

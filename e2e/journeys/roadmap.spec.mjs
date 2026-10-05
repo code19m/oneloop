@@ -72,6 +72,16 @@ test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in vie
   await expect.poll(todayShows).toBe(true);
 });
 
+test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
+  const { epic, task } = instance.projects[0];
+  await openApp(page, instance, 'roadmap');
+  await page.locator(`[data-epic="${epic.id}"]`).press('Enter');
+  const rows = page.locator('.peek .task-row');
+  await expect(rows).toContainText(task.title);
+  await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed by a teammate' }, task.revision);
+  await expect(rows).toContainText('Renamed by a teammate');
+});
+
 test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project, track, task } = instance.projects[0];
