@@ -17,13 +17,19 @@ const view=(id,projectId='p1')=>({id,projectId,epicId:'e1',taskKey:id.toUpperCas
 /** A page with held API calls and the real bootstrap and read controllers. */
 function page(context){
   const data=createLegacyData();hydrateLegacyData(data,projection(context.projectId));
-  const calls=[],held=name=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,options:args.at(-1),resolve,reject}));
+  const calls=[],waiting=[];
+  const held=name=>(...args)=>new Promise((resolve,reject)=>{
+    calls.push({name,args,options:args.at(-1),resolve,reject});
+    for(const waiter of waiting.filter(item=>calls.length>=item.count)){waiting.splice(waiting.indexOf(waiter),1);waiter.resolve();}
+  });
   const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
   const app={context:()=>context,refresh(){},refreshCounts(){},refreshBackground(){},refreshRoadmap(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
   const reload=createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>null,getRecovery:()=>recovery,location:{get hash(){return context.hash??'#/roadmap';}}});
-  return {data,calls,bootstrap,reads,reload,next:name=>calls.find(call=>call.name===name&&!call.done&&(call.done=true))};
+  return {data,calls,bootstrap,reads,reload,next:name=>calls.find(call=>call.name===name&&!call.done&&(call.done=true)),
+    /** Resolves once the page has called the API `count` times. */
+    called:count=>calls.length>=count?Promise.resolve():new Promise(resolve=>waiting.push({count,resolve}))};
 }
 
 test('a live refresh lets the task someone is opening load, then refreshes it',async()=>{
@@ -139,7 +145,8 @@ test('a project the account can no longer open loads the default project, and a 
   assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });
 
-test('a live task change re-reads the open epic drawer with the Roadmap, after a Load more someone started',async()=>{
+// Without the drawer read, the fourth call never comes and the test times out.
+test('a live task change re-reads the open epic drawer with the Roadmap, after a Load more someone started',{timeout:5_000},async()=>{
   const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
   mergeEpicTaskPage(t.data,'e1',[view('t1'),view('t2')],{nextCursor:'after-t2',total:3});
   const more=t.reads.moreEpicTasks('e1');
@@ -149,8 +156,7 @@ test('a live task change re-reads the open epic drawer with the Roadmap, after a
   assert.deepEqual(t.calls.map(call=>call.name),['epicTasks'],'the live read waits for Load more');
   loading.resolve({items:[view('t3')],nextCursor:null,total:3});
   assert.equal((await more).stale,false);assert.equal(loading.options.signal.aborted,false,'Load more is never cancelled');
-  // A bounded wait: without the drawer read the calls never come.
-  for(let i=0;i<200&&t.calls.length<4;i++)await new Promise(resolve=>setTimeout(resolve,1));
+  await t.called(4);
   assert.deepEqual(t.calls.map(call=>call.name).sort(),['epicActivity','epicTasks','epicTasks','roadmap'],'the Roadmap and the drawer are read again');
   t.next('roadmap').resolve(projection('p1'));
   const drawer=t.next('epicTasks');assert.equal(drawer.options.cursor,undefined,'the drawer reads its tasks again from the first');
