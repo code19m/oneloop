@@ -15,7 +15,7 @@ const ALLOWED_APP_METHODS = new Set([
   'milestoneHover','nav','openAttachment','openModal','openNotification','openPeek','openTask','poolDescriptionKey','poolKey','popDate',
   'popMulti','popSelect','projectMenu','promotePool','removeAvatar','removeMember','reopenEpic',
   'replyComment','resetPassword','retryInbox','retryPool','retryTaskActivity','retryStorageUsage','retryProfileAccess','retryUsers','revokeAppAccess','revokeOtherSessions','revokeSession','roadmapTipKey','saveBlock',
-  'saveEpic','saveMilestone','savePoolDescription','saveProjectNew','saveTask','saveTrack','saveUser',
+  'saveEpic','saveMilestone','savePoolDescription','saveProjectNew','saveTask','saveTaskDraft','saveTrack','saveUser',
   'setAttachmentTemporary','setAvatar','setBlockedFilter','setMemberPermission','setNotificationRead','setPassword','setPoolTab','setTheme',
   'setBoardQ','sizeDescription','sizeDescriptionEditors','sizeTaskTitle','taskActions','taskDragStart',
   'taskMoveMenu','toggleCommentText','toggleDescription','togglePoolDescription','toggleSidebar','trackDragStart','trackDrop',

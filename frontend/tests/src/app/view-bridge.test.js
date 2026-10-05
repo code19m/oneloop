@@ -400,3 +400,74 @@ test('Save in Edit user finds the account after a refresh replaced its row',asyn
     assert.deepEqual(errors,[['name','This user is no longer listed. Reload Users and try again.']]);
   }finally{globalThis.FormData=OriginalFormData;}
 });
+
+/** A task page whose commands go through the real gateway and are answered one by one. */
+function taskPage(overrides={}){
+  let gateway;
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args),hasUncertain:(...args)=>gateway.hasUncertain(...args)},...overrides});
+  const item={id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,title:'Title',desc:'Description',state:'planning',assignees:[]};state.data.tasks.push(item);
+  const requests=[];
+  gateway=createCommandGateway({data:state.data,api:{command:command=>new Promise((resolve,reject)=>requests.push({command,resolve,reject}))}});
+  const accept=(index,fields={})=>requests[index].resolve({entities:[{entityType:'task',id:'t1',...fields,revision:requests[index].command.expectedRevision+1}],events:[{}]});
+  return {...state,item,requests,accept};
+}
+
+test('two task fields saved close together build on each other instead of conflicting',async()=>{
+  const state=taskPage();
+  state.app.updTask('ONE-1','title','New title');state.app.updTask('ONE-1','desc','New description');state.app.updTask('ONE-1','state','progress');
+  assert.equal(state.requests.length,1,'the next field waits for the first reply');
+  state.accept(0,{title:'New title'});await tick();
+  assert.equal(state.requests.length,2);assert.equal(state.requests[1].command.payload.description,'New description');assert.equal(state.requests[1].command.expectedRevision,2);
+  state.accept(1,{description:'New description'});await tick();
+  assert.equal(state.requests[2].command.operation,'task.move');assert.equal(state.requests[2].command.expectedRevision,3);
+  state.accept(2,{status:'in_progress'});await tick();await tick();
+  assert.deepEqual([state.item.title,state.item.desc,state.item.state],['New title','New description','progress']);
+  assert.deepEqual(state.saved,['ONE-1'],'Saved shows once, after the last field');assert.deepEqual(state.toasts,[]);
+});
+
+test('a conflict prompt that closes without a choice keeps the typed value as Not saved',async()=>{
+  const conflict=new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'}),drafted=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async()=>({handled:true,saved:false}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery,app:{refreshTaskDrafts:id=>drafted.push(id)}});
+  state.app.updTask('ONE-1','desc','My description');state.requests[0].reject(conflict);await tick();await tick();
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'My description',unsaved:true});
+  assert.deepEqual(drafted,['ONE-1']);assert.deepEqual(state.toasts,[],'the note on the field reports it');
+  state.app.updTask('ONE-1','state','done');state.requests[1].reject(conflict);await tick();await tick();
+  assert.deepEqual(state.toasts,[['Your change was not saved. Review the latest version and try again.','error']]);
+  state.app.saveTaskDraft('ONE-1','desc');
+  assert.equal(state.requests[2].command.payload.description,'My description');assert.equal(state.requests[2].command.expectedRevision,1,'Save keeps the revision the text was written against');
+});
+
+test('a task field edited while offline stays as typed and saves when the connection returns',async()=>{
+  let online=false,reconnected;
+  const recovery={ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','desc','Written on the train');await tick();
+  assert.equal(state.requests.length,0);
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Written on the train',unsaved:true});
+  online=true;reconnected();await tick();
+  assert.equal(state.requests[0].command.payload.description,'Written on the train');assert.equal(state.requests[0].command.expectedRevision,1);
+  state.accept(0,{description:'Written on the train'});await tick();await tick();
+  assert.equal(state.bridge.taskDraft('t1','desc'),null);assert.equal(state.item.desc,'Written on the train');
+});
+
+test('several fields edited offline save in order without conflicting with each other',async()=>{
+  let online=false,reconnected;
+  const state=taskPage({recovery:{ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}}});
+  state.app.updTask('ONE-1','title','Offline title');state.app.updTask('ONE-1','desc','Offline description');await tick();
+  online=true;reconnected();await tick();
+  state.accept(0,{title:'Offline title'});await tick();await tick();
+  assert.equal(state.requests[1].command.payload.description,'Offline description');assert.equal(state.requests[1].command.expectedRevision,2);
+});
+
+test('a block saved from the task page repaints before its counts read finishes',async()=>{
+  const originalFormData=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  const counted=deferred(),closed=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[],events:[{}]})},reads:{counts:()=>counted.promise},app:{refreshAfterDialog(){state.paints.push('after-dialog');}}});
+  const item={id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block:{id:'b1',reason:'Waiting',revision:1}};state.data.tasks.push(item);
+  try{
+    state.app.saveBlock({preventDefault(){},target:{fields:{reason:''},isConnected:true,closest:()=>null}},'ONE-1','unblock');await tick();
+    assert.deepEqual(state.paints,['after-dialog'],'the page shows the change while counts load');
+    counted.resolve({stale:false});await tick();assert.deepEqual(state.paints,['after-dialog']);
+  }finally{globalThis.FormData=originalFormData;void closed;}
+});

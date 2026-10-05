@@ -1,7 +1,8 @@
 // views/app.js: the task page, its dialogs, save feedback and activity feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { stored, prepare } = {}) => bootApp({ route, stored, prepare });
@@ -93,4 +94,45 @@ const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaqu
 
 test('the activity feed loads older records in batches', () => {
 const x=boot('task/BIR-079');const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
+});
+
+/** The task page wired to the production bridge, with commands answered by the test. */
+function productionTaskPage() {
+  const t = bootApp({ route: 'task/BIR-079', media: () => true });
+  const task = t.D.tasks.find(x => x.id === 'BIR-079');
+  Object.assign(task, { internalId: 'bir-079', projectId: 'p1', revision: 1, deadline: null });
+  const requests = [];
+  const gateway = { execute: (operation, payload, options) => new Promise((resolve, reject) => requests.push({ operation, payload, options, resolve, reject })) };
+  const reads = { task: async () => { Object.assign(task, { revision: 2, title: 'Their title', deadline: '2026-11-30' }); t.A.refresh(); return { stale: false, task }; }, counts: async () => ({}), cancel() {} };
+  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap: async () => ({}) });
+  t.w.OneloopRuntime = bridge;
+  return { ...t, task, requests, bridge };
+}
+
+test('a title conflict keeps newer typing elsewhere and shows the title as typed beside the latest one', async () => {
+  const t = productionTaskPage(), title = t.d.querySelector('.tp-title');
+  // Inline handlers do not run in this harness, so blur calls the handler itself.
+  title.focus(); title.value = 'My title'; title.blur(); t.A.updTask(t.task.id, 'title', title.value);
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Typed after the title save started'; description.dispatchEvent(new t.w.Event('input', { bubbles: true }));
+  assert.equal(t.requests.length, 1);
+  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
+  assert.equal(t.d.getElementById('task-description').value, 'Typed after the title save started');
+  assert.equal(t.d.querySelector('.tp-title').value, 'My title');
+  assert.equal(t.d.getElementById('tpDl-input').value, '2026-11-30', 'other fields show the latest saved values');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Their title/);
+});
+
+test('an unsaved description stays on the page through refreshes and offers Save', async () => {
+  const t = productionTaskPage();
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Unable to reach oneloop', { code: 'network_error' }), requestContext: t.w.Recovery.requestContext() });
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Written offline'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
+  await settle();
+  t.d.querySelector('.tp-title').focus(); t.A.refresh();
+  assert.equal(t.d.getElementById('task-description').value, 'Written offline');
+  const note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.match(note.textContent, /Not saved/); assert(note.querySelector('button'));
+  assert.equal(t.requests.length, 0);
 });

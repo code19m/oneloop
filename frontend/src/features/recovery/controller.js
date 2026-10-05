@@ -130,6 +130,7 @@ export function createRecoveryController({
   const pendingEditors=new Map();
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
+  /** @type {Set<()=>void>} */ const onlineListeners=new Set();
 
   function entityKey(entity){
     if(!entity)return null;
@@ -190,9 +191,11 @@ export function createRecoveryController({
     const previous=visibleConnection();
     if(apiReachable!==nextApi)connectivityGeneration++;
     apiReachable=nextApi;liveReachable=nextLive;
+    const restored=apiReachable&&previous==='offline';
     const next=visibleConnection();if(previous===next)return;
     updateNotice();
     if(next==='live'&&previous==='offline')getApp()?.toast?.('Connection restored','info');
+    if(restored)for(const listener of [...onlineListeners])queueMicrotask(listener);
   };
 
   function viewScope(){
@@ -414,7 +417,7 @@ export function createRecoveryController({
       if(!current())return {handled:true,saved:false};
       const latest=latestEntity();
       if(latest)target?.acceptLatest?.(latest);
-      return {handled:true,saved:false,latest};
+      return {handled:true,saved:false,latest,choice:'latest'};
     }
     try{const result=await retry(entity.revision);return {handled:true,saved:true,result,stale:!current()};}
     catch(retryError){if(!current())return {handled:true,saved:false};documentObject?.querySelectorAll?.('.save-feedback[data-recovery-conflict]')?.forEach?.((element)=>element.remove());handleCommandFailure(retryError);throw retryError;}
@@ -447,6 +450,8 @@ export function createRecoveryController({
     ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast?.('Reconnect before making this change.','error');return false;},
     connectionHtml,
     activateNotice,
+    /** Run `listener` each time saving works again after the connection was lost. */
+    whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
     buildChanged(){updatedBuild=true;updateNotice();},
     reloadClient(){windowObject?.location.reload();},
     reconnect,

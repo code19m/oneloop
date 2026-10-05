@@ -1465,17 +1465,23 @@
           <div class="cmt-body">${esc(it.text)}</div></div>`).join('');
 
   }
+  // A title or description that is not saved yet stays as typed, with Save.
+  const taskDraft = (t, field) => bootWindow.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
+  function taskDraftNote(t, field) {
+    return taskDraft(t, field)?.unsaved ? `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>` : '';
+  }
   function renderTask() {
     const t = taskById(state.taskId);
     if (!t) { state.view = 'board'; return renderBoard(); }
     const canEdit = canBoard();
+    const title = taskDraft(t, 'title')?.value ?? t.title, desc = taskDraft(t, 'desc')?.value ?? t.desc ?? '';
     const atts = window.Uploads?.renderAttachments(t,canEdit) || '';
 
     const feed = taskActivityHtml(t);
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : 'disabled'}>${esc(t.title)}</textarea></div>
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : 'disabled'}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
         <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
@@ -1489,8 +1495,8 @@
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : 'disabled'}>${esc(t.desc || '')}</textarea></div>
-          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button></div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : 'disabled'}>${esc(desc)}</textarea></div>
+          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
           ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
           ${atts}<div class="upload-list"></div></div>
@@ -2450,6 +2456,17 @@
       if (userId) [...content.querySelectorAll('.user-row')].find(el => el.dataset.userId === userId)?.focus({preventScroll:true});
     },
     validateFormDates,
+    /** Show or clear the Not saved notes without touching what is typed. */
+    refreshTaskDrafts(id) {
+      if (state.view !== 'task' || state.taskId !== id) return;
+      const t = taskById(id); if (!t) return;
+      for (const [field, selector] of [['title', '.task-title-field'], ['desc', '.task-description']]) {
+        const host = document.querySelector(`.task-page ${selector}`); if (!host) continue;
+        host.querySelector('[data-draft-note]')?.remove();
+        const template = document.createElement('template'); setHTML(template, taskDraftNote(t, field));
+        host.append(template.content);
+      }
+    },
     noteTaskSaving: taskSaving,
     clearTaskSaving,
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},

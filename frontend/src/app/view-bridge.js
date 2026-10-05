@@ -26,7 +26,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const sessionScope=()=>`${data.session?.id??''}:${data.session?.userId??''}`;
   let usersAfter=null,usersDepth=1;
   const assigneeSaves=new Map();
-  const fieldSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
   const pendingPoolCaptures = new WeakSet();
@@ -53,7 +52,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function skipped(){return {entities:[],events:[],replayed:false,skipped:true};}
   function stale(result={}){return {...result,stale:true};}
   function ifCurrent(result,effect){return result?.stale?result:effect(result);}
-  function noteTaskSaved(result,id){if(!result?.stale&&!result?.skipped&&!recovery?.isSavingTask?.())app.noteTaskSaved?.(id);return result;}
+  function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery?.isSavingTask?.()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved?.(id);return result;}
   const sameAssignees=(left,right)=>left.length===right.length&&left.every((id)=>right.includes(id));
 
   function saveAssignees(item,assigneeIds){
@@ -143,37 +142,129 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     else (app.refreshAfterDialog??app.refresh)();
   }
 
-  function saveField(operation,payload,entity,message,options){
-    const scope=sessionScope(),key=`${scope}:${commandInteractionKey(operation,payload,entity)}`;
-    const pending=fieldSaves.get(key);
-    if(pending){pending.next={payload,options};return pending.promise;}
-    const state={next:{payload,options},promise:null};fieldSaves.set(key,state);
-    state.promise=(async()=>{
-      let result=skipped(),expectedRevision;
-      try{
-        while(state.next){
-          const next=state.next;state.next=null;
-          if(sessionScope()!==scope)return stale();
-          const current=latestEntity(operation,next.payload,entity)??entity;
-          const saved=await execute(operation,next.payload,current,null,{...next.options,coalesce:false,expectedRevision,paint:false});
-          if(saved?.stale)return saved;
-          if(!saved?.skipped)result=saved;
-          // Only advance from our acknowledged write, not a newer live projection.
-          const acknowledged=saved?.entities?.find(item=>item.id===(entity.internalId??entity.id));
-          expectedRevision=acknowledged?.revision??expectedRevision;
-        }
-        if(!result.skipped){
-          if(options.paint!==false&&!result.refreshError)paintCommand(operation);
-          if(message)app.toast(message);
-        }
-        return result;
-      }finally{fieldSaves.delete(key);}
-    })();
-    return state.promise;
+  // Saves of one record run one at a time, and each builds on the revision the
+  // previous save was acknowledged at. Two fields saved close together never
+  // conflict with each other, while a change made by someone else still does.
+  // A newer value of an autosaved field replaces its queued value.
+  /** @type {Map<string,{jobs:Map<string,any>,active:boolean,running:Promise<void>|null}>} */
+  const records=new Map();
+  /** Revisions this browser moved a record to, by the revision each save was based on. */
+  /** @type {Map<string,Map<number,number>>} */
+  const acknowledged=new Map();
+  // A task field value that is not saved yet. The task page shows it instead of
+  // the saved value, so a refresh never replaces what the person typed, and
+  // offers Save when the save failed.
+  /** @type {Map<string,{taskId:string,field:string,value:string,base:number|undefined,unsaved:boolean,retryOnline:boolean}>} */
+  const drafts=new Map();
+  let jobSequence=0;
+  const RECORD_FIELDS={task:'taskId',epic:'epicId',track:'trackId',milestone:'milestoneId',pool:'poolItemId',project:'projectId'};
+  function recordOf(operation,payload){
+    if(operation.startsWith('task.block.'))return payload.blockId?`taskBlock:${payload.blockId}`:null;
+    const type=operation.split('.')[0];
+    if(type==='membership')return payload.projectId&&payload.userId?`membership:${payload.projectId}:${payload.userId}`:null;
+    const id=payload[RECORD_FIELDS[type]]??payload.id;
+    return id?`${type}:${id}`:null;
+  }
+  const draftKey=(taskId,field)=>`${sessionScope()}|${taskId}|${field}`;
+  // Drafts belong to one session; another session never sees them.
+  function pruneDrafts(){const scope=`${sessionScope()}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
+  const unsavedDraft=(taskId)=>[...drafts.values()].some(draft=>draft.taskId===taskId&&draft.unsaved&&drafts.get(draftKey(taskId,draft.field))===draft);
+  function paintDrafts(taskId){const item=task(taskId);if(item)app.refreshTaskDrafts?.(item.id);}
+
+  function enqueue(record,operation,payload,entity,message,options){
+    const scope=sessionScope(),key=`${scope}|${record}`;
+    let queue=records.get(key);
+    if(!queue){queue={jobs:new Map(),active:false,running:null};records.set(key,queue);}
+    const jobKey=options.coalesce?commandInteractionKey(operation,payload,entity):`job:${++jobSequence}`;
+    const replaced=queue.jobs.get(jobKey);
+    // The base is the revision the person saw when they made this change.
+    const base=options.expectedRevision??recovery?.expectedRevision?.(recovery?.revisionKey?.(entity),entity?.revision)??entity?.revision;
+    const job={jobKey,operation,payload,entity,message,options,base,waiters:replaced?.waiters??[],carry:replaced?.carry??null};
+    const done=new Promise((resolve,reject)=>job.waiters.push({resolve,reject}));
+    queue.jobs.set(jobKey,job);
+    queue.running??=drain(queue,key,scope);
+    return done;
   }
 
+  async function drain(queue,key,scope){
+    let chain=acknowledged.get(key);if(!chain){chain=new Map();acknowledged.set(key,chain);}
+    try{
+      while(queue.jobs.size){
+        const [jobKey,job]=queue.jobs.entries().next().value;queue.jobs.delete(jobKey);
+        const draft=job.options.draft?drafts.get(job.options.draft):null;
+        if(sessionScope()!==scope){for(const waiter of job.waiters)waiter.resolve(stale());continue;}
+        let base=job.base;while(chain.has(base))base=chain.get(base);
+        const current=latestEntity(job.operation,job.payload,job.entity)??job.entity;
+        queue.active=true;
+        try{
+          const result=await run(job.operation,job.payload,current,job.options.coalesce?null:job.message,{...job.options,expectedRevision:base,paint:job.options.coalesce?false:job.options.paint});
+          queue.active=false;
+          const saved=result?.entities?.find(item=>item.id===(current?.internalId??current?.id))?.revision;
+          if(!result?.stale&&!result?.skipped&&Number.isSafeInteger(base)&&Number.isSafeInteger(saved)&&saved!==base)chain.set(base,saved);
+          const carry=!result?.stale&&!result?.skipped?result:job.carry;
+          const newer=queue.jobs.get(jobKey);
+          // A newer value of this field is still queued: its callers learn the outcome together.
+          if(newer&&!result?.stale){newer.waiters.unshift(...job.waiters);newer.carry=carry;continue;}
+          const outcome=result?.stale||!carry?result:carry;
+          if(draft&&!result?.stale&&drafts.get(job.options.draft)===draft&&draft.value===job.options.draftValue){drafts.delete(job.options.draft);paintDrafts(draft.taskId);}
+          if(job.options.coalesce&&carry&&!outcome?.stale){
+            if(job.options.paint!==false&&!carry.refreshError)paintCommand(job.operation);
+            if(job.message)app.toast(job.message);
+          }
+          for(const waiter of job.waiters)waiter.resolve(outcome);
+        }catch(error){
+          queue.active=false;
+          // A newer queued value of the field is not sent after a failure; a draft keeps it.
+          const newer=queue.jobs.get(jobKey);if(newer){queue.jobs.delete(jobKey);job.waiters.push(...newer.waiters);}
+          if(draft&&drafts.get(job.options.draft)===draft&&sessionScope()===scope){
+            if(/** @type {any} */(error)?.conflictChoice==='latest')drafts.delete(job.options.draft);
+            else Object.assign(draft,{unsaved:true,base:draft.base??job.base,retryOnline:['offline','network_error','timeout'].includes(/** @type {any} */(error)?.code)});
+            paintDrafts(draft.taskId);
+          }
+          for(const waiter of job.waiters)waiter.reject(error);
+        }
+      }
+    }finally{queue.active=false;queue.running=null;if(records.get(key)===queue&&!queue.jobs.size)records.delete(key);}
+  }
+
+  /**
+   * Save a task field from the task page. A title or description keeps a draft until it is saved.
+   * @param {any} item @param {string} field @param {any} value @param {{base?:number}} [options]
+   */
+  function saveTaskField(item,field,value,{base}={}){
+    const form=globalThis.document?.querySelector?.('.task-page');
+    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
+    if(!names[field])return false;
+    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
+    if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
+    if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
+    if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
+    let draft;pruneDrafts();
+    if(field==='title'||field==='desc'){
+      draft=draftKey(item.internalId,field);
+      const previous=drafts.get(draft);
+      if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
+      else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
+    }
+    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+  }
+  function retryDrafts(){
+    for(const draft of [...drafts.values()]){
+      const item=task(draft.taskId);
+      if(item&&draft.unsaved&&draft.retryOnline&&drafts.get(draftKey(draft.taskId,draft.field))===draft)saveTaskField(item,draft.field,draft.value,{base:draft.base});
+    }
+  }
+  recovery?.whenOnline?.(retryDrafts);
+
   async function execute(operation, payload, entity, message, options = {}) {
-    if(options.coalesce)return saveField(operation,payload,entity,message,options);
+    const record=options.create?null:recordOf(operation,payload);
+    if(!record)return run(operation,payload,entity,message,options);
+    return enqueue(record,operation,payload,entity,message,options);
+  }
+
+  async function run(operation, payload, entity, message, options = {}) {
     if(isFormRetryPending(options.form)){
       const error=new ApiError('Wait before trying again.',{code:'rate_limited'});
       /** @type {any} */(error).oneloopReported=true;
@@ -187,7 +278,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();
     }
     const interactionKey=options.interactionKey ?? commandInteractionKey(operation,payload,entity);
-    const editorSnapshot=recovery?.captureEditor?.();
     const expectedRevision=options.create?undefined:(options.expectedRevision??recovery?.expectedRevision?.(revisionKey,entity?.revision)??entity?.revision);
     let result;
     try {
@@ -207,7 +297,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             retry:(expectedRevision)=>{if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
             target:{element:options.conflictElement,latestValue:(item)=>conflictValue(operation,payload,item)},
             myValue:conflictValue(operation,payload,payload),
-            snapshot:editorSnapshot,
+            // A task field keeps the person's other fields as they are now; only a
+            // dialog is restored, from the moment the conflict came back.
+            snapshot:options.coalesce?false:null,
           });
           if(resolved.saved)result=resolved.result;
           else{
@@ -220,7 +312,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
               // Focusing the retained editor records the newly accepted source revision.
               form?.querySelector('[name="title"]')?.focus({preventScroll:true});
             }
-            if(error&&typeof error==='object')error.oneloopReported=true;throw error;
+            if(error&&typeof error==='object'){error.oneloopReported=true;error.conflictChoice=resolved.choice==='latest'?'latest':'cancelled';}
+            // A prompt that closed without a choice (the page changed) still says so; a draft shows it in place.
+            if(resolved.choice!=='latest'&&!options.draft&&sessionScope()===scope)app.toast('Your change was not saved. Review the latest version and try again.','error');
+            throw error;
           }
         }catch(recoveryError){
           if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
@@ -239,6 +334,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     options.onAccepted?.(result);
     if (message) app.toast(message);
     recovery?.finishRevision?.(revisionKey);
+    // The accepted change paints at once; reads that follow repaint their own parts.
+    if(!options.reload&&options.paint!==false)paintCommand(operation);
     const refreshContext={...context()};
     try {
       if (options.reload) {
@@ -253,7 +350,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       }
       if(options.poolScope&&(await reads.pool(context().projectId,options.poolScope))?.stale)return stale(result);
       if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale(result);}
-      if(options.paint!==false)paintCommand(operation);
+      if(options.reload&&options.paint!==false)paintCommand(operation);
       return result;
     } catch (error) {
       if(sessionScope()!==scope)return stale(result);
@@ -374,15 +471,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   app.updTask = (id, field, value) => {
     if(app.isRendering?.())return false;
-    const item=task(id),form=globalThis.document?.querySelector?.('.task-page');if(!item)return false;
-    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
-    const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
-    if(!names[field])return false;
-    const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
-    if(field==='title'&&!next)return fieldError(form,'title','Enter a task title.');
-    if(field==='deadline'&&next&&!validDate(next)){app.toast('Enter a valid deadline in YYYY-MM-DD format.','error');return false;}
-    if(field==='epicId'&&!data.epics.some((entry)=>entry.id===next&&entry.projectId===item.projectId&&entry.state!=='done')){app.toast('Choose an open epic. Completed epics must be reopened first.','error');return false;}
-    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    const item=task(id);if(!item)return false;
+    return saveTaskField(item,field,value);
+  };
+  app.saveTaskDraft=(id,field)=>{
+    const item=task(id),draft=item&&drafts.get(draftKey(item.internalId,field));
+    if(!draft?.unsaved)return false;
+    return saveTaskField(item,field,draft.value,{base:draft.base});
   };
   app.saveTask = (event) => {
     event.preventDefault();
@@ -581,6 +676,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   return Object.freeze({
+    /** The unsaved value of a task field, which the task page shows instead of the saved one. */
+    taskDraft(taskId,field){pruneDrafts();const draft=drafts.get(draftKey(taskId,field));return draft?{value:draft.value,unsaved:draft.unsaved}:null;},
     async invoke(action,payload){
       if(action==='date.rollover')return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});
       if(action==='task.assignees'){const item=task(payload.taskId);if(!item)return skipped();return saveAssignees(item,payload.assigneeIds);}
