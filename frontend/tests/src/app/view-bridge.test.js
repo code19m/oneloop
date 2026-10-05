@@ -484,3 +484,17 @@ test('a new project opens after a re-render of its dialog but not after the dial
     }
   }finally{globalThis.FormData=originalFormData;}
 });
+
+test('permission changes for two members save side by side',async()=>{
+  let gateway;const requests=[];
+  const state=fixture({view:'settings',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args)}});
+  gateway=createCommandGateway({data:state.data,api:{command:command=>new Promise(resolve=>requests.push({command,resolve}))}});
+  state.data.users.push({id:'u1',admin:true,active:true});
+  state.data.projects[0].members.push({userId:'alice',permissions:[],revision:1},{userId:'bob',permissions:[],revision:1});
+  state.app.setMemberPermission('alice','manage_board',true);state.app.setMemberPermission('bob','manage_board',true);await tick();
+  assert.deepEqual(requests.map(request=>request.command.payload.userId),['alice','bob']);
+  for(const request of requests)request.resolve({entities:[{entityType:'membership',projectId:'p1',userId:request.command.payload.userId,manageBoard:true,manageRoadmap:false,revision:2}],events:[{}]});
+  await tick();await tick();
+  assert.deepEqual(state.toasts,[['Access updated'],['Access updated']]);
+  assert.deepEqual(state.data.projects[0].members.map(member=>member.permissions),[['manage_board'],['manage_board']]);
+});

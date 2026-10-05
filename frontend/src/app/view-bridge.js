@@ -597,7 +597,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||context().projectId!==project.id||!data.users.find(user=>user.id===data.session?.userId)?.admin)return false;
       const latest=project.members.find(item=>item.userId===userId);if(!latest)return false;
       const current=new Set(latest.permissions);enabled?current.add(permission):current.delete(permission);
-      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(report));
+      // A change that fails shows the saved permission again.
+      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(error=>{report(error);if(sessionScope()===scope)app.refreshUsers?.();}));
     };
     if(!enabled)return app.confirm({title:'Remove permission?',text:`${data.users.find(user=>user.id===userId)?.name||userId} will lose permission to manage ${permission==='manage_board'?'Board':'Roadmap'} in ${project.name}.`,action:'Remove permission',confirm:apply});
     return apply();

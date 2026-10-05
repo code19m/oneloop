@@ -72,7 +72,7 @@ export function commandIsUnchanged(operation, payload, entity) {
 }
 
 const OPERATION_IDENTITY_FIELDS = Object.freeze({
-  'epic.update':['epicId'], 'membership.update':['projectId','userId'], 'membership.remove':['projectId','userId'],
+  'epic.update':['epicId'], 'membership.add':['projectId','userId'], 'membership.update':['projectId','userId'], 'membership.remove':['projectId','userId'],
   'milestone.update':['milestoneId'], 'pool.update':['poolItemId'], 'project.update':['projectId'],
   'task.block.update':['blockId'], 'task.move':['taskId'], 'task.update':['taskId'],
   'track.reorder':['trackId'], 'track.update':['trackId'],
@@ -84,9 +84,11 @@ const OPERATION_IDENTITY_FIELDS = Object.freeze({
  * values and decide whether an uncertain retry still represents the same intent.
  */
 export function commandInteractionKey(operation, payload, entity) {
-  const entityId = entity?.internalId ?? entity?.id ?? 'new';
-  const identityFields=new Set(OPERATION_IDENTITY_FIELDS[operation]??['id']);
-  const fields = Object.keys(payload).filter((key) => !identityFields.has(key)).sort();
+  const identityFields=OPERATION_IDENTITY_FIELDS[operation]??['id'];
+  // A record without its own id, such as a membership, is named by its identity fields.
+  const identity=identityFields.map((key)=>payload[key]);
+  const entityId = entity?.internalId ?? entity?.id ?? (identity.every((value)=>value!=null)?identity.join(':'):'new');
+  const fields = Object.keys(payload).filter((key) => !identityFields.includes(key)).sort();
   return `${operation}:${entityId}:${fields.join(',') || 'action'}`;
 }
 
@@ -197,6 +199,7 @@ export function actionErrorFeedback(error) {
   if (code === 'last_admin' || ((code === 'conflict' || status === 409) && /last active administrator cannot be deactivated or demoted/i.test(raw))) return {silent:false,field:null,message:'Keep at least one active administrator. Add another administrator before removing this access.'};
   if (code === 'broadcast_cooldown') return {silent:false,field:null,message:'Wait one minute before mentioning everyone again.'};
   if (code === 'recent_auth_required') return {silent:false,field:null,message:'Confirm your password to continue.'};
+  if (code === 'interaction_pending') return {silent:false,field:null,message:'Another change is still being saved. Wait a moment and try again.'};
   if (code === 'idempotency_key_reused') return {silent:false,field:null,message:'This request was already used for another change. Refresh and try again.'};
   if (code === 'invalid_origin') return {silent:false,field:null,message:'Open oneloop at its configured address and try again.'};
   if (code === 'forbidden' || status === 403) return {silent:false,field:null,message:'You do not have permission to make this change.'};
