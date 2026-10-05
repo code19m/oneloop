@@ -49,7 +49,7 @@ usernames, IP addresses and file paths, so keep them private.
 | `database schema … requires migration` | A new version is installed, but the database isn't upgraded yet. | Follow [Upgrade](backups-and-upgrades.md#upgrade). |
 | `legacy pre-release database requires the baseline conversion` | The database is from before the first release candidate. | Follow [the upgrade steps](backups-and-upgrades.md#databases-from-before-010). |
 | `database schema … is newer than this binary supports` | An older version runs with an upgraded database. | Install the newer version again, or [roll back](backups-and-upgrades.md#roll-back). |
-| `stop the oneloop server first` | `db migrate` can't upgrade while the server runs. | Stop the server and try again. |
+| `another oneloop server or command is using …` | `db migrate` needs the data directory to itself, but the server or another `oneloop` command, such as a backup, uses it. | Stop the server, wait for other `oneloop` commands to finish, and try again. |
 | `another oneloop server is already using …` | A second server started with the same data directory. | Run only one server for each data directory. |
 | `incomplete restore at …` | A restore stopped halfway. | Empty the directory, including hidden files, and restore again. |
 | Permission errors for files in the data directory | The files belong to another account, often after a command ran as root. | Give them back to the service account with `chown -R`. For Docker bind mounts, the owner is user 10001. |

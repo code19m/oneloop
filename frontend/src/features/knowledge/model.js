@@ -78,10 +78,10 @@ export function iconKind(/** @type {string} */ path, folder = false) {
 export function resolveLink(/** @type {string} */ value, /** @type {string} */ fromPath, /** @type {KnowledgeFile[]} */ files, /** @type {string} */ projectId) {
   const target = relativeTarget(value, fromPath);
   if (!target) return null;
-  const path = target.path || fromPath;
-  if (fileAt(files, path)) return routeHash(projectId, 'blob', path, target.fragment);
-  const folder = path.replace(/\/$/, '');
-  if (folder && folderExists(files, folder)) return routeHash(projectId, 'tree', folder);
+  // A link with only a fragment or query stays on its file; `''` is the root.
+  const path = target.path ?? fromPath;
+  if (path && fileAt(files, path)) return routeHash(projectId, 'blob', path, target.fragment);
+  if (folderExists(files, path)) return routeHash(projectId, 'tree', path);
   return null;
 }
 
@@ -108,7 +108,7 @@ function relativeTarget(/** @type {string} */ value, /** @type {string} */ fromP
   }
   let section = fragment;
   try { section = decodeURIComponent(fragment); } catch {}
-  return { path: pathOnly ? parts.join('/') : '', fragment: section };
+  return { path: pathOnly ? parts.join('/') : null, fragment: section };
 }
 
 /** API URL for one file. `content` serves images and PDFs, `text` text sources, `download` the original. */

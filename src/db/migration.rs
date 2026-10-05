@@ -69,6 +69,7 @@ pub fn migrate(
     let _instance_lock = layout.try_instance_exclusive_lock()?;
     let _lock = layout.open_exclusive_lock()?;
     let existed = layout.database().is_file();
+    super::create_database_file(&layout.database())?;
     let mut connection = open_connection(&layout.database())?;
     let previous_version = inspect_schema_version(&connection)?;
 
@@ -110,9 +111,6 @@ pub fn migrate(
         None
     };
 
-    if let Some(path) = &backup_path {
-        eprintln!("pre-upgrade backup: {}", path.display());
-    }
     let mut current_version = previous_version;
     let mut current_step = "migration setup".to_owned();
     let result = (|| {
@@ -199,11 +197,11 @@ fn apply_migration(connection: &mut Connection, migration: &Migration) -> AppRes
 pub(crate) fn ensure_current_schema(connection: &Connection) -> AppResult<()> {
     let version = inspect_schema_version(connection)?;
     if is_legacy_schema(connection)? {
-        return Err(AppError::PreconditionFailed("legacy pre-release database requires the baseline conversion; run `oneloop db migrate --backup-dir <directory>`".to_owned()));
+        return Err(AppError::PreconditionFailed("legacy pre-release database requires the baseline conversion; run `oneloop db migrate --backup-dir <folder>`".to_owned()));
     }
     if version < CURRENT_SCHEMA_VERSION {
         return Err(AppError::PreconditionFailed(format!(
-            "database schema {version} requires migration to {CURRENT_SCHEMA_VERSION}; run `oneloop db migrate`"
+            "database schema {version} requires migration to {CURRENT_SCHEMA_VERSION}; run `oneloop db migrate --backup-dir <folder>`"
         )));
     }
     if version > CURRENT_SCHEMA_VERSION {

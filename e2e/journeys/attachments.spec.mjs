@@ -11,6 +11,19 @@ function largePdf(marker) {
   return Buffer.concat([pdf, Buffer.from('\n% ' + marker.repeat(12 * 1024 * 1024) + '\nstartxref\n' + xref + '\n%%EOF\n')]);
 }
 
+/** The requests that reached the network. Chromium also reports loads that a policy blocked. */
+async function sent(requests) {
+  const urls = [];
+  for (const request of requests) {
+    await request.response();
+    if (!/^csp$|BLOCKED_BY_CSP/.test(request.failure()?.errorText ?? '')) urls.push(request.url());
+  }
+  return urls;
+}
+
+// The harness's init script can't run in the script-less preview frame either.
+const sandboxedScript = /Blocked script execution in '[^']*\/preview\/html[^']*' because the document's frame is sandboxed/;
+
 async function attach(page, name, mimeType, content) {
   await page.locator('#attIn').setInputFiles({ name, mimeType, buffer: Buffer.from(content) });
 }
@@ -37,7 +50,8 @@ test('the attachment preview traps focus, exposes details and restores its trigg
   await expect(attachment).toBeFocused();
 });
 
-test('every page, theme, icon and preview type loads from the embedded assets', async ({ page, instance }) => {
+test('every page, theme, icon and preview type loads from the embedded assets', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(sandboxedScript);
   const missing = [];
   page.on('response', response => { if (response.status() === 404) missing.push(response.url()); });
   await openApp(page, instance);
@@ -93,58 +107,39 @@ test('previews render under a policy that refuses HTML strings and inline style 
   await expect.poll(() => page.evaluate(() => window.violations)).toEqual(['require-trusted-types-for', 'style-src-elem']);
 });
 
-const hostile = `<!doctype html><title>Isolation probe</title><h1>Isolation probe</h1><form action="/?preview-form-probe" method="get"><input name="probe" value="1"></form><script>
-window.results={};window.violations=[];
-document.addEventListener('securitypolicyviolation',e=>violations.push(e.effectiveDirective));
-for(const [name,attempt] of Object.entries({parentDOM:()=>parent.document.title,cookie:()=>document.cookie,storage:()=>localStorage.setItem('preview-escape','1')})){
- try{attempt();results[name]='allowed';}catch{results[name]='blocked';}
-}
-results.origin=self.origin;
-fetch('/api/auth/me').then(()=>results.fetch='allowed',()=>results.fetch='blocked');
-try{const worker=new Worker('/?preview-worker-probe');worker.onerror=()=>{results.worker='blocked';worker.terminate();};results.worker='created';}catch{results.worker='blocked';}
-document.forms[0].submit();results.formAttempted=true;
-setTimeout(()=>results.settled=true,100);
-if(parent!==self){try{top.location='/?preview-navigation-probe';results.navigation='allowed';}catch{results.navigation='blocked';}}
+const outside = 'https://outside.invalid';
+const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const hostile = `<!doctype html><title>Isolation probe</title><link rel="stylesheet" href="${outside}/style.css"><link rel="preconnect" href="${outside}">
+<style>@font-face{font-family:probe;src:url(${outside}/font.woff)}h1{font-family:probe}body{background:url(${outside}/background.png)}</style>
+<h1 id="status" style="color: rgb(1, 2, 3)">Static</h1><img alt="Dot" src="${dot}"><img alt="Outside" src="${outside}/image.png"><script src="${outside}/script.js"></script>
+<form action="/?preview-form-probe" method="get"><input name="probe" value="1"></form><script>
+document.getElementById('status').textContent='Script ran';
+fetch('/?preview-fetch-probe');document.forms[0].submit();location.href='${outside}/navigation';
 </script>`;
 
-test('hostile HTML stays isolated in the iframe and at its direct URL', { tag: '@smoke' }, async ({ page, context, instance, browserName, allowedConsoleErrors, expectedPageErrors }) => {
-  // WebKit reports the denied top-navigation attempt as a page error even when caught.
-  if (browserName === 'webkit') expectedPageErrors.push(/\/api\/attachments\/[^/]+\/preview\/html.*[\s\S]*frame attempting navigation of the top-level window is sandboxed.*allow-top-navigation/);
-  allowedConsoleErrors.push(/Security Error: Content at moz-nullprincipal:.*preview-worker-probe/);
-  allowedConsoleErrors.push(/Content Security Policy|Content-Security-Policy|content security policy|violates.*policy|sandbox|Sandbox|Blocked.*frame|Unsafe attempt|not allowed.*Worker|insecure/i);
+test('HTML previews run no scripts and load nothing from other sites, framed or at their direct URL', { tag: '@smoke' }, async ({ page, context, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/Content Security Policy|Content-Security-Policy|content security policy|violates.*policy|sandbox|Sandbox|Blocked script|downloadable font: .*content blocked|insecure/i);
   const escapes = [];
-  context.on('request', r => { if (/preview-(?:form|worker|navigation)-probe/.test(r.url())) escapes.push(r.url()); });
+  context.on('request', request => { if (request.url().startsWith(outside) || /preview-(?:form|fetch)-probe/.test(request.url())) escapes.push(request); });
   await openApp(page, instance);
   await attach(page, 'hostile.html', 'text/html', hostile);
   await page.locator('.attachment-title').filter({ hasText: 'hostile.html' }).click();
   const iframe = page.locator('iframe.html-preview');
-  await expect(iframe).toBeVisible();
-  const src = await iframe.getAttribute('src'), original = page.url();
-  const frame = page.frames().find(frame => frame !== page.mainFrame());
-  await expect.poll(() => frame.evaluate(() => window.results)).toMatchObject({ parentDOM: 'blocked', cookie: 'blocked', storage: 'blocked', fetch: 'blocked', origin: 'null', navigation: 'blocked' });
-  await expect.poll(() => frame.evaluate(() => window.results)).toMatchObject({ formAttempted: true, settled: true });
-  expect(escapes).toEqual([]);
-  await expect.poll(() => frame.evaluate(() => window.results.worker === 'blocked' || window.violations.includes('worker-src'))).toBe(true);
-  expect(page.url()).toBe(original);
-  expect(frame.url()).not.toContain('preview-form-probe');
+  await expect(iframe).toHaveAttribute('sandbox', '');
+  const src = new URL(await iframe.getAttribute('src'), instance.url).href, original = page.url();
   const direct = await context.newPage();
-  await direct.goto(new URL(src, instance.url).href);
-  await expect.poll(() => direct.evaluate(() => window.results)).toMatchObject({ cookie: 'blocked', storage: 'blocked', fetch: 'blocked', origin: 'null' });
-  await expect.poll(() => direct.evaluate(() => window.results)).toMatchObject({ formAttempted: true, settled: true });
-  expect(escapes).toEqual([]);
-  expect(direct.url()).toBe(new URL(src, instance.url).href);
-  await expect.poll(() => direct.evaluate(() => window.results.worker === 'blocked' || window.violations.includes('worker-src'))).toBe(true);
+  await direct.goto(src);
+  for (const [frame, view] of [[page.frames().find(item => item.url().includes('/preview/html')), page.frameLocator('iframe.html-preview')], [direct.mainFrame(), direct]]) {
+    // Every request the page could make has started once it has loaded.
+    await frame.waitForLoadState('load');
+    await expect(view.locator('#status')).toHaveText('Static');
+    await expect(view.locator('#status')).toHaveCSS('color', 'rgb(1, 2, 3)');
+    await expect(view.getByRole('img', { name: 'Dot' })).toHaveJSProperty('naturalWidth', 1);
+  }
+  expect(await sent(escapes)).toEqual([]);
+  expect(page.url()).toBe(original);
+  expect(direct.url()).toBe(src);
   await direct.close();
-});
-
-test('the HTML preview keeps allowed inline interactions inside its sandbox', async ({ page, instance }) => {
-  await openApp(page, instance);
-  await attach(page, 'interactive.html', 'text/html', '<button onclick="this.textContent=\'Clicked\'">Interact</button>');
-  await page.locator('.attachment-title').click();
-  const frame = page.frameLocator('.html-preview');
-  await frame.getByRole('button', { name: 'Interact' }).click();
-  await expect(frame.getByRole('button', { name: 'Clicked' })).toBeVisible();
-  await expect(page.locator('.html-preview')).toHaveAttribute('sandbox', 'allow-scripts');
 });
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
@@ -182,7 +177,7 @@ test('Markdown keeps renderer formatting and cannot borrow dialog classes', asyn
 });
 
 test('Markdown loads on demand and a dependency failure is local and retryable', async ({ page, instance, allowedConsoleErrors }) => {
-  allowedConsoleErrors.push(/(?:ERR_FAILED|Failed to load resource|Loading failed).*katex(?:\.min)?\.js/);
+  allowedConsoleErrors.push(/(?:ERR_FAILED|Failed to load resource|Loading failed).*katex(?:\.min)?\.js/, sandboxedScript);
   const preview = page.locator('.file-overlay:not([data-motion-exiting])');
   let mathRequests = 0;
   await page.route('**/vendor/katex/katex.min.js', route => ++mathRequests === 1 ? route.abort() : route.continue());

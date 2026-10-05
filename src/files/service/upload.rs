@@ -239,7 +239,15 @@ impl PendingAttachmentUpload {
             .file
             .take()
             .ok_or_else(|| AppError::internal("upload staging file is unavailable"))?;
-        let data_lease = self.service.db.acquire_data_lease().await?;
+        let data_lease = match self.service.db.acquire_data_lease().await {
+            Ok(data_lease) => data_lease,
+            Err(error) => {
+                self.finished = true;
+                drop(file);
+                self.release_without_data_lease().await;
+                return Err(error);
+            }
+        };
         let finalizer = FinalizeAttachmentUpload {
             disk: self.disk.take(),
             service: self.service.clone(),
@@ -265,7 +273,14 @@ impl PendingAttachmentUpload {
     }
 
     pub async fn abort(mut self) -> AppResult<()> {
-        let data_lease = self.service.db.acquire_data_lease().await?;
+        let data_lease = match self.service.db.acquire_data_lease().await {
+            Ok(data_lease) => data_lease,
+            Err(error) => {
+                self.finished = true;
+                self.release_without_data_lease().await;
+                return Err(error);
+            }
+        };
         let file = self.file.take();
         let service = self.service.clone();
         let reservation_id = self.reservation_id.clone();
@@ -294,6 +309,16 @@ impl PendingAttachmentUpload {
         .await
         .map_err(|error| AppError::internal(format!("upload cleanup failed: {error}")))?
     }
+
+    /// Without the data lease, for example during a backup, the attempt still
+    /// frees its task slot and retry key at once.
+    async fn release_without_data_lease(&self) {
+        log_cleanup_failure(
+            self.service
+                .release_upload_reservation(&self.reservation_id, &self.idempotency_id)
+                .await,
+        );
+    }
 }
 
 impl Drop for PendingAttachmentUpload {
@@ -314,18 +339,25 @@ impl Drop for PendingAttachmentUpload {
                 if let Some(mut file) = file {
                     let _ = file.flush().await;
                 }
-                let Ok(data_lease) = service.db.acquire_data_lease().await else {
-                    return;
+                let result = match service.db.acquire_data_lease().await {
+                    Ok(data_lease) => {
+                        service
+                            .cleanup_upload_attempt(
+                                &reservation_id,
+                                &idempotency_id,
+                                &storage_key,
+                                &staging_path,
+                                &data_lease,
+                            )
+                            .await
+                    }
+                    Err(_) => {
+                        service
+                            .release_upload_reservation(&reservation_id, &idempotency_id)
+                            .await
+                    }
                 };
-                let _ = service
-                    .cleanup_upload_attempt(
-                        &reservation_id,
-                        &idempotency_id,
-                        &storage_key,
-                        &staging_path,
-                        &data_lease,
-                    )
-                    .await;
+                log_cleanup_failure(result);
             });
         }
     }

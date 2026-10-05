@@ -26,7 +26,7 @@ impl AppState {
     pub fn new(config: Config, db: Db) -> Self {
         Self {
             auth: AuthService::new(db.clone()),
-            domain: DomainService::new(db.clone(), config.timezone),
+            domain: DomainService::new(db.clone(), config.timezone.clone()),
             files: FileService::new(
                 db.clone(),
                 config.storage_limit_bytes,

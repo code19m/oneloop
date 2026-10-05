@@ -1022,6 +1022,58 @@ async fn admin_removed_as_member_keeps_their_app() {
     McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
 }
 
+#[tokio::test]
+async fn demoted_admin_loses_apps_for_projects_they_are_not_a_member_of() {
+    let (_dir, db, app, session, user) = fixture().await;
+    let owner = user.clone();
+    let revision: i64 = db
+        .run(move |connection| {
+            connection.execute("UPDATE users SET is_admin=1 WHERE id=?1", [&owner])?;
+            connection.execute("DELETE FROM project_memberships WHERE user_id=?1", [&owner])?;
+            Ok(
+                connection.query_row(
+                    "SELECT revision FROM users WHERE id=?1",
+                    [&owner],
+                    |row| row.get(0),
+                )?,
+            )
+        })
+        .await
+        .unwrap();
+    // The admin connects an app to a project that only the admin role opens.
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let admin = support::add_user(&db, "admin", true).await;
+    let accounts = AuthService::new(db.clone());
+    // Demoted, then promoted again before the app's next request.
+    for (is_admin, expected_revision) in [(false, revision), (true, revision + 1)] {
+        accounts
+            .update_account(
+                &admin.actor,
+                &user,
+                oneloop::auth::AccountUpdate {
+                    display_name: "Owner".into(),
+                    is_admin,
+                    is_active: true,
+                    expected_revision,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let denied = app
+        .clone()
+        .oneshot(mcp_request(
+            tokens["access_token"].as_str().unwrap(),
+            None,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+}
+
 /// Adds a second project, "Old project", with the fixture's user as a member.
 async fn add_old_project(db: &Db, user: String) {
     db.run(move |connection| {

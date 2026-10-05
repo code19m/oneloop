@@ -6,6 +6,7 @@
 //! Nothing in oneloop writes to the repository, and knowledge files never link
 //! to tasks or other project work.
 
+mod content;
 mod git;
 mod markdown;
 mod search;
@@ -14,6 +15,7 @@ mod service;
 mod source;
 mod sync;
 
+pub use content::{Chunks, FileBody};
 pub use search::{DocumentHits, FileHit, Hit, Results as SearchResults};
 pub use service::{
     FileMode, FileRead, KnowledgeCommand, KnowledgeCommandResult, KnowledgeFile, KnowledgeOverview,

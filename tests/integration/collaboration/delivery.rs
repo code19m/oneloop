@@ -70,7 +70,7 @@ async fn backward_clock_steps_split_activity_chains_without_blocking_domain_edit
     })
     .await
     .unwrap();
-    let domain = oneloop::domain::DomainService::new(db.clone(), chrono_tz::UTC);
+    let domain = oneloop::domain::DomainService::new(db.clone(), crate::support::utc());
     let updated = domain
         .execute(
             &alice,
@@ -605,7 +605,7 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         if purge {
             assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
         }
-        let bootstrap = oneloop::domain::DomainService::new(db.clone(), chrono_tz::UTC)
+        let bootstrap = oneloop::domain::DomainService::new(db.clone(), crate::support::utc())
             .bootstrap(&bob, Default::default())
             .await
             .unwrap();

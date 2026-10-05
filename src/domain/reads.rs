@@ -1,6 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{Datelike, Duration, NaiveDate, TimeZone, Utc};
-use chrono_tz::Tz;
+use jiff::{
+    Timestamp, ToSpan,
+    civil::{Date, DateTime},
+    tz::AmbiguousOffset,
+};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -10,6 +13,7 @@ use crate::{
     auth::{Actor, ActorSource},
     collaboration::{ActivityEvent, ActivityPage},
     error::{AppError, AppResult},
+    timezone::TimeZone,
 };
 
 use super::{
@@ -112,12 +116,12 @@ impl DomainService {
             return Err(AppError::validation("view", "unknown initial view"));
         }
         let actor = actor.clone();
-        let time_zone = self.time_zone;
+        let time_zone = self.time_zone.clone();
         self.db
             .run(move |connection| {
                 let transaction =
                     connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let result = bootstrap_snapshot(&transaction, &actor, query, time_zone)?;
+                let result = bootstrap_snapshot(&transaction, &actor, query, &time_zone)?;
                 transaction.commit()?;
                 Ok(result)
             })
@@ -221,7 +225,7 @@ impl DomainService {
     pub async fn roadmap(&self, actor: &Actor, project_id: String) -> AppResult<Value> {
         actor.require_ready()?;
         let actor = actor.clone();
-        let time_zone = self.time_zone;
+        let time_zone = self.time_zone.clone();
         self.db
             .snapshot(move |connection| {
                 let actor = ensure_current_actor(connection, &actor)?;
@@ -229,7 +233,7 @@ impl DomainService {
                 Ok(json!({
                 "projectId":project_id,
                 "tracks":tracks(connection,&project_id)?,
-                "epics":epics(connection,&project_id,time_zone)?,
+                "epics":epics(connection,&project_id,&time_zone)?,
                 "milestones":milestones(connection,&project_id)?
                 }))
             })
@@ -492,31 +496,24 @@ fn tracks(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<
 fn epics(
     connection: &rusqlite::Connection,
     project_id: &str,
-    timezone: Tz,
+    timezone: &TimeZone,
 ) -> AppResult<Vec<EpicView>> {
-    epics_on(
-        connection,
-        project_id,
-        timezone,
-        Utc::now().with_timezone(&timezone).date_naive(),
-    )
+    let today = timezone.rules().to_datetime(Timestamp::now()).date();
+    epics_on(connection, project_id, timezone, today)
 }
 
 fn epics_on(
     connection: &rusqlite::Connection,
     project_id: &str,
-    timezone: Tz,
-    today: NaiveDate,
+    timezone: &TimeZone,
+    today: Date,
 ) -> AppResult<Vec<EpicView>> {
-    let week_start = today - Duration::days(today.weekday().num_days_from_monday() as i64);
+    let week_start = today - today.weekday().to_monday_zero_offset().days();
     let week_start_epoch = local_midnight(timezone, week_start)?;
-    let trailing_start = today - Duration::days(6);
+    let trailing_start = today - 6.days();
     let mut boundaries = Vec::with_capacity(8);
     for offset in 0..8 {
-        boundaries.push(local_midnight(
-            timezone,
-            trailing_start + Duration::days(offset),
-        )?);
+        boundaries.push(local_midnight(timezone, trailing_start + offset.days())?);
     }
     let mut statement = connection.prepare_cached("SELECT id,project_id,track_id,title,description,start_date,end_date,state,position,\
                      revision FROM epics WHERE project_id=?1 AND deleted_at IS NULL ORDER BY start_date,position,id")?;
@@ -546,7 +543,9 @@ fn epics_on(
     let starts = result
         .iter()
         .map(|epic| {
-            let start = NaiveDate::parse_from_str(&epic.start_date, "%Y-%m-%d")
+            let start = epic
+                .start_date
+                .parse::<Date>()
                 .map_err(|_| AppError::internal("stored epic start date is invalid"))?;
             Ok((&epic.id, local_midnight(timezone, start)?))
         })
@@ -622,19 +621,28 @@ const EPIC_SUMMARY_SQL: &str = "
            AND t.deleted_at IS NULL AND t.status='done' AND t.completed_at>=?10 AND t.completed_at<?11))
     FROM json_each(?2) e";
 
-fn local_midnight(timezone: Tz, mut date: NaiveDate) -> AppResult<i64> {
+fn local_midnight(timezone: &TimeZone, mut date: Date) -> AppResult<i64> {
     // Midnight gaps and even skipped calendar dates map to the first following
     // representable local instant. Date-only records remain valid in every zone.
+    // The instant is plain arithmetic because jiff timestamps end before
+    // 9999-12-31, a valid date.
+    const UNIX_EPOCH: DateTime = jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0);
     loop {
-        for minute in 0..1440 {
-            let local = date.and_hms_opt(minute / 60, minute % 60, 0).unwrap();
-            if let Some(value) = timezone.from_local_datetime(&local).earliest() {
-                return Ok(value.timestamp());
+        for hour in 0..24 {
+            for minute in 0..60 {
+                let local = date.at(hour, minute, 0, 0);
+                let offset = match timezone.rules().to_ambiguous_timestamp(local).offset() {
+                    AmbiguousOffset::Unambiguous { offset } => offset,
+                    AmbiguousOffset::Fold { before, .. } => before,
+                    AmbiguousOffset::Gap { .. } => continue,
+                };
+                let seconds = local.duration_since(UNIX_EPOCH).as_secs();
+                return Ok(seconds - i64::from(offset.seconds()));
             }
         }
         date = date
-            .succ_opt()
-            .ok_or_else(|| AppError::internal("calendar range exhausted"))?;
+            .tomorrow()
+            .map_err(|_| AppError::internal("calendar range exhausted"))?;
     }
 }
 
@@ -1459,7 +1467,7 @@ fn bootstrap_snapshot(
     connection: &rusqlite::Connection,
     actor: &Actor,
     query: BootstrapQuery,
-    time_zone: Tz,
+    time_zone: &TimeZone,
 ) -> AppResult<BootstrapView> {
     let actor = ensure_current_actor(connection, actor)?;
     let projects = projects(connection, &actor)?;

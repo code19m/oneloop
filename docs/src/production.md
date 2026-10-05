@@ -84,6 +84,8 @@ not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
   oneloop sets its own, including HSTS.
 - Use HTTP/2 to browsers. With HTTP/1.1, a browser opens only six connections
   to a site, and every open tab uses one for live updates.
+- Reach oneloop itself over HTTP/1.1. It doesn't accept HTTP/2 without TLS
+  (h2c).
 - Don't buffer or time out `/api/events`. This live-update stream stays open as
   long as the tab.
 - Allow request bodies of at least 27 MB, for file uploads.

@@ -13,6 +13,7 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
+use http_body_util::BodyExt;
 use oneloop::{AppState, Db, application, auth::unix_now};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -62,6 +63,21 @@ impl Repository {
     fn commit(&self, time: i64) {
         self.git(&["add", "--all"], time);
         self.git(&["commit", "--quiet", "--message", "Change"], time);
+    }
+
+    /// Adds commits from a `git fast-import` stream.
+    fn import(&self, stream: &[u8]) {
+        use std::io::Write;
+        let mut import = Command::new("git")
+            .current_dir(self.path())
+            .args(["fast-import", "--quiet"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        import.stdin.take().unwrap().write_all(stream).unwrap();
+        assert!(import.wait().unwrap().success());
     }
 
     fn git(&self, arguments: &[&str], time: i64) -> Vec<u8> {
@@ -316,6 +332,31 @@ impl Fixture {
 
 fn cookie(token: &str) -> String {
     format!("__Host-oneloop_session={token}")
+}
+
+#[tokio::test]
+async fn the_overview_leaves_out_a_readme_that_is_not_text() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/README.md", b"\x89\0\xff\xfeNOT TEXT \0\x01");
+    repository.write("docs/guide.md", b"# Guide\n");
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let actor = fixture
+        .state
+        .auth
+        .authenticate_session(fixture.member.split_once('=').unwrap().1, false)
+        .await
+        .unwrap();
+    let overview = fixture
+        .state
+        .knowledge
+        .overview(&actor, "p1", None)
+        .await
+        .unwrap();
+    assert!(overview.readme.is_none(), "{:?}", overview.readme);
+    assert_eq!(overview.file_count, 2);
 }
 
 #[tokio::test]
@@ -639,11 +680,9 @@ async fn files_follow_the_attachment_safety_rules() {
         )
         .await;
     assert_eq!(preview.status(), StatusCode::OK);
-    assert!(
-        preview.headers()["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .starts_with("sandbox allow-scripts;")
+    assert_eq!(
+        preview.headers()["content-security-policy"],
+        crate::files::http::PREVIEW_POLICY
     );
 
     let script = fixture
@@ -667,6 +706,77 @@ async fn files_follow_the_attachment_safety_rules() {
         )
         .await;
     assert_eq!(outsider.status(), StatusCode::NOT_FOUND);
+}
+
+/// A binary file several chunks long, with no repeating stretch.
+fn large_file() -> Vec<u8> {
+    (0..1_500_000_u32)
+        .map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect()
+}
+
+#[tokio::test]
+async fn large_files_are_sent_in_bounded_chunks() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    let content = large_file();
+    repository.write("docs/data.bin", &content);
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let response = fixture
+        .get(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=data.bin",
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        content.len().to_string()
+    );
+    let mut body = response.into_body();
+    let (mut received, mut frames) = (Vec::new(), 0);
+    while let Some(frame) = body.frame().await {
+        let chunk = frame.unwrap().into_data().unwrap();
+        assert!(chunk.len() <= 256 * 1024, "{} bytes at once", chunk.len());
+        received.extend_from_slice(&chunk);
+        frames += 1;
+    }
+    assert!(frames > 1);
+    assert!(received == content, "the bytes arrive unchanged");
+}
+
+#[tokio::test]
+async fn a_file_replaced_while_it_is_sent_ends_the_response() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/data.bin", &large_file());
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let response = fixture
+        .get(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=data.bin",
+        )
+        .await;
+    let mut body = response.into_body();
+    body.frame().await.unwrap().unwrap();
+    // A sync stores another version of the file.
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE knowledge_files SET content=zeroblob(size),checksum='other' WHERE path='data.bin'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let next = body.frame().await.unwrap();
+    assert!(next.is_err(), "the rest of another version is never sent");
 }
 
 #[tokio::test]
@@ -720,6 +830,57 @@ async fn search_finds_names_and_section_text() {
 }
 
 #[tokio::test]
+async fn files_with_quotes_in_their_names_keep_their_own_dates() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/say \"hi\".md", b"# Hi\n");
+    repository.write("docs/plain.md", b"# Plain\n");
+    repository.commit(FIRST);
+    repository.write("docs/plain.md", b"# Plain, changed\n");
+    repository.commit(SECOND);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let view = fixture.view(&fixture.member).await;
+    assert_eq!(file(&view, "say \"hi\".md")["updatedAt"], FIRST);
+    assert_eq!(file(&view, "plain.md")["updatedAt"], SECOND);
+}
+
+#[tokio::test]
+async fn a_history_listing_longer_than_the_output_limit_still_syncs() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    // Renaming a folder of long names lists each of them twice per commit:
+    // a small repository whose `git log` prints about 70 MB.
+    let mut stream = format!(
+        "commit refs/heads/main\ncommitter T <t@example.test> {FIRST} +0000\ndata 1\nc\n\
+         M 100644 inline docs/README.md\ndata 7\n# Docs\n\n"
+    );
+    for n in 0..17 {
+        stream.push_str(&format!(
+            "M 100644 inline docs/old/a/{n:02}{}\ndata 1\nx\n",
+            "n".repeat(4_200)
+        ));
+    }
+    for n in 0..490 {
+        let (from, to) = if n % 2 == 0 { ("a", "b") } else { ("b", "a") };
+        stream.push_str(&format!(
+            "\ncommit refs/heads/main\ncommitter T <t@example.test> {} +0000\ndata 1\nc\nR docs/old/{from} docs/old/{to}\n",
+            FIRST + 60 * (n + 1)
+        ));
+    }
+    stream.push_str(&format!(
+        "\ncommit refs/heads/main\ncommitter T <t@example.test> {SECOND} +0000\ndata 1\nc\nD docs/old\n\n"
+    ));
+    repository.import(stream.as_bytes());
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let admin = fixture.view(&fixture.admin).await;
+    assert_eq!(admin["source"]["state"], "ready", "{}", admin["source"]);
+    assert_eq!(paths(&admin), ["README.md"]);
+    assert_eq!(file(&admin, "README.md")["updatedAt"], FIRST);
+}
+
+#[tokio::test]
 async fn new_commits_replace_files_and_unchanged_files_keep_their_dates() {
     let fixture = Fixture::new().await;
     let repository = handbook();
@@ -760,6 +921,31 @@ async fn new_commits_replace_files_and_unchanged_files_keep_their_dates() {
     )
     .await;
     assert_eq!(results["documents"][0]["hits"][0]["heading"], "First week");
+}
+
+#[tokio::test]
+async fn a_commit_outside_the_folder_records_no_new_sync() {
+    let fixture = Fixture::new().await;
+    let repository = handbook();
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let before = fixture.view(&fixture.member).await;
+    repository.write("other/secret.md", b"# Still not shared\n");
+    repository.commit(SECOND);
+    fixture.sync().await;
+    assert_eq!(
+        fixture.view(&fixture.member).await["files"],
+        before["files"]
+    );
+    assert_eq!(
+        fixture.events("knowledge.synced").await,
+        1,
+        "viewers get no live hint for an unchanged folder"
+    );
+    repository.write("docs/news.md", b"# News\n");
+    repository.commit(SECOND + 60);
+    fixture.sync().await;
+    assert_eq!(fixture.events("knowledge.synced").await, 2);
 }
 
 #[tokio::test]

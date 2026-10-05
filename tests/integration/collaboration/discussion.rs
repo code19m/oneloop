@@ -763,6 +763,54 @@ async fn idempotent_comment_replay_rechecks_current_project_access() {
 }
 
 #[tokio::test]
+async fn comments_of_a_deleted_task_can_no_longer_change() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service();
+    let created = service
+        .execute(
+            &fixture.alice,
+            command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"Before"}),
+                "before-task-deletion",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE tasks SET deleted_at=unixepoch() WHERE id='task'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (operation, payload) in [
+        (
+            "discussion.comment.edit",
+            json!({"commentId":id,"content":"After"}),
+        ),
+        ("discussion.comment.delete", json!({"commentId":id})),
+    ] {
+        let result = service
+            .execute(
+                &fixture.alice,
+                command(operation, payload, operation, Some(1)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(AppError::NotFound { .. })),
+            "{operation}: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn comment_pages_walk_newest_to_oldest_with_bounded_thread_context() {
     let fixture = Fixture::new().await;
     fixture.db.transaction(|tx| {

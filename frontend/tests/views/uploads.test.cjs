@@ -37,7 +37,7 @@ test('HTML attachments keep their file name and preview in an isolated sandbox w
   assert(!d.querySelector('.file-preview-action')); assert(d.querySelector('.file-download').textContent.includes('Download'));
   A.previewAttachment(task.id, file.id);
   let frame = d.querySelector('.html-preview');
-  assert(frame); assert.equal(frame.getAttribute('sandbox'), 'allow-scripts'); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
+  assert(frame); assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
   assert(frame.srcdoc.includes("default-src 'none'")); assert(frame.srcdoc.includes('<script>')); assert(frame.srcdoc.includes('onerror=')); assert(frame.srcdoc.includes('https://example.invalid'));
   assert(!frame.srcdoc.includes('<iframe')); assert(frame.srcdoc.includes('Visible field')); assert(!frame.srcdoc.includes('disabled'));
   assert(d.querySelector('.file-info').hidden);
