@@ -171,7 +171,7 @@ async fn queue_inbox_changes(db: &oneloop::Db, ids: &[&str]) {
 }
 
 #[tokio::test]
-async fn one_run_delivers_a_burst_in_order_with_one_hint_each() {
+async fn a_burst_is_delivered_in_order_with_one_hint_each() {
     let SeededProject {
         root: _root, db, ..
     } = seeded_project().await;
@@ -182,19 +182,19 @@ async fn one_run_delivers_a_burst_in_order_with_one_hint_each() {
     let runtime = CollaborationRuntime::new(db.clone());
     let mut hints = runtime.subscribe();
     let worker = runtime.worker();
-    assert!(worker.run_once().await.unwrap());
-    let delivered = || {
-        db.run(|connection| {
+    // How many go in one run depends on time; see the runtime's unit tests.
+    while worker.run_once().await.unwrap() {}
+    let delivered = db
+        .run(|connection| {
             Ok(connection.query_row(
                 "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NOT NULL",
                 [],
                 |row| row.get::<_, i64>(0),
             )?)
         })
-    };
-    assert!(delivered().await.unwrap() > 1, "one run delivers many");
-    while worker.run_once().await.unwrap() {}
-    assert_eq!(delivered().await.unwrap(), 70);
+        .await
+        .unwrap();
+    assert_eq!(delivered, 70);
     let mut order = Vec::new();
     while let Ok(hint) = hints.try_recv() {
         assert_eq!(hint.kind, "inbox.changed");

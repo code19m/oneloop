@@ -1038,6 +1038,7 @@ async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
         .unwrap();
     let id = created.entities[0]["id"].as_str().unwrap().to_owned();
     assert!(created.entities[0]["completedAt"].is_null());
+    let before = now();
     let moved = f
         .service
         .execute(
@@ -1051,7 +1052,8 @@ async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
         )
         .await
         .unwrap();
-    assert!(moved.entities[0]["completedAt"].as_i64().unwrap() >= now() - 60);
+    let completed_at = moved.entities[0]["completedAt"].as_i64().unwrap();
+    assert!((before..=now()).contains(&completed_at));
     let newest = f
         .service
         .board_page(&f.member, newest_done_query(None, None))
