@@ -662,6 +662,8 @@ div.ms-label {cursor:default}
   .tp-rail { width: 100%; }
   .tp-main { max-width: none; }
   .board { scroll-snap-type: x mandatory; }
+  /* Snapping would pull each auto-scroll step back while a card is dragged. */
+  body.is-dragging .board { scroll-snap-type: none; }
   .col { scroll-snap-align: start; }
   .peek { width: min(420px, 100vw); }
   .settings { padding: 16px; }
