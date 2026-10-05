@@ -91,7 +91,9 @@ Tests must not depend on sleeps, the wall clock, the host time zone or locale.
 Keep the suites fast. Warm `cargo test` should finish in under 60 seconds on a
 10-core laptop, frontend unit tests in under 10 seconds, the end-to-end smoke
 set in under 2 minutes, and the full end-to-end suite in a few minutes locally
-(about 12 on CI's two workers). CI timeouts enforce these budgets.
+(about 12 on CI's two workers). CI doesn't enforce these budgets: its job
+timeouts only stop runs that hang. When you add slow tests, compare the step
+times in CI.
 
 ## Pull requests
 
@@ -152,7 +154,11 @@ example `v0.1.0-rc.1`.
 1. Set the version in `Cargo.toml` and run `cargo check` to update
    `Cargo.lock`. Update the version that `README.md`, `deploy/compose.yaml`
    and the pages in `docs/src/` show; `rg -F` with the previous version finds
-   them.
+   them. If `CURRENT_SCHEMA_VERSION` changed since the previous release, also
+   update the schema numbers in the docs: the sample output of `db migrate`
+   and `/healthz`, and the name of the pre-upgrade backup;
+   `rg 'migrated from|schema [0-9]|schemaVersion|pre-migration-v' docs/src`
+   finds them.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
    `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
    bottom, and note any upgrade steps.
@@ -169,29 +175,45 @@ example `v0.1.0-rc.1`.
      notes, because the Rust advisory database doesn't cover it.
 5. Build the image and try it on both architectures if you can: first run,
    an upgrade from the previous release, and a backup restore.
-6. Merge to `main`, then tag and push:
+6. Merge to `main`. Then tag the merged release commit, usually `origin/main`,
+   and push the tag:
 
    ```sh
-   git tag vX.Y.Z
+   git fetch origin
+   git tag vX.Y.Z origin/main
    git push origin vX.Y.Z
    ```
 
 The Release workflow then:
 
-- checks that the tag matches `Cargo.toml` and `CHANGELOG.md`, then runs the
-  full verification and the dependency checks;
+- checks that the tag is on `main`, is not released yet and matches
+  `Cargo.toml` and `CHANGELOG.md`, then runs the full verification and the
+  dependency checks;
 - builds the linux/amd64 and linux/arm64 image and pushes it to
-  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations;
-- creates a GitHub Release with the changelog notes and no binary files.
+  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations. If the
+  version's image tag already exists with other images, it stops before it
+  changes any tag;
+- checks the attestations before it tags the version. Each image's SBOM must
+  list the Rust crates, which cargo-auditable records in the binary, besides
+  the Debian packages. The browser libraries aren't in it;
+  `THIRD_PARTY_NOTICES.md` lists them with their versions, and the
+  Dependencies workflow audits them;
+- creates a GitHub Release with the changelog notes and no binary files;
+- runs the Docs workflow, which publishes the documentation. Docs pushed to
+  `main` go live only when the version in `Cargo.toml` is released, so the site
+  never names a version that people can't install yet.
 
-A release candidate gets only the `X.Y.Z-rc.N` image tag and never moves
-`latest`. A final release is tagged `X.Y.Z`, `X.Y` and `latest`. oneloop is not
-published to crates.io; people who don't use Docker install a tag from source
-with `cargo install --git`.
+A release candidate gets only the `X.Y.Z-rc.N` image tag. A final release gets
+the `X.Y.Z` tag. `X.Y` and `latest` only move forward: they move to the release
+unless they already name a newer version. For example, 0.1.1 released after
+0.2.0 moves `0.1` but leaves `latest` at 0.2.0. GitHub's Latest release follows
+`latest`. oneloop is not published to crates.io; people who don't use Docker
+install a tag from source with `cargo install --git`.
 
 Afterwards, check the image and the GitHub Release. Publishing is not atomic:
-if one step fails, look at what already went out before you retry. Tags must
-never move, so fix forward with a new version when needed.
+if one step fails, look at what already went out before you retry. Retry with
+**Re-run failed jobs**, which reuses the images that were built. Tags must never
+move, so fix forward with a new version when needed.
 
 ### Dependencies
 
