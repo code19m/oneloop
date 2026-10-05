@@ -26,6 +26,7 @@ const INSTANCE_LOCK_FILE: &str = ".oneloop-instance.lock";
 const DEFAULT_POOL_SIZE: usize = 8;
 const MAX_PENDING_OPERATIONS: usize = 256;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug)]
 pub struct DataLayout {
@@ -84,22 +85,16 @@ impl DataLayout {
         Ok(())
     }
 
-    pub(crate) fn open_shared_lock(&self) -> AppResult<File> {
-        let file = open_lock_file(&self.data_lock())?;
-        wait_for_lock(&file, false, &self.data_lock())?;
-        Ok(file)
-    }
-
     pub(crate) fn open_exclusive_lock(&self) -> AppResult<File> {
         let file = open_lock_file(&self.data_lock())?;
-        wait_for_lock(&file, true, &self.data_lock())?;
+        wait_for_exclusive_lock(&file, &self.data_lock())?;
         Ok(file)
     }
 
     pub(crate) fn backup_lock(&self) -> AppResult<File> {
         let path = self.root.join(".oneloop-backup.lock");
         let file = open_lock_file(&path)?;
-        wait_for_lock(&file, true, &path)?;
+        wait_for_exclusive_lock(&file, &path)?;
         Ok(file)
     }
 
@@ -279,15 +274,31 @@ impl Db {
         &self.inner.layout
     }
 
+    /// Waits up to five seconds while a backup holds the data lock. Waiting
+    /// takes no blocking thread, so many requests can wait at once.
     pub async fn acquire_data_lease(&self) -> AppResult<DataLease> {
-        let layout = self.inner.layout.clone();
-        tokio::task::spawn_blocking(move || {
-            Ok(DataLease {
-                _lock: layout.open_shared_lock()?,
-            })
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("data lease worker failed: {error}")))?
+        let path = self.inner.layout.data_lock();
+        let file = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || open_lock_file(&path))
+                .await
+                .map_err(|error| {
+                    AppError::internal(format!("data lease worker failed: {error}"))
+                })??
+        };
+        let started = tokio::time::Instant::now();
+        loop {
+            match file.try_lock_shared() {
+                Ok(()) => return Ok(DataLease { _lock: file }),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < ADMISSION_TIMEOUT => {
+                    tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+                }
+                Err(std::fs::TryLockError::WouldBlock) => return Err(lock_busy_error(&path)),
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(lock_failed_error(&path, error));
+                }
+            }
+        }
     }
 
     pub async fn run<T, F>(&self, operation: F) -> AppResult<T>
@@ -647,28 +658,31 @@ fn warn_public_permissions(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn wait_for_lock(file: &File, exclusive: bool, path: &Path) -> AppResult<()> {
+fn wait_for_exclusive_lock(file: &File, path: &Path) -> AppResult<()> {
     let start = Instant::now();
     loop {
-        let result = if exclusive {
-            file.try_lock()
-        } else {
-            file.try_lock_shared()
-        };
-        match result {
+        match file.try_lock() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::WouldBlock) => {
                 if start.elapsed() >= ADMISSION_TIMEOUT {
-                    return Err(AppError::Unavailable(format!(
-                        "data lease is busy at {}; retry shortly",
-                        path.display()
-                    )));
+                    return Err(lock_busy_error(path));
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(LOCK_RETRY_INTERVAL);
             }
-            Err(error) => return Err(AppError::Io(format!("lock {}: {error}", path.display()))),
+            Err(std::fs::TryLockError::Error(error)) => return Err(lock_failed_error(path, error)),
         }
     }
+}
+
+fn lock_busy_error(path: &Path) -> AppError {
+    AppError::Unavailable(format!(
+        "data lease is busy at {}; retry shortly",
+        path.display()
+    ))
+}
+
+fn lock_failed_error(path: &Path, error: std::io::Error) -> AppError {
+    AppError::Io(format!("lock {}: {error}", path.display()))
 }
 
 fn open_lock_file(path: &Path) -> AppResult<File> {
