@@ -1936,7 +1936,8 @@
     if (!target && record?.id) target = document.getElementById(record.id);
     if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
     if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
-    if (!target && record?.action) target = [...app.querySelectorAll(`[${bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'}]`)].find(el => el.getAttribute(bootWindow.OneloopEventAttribute?.('onclick') || 'onclick') === record.action);
+    // A scrim and a close button can share an action; prefer the same kind of control in the same place.
+    if (!target && record?.action) { const attribute = bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'; target = [...app.querySelectorAll(`${record.scope} [${attribute}]`), ...app.querySelectorAll(`[${attribute}]`)].find(el => el.tagName === record.tag && el.getAttribute(attribute) === record.action); }
     if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
     if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
     if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);

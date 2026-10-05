@@ -155,3 +155,11 @@ test('permission checkboxes and task controls have descriptive labels', () => {
   t.A.openTask('BIR-079');assert.equal(t.d.querySelector('[title="Back to Board"]').getAttribute('aria-label'),'Back to Board');
   assert.equal(t.d.querySelector('.attachment-dropzone').getAttribute('aria-label'),'Drag & drop or browse files');
 });
+
+test('a full render keeps focus on the epic drawer close button, not its scrim', () => {
+  const t=boot('roadmap');t.A.openPeek(t.D.epics[0].id);
+  const close=()=>t.d.querySelector('.peek [aria-label="Close epic"]');
+  close().focus();assert.equal(t.d.activeElement,close());
+  t.A.refresh();
+  assert.equal(t.d.activeElement,close());
+});
