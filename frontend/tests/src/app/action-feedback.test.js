@@ -141,3 +141,13 @@ test('task insertion indices are not compared with gapped ordering keys',()=>{
   assert.equal(commandIsUnchanged('task.move',{status:'planning'},task),true);
   assert.equal(actionErrorFeedback({code:'validation_failed',message:'invalid position: task is already at that position'}).silent,true);
 });
+
+test('membership changes for two people are separate interactions with readable pending feedback',()=>{
+  const alice={userId:'alice',permissions:[],revision:1},bob={userId:'bob',permissions:[],revision:1};
+  const update=(entity,userId)=>commandInteractionKey('membership.update',{projectId:'p1',userId,manageRoadmap:false,manageBoard:true},entity);
+  assert.notEqual(update(alice,'alice'),update(bob,'bob'));
+  assert.equal(update(alice,'alice'),update({...alice,revision:2},'alice'));
+  const add=userId=>commandInteractionKey('membership.add',{projectId:'p1',userId,manageRoadmap:false,manageBoard:false},null);
+  assert.notEqual(add('alice'),add('bob'));
+  assert.equal(actionErrorFeedback(new ApiError('Another change is still being saved. Wait a moment and try again.',{code:'interaction_pending'})).message,'Another change is still being saved. Wait a moment and try again.');
+});

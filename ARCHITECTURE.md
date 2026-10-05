@@ -170,6 +170,12 @@ and an update here.
   from other sites, so a preview can't read cookies, call the API or tell
   another site it was opened. Downloads are `application/octet-stream` with
   `nosniff`.
+- **The app page runs and styles only its own code.** Its
+  `Content-Security-Policy` allows scripts and style elements from the app
+  only, and Trusted Types let HTML reach the page only through the app's
+  `oneloop` policy and DOMPurify. Mermaid lays out diagrams in a separate
+  document, `views/diagram-renderer.html`, the one app page that allows
+  inline style elements.
 - **A write and its record commit together.** Data, audit activity and outbox
   messages share one transaction. Nothing reaches clients that was not
   committed.

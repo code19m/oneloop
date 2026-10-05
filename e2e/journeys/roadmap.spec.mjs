@@ -12,13 +12,15 @@ test('Roadmap shows its summary without work counters', { tag: '@smoke' }, async
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
 });
 
-test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ page, instance }, testInfo) => {
+test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ page, instance, browserName, allowedConsoleErrors }, testInfo) => {
   const { project, track } = instance.projects[0];
   for (let i = 0; i < 4; i++) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Overlapping epic ${i}`, startDate: '2026-09-24', endDate: '2026-10-24' });
   await openApp(page, instance, 'roadmap');
   expect(await page.evaluate(() => Uploads.limits)).toEqual({ file: 25 * 1024 * 1024, avatar: 5 * 1024 * 1024, count: 25 });
   const beforeSpacing = Number(await page.locator('#rmScroll').getAttribute('data-bar-height'));
-  await page.addStyleTag({ content: '* { line-height:1.5 !important; letter-spacing:.12em !important; word-spacing:.16em !important; }' });
+  // WCAG text spacing, as a stylesheet: the app's policy refuses inline style elements.
+  await page.route('**/e2e-text-spacing.css', route => route.fulfill({ contentType: 'text/css', body: '* { line-height:1.5 !important; letter-spacing:.12em !important; word-spacing:.16em !important; }' }));
+  await page.addStyleTag({ url: `${instance.url}/e2e-text-spacing.css` });
   await expect.poll(async () => Number(await page.locator('#rmScroll').getAttribute('data-bar-height'))).toBeGreaterThan(beforeSpacing);
   const geometry = await page.locator('.bar').evaluateAll(bars => bars.map(bar => ({ h: bar.clientHeight, sh: bar.scrollHeight, top: bar.offsetTop, bottom: bar.offsetTop + bar.offsetHeight })));
   expect(geometry.length).toBeGreaterThan(3);
@@ -28,12 +30,20 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
   await page.evaluate(() => {
     window.originalSidebar = document.querySelector('.sidebar');
     window.originalScroll = document.getElementById('rmScroll');
-    window.initialWidth = document.querySelector('.bar').offsetWidth;
+    window.originalBar = document.querySelector('.bar');
+    window.initialWidth = window.originalBar.offsetWidth;
     for (let i = 0; i < 5; i++) window.originalScroll.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -10, clientX: 800, bubbles: true, cancelable: true }));
   });
-  await expect.poll(() => page.evaluate(() => document.getElementById('rmScroll') !== window.originalScroll)).toBe(true);
-  expect(await page.evaluate(() => document.querySelector('.sidebar') === window.originalSidebar)).toBe(true);
-  expect(await page.evaluate(() => document.querySelector('.bar').offsetWidth > window.initialWidth)).toBe(true);
+  // The zoom resizes the Roadmap in place: the same scroller and bars, wider, inside the same shell.
+  await expect.poll(() => page.evaluate(() => window.originalBar.offsetWidth > window.initialWidth)).toBe(true);
+  const unchanged = () => page.evaluate(() => document.getElementById('rmScroll') === window.originalScroll && window.originalBar.isConnected && document.querySelector('.sidebar') === window.originalSidebar);
+  expect(await unchanged()).toBe(true);
+  // Month cells follow the zoom through CSS: each spans its days times the pixels per day.
+  const months = await page.locator('.rm-month-grid .rm-month').evaluateAll(cells => cells.map(cell => [cell.getBoundingClientRect().width, Number(cell.style.getPropertyValue('--n')) * Number(cell.parentElement.style.getPropertyValue('--ppd'))]));
+  expect(months.length).toBeGreaterThan(0);
+  for (const [width, expected] of months) expect(Math.abs(width - expected)).toBeLessThan(1);
+  // Playwright's WebKit screenshots insert a style element to sync animations, which the policy refuses.
+  if (browserName === 'webkit') allowedConsoleErrors.push(/Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'/);
   for (const theme of ['light', 'dark']) {
     await page.mouse.move(1, 1);
     await page.keyboard.press('Escape');
@@ -41,6 +51,8 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
     expect(await page.locator('.rail-cell').first().evaluate(el => getComputedStyle(el).backdropFilter)).toBe('none');
     await page.screenshot({ path: testInfo.outputPath(`roadmap-${theme}.png`), animations: 'disabled' });
   }
+  // Long after the gesture ended, the Roadmap was still never rebuilt.
+  expect(await unchanged()).toBe(true);
 });
 
 test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {

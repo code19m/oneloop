@@ -71,8 +71,7 @@ Inspector; and clients that identify themselves with a client ID metadata
 document. See [AI assistant connections](production.md#ai-assistant-connections).
 
 OAuth requests may repeat `resource` only when every value is this server's
-exact MCP address. Other parameters must appear once. The `Bearer` scheme in
-an `Authorization` header accepts any letter case; the token stays unchanged.
+exact MCP address. Other parameters must appear once.
 
 To build on oneloop, use MCP. The JSON API under `/api` is only for oneloop's
 own web app. It isn't documented and can change in any release.
@@ -95,7 +94,8 @@ project; the assistant can't see other projects. Then choose capabilities:
 | Permanently delete permitted work and files | `destructive` | Delete tasks, epics, tracks, milestones, Pool items, files and your own comments | No |
 
 The page lists only the capabilities that the assistant asked for. Delete access
-also needs at least one capability that manages something.
+also needs **Create and manage tasks and Pool items**, **Create and manage
+roadmap work** or **Read and manage attachments**.
 
 - A capability never adds a permission. If you can't change the Board in a
   project, your assistant can't either.
@@ -123,9 +123,9 @@ oneloop also ends a connection when:
 
 - you change your password, or an admin resets it;
 - an admin deactivates your account;
-- you are removed from one of its projects, or the project is deleted;
-- you lose the admin role, and one of its projects is one you aren't a member
-  of;
+- you lose access to one of its projects: you are removed from it (admins keep
+  access to every project), you lose the admin role and aren't a member of it,
+  or it is deleted;
 - a backup is restored;
 - it isn't used for 30 days, or 90 days have passed since you connected it.
 
@@ -218,8 +218,8 @@ schema describes the payload of each operation.
   the [response limits](reference.md#limits); to read one part of a long
   document, pass a heading as `section`. Search hits include a `section` target;
   use it to tell repeated headings apart (for example, `setup-1` for the second
-  **Setup**). Pass the target unchanged; exact targets take priority over bare
-  `md-` aliases. A fragment such as `#md-setup` refers to the browser's anchor.
+  **Setup**). Pass the target unchanged. You can also pass the end of a heading
+  link from the browser, such as `#md-setup`.
   Images, PDFs and other binary files return only their details.
 - **Errors.** A failed call returns a `code`, a `message`, `details` and, when
   waiting helps, `retryAfter` in seconds.

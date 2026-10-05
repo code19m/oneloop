@@ -1,7 +1,8 @@
 // views/app.js: the task page, its dialogs, save feedback and activity feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { stored, prepare } = {}) => bootApp({ route, stored, prepare });
@@ -93,4 +94,96 @@ const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaqu
 
 test('the activity feed loads older records in batches', () => {
 const x=boot('task/BIR-079');const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
+});
+
+/** The task page wired to the production bridge, with commands answered by the test. */
+/** A task page with the production bridge; reading the task again brings someone else's `latest` change. */
+function productionTaskPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
+  const t = bootApp({ route: 'task/BIR-079', media: () => true });
+  const task = t.D.tasks.find(x => x.id === 'BIR-079');
+  Object.assign(task, { internalId: 'bir-079', projectId: 'p1', revision: 1, deadline: null });
+  const requests = [];
+  const gateway = { execute: (operation, payload, options) => new Promise((resolve, reject) => requests.push({ operation, payload, options, resolve, reject })) };
+  const reads = { task: async () => { Object.assign(task, { revision: 2, ...latest }); t.A.refresh(); return { stale: false, task }; }, counts: async () => ({}), cancel() {} };
+  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap: async () => ({}) });
+  t.w.OneloopRuntime = bridge;
+  return { ...t, task, requests, bridge };
+}
+
+test('a title conflict keeps newer typing elsewhere and shows the title as typed beside the latest one', async () => {
+  const t = productionTaskPage(), title = t.d.querySelector('.tp-title');
+  // Inline handlers do not run in this harness, so blur calls the handler itself.
+  title.focus(); title.value = 'My title'; title.blur(); t.A.updTask(t.task.id, 'title', title.value);
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Typed after the title save started'; description.dispatchEvent(new t.w.Event('input', { bubbles: true }));
+  assert.equal(t.requests.length, 1);
+  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
+  assert.equal(t.d.getElementById('task-description').value, 'Typed after the title save started');
+  assert.equal(t.d.querySelector('.tp-title').value, 'My title');
+  assert.equal(t.d.getElementById('tpDl-input').value, '2026-11-30', 'other fields show the latest saved values');
+  assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Their title/);
+});
+
+test('Use latest on a description shows the saved description, not the typed one', async () => {
+  const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
+  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
+  [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === 'Use latest').click();
+  await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'desc'), 'the typed description is dropped');
+  await settle();
+  assert.equal(t.d.getElementById('task-description').value, 'Their description');
+  assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null);
+});
+
+test('an unsaved description stays on the page through refreshes and offers Save', async () => {
+  const t = productionTaskPage();
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Unable to reach oneloop', { code: 'network_error' }), requestContext: t.w.Recovery.requestContext() });
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Written offline'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
+  await settle();
+  t.d.querySelector('.tp-title').focus(); t.A.refresh();
+  assert.equal(t.d.getElementById('task-description').value, 'Written offline');
+  const note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.match(note.textContent, /Not saved/); assert(note.querySelector('button'));
+  assert.equal(t.requests.length, 0);
+});
+
+test('a pasted line break cleans the title without splitting an emoji at its length limit', () => {
+  const t = taskPage(), title = t.d.querySelector('.tp-title');
+  title.focus(); title.value = ''; title.setSelectionRange(0, 0);
+  const paste = new t.w.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'A'.repeat(139) + '😀\n' + 'B'.repeat(10) } });
+  title.dispatchEvent(paste);
+  assert(paste.defaultPrevented);
+  assert.equal(title.value, 'A'.repeat(139));
+  assert(title.value.isWellFormed());
+  title.value = 'A'.repeat(137); title.setSelectionRange(137, 137);
+  const joined = new t.w.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(joined, 'clipboardData', { value: { getData: () => '\t👩‍💻 x' } });
+  title.dispatchEvent(joined);
+  assert.equal(title.value, 'A'.repeat(137) + ' ', 'a joined emoji that does not fit stays whole');
+});
+
+test('text typed into a task field when edit rights end stays as Not saved, readable and saved again once rights return', () => {
+  const t = productionTaskPage();
+  const actor = t.D.users.find(user => user.id === t.D.session.userId), membership = t.D.projects[0].members.find(member => member.userId === actor.id);
+  const description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'Typed while access changed';
+  actor.admin = false; const permissions = membership.permissions; membership.permissions = [];
+  t.A.refreshBackground();
+  let field = t.d.getElementById('task-description'), note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.equal(field.value, 'Typed while access changed');
+  assert.equal(field.readOnly, true); assert.equal(field.disabled, false);
+  assert.equal(note?.getAttribute('role'), 'alert'); assert.equal(note.textContent, 'Not saved. You no longer have permission to edit this task.');
+  assert.equal(t.d.activeElement, field, 'focus stays on the text');
+  t.A.refresh();
+  assert.equal(t.d.getElementById('task-description').value, 'Typed while access changed', 'a later refresh keeps it');
+  actor.admin = true; membership.permissions = permissions; t.A.refresh();
+  field = t.d.getElementById('task-description'); note = t.d.querySelector('.task-description [data-draft-note]');
+  assert.equal(field.readOnly, false); assert.equal(field.value, 'Typed while access changed');
+  assert.match(note.textContent, /^Not saved/); assert(note.querySelector('button'));
+  t.A.saveTaskDraft(t.task.id, 'desc');
+  assert.deepEqual(t.requests.map(request => [request.operation, request.payload.description, request.options.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
 });

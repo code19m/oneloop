@@ -64,16 +64,14 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
   assert(d.querySelector('.markdown-body img[src="https://example.invalid/image.png"]')); assert(!d.querySelector('[data-view-resources]')); close();
 });
 
-test('HTML previews run no scripts, load nothing from other sites and restart from the same content', async () => {
-  const { d, open, close } = await taskWithFiles();
+test('HTML previews frame the server preview in a sandbox and restart it', async () => {
+  const { d, file, open, close } = await taskWithFiles();
+  file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
   open('report.html');
   let frame = d.querySelector('iframe');
-  assert.equal(frame.getAttribute('sandbox'), ''); assert(frame.hasAttribute('credentialless'));
-  const policy = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(frame.srcdoc)[1];
-  assert.equal(policy, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'");
-  assert(!frame.srcdoc.includes('<iframe')); assert(!frame.srcdoc.includes('<link')); assert(!frame.srcdoc.includes('oneloop-preview-escape'));
-  assert(frame.srcdoc.includes('onerror')); assert(!frame.srcdoc.includes('disabled')); assert(!d.querySelector('[data-view-resources]'));
-  const contents = frame.srcdoc; d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(frame.srcdoc, contents);
+  assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
+  assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html'); assert(!frame.hasAttribute('srcdoc'));
+  d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html');
   d.querySelector('[data-view-source]').click(); assert(!frame.isConnected); assert(!d.querySelector('.document-preview iframe')); assert(d.querySelector('[data-html-restart]').hidden);
   d.querySelector('[data-view-preview]').click(); assert(d.querySelector('.document-preview iframe')); assert(!d.querySelector('[data-html-restart]').hidden); close();
 });
@@ -168,25 +166,55 @@ Inline code: ${'`'}$x$${'`'}. Prices: $5 and $10.
   assert(extras.querySelector('code').textContent.includes('$x$')); assert(extras.textContent.includes('Prices: $5 and $10.'));
 });
 
-test('diagrams render safely, fall back on syntax errors and drop stale results', async () => {
+/** Stand in for the Mermaid renderer document; `answer.render` draws each diagram. */
+function stubRenderer(w, answer) {
+  const append = w.document.body.append.bind(w.document.body);
+  w.document.body.append = (...nodes) => {
+    append(...nodes);
+    for (const node of nodes) if (node.classList?.contains('diagram-renderer')) {
+      node.contentWindow.renderDiagram = (...args) => answer.render(...args);
+      node.dispatchEvent(new w.Event('load'));
+    }
+  };
+}
+
+test('diagrams render in their own document, fall back on syntax errors and drop stale results', async () => {
   const { w, d } = boot();
   let config;
-  w.mermaid = { initialize(value) { config = value; }, async render(id, text) { if (text.includes('invalid')) throw Error('syntax'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"><script>evil()</script><text>Ready</text></svg>' }; } };
+  const answer = { async render(_id, text, value) { config = value; if (text.includes('invalid')) throw Error('syntax'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"><text>Ready</text></svg>', width: 420, height: 180 }; } };
+  stubRenderer(w, answer);
   const host = d.createElement('div'); d.body.append(host);
   w.FileViews.markdown(host, { name: 'diagrams.md' }, '```mermaid\nflowchart LR\n A-->B\n```\n\n```mermaid\ninvalid\n```', false);
   await waitFor(() => !host.querySelector('[aria-busy]'), 'diagrams finish rendering');
   const diagram = host.querySelector('.markdown-diagram img');
-  assert(diagram); assert.equal(diagram.width, 420); assert.equal(diagram.height, 180); assert(!decodeURIComponent(diagram.src).includes('<script>'));
+  assert(diagram); assert.equal(diagram.width, 420); assert.equal(diagram.height, 180); assert.match(decodeURIComponent(diagram.src), /^data:image\/svg\+xml;charset=utf-8,<svg .*Ready/);
   assert.equal(config.securityLevel, 'strict'); assert(host.textContent.includes('could not be rendered')); assert(host.querySelector('pre code').textContent.includes('invalid'));
+  const frame = d.querySelectorAll('.diagram-renderer');
+  assert.equal(frame.length, 1, 'one renderer document draws every diagram');
+  assert.equal(new URL(frame[0].src).pathname, '/views/diagram-renderer.html'); assert(frame[0].inert); assert.equal(frame[0].getAttribute('aria-hidden'), 'true');
   let finish, started;
   const rendering = new Promise(resolve => { started = resolve; });
-  w.mermaid.render = () => { started(); return new Promise(resolve => finish = resolve); };
+  answer.render = () => { started(); return new Promise(resolve => finish = resolve); };
   w.FileViews.markdown(host, { name: 'slow.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
   await rendering;
   const pending = host.querySelector('.markdown-diagram'); host.remove();
-  finish({ svg: '<svg viewBox="0 0 10 10"></svg>' });
+  finish({ svg: '<svg viewBox="0 0 10 10"></svg>', width: 10, height: 10 });
   await new Promise(resolve => setImmediate(resolve));
   assert(!pending.querySelector('img'));
+});
+
+test('the renderer document returns sanitized SVG with its size', async () => {
+  const { window: w } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/views/diagram-renderer.html', runScripts: 'outside-only' });
+  w.eval(source('vendor/dompurify/purify'));
+  let config;
+  w.mermaid = { initialize(value) { config = value; }, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 419.2 180"><style>text{fill:red}</style><script>evil()</script><a href="https://example.invalid"><text onclick="evil()">Ready</text></a></svg>' }; } };
+  w.eval(source('diagram-renderer'));
+  const settings = { securityLevel: 'strict', flowchart: { htmlLabels: false } };
+  const drawn = await w.renderDiagram('d1', 'flowchart LR\n A-->B', settings);
+  assert.deepEqual([drawn.width, drawn.height], [420, 180]);
+  assert.match(drawn.svg, /Ready/); assert.match(drawn.svg, /<style>/);
+  assert.doesNotMatch(drawn.svg, /<script|onclick|<a\b/);
+  assert.deepEqual(JSON.parse(JSON.stringify(config)), settings); assert.notEqual(config, settings, 'Mermaid gets its own copy');
 });
 
 /** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */
@@ -223,18 +251,20 @@ test('Markdown loads only the libraries it needs and retries a failed math libra
   await open('<pre><code class="language-js">const answer = 42;</code></pre>'); assert(host.querySelector('.hljs-keyword'));
 });
 
-test('server HTML previews keep Source usable without parsing, and local srcdoc is built once', () => {
+test('HTML previews keep Source usable without parsing, and show nothing without a server preview', () => {
   const { w, d, host } = lazyPreviews();
   let parses = 0;
   const create = d.implementation.createHTMLDocument.bind(d.implementation);
   d.implementation.createHTMLDocument = (...args) => { parses++; return create(...args); };
   w.FileViews.html(host, { name: 'server.html', size: 20, htmlPreviewUrl: '/api/attachments/f/preview' }, '<h1>Source</h1>');
-  assert.equal(parses, 0); assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
+  assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
   host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click();
   assert(!host.querySelector('iframe')); assert.equal(host.querySelector('.html-source').textContent, '<h1>Source</h1>');
-  host.querySelector('[data-view-preview]').click(); assert.equal(parses, 0);
-  w.FileViews.html(host, { name: 'demo.html', size: 20 }, '<h1>Demo</h1><iframe src="bad"></iframe>'); assert.equal(parses, 1); assert(!host.querySelector('iframe').srcdoc.includes('<iframe'));
-  host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click(); host.querySelector('[data-view-preview]').click(); assert.equal(parses, 1);
+  host.querySelector('[data-view-preview]').click();
+  w.FileViews.html(host, { name: 'local.html', size: 20 }, '<h1>Local</h1><iframe src="bad"></iframe>');
+  assert(!host.querySelector('iframe')); assert.match(host.querySelector('.preview-unavailable').textContent, /Preview unavailable/);
+  assert(host.querySelector('[data-html-restart]').hidden); assert.equal(host.querySelector('.html-source').textContent, '<h1>Local</h1><iframe src="bad"></iframe>');
+  assert.equal(parses, 0, 'uploaded HTML is never parsed in the app page');
 });
 
 /** File views with the Markdown libraries present, outside the app. */

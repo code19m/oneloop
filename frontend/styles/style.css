@@ -354,18 +354,27 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 
 /* ---------- roadmap ---------- */
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
-.rm-canvas { position: relative; }
+.rm-canvas { position: relative; min-width: 100%; }
 .rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
 .rm-axis-labels { position: relative; flex: 1; }
 .rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
 .rm-month-grid { position:relative;flex:1; }
-.rm-axis-divider { position:absolute;top:0;bottom:0;width:1px;background:var(--line-soft);pointer-events:none; }
-.rm-month { line-height: 16px; position: absolute; top: 7px; text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
+/* Month cells are day offsets (--d) and lengths (--n) times --ppd, the pixels
+   per day that the zoom sets on their containers. */
+.rm-axis-divider { position:absolute;top:0;bottom:0;left:calc(var(--d) * var(--ppd) * 1px);width:1px;background:var(--line-soft);pointer-events:none; }
+.rm-month-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:1px;background:var(--line-soft);pointer-events:none; }
+.rm-month { line-height: 16px; position: absolute; top: 7px; left: calc(var(--d) * var(--ppd) * 1px); width: calc(var(--n) * var(--ppd) * 1px); text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
 .rm-axis .rail-cell { z-index: 6; box-shadow: none; }
 
-.lane { display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); }
+/* Lanes far outside the view skip style, layout and paint, so a zoom step
+   costs what is near the view. That makes a lane a stacking context, so it
+   sits above the milestone and today lines (z-index 1), as its bars did. */
+.lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+/* Safari skips a lane's contents for a moment when focus leaves it, so a click
+   on a button there landed on the lane. A lane under the pointer always renders. */
+.lane:hover { content-visibility: visible; }
 .lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
 .lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
 .lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
@@ -391,7 +400,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .bar .t span.txt { overflow: hidden; text-overflow: ellipsis; }
 .bar .m { line-height: 16px; margin-top: 3px; font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); white-space: nowrap; }
 /* open-ended bars are viewport-wide, so their labels stick to the visible edge */
-.bar.ongoing { overflow: visible; }
+.bar.ongoing { overflow: visible; right: 0; min-width: 60px; }
 .bar.ongoing .t, .bar.ongoing .m { position: sticky; left: 222px; width: fit-content; max-width: 96%; }
 .bar .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: rgb(var(--tone-rgb) / 0.09); width: 100%; }
 .bar .prog i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
@@ -665,6 +674,8 @@ div.ms-label {cursor:default}
   .tp-rail { width: 100%; }
   .tp-main { max-width: none; }
   .board { scroll-snap-type: x mandatory; }
+  /* Snapping would pull each auto-scroll step back while a card is dragged. */
+  body.is-dragging .board { scroll-snap-type: none; }
   .col { scroll-snap-align: start; }
   .peek { width: min(420px, 100vw); }
   .settings { padding: 16px; }
@@ -1388,6 +1399,13 @@ a.attachment-name:hover { text-decoration:underline; }
     .user-name, .uname, .project-name, .card-title-button, .tp-title, .tt,
     .member-person b, .attachment-name, .file-name, .act-text b) {
   unicode-bidi: isolate;
+}
+/* People write in any script: each paragraph of their text takes its direction,
+   and so its alignment, from its own first letter. */
+:is(.tp-title, #task-description, .description-editor, .description-content, .cmt-body, #cmtIn,
+    .reply-context-quote, #block-reason, .modal textarea[name="reason"], .task-block p,
+    #poolNewDesc, .pool-description-editor textarea, .pool-description-preview) {
+  unicode-bidi: plaintext;
 }
 /* Semantic headings retain the established compact layout. */
 .col-head h2 { margin:0;font:inherit; }

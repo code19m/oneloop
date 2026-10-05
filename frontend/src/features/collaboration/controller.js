@@ -192,7 +192,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
     return {stale:false,result};
   }
 
-  async function performSaveComment(input){
+  async function performSaveComment(input,acknowledged={revision:null}){
     const expectedTask=app?.context?.().taskId,expectedSession=currentSession();
     const editing=input.mode==='edit',operation=editing?'discussion.comment.edit':'discussion.comment.create';
     const payload=editing?{commentId:input.commentId,content:input.text,mentions:mentionsToWire(input.text,input.mentions)}:{taskId:input.task.internalId,content:input.text,replyToId:input.mode==='reply'?input.targetId:null,mentions:mentionsToWire(input.text,input.mentions)};
@@ -219,7 +219,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
     try{
       const entity=(response.result.entities??[]).find((item)=>item&&item.id&&item.authorId);
       if(!entity)throw new Error('The server did not return the saved comment.');
-      const comment=mapComment(entity),task=currentTask(input.task.internalId);if(!task)return false;
+      const comment=mapComment(entity),task=currentTask(input.task.internalId);acknowledged.revision=comment.revision;if(!task)return false;
       const index=(task.comments??[]).findIndex((item)=>item.id===comment.id);if(index>=0)task.comments.splice(index,1,comment);else (task.comments??=[]).push(comment);
       task.comments.sort(chronological);
       // Typing after Save keeps the editor open; its next save builds on this one.
@@ -230,9 +230,32 @@ export function installCollaborationController({ transport, eventSourceFactory =
     }catch(error){report(error,true);return false;}
   }
 
+  // Saves of one comment's edits run one at a time. A Save made before the
+  // previous reply waits for it and builds on the revision that reply
+  // acknowledged, so it never conflicts with the person's own edit; only the
+  // newest text is sent.
+  const commentEdits=new Map();
   function saveComment(input){
     const key=`comment:${input.interactionId}`;if(interactions.has(key))return interactions.get(key);
-    const promise=performSaveComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;
+    if(input.mode!=='edit'){const promise=performSaveComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;}
+    const editKey=`${currentSession()}:${input.commentId}`,queued=commentEdits.get(editKey);
+    if(queued){queued.next=input;queued.keys.push(key);interactions.set(key,queued.promise);return queued.promise;}
+    const state={next:input,keys:[key],promise:null};commentEdits.set(editKey,state);
+    state.promise=(async()=>{
+      const rebased=new Map();let saved=false;
+      try{
+        while(state.next){
+          const next=state.next;state.next=null;
+          let revision=next.revision;while(rebased.has(revision))revision=rebased.get(revision);
+          const acknowledged={revision:null};
+          saved=await performSaveComment({...next,revision},acknowledged);
+          if(Number.isSafeInteger(revision)&&Number.isSafeInteger(acknowledged.revision)&&acknowledged.revision!==revision)rebased.set(revision,acknowledged.revision);
+          if(!saved)break;
+        }
+        return saved;
+      }finally{if(commentEdits.get(editKey)===state)commentEdits.delete(editKey);for(const item of state.keys)interactions.delete(item);}
+    })();
+    interactions.set(key,state.promise);return state.promise;
   }
 
   async function performDeleteComment(input){
@@ -290,8 +313,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
     try{
       if(!item.readAt)await execute('inbox.markRead',{notificationId:item.id},{interactionKey:`inbox.markRead:${item.id}`});
       if(!item.destinationAvailable||!item.taskId){app.toast('This item is no longer available','info');await readInbox(facade.filter());return;}
-      const loaded=await transport.reload({taskId:item.taskId});if(loaded?.stale)return;
-      const task=currentTask(item.taskId);if(!task){app.toast('This item is no longer available','info');return;}
+      // A task removed since the Inbox loaded is reported here; the Inbox stays.
+      const loaded=await transport.reload({taskId:item.taskId,routeErrors:false});if(loaded?.stale)return;
+      const task=loaded?.unavailable?null:currentTask(item.taskId);if(!task){app.toast('This item is no longer available','info');await readInbox(facade.filter());return;}
       facade?.target?.({commentId:item.commentId,blockId:item.blockId,rootId:item.rootId});
       app.openTask(task.id);
       if(item.commentId||item.blockId)await readTask(task,{targetCommentId:item.commentId,targetBlockId:item.blockId});
@@ -441,7 +465,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
       if(!data.session)return;
       if(context.view==='task'){
         const task=currentTask(context.taskId),page=task&&taskPages.get(task.internalId);
-        if(task&&(!page?.loaded||page.taskRef?.deref()!==task)&&!page?.loading&&!page?.error)readTask(task);
+        // Reading a page again after a refresh replaced its task is passive.
+        if(task&&(!page?.loaded||page.taskRef?.deref()!==task)&&!page?.loading&&!page?.error)readTask(task,{background:!!page?.loaded});
       }else if(context.view==='inbox'){
         const key=`${currentSession()}:${filterKey(facade.filter())}`;if((inboxEntry||!inboxPage.loaded||inboxPage.key!==key)&&!inboxPage.loading&&!(inboxPage.error&&inboxPage.key===key)){inboxEntry=false;readInbox(facade.filter(),{background:inboxPage.loaded});}
       }

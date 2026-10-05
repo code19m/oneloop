@@ -52,6 +52,8 @@
  function beforeRender(next){
   capture();
   if(production&&renderedUserId!==next.userId){taskPages.clear();feedSnapshot=null;inboxMeta={unreadCount:Number.isFinite(D.inboxUnreadCount)?D.inboxUnreadCount:null,filteredCount:null,nextCursor:null,loaded:false,loading:false,error:false};renderedUserId=next.userId;}
+  // A kept comment that is still waiting goes when its writer signs out or someone else signs in.
+  if(resumedComment&&resumedComment.userId!==next.userId)resumedComment=null;
   const scope=next.userId&&next.view==='task'?JSON.stringify([next.userId,next.projectId,next.taskId]):null;
   if(scope!==editorScope){feedSnapshot=null;commentResizeObserver?.disconnect();commentResizeObserver=null;cancelAnimationFrame(commentResizeFrame);commentResizeFrame=0;expandedCommentBodies.clear();}
   if(scope!==editorScope||!scope){commentEditor=null;commentMode={mode:'comment',target:null};}
@@ -265,8 +267,34 @@
   for(const [uid,reason] of recipients)if(!(c.notifiedRecipients||[]).includes(uid)){notify(c.id,task,[uid],reason,c.id,c.parentId||c.id);c.notifiedRecipients.push(uid);}
   persist();savedComment(task,c,cxt.mode,changed);return true;
  }
+ // A comment being written when the session ended, kept for the same person's next sign-in.
+ let resumedComment=null;
+ function commentDraft(){
+  capture();
+  const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
+  if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
+  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
+ }
+ // Put a kept comment back once its task page shows; a reply or an edit waits for
+ // its comment, and becomes a new comment when that comment is gone. Only the
+ // person who wrote it gets it back.
+ function resumeComment(){
+  if(resumedComment&&resumedComment.userId!==me()?.id)resumedComment=null;
+  const draft=resumedComment,task=draft&&hooks?.task(draft.taskId);
+  if(!task||hooks.view()!=='task'||mountedTaskId!==task.id||!canComment(task)||!document.querySelector('[data-comment-task]'))return;
+  const target=draft.target?task.comments?.find(c=>c.id===draft.target):null;
+  if(draft.target&&!target&&!taskFeedState(task.id).loaded)return;
+  resumedComment=null;
+  const keep=target&&!target.deleted&&(draft.mode==='reply'||target.who===me()?.id||me()?.admin);
+  commentMode=keep?{mode:draft.mode,target:draft.target}:{mode:'comment',target:null};commentEditor=null;
+  Object.assign(editor(task),{text:draft.text,mentions:validTokens(draft.text,draft.mentions),revision:keep&&draft.mode==='edit'?draft.revision:null});
+  if(keep&&draft.mode==='reply')expanded.add(target.parentId||target.id);
+  refreshComments(task,true);
+  const input=document.getElementById('cmtIn');if(input){input.focus({preventScroll:true});input.setSelectionRange(input.value.length,input.value.length);scrollWithinTask(input.closest('.collaboration-composer')||input);}
+ }
  function mount(updateSnapshot=true){badge();mountCommentBodies();if(mention&&!mention.input.isConnected)closeMentions();const blockInput=document.getElementById('block-reason'),blockTask=hooks?.task(blockInput?.dataset.blockTask);if(blockTask)blockHint(blockTask);const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);if(task)notifyHint(task);if(updateSnapshot)feedSnapshot=task?feedSnapshotFor(task):null;productionApi?.mount?.({view:hooks?.view?.(),taskId:task?.id});
   if(pendingTarget&&hooks.view()==='task'){const p=pendingTarget;setTimeout(()=>{if(pendingTarget===p)pendingTarget=null;},5000);const el=p.blockId?[...document.querySelectorAll('[data-block-id]')].find(el=>el.dataset.blockId===p.blockId):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===p.commentId);if(el){pendingTarget=null;el.classList.add('comment-highlight');scrollWithinTask(el,true);el.focus({preventScroll:true});}}
+  if(resumedComment)resumeComment();
  }
  window.Collab={userById,blockReasonHtml,prepareBlock,blockSaved,blockText,canComment,feedHtml,composerHtml,inboxHtml,inboxNav,unread,taskEvent,mount,beforeRender,taskFeedState,retryTaskPage(id){return productionApi?.loadTaskPage?.(id);},retryInbox(){return productionApi?.loadInbox?.(filter);},
   bind(api,callbacks){app=api;hooks=callbacks;
@@ -294,6 +322,7 @@
    }
    persist();
    Object.assign(app,{
+    commentDraft,restoreCommentDraft(draft){resumedComment=draft;mount(false);},
     addComment:post,replyComment:(taskId,target)=>setMode(taskId,'reply',target),editComment:(taskId,target)=>setMode(taskId,'edit',target),
     toggleCommentText(taskId,commentId){const comment=hooks.task(taskId)?.comments?.find(item=>item.id===commentId);if(!comment||comment.deleted)return;const key=commentBodyKey(comment);expandedCommentBodies.has(key)?expandedCommentBodies.delete(key):expandedCommentBodies.add(key);sizeCommentBodies();},
     cancelCommentMode(taskId){const task=hooks.task(taskId),previous=commentMode;commentEditor=null;commentMode={mode:'comment',target:null};refreshComments(task,true);const row=[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===previous.target),focus=row?.querySelector(previous.mode==='edit'?'.comment-menu-button':'.reply-action')||document.getElementById('cmtIn');focus?.focus({preventScroll:true});},

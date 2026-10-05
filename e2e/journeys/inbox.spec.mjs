@@ -1,7 +1,7 @@
 // The Inbox and live updates between signed-in clients.
 import { test, expect, openApp, failUntilRetry, command } from '../support/test.mjs';
 
-test('two signed-in clients receive Inbox creation and read updates over live events', { tag: '@smoke' }, async ({ page, browser, instance }) => {
+test('two signed-in clients receive Inbox creation and read updates over live events', { tag: '@smoke' }, async ({ page, browser, browserName, instance, allowedConsoleErrors }) => {
   const second = await browser.newContext();
   const other = await second.newPage();
   try {
@@ -21,7 +21,11 @@ test('two signed-in clients receive Inbox creation and read updates over live ev
     await secondRow.getByRole('button', { name: 'Mark notification read', exact: true }).click();
     await expect(firstRow).toHaveClass(/\bread\b/);
     await expect(secondRow).toHaveClass(/\bread\b/);
-  } finally { await second.close().catch(() => {}); }
+  } finally {
+    // Playwright's WebKit inserts a style element while closing a page, which the app's policy refuses.
+    if (browserName === 'webkit') allowedConsoleErrors.push(/Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'/);
+    await second.close().catch(() => {});
+  }
 });
 
 test('a fresh page load shows unread notifications on the Inbox button', async ({ page, instance }) => {

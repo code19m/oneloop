@@ -209,6 +209,11 @@ pub async fn add_main_security_headers(
 
 /// Only validated OAuth callback origins may extend native form navigation.
 /// A callback in an app's own scheme, which has no origin, adds that scheme.
+///
+/// Style elements and stylesheets come only from this origin; the views keep
+/// inline style attributes. `style-src` repeats both for browsers without the
+/// separate directives. Trusted Types limit HTML and script sinks to the app's
+/// own policies and DOMPurify's.
 pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
     let extra = callback
         .map(|url| match url.scheme() {
@@ -219,10 +224,23 @@ pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
     HeaderValue::from_str(&format!(
         "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \
          form-action 'self'{extra}; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         style-src-elem 'self'; style-src-attr 'unsafe-inline'; \
          img-src 'self' https: data: blob:; font-src 'self'; connect-src 'self'; \
-         frame-src 'self'; worker-src 'self' blob:"
+         frame-src 'self'; worker-src 'self' blob:; \
+         require-trusted-types-for 'script'; trusted-types oneloop dompurify default"
     ))
     .expect("URL origins are valid header values")
+}
+
+/// The off-screen document where Mermaid lays out diagrams for the app.
+/// Mermaid writes inline styles and HTML strings, so this document alone
+/// allows inline styles and has no Trusted Types. Only the app may frame it.
+pub fn diagram_renderer_policy() -> HeaderValue {
+    HeaderValue::from_static(
+        "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; \
+         form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data:; font-src 'self'",
+    )
 }
 
 pub fn require_canonical_origin(

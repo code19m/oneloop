@@ -369,9 +369,10 @@ test('block Inbox wording distinguishes direct and broadcast mentions and keeps 
   ])assert.equal(mapInboxItem({id:'block-item',eventType,blockId:'episode',destinationAvailable:true}).reason,reason);
 });
 
-test('a replacement task projection reloads discussion rather than trusting an old loaded marker',async()=>{
+test('a replacement task projection reloads discussion passively rather than trusting an old loaded marker',async()=>{
   const t=fixture();t.controller.mount({view:'task',taskId:'ONE-101'});await tick();assert.equal(t.apiCalls.length,2);
   t.data.tasks[0]={...t.data.tasks[0],comments:[],activity:[]};t.controller.mount({view:'task',taskId:'ONE-101'});await tick();assert.equal(t.apiCalls.length,4);
+  assert.deepEqual(t.apiCalls.map(([,,options])=>options.background),[false,false,true,true],'only opening the page counts as use');
   t.controller.dispose();
 });
 
@@ -512,4 +513,32 @@ test('temporary sessions open no event stream until password completion',()=>{
   assert.equal(streams,0,'no initial stream for temporary session');
   t.data.session.temporary=false;for(const listener of t.listeners)listener({type:'session'});assert.equal(streams,1);
   t.controller.dispose();
+});
+
+test('a second Save of an edited comment waits for the first reply and builds on its revision',async()=>{
+  const t=fixture(),pending=[];t.data.tasks[0].comments=[{id:'c1',who:'u1',text:'Old',revision:1,ts:20_000}];
+  t.transport.commands.execute=(_operation,payload,options)=>new Promise(resolve=>pending.push({payload,options,resolve}));
+  const reply=(index)=>pending[index].resolve({entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:pending[index].payload.content,mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:pending[index].options.expectedRevision+1}],events:[{id:`a${index}`}]});
+  const edit=(text,interactionId)=>t.controller.saveComment({task:t.data.tasks[0],mode:'edit',commentId:'c1',revision:1,text,mentions:[],interactionId});
+  const first=edit('First','i1'),second=edit('Second','i2'),third=edit('Third','i3');
+  assert.equal(pending.length,1,'later Saves wait for the first reply');
+  reply(0);while(pending.length<2)await tick();
+  assert.equal(pending[1].payload.content,'Third');assert.equal(pending[1].options.expectedRevision,2);
+  reply(1);assert.deepEqual(await Promise.all([first,second,third]),[true,true,true]);
+  assert.equal(pending.length,2);assert.equal(t.data.tasks[0].comments[0].text,'Third');
+});
+
+test('opening an Inbox item whose task was deleted keeps the Inbox and says so',async()=>{
+  const toasts=[],routeErrors=[],opened=[];let inboxReads=0;
+  const t=fixture({
+    app:{context:()=>({view:'inbox'}),toast:(...args)=>toasts.push(args),openTask:id=>opened.push(id)},
+    api:{inbox:async()=>{inboxReads++;return {items:[],nextCursor:null,unreadCount:0,filteredCount:0};}},
+    transport:{reload:async scope=>{if(scope.routeErrors!==false){routeErrors.push('404');return {stale:false};}return {stale:false,unavailable:true};}},
+  });
+  try{
+    await t.controller.openNotification({id:'n1',readAt:1,destinationAvailable:true,taskId:'gone-task'});
+    assert.deepEqual(routeErrors,[],'the page does not turn into Page not found');
+    assert.deepEqual(toasts,[['This item is no longer available','info']]);assert.deepEqual(opened,[]);
+    assert.equal(inboxReads,1,'the Inbox reloads so the item shows as unavailable');
+  }finally{t.controller.dispose();}
 });

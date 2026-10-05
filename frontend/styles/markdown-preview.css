@@ -2272,6 +2272,8 @@
 .markdown-body .markdown-diagram img { display:block;max-width:100%;height:auto;margin:auto;background:transparent; }
 .markdown-diagram-status { display:block;color:var(--ink-muted);font:13px/1.5 var(--font);text-align:left;margin-bottom:8px; }
 .markdown-body .markdown-diagram pre { text-align:left;margin:12px 0 0; }
+/* Mermaid lays diagrams out in this frame, so it must render, but out of sight. */
+.diagram-renderer { position:fixed;left:-10000px;top:0;width:1600px;height:1200px;border:0;visibility:hidden;pointer-events:none; }
 
 /* GitHub extras retain document semantics without inheriting application controls. */
 .markdown-body .markdown-math-block { overflow-x:auto;overflow-y:hidden;margin:16px 0;padding:4px 0; }
