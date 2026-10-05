@@ -52,7 +52,7 @@ pub fn create_backup(
     let layout = DataLayout::new(data_dir);
     if !layout.database().is_file() {
         return Err(AppError::PreconditionFailed(format!(
-            "database is not initialized at {}",
+            "database is not initialized at {}; check ONELOOP_DATA_DIR",
             layout.database().display()
         )));
     }

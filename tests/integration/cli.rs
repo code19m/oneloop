@@ -53,7 +53,22 @@ fn binary_without_arguments_prints_help_successfully() {
         .unwrap()
         .assert()
         .success()
-        .stdout(contains("Usage:"));
+        .stdout(contains("Usage:"))
+        .stdout(contains("ONELOOP_DATA_DIR"));
+}
+
+#[test]
+fn version_names_the_source_revision() {
+    let version = match oneloop::build_info::REVISION {
+        "unknown" => oneloop::build_info::VERSION.to_owned(),
+        revision => format!("{} ({revision})", oneloop::build_info::VERSION),
+    };
+    ProcessCommand::cargo_bin("oneloop")
+        .unwrap()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(format!("oneloop {version}\n"));
 }
 
 #[test]
@@ -154,12 +169,20 @@ fn binary_migrates_backs_up_restores_and_reads_one_password_line() {
         .args(["db", "migrate"])
         .assert()
         .success()
-        .stdout(format!("database migrated from 0 to {schema}\n"));
+        .stdout(format!(
+            "created a new database in {} (schema {schema})\n",
+            data.display()
+        ))
+        .stderr("");
     command(&data)
         .args(["db", "migrate"])
         .assert()
         .success()
-        .stdout(format!("database schema {schema} is current\n"));
+        .stdout(format!(
+            "database in {} is current (schema {schema})\n",
+            data.display()
+        ))
+        .stderr("");
     command(&data)
         .args(["user", "add", "owner", "--admin", "--password-stdin"])
         .write_stdin("pass123\r\n")
@@ -181,8 +204,16 @@ fn binary_migrates_backs_up_restores_and_reads_one_password_line() {
         .args(["user", "passwd", "owner"])
         .write_stdin("pass123\n")
         .assert()
-        .failure()
-        .stderr(contains("use --password-stdin"));
+        .code(2)
+        .stderr(contains(
+            "no terminal to ask for the password; use --password-stdin",
+        ));
+    command(&data)
+        .args(["user", "add", "nameless", "--name", " ", "--password-stdin"])
+        .write_stdin("pass123\n")
+        .assert()
+        .code(2)
+        .stderr(contains("invalid --name:"));
     command(&data)
         .args(["user", "passwd", "owner", "--password-stdin"])
         .write_stdin("pass456\r\n")
@@ -228,5 +259,75 @@ fn binary_migrates_backs_up_restores_and_reads_one_password_line() {
         .stdout(contains(format!(
             "IANA timezone database {}",
             oneloop::timezone::built_in_version()
+        )));
+}
+
+#[test]
+fn upgrade_messages_lead_to_a_command_that_works() {
+    let root = scratch_dir();
+    let data = root.path().join("data");
+    let backups = root.path().join("backups");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir(&backups).unwrap();
+    drop(crate::support::schema_two_database(&data));
+    let command = || {
+        let mut command = ProcessCommand::cargo_bin("oneloop").unwrap();
+        command
+            .env_clear()
+            .env("ONELOOP_DATA_DIR", &data)
+            .env("ONELOOP_PUBLIC_URL", "http://127.0.0.1:18710");
+        command
+    };
+    command()
+        .args(["serve", "--check"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains(format!(
+            "requires migration to {}; run `oneloop db migrate --backup-dir <folder>`",
+            oneloop::db::CURRENT_SCHEMA_VERSION
+        )));
+    command()
+        .args(["db", "migrate"])
+        .assert()
+        .code(1)
+        .stderr(contains("--backup-dir is required"));
+    let output = command()
+        .args(["db", "migrate", "--backup-dir"])
+        .arg(&backups)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(
+        lines[0],
+        format!(
+            "database in {} migrated from 2 to {}",
+            data.display(),
+            oneloop::db::CURRENT_SCHEMA_VERSION
+        )
+    );
+    let backup = lines[1].strip_prefix("pre-upgrade backup: ").unwrap();
+    oneloop::db::validate_backup(backup).unwrap();
+}
+
+#[test]
+fn commands_on_an_empty_data_folder_say_how_to_fix_it() {
+    let root = scratch_dir();
+    ProcessCommand::cargo_bin("oneloop")
+        .unwrap()
+        .env_clear()
+        .env("ONELOOP_DATA_DIR", root.path())
+        .args(["user", "passwd", "owner", "--password-stdin"])
+        .write_stdin("pass123\n")
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(contains(format!(
+            "database is not initialized at {}; check ONELOOP_DATA_DIR, or run `oneloop db migrate` to create a new instance",
+            root.path().join("oneloop.sqlite3").display()
         )));
 }

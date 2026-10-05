@@ -1,6 +1,7 @@
 use std::{
     io::{self, IsTerminal, Read},
     path::PathBuf,
+    sync::LazyLock,
 };
 
 use clap::{Args, Parser, Subcommand};
@@ -14,8 +15,21 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+/// The version and, when known, the source revision it was built from.
+static VERSION: LazyLock<String> = LazyLock::new(|| match crate::build_info::REVISION {
+    "unknown" => crate::build_info::VERSION.to_owned(),
+    revision => format!("{} ({revision})", crate::build_info::VERSION),
+});
+
 #[derive(Debug, Parser)]
-#[command(name = "oneloop", version, about = "Self-hosted team task management")]
+#[command(
+    name = "oneloop",
+    version = VERSION.as_str(),
+    about = "Self-hosted team task management",
+    after_help = "Settings come from ONELOOP_* environment variables. Commands other than \
+        serve read only ONELOOP_DATA_DIR (default ./data). \
+        See https://code19m.github.io/oneloop/reference.html"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -27,9 +41,9 @@ pub enum Command {
     Serve(ServeArgs),
     /// Create and recover local accounts.
     User(UserArgs),
-    /// Create or restore a complete backup.
+    /// Create or restore a complete backup of the data folder.
     Backup(BackupArgs),
-    /// Manage the database schema.
+    /// Create or upgrade the database.
     Db(DatabaseArgs),
 }
 
@@ -56,6 +70,8 @@ pub enum UserCommand {
 
 #[derive(Debug, Args)]
 pub struct UserAddArgs {
+    /// Account name: 3 to 32 lowercase letters, digits, ".", "_" or "-",
+    /// starting with a letter or digit.
     pub username: String,
     /// Grant global administrator access.
     #[arg(long)]
@@ -70,6 +86,7 @@ pub struct UserAddArgs {
 
 #[derive(Debug, Args)]
 pub struct UserPasswordArgs {
+    /// Account name.
     pub username: String,
     /// Read exactly one password line from standard input.
     #[arg(long)]
@@ -84,10 +101,18 @@ pub struct BackupArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BackupCommand {
-    /// Create and validate a complete backup directory.
-    Create { destination: PathBuf },
-    /// Restore a validated backup into the configured new or empty data directory.
-    Restore { backup: PathBuf },
+    /// Create and validate a complete backup of ONELOOP_DATA_DIR.
+    Create {
+        /// New folder for the backup. Its parent must exist, and it must be
+        /// outside the data folder.
+        destination: PathBuf,
+    },
+    /// Restore a validated backup into ONELOOP_DATA_DIR, which must be new or
+    /// empty.
+    Restore {
+        /// Backup folder to restore from.
+        backup: PathBuf,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -98,9 +123,10 @@ pub struct DatabaseArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum DatabaseCommand {
-    /// Initialize or upgrade the database with forward-only migrations.
+    /// Create the database in ONELOOP_DATA_DIR, or upgrade it to this version.
     Migrate {
-        /// Parent directory for the mandatory validated pre-upgrade backup.
+        /// Folder where the backup taken before an upgrade is saved. Needed
+        /// when the database is upgraded.
         #[arg(long)]
         backup_dir: Option<PathBuf>,
     },
@@ -133,6 +159,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
                 config.data_dir.display()
             );
         } else {
+            // The launchd launcher stops the job when it sees "database is not initialized".
             println!(
                 "configuration is valid; database is not initialized (data {})",
                 config.data_dir.display()
@@ -239,7 +266,13 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                         unix_now()?,
                     )
                 })
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    AppError::Validation { field, message } if field == "displayName" => {
+                        AppError::validation("--name", message)
+                    }
+                    error => error,
+                })?;
             println!("created user {}", created.username);
             Ok(())
         }
@@ -285,21 +318,31 @@ async fn database(arguments: DatabaseArgs) -> AppResult<()> {
     let config = DataConfig::from_env()?;
     match arguments.command {
         DatabaseCommand::Migrate { backup_dir } => {
-            let outcome = tokio::task::spawn_blocking(move || migrate(config.data_dir, backup_dir))
+            let data_dir = config.data_dir.clone();
+            let outcome = tokio::task::spawn_blocking(move || migrate(data_dir, backup_dir))
                 .await
                 .map_err(|error| {
                     AppError::internal(format!("migration worker failed: {error}"))
                 })??;
+            let data_dir = config.data_dir.display();
             if outcome.applied.is_empty() {
-                println!("database schema {} is current", outcome.current_version);
+                println!(
+                    "database in {data_dir} is current (schema {})",
+                    outcome.current_version
+                );
+            } else if outcome.previous_version == 0 {
+                println!(
+                    "created a new database in {data_dir} (schema {})",
+                    outcome.current_version
+                );
             } else {
                 println!(
-                    "database migrated from {} to {}",
+                    "database in {data_dir} migrated from {} to {}",
                     outcome.previous_version, outcome.current_version
                 );
-                if let Some(path) = outcome.backup_path {
-                    println!("pre-upgrade backup: {}", path.display());
-                }
+            }
+            if let Some(path) = outcome.backup_path {
+                println!("pre-upgrade backup: {}", path.display());
             }
             Ok(())
         }
@@ -333,8 +376,8 @@ fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
     }
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(AppError::validation(
-            "password",
-            "interactive input requires a terminal; use --password-stdin for automation",
+            "password input",
+            "there is no terminal to ask for the password; use --password-stdin",
         ));
     }
     let first = rpassword::prompt_password("Password: ")?;

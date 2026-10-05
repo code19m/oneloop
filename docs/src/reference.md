@@ -83,8 +83,10 @@ container, for example `docker compose exec oneloop oneloop backup create …`.
   oneloop server uses the same data directory. `serve --check` never creates a
   database, opens a port or changes data. It also prints the versions of SQLite
   and of the timezone database.
-- `db migrate` needs the server to be stopped when it upgrades. There is no
-  downgrade.
+- `db migrate` needs the data directory to itself, even when there is nothing
+  to upgrade: stop the server, and wait for backups and other `oneloop`
+  commands to finish. `serve --check` works while the server runs and shows
+  whether an upgrade is needed. There is no downgrade.
 - `user add` and `user passwd` ask for the password twice. In scripts, use
   `--password-stdin` and send the password as one line, for example
   `oneloop user add ci-bot --password-stdin < password.txt`. oneloop removes the

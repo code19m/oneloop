@@ -178,9 +178,10 @@ impl DataLayout {
         let file = open_lock_file(&self.instance_lock())?;
         file.try_lock().map_err(|error| match error {
             std::fs::TryLockError::Error(error) => AppError::from(error),
-            std::fs::TryLockError::WouldBlock => AppError::PreconditionFailed(
-                "exclusive data access is unavailable; stop the oneloop server first".into(),
-            ),
+            std::fs::TryLockError::WouldBlock => AppError::PreconditionFailed(format!(
+                "another oneloop server or command is using {}; stop the server and wait for backups and other oneloop commands to finish",
+                self.root.display()
+            )),
         })?;
         Ok(file)
     }
@@ -213,10 +214,7 @@ impl Db {
         let layout = DataLayout::new(data_dir);
         layout.ensure_restore_complete()?;
         if !layout.database().is_file() {
-            return Err(AppError::PreconditionFailed(format!(
-                "database is not initialized at {}; run `oneloop db migrate`",
-                layout.database().display()
-            )));
+            return Err(not_initialized(&layout));
         }
         layout.check_writable()?;
         let connection = Connection::open_with_flags(
@@ -245,10 +243,7 @@ impl Db {
         let layout = DataLayout::new(data_dir);
         layout.ensure_restore_complete()?;
         if !layout.database().is_file() {
-            return Err(AppError::PreconditionFailed(format!(
-                "database is not initialized at {}; run `oneloop db migrate`",
-                layout.database().display()
-            )));
+            return Err(not_initialized(&layout));
         }
         let instance_lock = layout.open_instance_shared_lock()?;
         layout.check_writable()?;
@@ -582,7 +577,12 @@ pub(crate) fn create_private_directories(path: &Path) -> std::io::Result<()> {
     match builder.create(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("cannot create {}: {error}", path.display()),
+            ));
+        }
     }
     sync_directory(path)?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -635,6 +635,13 @@ fn ensure_writable_without_opening(path: &Path) -> AppResult<()> {
     #[cfg(not(unix))]
     let result = OpenOptions::new().write(true).open(path).map(drop);
     result.map_err(|error| writable_error(path, error))
+}
+
+fn not_initialized(layout: &DataLayout) -> AppError {
+    AppError::PreconditionFailed(format!(
+        "database is not initialized at {}; check ONELOOP_DATA_DIR, or run `oneloop db migrate` to create a new instance",
+        layout.database().display()
+    ))
 }
 
 fn writable_error(path: &Path, error: impl std::fmt::Display) -> AppError {
@@ -695,7 +702,13 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
         .read(true)
         .write(true)
         .open(path)
-        .map_err(AppError::from)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot open {}: {error}", path.display()),
+            )
+            .into()
+        })
 }
 
 use rusqlite::OptionalExtension;
