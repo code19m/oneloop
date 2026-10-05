@@ -2401,7 +2401,7 @@
     sc.scrollLeft = state.rmScrollLeft;
     sc.scrollTop = state.rmScrollTop;
     mountRoadmapCalendar(view);
-    /** @type {{kind:'wheel'|'pinch',left:number,cx:number,day:number,ppd0:number,log:number,target:number|null,distance:number,cy:number,dy:number}|null} The zoom gesture in progress. */
+    /** @type {{kind:'wheel'|'pinch'|'gesture',left:number,cx:number,day:number,ppd0:number,log:number,target:number|null,distance:number,cy:number,dy:number}|null} The zoom gesture in progress. */
     let gesture = null;
     let calendarFrame = 0;
     sc.addEventListener('scroll', () => {
@@ -2426,9 +2426,9 @@
     // Zoom: input events update one gesture, and one frame applies it. A
     // gesture keeps the day under the pointer, or under the pinch center as it
     // moves, in place.
-    let frame = 0;
+    let frame = 0, pointerX = NaN;
     /** @type {ReturnType<typeof setTimeout>|undefined} */ let idle;
-    const begin = (/** @type {'wheel'|'pinch'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
+    const begin = (/** @type {'wheel'|'pinch'|'gesture'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
       hideEpicTip();
       const cx = clientX - left;
       view.zoomLeft = sc.scrollLeft;
@@ -2483,6 +2483,25 @@
     const endPinch = (/** @type {TouchEvent} */ e) => { if (gesture?.kind === 'pinch' && e.touches.length < 2) end(); };
     sc.addEventListener('touchend', endPinch, {passive:true});
     sc.addEventListener('touchcancel', endPinch, {passive:true});
+    // Safari reports a touchpad pinch as gesture events, not ctrl+wheel. On
+    // touch screens, touch events already drive the pinch.
+    sc.addEventListener('pointermove', e => { pointerX = e.clientX; }, {passive:true});
+    const pinchGesture = (/** @type {Event & {scale?:number,clientX?:number}} */ e) => {
+      e.preventDefault();
+      if (gesture?.kind === 'pinch') return;
+      if (e.type === 'gesturestart') {
+        if (gesture) end();
+        const left = sc.getBoundingClientRect().left;
+        begin('gesture', Number.isFinite(e.clientX) ? e.clientX : Number.isFinite(pointerX) ? pointerX : left + sc.clientWidth / 2, left);
+        return;
+      }
+      if (gesture?.kind !== 'gesture') return;
+      if (Number.isFinite(e.scale) && e.scale > 0) gesture.target = gesture.ppd0 * e.scale;
+      if (Number.isFinite(e.clientX)) gesture.cx = e.clientX - gesture.left;
+      schedule();
+      if (e.type === 'gestureend') end();
+    };
+    for (const type of ['gesturestart', 'gesturechange', 'gestureend']) sc.addEventListener(type, pinchGesture);
     roadmapGestureCleanup = () => {
       if(calendarFrame)cancelAnimationFrame(calendarFrame);
       sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;

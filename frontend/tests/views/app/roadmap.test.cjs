@@ -124,23 +124,38 @@ test('zooming re-packs rows and lane heights exactly as a fresh render does', t 
   assert.deepEqual(geometry(), zoomed);
 });
 
-test('a touch pinch follows the fingers', async () => {
+test('a touch pinch follows the fingers and ignores the gesture events iOS sends with it', async () => {
   const { w, d } = bootApp({ route: 'roadmap' });
   const { sc, width, startX } = timeline(d), before = width();
   sc.scrollLeft += startX('e9') - 400; sc.scrollTop = 50;
   const fingers = (x, y, spread) => [{ clientX: x - spread / 2, clientY: y }, { clientX: x + spread / 2, clientY: y }];
   const touch = (type, touches) => { const event = new w.TouchEvent(type, { touches, bubbles: true, cancelable: true }); sc.dispatchEvent(event); return event; };
-  touch('touchstart', fingers(400, 300, 100));
+  const gesture = (type, scale) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); Object.assign(event, { scale, clientX: 400 }); sc.dispatchEvent(event); return event; };
+  touch('touchstart', fingers(400, 300, 100)); gesture('gesturestart', 1);
   // The fingers spread to twice their distance while their center moves 30 px right and 10 px up.
-  const move = touch('touchmove', fingers(430, 290, 200));
+  const move = touch('touchmove', fingers(430, 290, 200)), change = gesture('gesturechange', 3);
   await nextFrame(w);
-  assert(Math.abs(width() / before - 2) < 0.005, 'the zoom follows the fingers');
+  assert(Math.abs(width() / before - 2) < 0.005, 'the zoom follows the fingers, not the gesture events');
   assert(anchored(startX('e9'), 430), 'the date under the fingers moves with them');
   assert.equal(sc.scrollTop, 60);
-  assert(move.defaultPrevented, 'the page does not scroll or zoom');
-  touch('touchend', fingers(430, 290, 0).slice(1));
+  assert(move.defaultPrevented && change.defaultPrevented, 'the page does not scroll or zoom');
+  touch('touchend', fingers(430, 290, 0).slice(1)); gesture('gestureend', 3);
   await nextFrame(w);
   assert(Math.abs(width() / before - 2) < 0.005, 'lifting the fingers keeps the zoom');
+});
+
+test('Safari touchpad pinch gestures zoom the Roadmap around the pointer instead of the page', async () => {
+  const { w, d } = bootApp({ route: 'roadmap' });
+  const { sc, width, startX } = timeline(d), before = width();
+  sc.scrollLeft += startX('e9') - 400;
+  const gesture = (type, scale) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); Object.assign(event, { scale, clientX: 400 }); sc.dispatchEvent(event); return event; };
+  assert(gesture('gesturestart', 1).defaultPrevented, 'Safari does not zoom the page');
+  assert(gesture('gesturechange', 1.5).defaultPrevented);
+  await nextFrame(w);
+  assert(Math.abs(width() / before - 1.5) < 0.005);
+  assert(anchored(startX('e9'), 400), 'the date under the pointer stays there');
+  gesture('gestureend', 1.8);
+  assert(Math.abs(width() / before - 1.8) < 0.005, 'the end applies the final scale at once');
 });
 
 test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
