@@ -152,7 +152,11 @@ example `v0.1.0-rc.1`.
 1. Set the version in `Cargo.toml` and run `cargo check` to update
    `Cargo.lock`. Update the version that `README.md`, `deploy/compose.yaml`
    and the pages in `docs/src/` show; `rg -F` with the previous version finds
-   them.
+   them. If `CURRENT_SCHEMA_VERSION` changed since the previous release, also
+   update the schema numbers in the docs: the sample output of `db migrate`
+   and `/healthz`, and the name of the pre-upgrade backup;
+   `rg 'migrated from|schema [0-9]|schemaVersion|pre-migration-v' docs/src`
+   finds them.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
    `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
    bottom, and note any upgrade steps.
