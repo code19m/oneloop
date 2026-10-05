@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {createRequire} from 'node:module';
 import {compileLegacyHandler} from '../../src/app/view-events.js';
+import {installViewBridge} from '../../src/app/view-bridge.js';
 
 const {bootApp,settle}=createRequire(import.meta.url)('../support/dom.cjs');
 
@@ -53,9 +54,14 @@ test('user text with markup stays text on every page, dialog, drawer, menu and t
     Object.assign(D.tasks.find(task=>task.id==='BIR-064'),{block:{id:'block-1',reason:evil('Waiting'),by:'robin',at:Date.now(),mentions:[]}});
     for(const session of D.browserSessions)Object.assign(session,{device:evil(session.device),browser:evil(session.browser||'Browser'),ip:evil('192.0.2.1')});
     for(const grant of D.appGrants)grant.clientName=evil(grant.clientName);
+    // An open task makes removing Robin show Member has open work.
+    Object.assign(D.tasks.find(task=>task.id==='BIR-072'),{projectId:'p1'});
   }});
+  // The production actions, which add their own dialogs.
+  installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){},async epic(){return {stale:false};}},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({})});
   const planted=[];
   const visit=(label,show)=>{show();for(const element of t.d.querySelectorAll('.planted'))planted.push(`${label}: ${element.outerHTML}`);};
+  const cancel=()=>t.d.querySelector('[data-confirm-cancel]')?.click();
   const epic=t.D.epics.find(item=>item.state!=='done'),milestone=t.D.milestones[0];
   visit('roadmap',()=>{});
   visit('epic tooltip',()=>t.A.epicHover({currentTarget:t.d.querySelector(`[data-epic="${epic.id}"]`)},epic.id,true));
@@ -65,15 +71,21 @@ test('user text with markup stays text on every page, dialog, drawer, menu and t
   visit('milestone dialog',()=>{t.A.closeOverlays();t.A.openModal('milestone',milestone.id);});
   visit('track dialog',()=>{t.A.closeOverlays();t.A.openModal('track',t.D.tracks[0].id);});
   visit('delete milestone',()=>{t.A.closeOverlays();t.A.deleteMilestone(milestone.id);});
-  visit('project menu',()=>{t.A.closeOverlays();t.A.projectMenu({currentTarget:t.d.querySelector('.switcher-btn')});});
+  visit('delete epic',()=>{cancel();t.A.deleteEpic(epic.id);});
+  visit('delete track',()=>{cancel();t.A.deleteTrack(t.D.tracks[0].id);});
+  visit('project menu',()=>{cancel();t.A.projectMenu({currentTarget:t.d.querySelector('.switcher-btn')});});
   visit('board',()=>{t.A.closeOverlays();t.A.nav('board');});
   visit('pool',()=>t.A.openModal('pool'));
-  visit('task page',()=>{t.A.closeOverlays();t.A.openTask('BIR-064');});
+  visit('delete Pool item',()=>t.A.delPool(null,t.D.pool.find(item=>item.scope==='project').id));
+  visit('task page',()=>{cancel();t.A.closeOverlays();t.A.openTask('BIR-064');});
   visit('block dialog',()=>t.A.openModal('block','BIR-064'));
   visit('unblock dialog',()=>{t.A.closeOverlays();t.A.openModal('unblock','BIR-064');});
   visit('task dialog',()=>{t.A.closeOverlays();t.A.nav('board');t.A.openModal('task');});
   visit('settings',()=>{t.A.closeOverlays();t.A.nav('settings');});
-  visit('users',()=>t.A.nav('users'));
+  visit('member has open work',()=>t.A.removeMember('robin'));
+  visit('remove permission',()=>{t.A.closeOverlays();t.A.setMemberPermission('robin','manage_board',false);});
+  visit('delete project',()=>{cancel();t.A.deleteProject();});
+  visit('users',()=>{cancel();t.A.nav('users');});
   visit('user dialog',()=>t.A.openModal('user','robin'));
   visit('profile',()=>{t.A.closeOverlays();t.A.nav('profile');});
   visit('inbox',()=>t.A.nav('inbox'));
