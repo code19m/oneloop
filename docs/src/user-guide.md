@@ -199,7 +199,8 @@ restore individual items from **Archived** and use **Mark unread**. See
 ## Your account
 
 Click your name at the bottom of the sidebar. The menu has **Profile**,
-**Sign out**, and a switch between the light and dark theme.
+**Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
+default, follows your device's light or dark setting.
 
 On your **Profile**:
 

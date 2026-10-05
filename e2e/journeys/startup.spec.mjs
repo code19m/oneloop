@@ -31,6 +31,20 @@ test('cold startup stays neutral and sign-in does not depend on previews', { tag
   expect(optional).toEqual([]);
 });
 
+test('the theme follows the device until someone picks one', async ({ page, instance }) => {
+  const shown = () => page.evaluate(() => document.documentElement.dataset.theme);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto(instance.url);
+  await expect(page.locator('input[name="username"]')).toBeVisible();
+  expect(await shown()).toBe('dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect.poll(shown).toBe('light');
+  await page.evaluate(() => Theme.set('dark'));
+  await page.reload();
+  await expect(page.locator('input[name="username"]')).toBeVisible();
+  expect(await shown()).toBe('dark');
+});
+
 test('a module loading failure offers a startup retry', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/api-client\.js/, /Loading failed for the module/);
   await page.route('**/src/data/api-client.js', route => route.abort());
