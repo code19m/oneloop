@@ -319,6 +319,11 @@ impl FileService {
                     false,
                     now,
                 )?;
+                // Already set: a retry of an applied change succeeds, while a
+                // stale request for the other value still conflicts below.
+                if stored.attachment.is_ephemeral == patch.is_ephemeral {
+                    return Ok(stored.attachment);
+                }
                 if stored.attachment.state != BlobState::Available {
                     return Err(AppError::Conflict(
                         "cleaned attachments cannot change retention".into(),
@@ -329,9 +334,6 @@ impl FileService {
                         patch.expected_revision,
                         stored.attachment.revision,
                     ));
-                }
-                if stored.attachment.is_ephemeral == patch.is_ephemeral {
-                    return Ok(stored.attachment);
                 }
                 let revision = patch.expected_revision + 1;
                 tx.execute(

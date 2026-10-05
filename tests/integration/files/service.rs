@@ -640,6 +640,18 @@ async fn retention_and_deletion_require_current_revisions_but_replay_safely() {
         .await
         .unwrap();
     assert_eq!(changed.revision, file.revision + 1);
+    let retried = service
+        .set_ephemeral(
+            &fixture.manager,
+            &file.id,
+            AttachmentPatch {
+                is_ephemeral: true,
+                expected_revision: file.revision,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried, changed);
     assert!(matches!(
         service
             .set_ephemeral(
