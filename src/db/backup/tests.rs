@@ -255,28 +255,57 @@ fn a_backup_removes_only_copies_whose_writer_is_gone() {
 fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir_in("target").unwrap();
-    let copy = root
-        .path()
-        .join(format!(".nightly.partial-{}", Uuid::now_v7()));
-    let stuck = copy.join("data");
-    fs::create_dir_all(&stuck).unwrap();
-    fs::write(stuck.join("oneloop.sqlite3"), b"partial").unwrap();
-    plant(&copy.join(OWNER_FILE), &owner("backup", exited_pid()));
-    fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
-    if fs::write(stuck.join("probe"), b"").is_ok() {
+    let gone = exited_pid();
+    // Filesystems list a folder by name, by creation in either direction, or
+    // by a hash of the names. Each copy has its own name for the part that
+    // can't be removed, on either side of the record's name, and half the
+    // copies get their record first. Whichever way a folder is listed,
+    // removing a record before the rest would lose some of them.
+    let copies = (0..16)
+        .map(|index| {
+            let copy = root
+                .path()
+                .join(format!(".copy{index}.partial-{}", Uuid::now_v7()));
+            let stuck = copy.join(format!(
+                "{}stuck-{index}",
+                if index % 2 == 0 { "-" } else { "" }
+            ));
+            fs::create_dir(&copy).unwrap();
+            let record_first = index % 4 < 2;
+            if record_first {
+                plant(&copy.join(OWNER_FILE), &owner("backup", gone));
+            }
+            fs::create_dir(&stuck).unwrap();
+            fs::write(stuck.join("oneloop.sqlite3"), b"partial").unwrap();
+            if !record_first {
+                plant(&copy.join(OWNER_FILE), &owner("backup", gone));
+            }
+            fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+            (copy, stuck)
+        })
+        .collect::<Vec<_>>();
+    let unlock = || {
+        for (_, stuck) in &copies {
+            fs::set_permissions(stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    };
+    if fs::write(copies[0].1.join("probe"), b"").is_ok() {
         // Root ignores the permissions this test relies on.
-        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        unlock();
         return;
     }
     reclaim_partial_copies(root.path());
-    assert!(
-        copy.join(OWNER_FILE).exists(),
-        "the record goes only after everything else"
-    );
-    fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+    for (copy, _) in &copies {
+        assert!(
+            copy.join(OWNER_FILE).exists(),
+            "{}: the record goes only after everything else",
+            copy.display()
+        );
+    }
+    unlock();
     assert!(soon(|| {
         reclaim_partial_copies(root.path());
-        !copy.exists()
+        copies.iter().all(|(copy, _)| !copy.exists())
     }));
 }
 
