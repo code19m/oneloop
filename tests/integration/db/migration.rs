@@ -18,42 +18,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
-    let connection = Connection::open(live.join("oneloop.sqlite3")).unwrap();
-    // This predecessor database cannot be opened by the current Db yet, but
-    // its stored triggers still need the server's Unicode lower-case function.
-    connection
-        .create_scalar_function(
-            "oneloop_lower",
-            1,
-            rusqlite::functions::FunctionFlags::SQLITE_UTF8
-                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-            |context| Ok(context.get::<String>(0)?.to_lowercase()),
-        )
-        .unwrap();
-    connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,checksum TEXT NOT NULL,applied_at INTEGER NOT NULL)").unwrap();
-    for (version, name, sql) in [
-        (
-            1,
-            "initial",
-            include_str!("../../../migrations/0001_initial.sql"),
-        ),
-        (
-            2,
-            "knowledge",
-            include_str!("../../../migrations/0002_knowledge.sql"),
-        ),
-    ] {
-        connection.execute_batch(sql).unwrap();
-        connection
-            .execute(
-                "INSERT INTO schema_migrations VALUES(?1,?2,?3,1)",
-                params![version, name, hex::encode(Sha256::digest(sql.as_bytes()))],
-            )
-            .unwrap();
-        connection
-            .pragma_update(None, "user_version", version)
-            .unwrap();
-    }
+    let connection = support::schema_two_database(&live);
     connection.execute_batch("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Original','hash',1,1,1);
         INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
         INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
@@ -630,8 +595,11 @@ fn schema_four_repairs_only_historical_assignee_projections() {
 fn migration_requires_exclusive_instance_access() {
     let root = support::scratch_dir();
     let db = initialize(&root);
-    let error = migrate(root.path(), None).unwrap_err();
-    assert!(error.to_string().contains("stop the oneloop server"));
+    let error = migrate(root.path(), None).unwrap_err().to_string();
+    assert!(
+        error.contains("another oneloop server or command is using"),
+        "{error}"
+    );
     drop(db);
     let outcome = migrate(root.path(), None).expect("exclusive access restored");
     assert!(outcome.applied.is_empty());

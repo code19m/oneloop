@@ -134,7 +134,8 @@ impl OutboxWorker {
                 )
                 .await
                 {
-                    Ok(()) => now.saturating_add(3600),
+                    Ok(false) => now.saturating_add(3600),
+                    Ok(true) => now.saturating_add(60),
                     Err(error) => {
                         tracing::warn!(%error, "transient state cleanup failed; retrying in one minute");
                         now.saturating_add(60)

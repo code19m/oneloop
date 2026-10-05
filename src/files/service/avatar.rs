@@ -140,7 +140,7 @@ impl FileService {
         disk.published();
         drop(maintenance_gate);
         if let Some(old_blob) = old_blob {
-            self.schedule_blob_deletion(&old_blob, "rollback").await?;
+            self.forget_old_avatar(&old_blob).await;
         }
         Ok(format!("/api/users/{}/avatar?v={}", actor.user_id, blob_id))
     }
@@ -167,9 +167,15 @@ impl FileService {
             })
             .await?;
         if let Some(blob) = old {
-            self.schedule_blob_deletion(&blob, "rollback").await?;
+            self.forget_old_avatar(&blob).await;
         }
         Ok(())
+    }
+
+    /// The change is saved, so a failure here must not report it as failed:
+    /// reconciliation deletes files that nothing refers to.
+    async fn forget_old_avatar(&self, blob_id: &str) {
+        log_cleanup_failure(self.schedule_blob_deletion(blob_id, "rollback").await);
     }
 
     pub async fn open_avatar(&self, actor: &Actor, user_id: &str) -> AppResult<FileRead> {

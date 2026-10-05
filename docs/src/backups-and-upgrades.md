@@ -8,8 +8,9 @@ account that runs oneloop, with the same environment.
 
 A backup is a complete, verified copy of the database, all uploaded files and
 oneloop's keys, including the key that encrypts knowledge base credentials, so
-a restored instance can still sync. oneloop keeps running while you make it;
-uploads may pause for a moment.
+a restored instance can still sync. oneloop keeps running while you make it.
+While the backup copies the database, file uploads, downloads and deletions
+wait. One that waits more than 5 seconds fails, and you can try it again.
 
 ```sh
 oneloop backup create /var/backups/oneloop/2026-09-28
@@ -134,8 +135,9 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database migrated from 2 to 3` and the folder of its
-backup, or `database schema 3 is current` if there was nothing to do.
+`db migrate` prints `database in <data folder> migrated from 2 to 3` and the
+folder of its backup, or `database in <data folder> is current (schema 3)` if
+there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
 Reloading the page loses unsaved text, so people can reload when they are ready.

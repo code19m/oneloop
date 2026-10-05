@@ -8,12 +8,12 @@ use std::{
     str::FromStr,
 };
 
-use chrono_tz::Tz;
 use ipnet::IpNet;
 use tracing::Level;
 use url::{Host, Url};
 
 use crate::error::{AppError, AppResult};
+use crate::timezone::TimeZone;
 
 pub const PUBLIC_URL_ENV: &str = "ONELOOP_PUBLIC_URL";
 pub const LISTEN_ENV: &str = "ONELOOP_LISTEN";
@@ -40,7 +40,7 @@ pub struct Config {
     pub public_url: Url,
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
-    pub timezone: Tz,
+    pub timezone: TimeZone,
     pub storage_limit_bytes: u64,
     pub disk_min_free_bytes: u64,
     pub trusted_proxies: Vec<IpNet>,
@@ -71,11 +71,11 @@ impl Config {
             .parse::<SocketAddr>()
             .map_err(|_| invalid_env(LISTEN_ENV, "expected an IP address and port"))?;
         let data_dir = resolve_data_dir(env.get(DATA_DIR_ENV).unwrap_or("./data"))?;
-        let timezone = env
-            .get(TIMEZONE_ENV)
-            .unwrap_or("UTC")
-            .parse::<Tz>()
-            .map_err(|_| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
+        let timezone = TimeZone::load(
+            env.get(TIMEZONE_ENV).unwrap_or("UTC"),
+            env.zoneinfo.as_deref(),
+        )
+        .ok_or_else(|| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
         let storage_limit_bytes = parse_size(
             STORAGE_LIMIT_ENV,
             env.get(STORAGE_LIMIT_ENV).unwrap_or("10GiB"),
@@ -121,6 +121,9 @@ impl DataConfig {
 
 struct Environment {
     values: BTreeMap<String, String>,
+    /// `TZDIR`, the folder with the server's zoneinfo, as jiff and the C
+    /// library read it.
+    zoneinfo: Option<PathBuf>,
 }
 
 impl Environment {
@@ -131,6 +134,7 @@ impl Environment {
         V: Into<OsString>,
     {
         let mut found = BTreeMap::new();
+        let mut zoneinfo = None;
         let known = KNOWN_ENV.into_iter().collect::<BTreeSet<_>>();
 
         for (raw_key, raw_value) in values {
@@ -138,6 +142,11 @@ impl Environment {
             let Some(key) = raw_key.to_str() else {
                 continue;
             };
+            if key == "TZDIR" {
+                zoneinfo = Some(PathBuf::from(raw_value.into()))
+                    .filter(|path| !path.as_os_str().is_empty());
+                continue;
+            }
             if !key.starts_with("ONELOOP_") {
                 continue;
             }
@@ -149,7 +158,10 @@ impl Environment {
             let value = os_value(key, &raw_value.into())?;
             found.insert(key.to_owned(), value);
         }
-        Ok(Self { values: found })
+        Ok(Self {
+            values: found,
+            zoneinfo,
+        })
     }
 
     fn get(&self, key: &str) -> Option<&str> {
@@ -280,17 +292,40 @@ fn parse_log_level(raw: &str) -> AppResult<Level> {
     }
 }
 
+/// The absolute data folder. A missing folder is fine, because `db migrate`
+/// and `backup restore` create it; anything else must be a folder.
 pub fn resolve_data_dir(raw: &str) -> AppResult<PathBuf> {
     if raw.trim().is_empty() {
         return Err(invalid_env(DATA_DIR_ENV, "path cannot be empty"));
     }
+    let cannot_resolve =
+        |reason: String| invalid_env(DATA_DIR_ENV, format!("cannot resolve {raw}: {reason}"));
     let path = Path::new(raw);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        env::current_dir()?.join(path)
+        env::current_dir()
+            .map_err(|error| cannot_resolve(error.to_string()))?
+            .join(path)
     };
-    normalize_path(&absolute)
+    let resolved = normalize_path(&absolute).map_err(|error| {
+        cannot_resolve(match error {
+            AppError::Validation { message, .. } | AppError::Io(message) => message,
+            error => error.to_string(),
+        })
+    })?;
+    match fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_dir() => Ok(resolved),
+        Ok(_) => Err(invalid_env(
+            DATA_DIR_ENV,
+            format!("{} is not a folder", resolved.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(resolved),
+        Err(error) => Err(invalid_env(
+            DATA_DIR_ENV,
+            format!("cannot open {}: {error}", resolved.display()),
+        )),
+    }
 }
 
 /// Removes `.` and `..` from an absolute path, so later checks and writes see

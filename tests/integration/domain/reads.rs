@@ -122,7 +122,8 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
         })
         .await
         .unwrap();
-        let service = DomainService::new(f.db.clone(), zone.parse().unwrap());
+        let zone = oneloop::timezone::TimeZone::built_in(zone).unwrap();
+        let service = DomainService::new(f.db.clone(), zone);
         service.roadmap(&f.manager, "p1".into()).await.unwrap();
         service
             .bootstrap(&f.manager, BootstrapQuery::default())

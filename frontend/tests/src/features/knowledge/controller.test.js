@@ -368,3 +368,24 @@ test('unchanged content keeps its rendered workspace when the app renders again'
   await painted(t);
   assert.notEqual(t.d.querySelector('.knowledge-workspace'), before);
 });
+
+test('a refresh that only moves the sync time keeps the reader, its preview and scroll position', async () => {
+  const t = fixture({ route: 'knowledge/p1/blob/guides/onboarding.md' });
+  await painted(t);
+  const workspace = t.d.querySelector('.knowledge-workspace');
+  t.d.querySelector('.knowledge-reader').scrollTop = 500;
+  t.state.view = { ...handbook(), checkedAt: handbook().checkedAt + 60 };
+  t.d.dispatchEvent(new t.w.Event('visibilitychange'));
+  await settle(); await settle();
+  assert.equal(t.state.requests.filter((path) => path === '/api/projects/p1/knowledge').length, 2, 'the view was read again');
+  assert.equal(t.d.querySelector('.knowledge-workspace'), workspace);
+  assert.equal(t.d.querySelector('.knowledge-reader').scrollTop, 500);
+  assert.equal(t.state.markdown.length, 1, 'the file is not rendered again');
+
+  t.state.view = handbook();
+  t.state.view.files[1].version = 'b3';
+  t.d.dispatchEvent(new t.w.Event('visibilitychange'));
+  await settle(); await settle();
+  assert.notEqual(t.d.querySelector('.knowledge-workspace'), workspace, 'a new version renders again');
+  assert.equal(t.state.markdown.length, 2);
+});

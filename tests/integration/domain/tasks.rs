@@ -73,6 +73,62 @@ async fn block_reason_edits_invalidate_existing_inboxes_even_after_mentions_are_
 }
 
 #[tokio::test]
+async fn block_reason_of_a_deleted_task_can_no_longer_change() {
+    let f = fixture().await;
+    let task = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Blocked"}),
+                "deleted-blocked-task",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let block = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::BlockTask,
+                json!({"taskId":task.entities[0]["id"],"reason":"Waiting"}),
+                "deleted-task-block",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::DeleteTask,
+                json!({"id":task.entities[0]["id"]}),
+                "delete-blocked-task",
+                block.entities[0]["revision"].as_i64(),
+            ),
+        )
+        .await
+        .unwrap();
+    let edit = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::UpdateBlockReason,
+                json!({"blockId":block.entities[1]["id"],"reason":"Still waiting"}),
+                "edit-deleted-task-block",
+                Some(1),
+            ),
+        )
+        .await;
+    assert!(matches!(edit, Err(AppError::NotFound { .. })), "{edit:?}");
+}
+
+#[tokio::test]
 async fn block_edits_notify_new_mentions_without_notifying_retained_self_mentions() {
     let f = fixture().await;
     let task = f

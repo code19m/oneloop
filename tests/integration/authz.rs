@@ -22,7 +22,7 @@ async fn project_reads_recheck_a_cached_admin_role() {
     let instance = TestInstance::new().await;
     let db = instance.db.clone();
     let cached_admin = support::add_user(&db, "old-admin", true).await.actor;
-    let project = DomainService::new(db.clone(), chrono_tz::UTC)
+    let project = DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &instance.owner.actor,
             oneloop::domain::CommandEnvelope {
@@ -38,7 +38,7 @@ async fn project_reads_recheck_a_cached_admin_role() {
     demote(&db, &instance.owner.actor, &cached_admin).await;
 
     // A still-valid session must not preserve an earlier admin role.
-    let error = DomainService::new(db, chrono_tz::UTC)
+    let error = DomainService::new(db, crate::support::utc())
         .bootstrap(
             &cached_admin,
             BootstrapQuery {
@@ -112,7 +112,7 @@ async fn bootstrap_redacts_all_inaccessible_notification_context() {
     .unwrap();
 
     let actor = browser_actor("recipient", "recipient", "recipient-session", timestamp);
-    let bootstrap = DomainService::new(db, chrono_tz::UTC)
+    let bootstrap = DomainService::new(db, crate::support::utc())
         .bootstrap(&actor, BootstrapQuery::default())
         .await
         .unwrap();
@@ -251,7 +251,7 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
         ..
     } = seeded_project().await;
     let auth = AuthService::new(db.clone());
-    let domain = DomainService::new(db.clone(), chrono_tz::UTC);
+    let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
     for (name, member, board, roadmap, active, admin, ready, valid_session) in [
@@ -371,7 +371,7 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
         grant_id: "g".into(),
     };
     let auth = AuthService::new(db.clone());
-    let domain = DomainService::new(db.clone(), chrono_tz::UTC);
+    let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
     for missing in [

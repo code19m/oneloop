@@ -132,6 +132,7 @@ async fn connections_enable_durable_sync_and_collect_planner_statistics() {
 #[cfg(unix)]
 #[test]
 fn fresh_database_sidecars_locks_and_restores_are_private() {
+    use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
     let root = support::scratch_dir();
     let live = root.path().join("live");
@@ -160,18 +161,41 @@ fn fresh_database_sidecars_locks_and_restores_are_private() {
         0o755,
         "preserve operator-owned directory mode"
     );
+    // An attachment in its shard folders and a Knowledge key.
+    fs::create_dir_all(live.join("files/ab/cd")).unwrap();
+    fs::write(live.join("files/ab/cd/abcd"), b"attachment").unwrap();
+    fs::write(live.join("keys/knowledge.key"), b"key").unwrap();
+    rusqlite::Connection::open(live.join("oneloop.sqlite3"))
+        .unwrap()
+        .execute(
+            "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+             VALUES('blob','ab/cd/abcd',?1,10,'text/plain','available',1)",
+            [hex::encode(sha2::Sha256::digest(b"attachment"))],
+        )
+        .unwrap();
     let backup = root.path().join("backup");
     create_backup(&live, &backup).unwrap();
     let restored = root.path().join("restored");
     restore_backup(backup, &restored).unwrap();
-    assert_eq!(
-        fs::metadata(restored.join("oneloop.sqlite3"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    for (name, mode) in [
+        ("oneloop.sqlite3", 0o600),
+        ("files", 0o700),
+        ("files/ab", 0o700),
+        ("files/ab/cd", 0o700),
+        ("files/ab/cd/abcd", 0o600),
+        ("keys", 0o700),
+        ("keys/knowledge.key", 0o600),
+    ] {
+        assert_eq!(
+            fs::metadata(restored.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            mode,
+            "{name}"
+        );
+    }
 }
 
 #[tokio::test]

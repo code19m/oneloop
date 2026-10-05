@@ -59,7 +59,10 @@ async fn fixture() -> Fixture {
     let mut admin = actor("admin", "Admin");
     admin.is_admin = true;
     Fixture {
-        service: DomainService::new(db.clone(), chrono_tz::Asia::Tashkent),
+        service: DomainService::new(
+            db.clone(),
+            oneloop::timezone::TimeZone::built_in("Asia/Tashkent").unwrap(),
+        ),
         db,
         _root: root,
         manager: actor("u1", "Manager"),

@@ -1,5 +1,13 @@
-//! A small, dependency-free reading of Markdown structure for search and MCP:
-//! headings, sections and plain text. Rendering stays in the browser.
+//! A small reading of Markdown structure for search and MCP: headings,
+//! sections and plain text. Rendering stays in the browser, which gives
+//! headings the same anchors with a port of these rules (`file-views.js`).
+
+use std::collections::HashMap;
+
+use icu_properties::{
+    CodePointMapData,
+    props::{GeneralCategory, GeneralCategoryGroup},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Heading {
@@ -166,25 +174,35 @@ pub(crate) fn section_source<'a>(
     source.get(sections[position].start..end)
 }
 
-/// The anchor a browser gives a heading: lower case, letters, numbers, marks,
-/// `_` and `-` kept, spaces turned into hyphens.
+/// A heading's anchor, by the rules the browser applies too (`file-views.js`):
+/// lower case; letters, marks, numbers, connector punctuation such as `_`, and
+/// `-` kept; each whitespace character turned into `-`; everything else left
+/// out.
 pub(crate) fn slug(text: &str) -> String {
+    let categories = CodePointMapData::<GeneralCategory>::new();
+    let kept = GeneralCategoryGroup::Letter
+        .union(GeneralCategoryGroup::Mark)
+        .union(GeneralCategoryGroup::Number)
+        .union(GeneralCategoryGroup::ConnectorPunctuation);
     text.to_lowercase()
         .chars()
-        .filter(|c| {
-            c.is_alphanumeric() || matches!(c, '_' | '-') || c.is_whitespace() || is_mark(*c)
+        .filter_map(|c| {
+            if c.is_whitespace() {
+                Some('-')
+            } else {
+                (c == '-' || kept.contains(categories.get(c))).then_some(c)
+            }
         })
-        .map(|c| if c.is_whitespace() { '-' } else { c })
         .collect()
-}
-
-fn is_mark(c: char) -> bool {
-    matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
 }
 
 fn lines_with_offsets(source: &str) -> Vec<(usize, &str)> {
     let mut lines = Vec::new();
-    let mut offset = 0;
+    // A byte order mark is not part of the first line.
+    let (mut offset, source) = match source.strip_prefix('\u{feff}') {
+        Some(rest) => ('\u{feff}'.len_utf8(), rest),
+        None => (0, source),
+    };
     for line in source.split_inclusive('\n') {
         lines.push((offset, line.trim_end_matches(['\n', '\r'])));
         offset += line.len();
@@ -256,32 +274,40 @@ fn setext_level(line: &str, next: &str) -> Option<u8> {
     }
 }
 
-/// Text a reader sees in one line of inline Markdown.
+/// Text a reader sees in one line of inline Markdown, by the rules the
+/// browser applies too (`file-views.js`): links and images keep their text,
+/// tags and code marks go, emphasis marks go when they pair up, escapes and
+/// common entities are decoded, and runs of whitespace become one space.
 pub(crate) fn inline_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
     let chars: Vec<char> = value.chars().collect();
     let mut closers = Closers::new(&chars);
+    let mut pieces = Vec::with_capacity(chars.len());
+    // Where a link's text ends, and where reading resumes after its target.
+    let mut link_ends = HashMap::new();
     let mut index = 0;
     while index < chars.len() {
+        if let Some(resume) = link_ends.remove(&index) {
+            index = resume;
+            continue;
+        }
         let c = chars[index];
         match c {
             '!' if chars.get(index + 1) == Some(&'[') => index += 1,
             '[' => {
                 if let Some(close) = closers.next(index + 1, ']') {
-                    out.extend(&chars[index + 1..close]);
-                    index = close + 1;
-                    if chars.get(index) == Some(&'(') {
-                        index = closers
-                            .next(index + 1, ')')
-                            .map_or(chars.len(), |end| end + 1);
-                    } else if chars.get(index) == Some(&'[') {
-                        index = closers
-                            .next(index + 1, ']')
-                            .map_or(chars.len(), |end| end + 1);
-                    }
-                    continue;
+                    let resume = match chars.get(close + 1) {
+                        Some('(') => closers
+                            .next(close + 2, ')')
+                            .map_or(chars.len(), |end| end + 1),
+                        Some('[') => closers
+                            .next(close + 2, ']')
+                            .map_or(chars.len(), |end| end + 1),
+                        _ => close + 1,
+                    };
+                    link_ends.insert(close, resume);
+                } else {
+                    pieces.push(Piece::Text(c));
                 }
-                out.push(c);
                 index += 1;
             }
             '<' => {
@@ -292,36 +318,183 @@ pub(crate) fn inline_text(value: &str) -> String {
                             .get(index + 1)
                             .is_some_and(|next| next.is_ascii_alphabetic() || *next == '/') =>
                     {
-                        let inner: String = chars[index + 1..end].iter().collect();
-                        if inner.contains("://") || inner.contains('@') {
-                            out.push_str(&inner);
+                        let inner = &chars[index + 1..end];
+                        if inner.contains(&'@') || inner.windows(3).any(|w| w == [':', '/', '/']) {
+                            pieces.extend(inner.iter().copied().map(Piece::Text));
                         }
                         index = end + 1;
                     }
                     _ => {
-                        out.push(c);
+                        pieces.push(Piece::Text(c));
                         index += 1;
                     }
                 }
             }
-            '`' | '*' => index += 1,
+            '`' => index += 1,
             '~' if chars.get(index + 1) == Some(&'~') => index += 2,
-            '_' if chars.get(index + 1) == Some(&'_') => index += 2,
-            '_' if word_edge(&chars, index) => index += 1,
             '\\' if chars
                 .get(index + 1)
                 .is_some_and(|next| next.is_ascii_punctuation()) =>
             {
-                out.push(chars[index + 1]);
+                pieces.push(Piece::Text(chars[index + 1]));
                 index += 2;
             }
+            '&' => match entity(&chars[index..]) {
+                Some((decoded, length)) => {
+                    pieces.push(Piece::Text(decoded));
+                    index += length;
+                }
+                None => {
+                    pieces.push(Piece::Text(c));
+                    index += 1;
+                }
+            },
+            '*' | '_' => {
+                let length = chars[index..].iter().take_while(|next| **next == c).count();
+                let (before, after) = (
+                    index.checked_sub(1).map(|i| chars[i]),
+                    chars.get(index + length).copied(),
+                );
+                let left = flanking(after, before);
+                let right = flanking(before, after);
+                let (open, close) = if c == '*' {
+                    (left, right)
+                } else {
+                    (
+                        left && (!right || before.is_some_and(is_punctuation)),
+                        right && (!left || after.is_some_and(is_punctuation)),
+                    )
+                };
+                pieces.push(Piece::Run {
+                    mark: c,
+                    left: length,
+                    open,
+                    close,
+                });
+                index += length;
+            }
             _ => {
-                out.push(c);
+                pieces.push(Piece::Text(c));
                 index += 1;
             }
         }
     }
+    pair_emphasis(&mut pieces);
+    let mut out = String::with_capacity(value.len());
+    for piece in pieces {
+        match piece {
+            Piece::Text(c) => out.push(c),
+            Piece::Run { mark, left, .. } => out.extend(std::iter::repeat_n(mark, left)),
+        }
+    }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+enum Piece {
+    Text(char),
+    /// A run of `*` or `_`, with the marks not yet paired.
+    Run {
+        mark: char,
+        left: usize,
+        open: bool,
+        close: bool,
+    },
+}
+
+/// A delimiter run is left-flanking when `next` is not whitespace and is not
+/// punctuation unless `previous` is whitespace or punctuation; swap the two for
+/// right-flanking. Line ends count as whitespace.
+fn flanking(next: Option<char>, previous: Option<char>) -> bool {
+    next.is_some_and(|next| {
+        !next.is_whitespace()
+            && (!is_punctuation(next)
+                || previous
+                    .is_none_or(|previous| previous.is_whitespace() || is_punctuation(previous)))
+    })
+}
+
+fn is_punctuation(c: char) -> bool {
+    let category = CodePointMapData::<GeneralCategory>::new().get(c);
+    GeneralCategoryGroup::Punctuation
+        .union(GeneralCategoryGroup::Symbol)
+        .contains(category)
+}
+
+/// Remove emphasis marks that pair up, nearest opener first, as CommonMark
+/// does without its finer rules. Unpaired marks stay as text. Each opener is
+/// paired or dropped once, so this is linear.
+fn pair_emphasis(pieces: &mut [Piece]) {
+    let mut openers: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for index in 0..pieces.len() {
+        let Piece::Run {
+            mark, open, close, ..
+        } = pieces[index]
+        else {
+            continue;
+        };
+        let (same, other) = if mark == '*' { (0, 1) } else { (1, 0) };
+        if close {
+            while let Some(&opener) = openers[same].last() {
+                let (Piece::Run { left: before, .. }, Piece::Run { left: after, .. }) =
+                    (&pieces[opener], &pieces[index])
+                else {
+                    unreachable!("openers are runs");
+                };
+                let used = (*before).min(*after);
+                if used == 0 {
+                    break;
+                }
+                for at in [opener, index] {
+                    if let Piece::Run { left, .. } = &mut pieces[at] {
+                        *left -= used;
+                    }
+                }
+                // Openers of the other mark inside the pair can't close anymore.
+                while openers[other].last().is_some_and(|inner| *inner > opener) {
+                    openers[other].pop();
+                }
+                if matches!(pieces[opener], Piece::Run { left: 0, .. }) {
+                    openers[same].pop();
+                }
+            }
+        }
+        if open && matches!(pieces[index], Piece::Run { left: 1.., .. }) {
+            openers[same].push(index);
+        }
+    }
+}
+
+/// A character reference at the start of `chars`: a decimal or hexadecimal
+/// number, or one of the names common in prose. Returns it and its length.
+fn entity(chars: &[char]) -> Option<(char, usize)> {
+    let end = chars.iter().take(34).position(|c| *c == ';')?;
+    let body: String = chars[1..end].iter().collect();
+    let decoded = if let Some(number) = body.strip_prefix('#') {
+        let (digits, radix) = match number.strip_prefix(['x', 'X']) {
+            Some(hex) if (1..=6).contains(&hex.len()) => (hex, 16),
+            None if (1..=7).contains(&number.len()) => (number, 10),
+            _ => return None,
+        };
+        if !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        u32::from_str_radix(digits, radix)
+            .ok()
+            .filter(|code| *code != 0)
+            .and_then(char::from_u32)
+            .unwrap_or('\u{fffd}')
+    } else {
+        match body.as_str() {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => '\u{a0}',
+            _ => return None,
+        }
+    };
+    Some((decoded, end + 1))
 }
 
 /// The next closing character at or after a position. Each answer is
@@ -365,15 +538,6 @@ impl<'a> Closers<'a> {
         self.memo.push((target, from, found));
         found
     }
-}
-
-fn word_edge(chars: &[char], index: usize) -> bool {
-    let before = index
-        .checked_sub(1)
-        .and_then(|i| chars.get(i))
-        .is_some_and(|c| c.is_alphanumeric());
-    let after = chars.get(index + 1).is_some_and(|c| c.is_alphanumeric());
-    !(before && after)
 }
 
 /// Plain text of block lines: list markers, quotes and table pipes removed.
@@ -548,6 +712,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn anchors_match_the_shared_browser_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../frontend/tests/support/fixtures/heading-anchors.json"
+        ))
+        .unwrap();
+        let source = fixture["source"].as_str().unwrap();
+        let anchors: Vec<String> = sections(source)
+            .into_iter()
+            .filter_map(|section| section.heading.map(|heading| heading.anchor))
+            .collect();
+        assert_eq!(
+            anchors,
+            fixture["anchors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|anchor| anchor.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn headings_read_as_rendered_text() {
+        let sections =
+            sections("\u{feff}# Q&amp;A\n\n## _config.yml and __init__.py\n\n## 5 \\* 3\n");
+        let headings: Vec<_> = sections
+            .iter()
+            .filter_map(|section| {
+                section
+                    .heading
+                    .as_ref()
+                    .map(|heading| heading.text.as_str())
+            })
+            .collect();
+        assert_eq!(headings, ["Q&A", "_config.yml and init.py", "5 * 3"]);
+        assert_eq!(
+            sections[0].start, 3,
+            "a byte order mark is not part of the heading"
+        );
     }
 
     #[test]

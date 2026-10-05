@@ -611,6 +611,8 @@ async fn approve_consent(
     let request_hash = hash_token(&form.request_id);
     let actor = actor.clone();
     state.db.transaction(move |connection| {
+        // The session may have been revoked since this request was authenticated.
+        let actor = crate::auth::refresh_actor_connection(connection, &actor)?;
         validate_selected_projects(connection, &actor, &projects)?;
         consume_request(connection, &request_hash, &actor.user_id, unix_now()?)?;
         connection.execute(
@@ -1744,3 +1746,105 @@ const SELECT_MCP_GRANT_SCOPES_SQL: &str =
     "SELECT scope FROM mcp_grant_scopes WHERE grant_id=?1 ORDER BY scope";
 const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
             AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Config, Db,
+        auth::{LoginResult, NewUser, create_user},
+    };
+
+    const CALLBACK: &str = "http://127.0.0.1/callback";
+    const RESOURCE: &str = "https://tasks.example.test/mcp";
+
+    #[tokio::test]
+    async fn consent_from_a_session_revoked_after_sign_in_creates_no_code() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        let config = Config::from_os_iter([
+            ("ONELOOP_PUBLIC_URL", "https://tasks.example.test"),
+            ("ONELOOP_DATA_DIR", root.path().to_str().unwrap()),
+        ])
+        .unwrap();
+        let state = AppState::new(config, db.clone());
+        let user = NewUser {
+            username: "owner".into(),
+            display_name: "Owner".into(),
+            password: "test-only-password-012345".into(),
+            is_admin: true,
+            must_change_password: false,
+        };
+        db.transaction(move |tx| create_user(tx, user, unix_now()?))
+            .await
+            .unwrap();
+        let LoginResult::Authenticated(session) = state
+            .auth
+            .login(
+                "owner",
+                "test-only-password-012345",
+                Default::default(),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("the owner signs in");
+        };
+        let actor = session.actor;
+        let request_id = "consent-request";
+        let (hash, user_id, now) = (
+            hash_token(request_id),
+            actor.user_id.clone(),
+            unix_now().unwrap(),
+        );
+        db.run(move |c| {
+            c.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1)", [])?;
+            c.execute(
+                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at) VALUES('client','Client',?1,1)",
+                [serde_json::json!([CALLBACK]).to_string()],
+            )?;
+            c.execute(
+                "INSERT INTO oauth_authorization_requests(id,user_id,client_id,redirect_uri,resource,requested_scopes_json,code_challenge,created_at,expires_at)
+                 VALUES(?1,?2,'client',?3,?4,'[\"project_read\"]','challenge',?5,?6)",
+                params![hash, user_id, CALLBACK, RESOURCE, now, now + 600],
+            )?;
+            // A plain revocation, such as from another tab, commits after the
+            // consent request was authenticated.
+            c.execute("UPDATE sessions SET revoked_at=?1", [now])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let form = ConsentForm {
+            request_id: request_id.into(),
+            decision: "allow".into(),
+            project: vec!["p1".into()],
+            scope: Vec::new(),
+        };
+        let stored = StoredAuthorizationRequest {
+            user_id: actor.user_id.clone(),
+            client_id: "client".into(),
+            client_name: "Client".into(),
+            redirect_uri: CALLBACK.into(),
+            state: None,
+            resource: RESOURCE.into(),
+            requested_scopes: vec!["project_read".into()],
+            challenge: "challenge".into(),
+        };
+        let result = approve_consent(&state, &actor, &form, &stored).await;
+        assert!(matches!(result, Err(AppError::Unauthorized)), "{result:?}");
+        let codes: i64 = db
+            .run(|c| {
+                Ok(
+                    c.query_row("SELECT count(*) FROM oauth_authorization_codes", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(codes, 0);
+    }
+}

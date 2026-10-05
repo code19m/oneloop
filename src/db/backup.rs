@@ -52,7 +52,7 @@ pub fn create_backup(
     let layout = DataLayout::new(data_dir);
     if !layout.database().is_file() {
         return Err(AppError::PreconditionFailed(format!(
-            "database is not initialized at {}",
+            "database is not initialized at {}; check ONELOOP_DATA_DIR",
             layout.database().display()
         )));
     }
@@ -646,9 +646,7 @@ fn copy_referenced_blobs(
 }
 
 fn copy_and_hash(source: &Path, destination: &Path) -> AppResult<(u64, String)> {
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    create_private_parent(destination)?;
     let mut input = File::open(source)?;
     let mut output = super::private_file_options()
         .write(true)
@@ -699,7 +697,7 @@ fn copy_regular_tree(
         })?;
         let destination = destination_root.join(relative);
         if item.file_type().is_dir() {
-            fs::create_dir_all(&destination)?;
+            create_private_dir_all(&destination)?;
         } else if item.file_type().is_file() {
             copy_regular_file(item.path(), &destination)?;
             entries.push(manifest_entry(backup_root, &destination)?);
@@ -852,12 +850,31 @@ fn copy_regular_file(source: &Path, destination: &Path) -> AppResult<()> {
             source.display()
         )));
     }
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    create_private_parent(destination)?;
     fs::copy(source, destination)?;
     secure_file(destination)?;
     sync_file(destination)
+}
+
+fn create_private_parent(path: &Path) -> AppResult<()> {
+    match path.parent() {
+        Some(parent) => create_private_dir_all(parent),
+        None => Ok(()),
+    }
+}
+
+/// Creates missing folders that only the owner can open, like the live data
+/// directory's. Callers sync the whole copied tree once when it is complete.
+fn create_private_dir_all(path: &Path) -> AppResult<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    Ok(())
 }
 
 fn secure_directory(path: &Path) -> AppResult<()> {

@@ -30,6 +30,11 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
 
 #[tokio::test]
 async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_client() {
+    // tracing caches per log call site whether any subscriber wants it. While
+    // only one subscriber exists, it asks just the current thread's, so a test
+    // on another thread could mark these call sites as never wanted. With a
+    // second subscriber alive, it asks them all.
+    let _second = tracing::Dispatch::new(tracing_subscriber::registry());
     let capture = Capture(Arc::default());
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
@@ -68,7 +73,8 @@ async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_clie
     }
 }
 
-#[tokio::test]
+// The paused clock passes the 5-second lease wait at once.
+#[tokio::test(start_paused = true)]
 async fn busy_data_lease_returns_a_safe_retryable_http_error() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
@@ -83,8 +89,9 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
         .open(&lock_path)
         .unwrap();
     lock.lock().unwrap();
-    let response = app
-        .oneshot(
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        app.oneshot(
             Request::builder()
                 .method("DELETE")
                 .uri("/api/auth/avatar")
@@ -92,9 +99,11 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
                 .header("cookie", format!("oneloop_session={}", session.token))
                 .body(Body::empty())
                 .unwrap(),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .expect("a busy data lease must not wait forever")
+    .unwrap();
     drop(lock);
     assert_eq!(response.status(), 503);
     assert_eq!(response.headers()["retry-after"], "1");

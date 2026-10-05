@@ -1,4 +1,4 @@
-/* Attachment and Knowledge views. HTML runs only in an opaque-origin sandbox; originals stay unchanged. */
+/* Attachment and Knowledge views. HTML previews show in an opaque-origin sandbox without scripts; originals stay unchanged. */
 (() => {
   const remote=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}};
   const embedded=value=>/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(value||'');
@@ -97,6 +97,113 @@
       });
     }
   }
+  // Heading anchors follow src/knowledge/markdown.rs (inline_text, slug and
+  // the headings of sections), so search hits and MCP sections name the
+  // headings shown here. tests/support/fixtures/heading-anchors.json checks
+  // both sides; change them together.
+  const isSpace=c=>/^\p{White_Space}$/u.test(c),isPunctuation=c=>/^[\p{P}\p{S}]$/u.test(c);
+  const trimSpace=value=>value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu,''),trimEndSpace=value=>value.replace(/\p{White_Space}+$/u,'');
+  const slug=text=>text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\p{White_Space}-]/gu,'').replace(/\p{White_Space}/gu,'-');
+  const ENTITIES={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
+  /** A character reference at `start`, and its length. */
+  function entity(chars,start){
+    let end=-1;for(let at=start;at<Math.min(chars.length,start+34);at++)if(chars[at]===';'){end=at;break;}
+    if(end<0)return null;
+    const body=chars.slice(start+1,end).join('');let decoded;
+    if(body.startsWith('#')){
+      const hex=/^#[xX]/.test(body),digits=body.slice(hex?2:1);
+      if(!(hex?/^[0-9a-fA-F]{1,6}$/:/^[0-9]{1,7}$/).test(digits))return null;
+      const code=parseInt(digits,hex?16:10);decoded=code===0||code>0x10ffff||(code>=0xd800&&code<=0xdfff)?'\ufffd':String.fromCodePoint(code);
+    }else if(Object.hasOwn(ENTITIES,body))decoded=ENTITIES[body];
+    else return null;
+    return [decoded,end-start+1];
+  }
+  const flanking=(next,previous)=>next!==null&&!isSpace(next)&&(!isPunctuation(next)||previous===null||isSpace(previous)||isPunctuation(previous));
+  /** The text a reader sees in one line of inline Markdown. */
+  function inlineText(value){
+    const chars=Array.from(value),n=chars.length,memo=new Map();
+    const next=(from,target)=>{const known=memo.get(target);if(known&&known.start<=from&&(known.found<0||known.found>=from))return known.found;let found=-1;for(let at=from;at<n;at++)if(chars[at]===target){found=at;break;}memo.set(target,{start:from,found});return found;};
+    const pieces=[],linkEnds=new Map();let index=0;
+    while(index<n){
+      if(linkEnds.has(index)){const resume=linkEnds.get(index);linkEnds.delete(index);index=resume;continue;}
+      const c=chars[index];
+      if(c==='!'&&chars[index+1]==='['){index++;}
+      else if(c==='['){const close=next(index+1,']');if(close>=0){let resume=close+1;if(chars[close+1]==='('||chars[close+1]==='['){const end=next(close+2,chars[close+1]==='('?')':']');resume=end<0?n:end+1;}linkEnds.set(close,resume);}else pieces.push(c);index++;}
+      else if(c==='<'){const end=next(index+1,'>');if(end>=0&&/^[A-Za-z/]$/.test(chars[index+1]||'')){const inner=chars.slice(index+1,end).join('');if(inner.includes('@')||inner.includes('://'))pieces.push(...Array.from(inner));index=end+1;}else{pieces.push(c);index++;}}
+      else if(c==='`')index++;
+      else if(c==='~'&&chars[index+1]==='~')index+=2;
+      else if(c==='\\'&&/^[!-/:-@[-`{-~]$/.test(chars[index+1]||'')){pieces.push(chars[index+1]);index+=2;}
+      else if(c==='&'){const found=entity(chars,index);if(found){pieces.push(found[0]);index+=found[1];}else{pieces.push(c);index++;}}
+      else if(c==='*'||c==='_'){
+        let length=0;while(chars[index+length]===c)length++;
+        const before=index>0?chars[index-1]:null,after=index+length<n?chars[index+length]:null,left=flanking(after,before),right=flanking(before,after);
+        pieces.push({mark:c,left:length,open:c==='*'?left:left&&(!right||(before!==null&&isPunctuation(before))),close:c==='*'?right:right&&(!left||(after!==null&&isPunctuation(after)))});index+=length;
+      }else{pieces.push(c);index++;}
+    }
+    // Emphasis marks go when they pair up, nearest opener first; others stay text.
+    const openers={'*':[],'_':[]};
+    pieces.forEach((piece,at)=>{
+      if(typeof piece==='string')return;
+      const same=openers[piece.mark],other=openers[piece.mark==='*'?'_':'*'];
+      while(piece.close&&same.length){const opener=same[same.length-1],used=Math.min(pieces[opener].left,piece.left);if(!used)break;pieces[opener].left-=used;piece.left-=used;while(other.length&&other[other.length-1]>opener)other.pop();if(!pieces[opener].left)same.pop();}
+      if(piece.open&&piece.left)same.push(at);
+    });
+    return pieces.map(piece=>typeof piece==='string'?piece:piece.mark.repeat(piece.left)).join('').split(/\p{White_Space}+/u).filter(Boolean).join(' ');
+  }
+  const indent=line=>{const trimmed=line.replace(/^ +/,'');return line.length-trimmed.length<=3?trimmed:null;};
+  function opensFence(line){const trimmed=indent(line),marker=trimmed?.[0];if(marker!=='`'&&marker!=='~')return null;let length=0;while(trimmed[length]===marker)length++;return length>=3&&!(marker==='`'&&trimmed.slice(length).includes('`'))?{marker,length}:null;}
+  function closesFence(line,fence){const trimmed=indent(line);if(trimmed===null)return false;let run=0;while(trimmed[run]===fence.marker)run++;return run>=fence.length&&!trimSpace(trimmed.slice(run));}
+  function atxHeading(line){
+    const trimmed=indent(line);if(trimmed===null)return null;
+    let level=0;while(trimmed[level]==='#')level++;
+    const rest=trimmed.slice(level);if(level<1||level>6||(rest&&!/^[ \t]/.test(rest)))return null;
+    let text=trimSpace(rest);const withoutClosing=text.replace(/#+$/,'');
+    if(withoutClosing.length!==text.length&&(!withoutClosing||/[ \t]$/.test(withoutClosing)))text=trimEndSpace(withoutClosing);
+    return {level,text:inlineText(text)};
+  }
+  function setextLevel(line,nextLine){
+    const text=indent(line);if(text===null||!trimSpace(text)||/^[#>\-*+|`~<]/.test(text)||(/^[0-9]/.test(text)&&text.includes('. ')))return 0;
+    const underline=indent(nextLine);if(underline===null)return 0;const mark=trimEndSpace(underline);
+    return /^=+$/.test(mark)?1:/^-+$/.test(mark)?2:0;
+  }
+  /** The headings the server indexes, each with its line and anchor. */
+  function headingAnchors(source){
+    const lines=source.replace(/^\uFEFF/,'').split('\n').map(line=>line.replace(/[\r\n]+$/,'')),headings=[];let fence=null;
+    for(let index=0;index<lines.length;){
+      const line=lines[index];
+      if(fence){if(closesFence(line,fence))fence=null;index++;continue;}
+      const opened=opensFence(line);if(opened){fence=opened;index++;continue;}
+      const atx=atxHeading(line),setext=atx||index+1>=lines.length?0:setextLevel(line,lines[index+1]);
+      const heading=atx||(setext?{level:setext,text:inlineText(trimSpace(line))}:null);
+      if(heading)headings.push({...heading,line:index});
+      index+=setext?2:1;
+    }
+    const occurrences=new Map(),used=new Set();
+    for(const heading of headings){const base=slug(heading.text);let count=occurrences.get(base)||0,anchor;do{anchor=count?base+'-'+count:base;count++;}while(used.has(anchor));occurrences.set(base,count);used.add(anchor);heading.anchor=anchor;}
+    return headings;
+  }
+  /**
+   * Give rendered headings the server's anchors: top-level headings by their
+   * line, headings the renderer nested by their text. Other headings get
+   * anchors the server's never use.
+   */
+  function nameHeadings(fragment,source,tokens,nonce){
+    const anchors=headingAnchors(source),byLine=new Map(anchors.map(anchor=>[anchor.line,anchor])),taken=new Set(anchors.map(anchor=>anchor.anchor));
+    const tokenOf=new Map(),named=new Set();
+    fragment.querySelectorAll('[data-md-heading]').forEach(el=>{const [mark,index]=el.getAttribute('data-md-heading').split('-');el.removeAttribute('data-md-heading');if(mark===nonce&&/^H[1-6]$/.test(el.tagName)&&tokens[Number(index)])tokenOf.set(el,tokens[Number(index)]);});
+    const headings=[...fragment.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(heading=>!heading.id);
+    const name=(heading,anchor)=>{heading.id='md-'+anchor.anchor;anchor.named=true;named.add(heading);};
+    for(const heading of headings){const token=tokenOf.get(heading),anchor=token&&byLine.get(token.mdLine);if(anchor&&!anchor.named&&anchor.level===token.depth)name(heading,anchor);}
+    const waiting=new Map();
+    for(const heading of headings){const token=tokenOf.get(heading);if(named.has(heading)||!token)continue;const key=token.depth+'\n'+inlineText(token.text);if(!waiting.has(key))waiting.set(key,[]);waiting.get(key).push(heading);}
+    for(const anchor of anchors){const heading=anchor.named?null:waiting.get(anchor.level+'\n'+anchor.text)?.shift();if(heading)name(heading,anchor);}
+    const counts=new Map();
+    for(const heading of headings){
+      if(named.has(heading))continue;
+      const token=tokenOf.get(heading),base=slug(token?inlineText(token.text):heading.textContent||'');
+      let count=counts.get(base)||0,id;do{id=count?base+'-'+count:base;count++;}while(taken.has(id));counts.set(base,count);taken.add(id);heading.id='md-'+id;
+    }
+  }
   /**
    * Render Markdown. A Knowledge `context` resolves relative links and images
    * inside its folder and themes diagrams; attachments have no context.
@@ -122,6 +229,13 @@
     const maths=[];
     const mathPlaceholder=token=>{const index=maths.push({text:token.text,display:!!token.displayMode})-1;return `<${token.displayMode?'div':'span'} data-md-math="${index}"></${token.displayMode?'div':'span'}>`;};
     const parser=new marked.Marked({gfm:true,breaks:false,async:false});
+    // Mark rendered headings with an unguessable value, so the ids can follow
+    // the source's headings and uploaded HTML can't claim one.
+    const nonce=Array.from(crypto.getRandomValues(new Uint32Array(2)),part=>part.toString(36)).join(''),headings=[];
+    parser.use({
+      hooks:{processAllTokens(tokens){let line=0;for(const token of tokens){if(token.type==='heading')token.mdLine=/^ {0,3}#{1,6}(?:[ \t\n]|$)/.test(token.raw)?line:line+token.raw.replace(/\n+$/,'').split('\n').length-2;line+=token.raw.split('\n').length-1;}return tokens;}},
+      renderer:{heading(token){const index=headings.push(token)-1;return `<h${token.depth} data-md-heading="${nonce}-${index}">${this.parser.parseInline(token.tokens)}</h${token.depth}>\n`;}},
+    });
     if(window.markedFootnote)parser.use(markedFootnote());
     if(window.markedAlert)parser.use(markedAlert());
     if(window.markedKatex&&window.katex){
@@ -129,23 +243,23 @@
       parser.use({extensions:[{name:'githubInlineMath',level:'inline',start:src=>src.indexOf('$`'),tokenizer(src){const match=/^\$`([^\n]+?)`\$/.exec(src);if(match)return {type:'githubInlineMath',raw:match[0],text:match[1],displayMode:false};},renderer:mathPlaceholder}],renderer:{code(token){if(token.lang?.trim()==='math')return mathPlaceholder({text:token.text,displayMode:true});return false;}}});
     }
     let parsed;
-    try{parsed=parser.parse(text.replace(/^\uFEFF/,''),{gfm:true,breaks:false,async:false});}catch{UIHTML(ui.view,'<p class="preview-unavailable">This Markdown could not be rendered. Use Source or download the file.</p>');return;}
+    const source=text.replace(/^\uFEFF/,'');
+    try{parsed=parser.parse(source,{gfm:true,breaks:false,async:false});}catch{UIHTML(ui.view,'<p class="preview-unavailable">This Markdown could not be rendered. Use Source or download the file.</p>');return;}
     const render=()=>{
       if(!text.trim()){UIHTML(ui.view,'<p class="preview-unavailable">This file is empty.</p>');return;}
       const scroll=ui.view.scrollTop;
-      const fragment=DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover'],SANITIZE_NAMED_PROPS:true});
+      const fragment=DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover'],SANITIZE_NAMED_PROPS:true});
       fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(attr.name.startsWith('data-oneloop-'))el.removeAttribute(attr.name);}));
       // Keep renderer classes, never application chrome supplied by an upload.
       fragment.querySelectorAll('[class]').forEach(el=>{
         const classes=[...el.classList].filter(name=>/^(?:language-[\w-]+|hljs[\w-]*|markdown-alert[\w-]*|task-list-[\w-]+|footnotes|sr-only|octicon[\w-]*)$/.test(name));
         if(classes.length)el.setAttribute('class',classes.join(' '));else el.removeAttribute('class');
       });
-      const slugs=new Map(),used=new Set();
       fragment.querySelectorAll('[id]').forEach(el=>{const id=el.id.replace(/^user-content-/,'');if(id.startsWith('footnote-'))el.id='md-'+id;else el.removeAttribute('id');});
       fragment.querySelectorAll('[aria-describedby]').forEach(el=>{const ids=el.getAttribute('aria-describedby').split(/\s+/).filter(id=>id.startsWith('footnote-')).map(id=>'md-'+id);if(ids.length)el.setAttribute('aria-describedby',ids.join(' '));else el.removeAttribute('aria-describedby');});
-      fragment.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(heading=>{if(heading.id)return;const base=heading.textContent.toLowerCase().replace(/[^\p{L}\p{N}\p{M}_\-\s]/gu,'').replace(/\s/g,'-');let n=slugs.get(base)||0,id;do{id='md-'+base+(n?'-'+n:'');n++;}while(used.has(id));slugs.set(base,n);used.add(id);heading.id=id;});
+      nameHeadings(fragment,source,headings,nonce);
       fragment.querySelectorAll('input').forEach(el=>{if(el.type!=='checkbox'){el.remove();return;}el.disabled=true;el.classList.add('task-list-item-checkbox');el.closest('li')?.classList.add('task-list-item');});
-      fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){link.href='#md-'+href.slice(1);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}});
+      fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){let name=href.slice(1);try{name=decodeURIComponent(name);}catch{}link.setAttribute('href','#md-'+name);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}});
       fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'',local=context.resolveImage?.(src);if(typeof local==='string'&&local.startsWith('/api/')){img.setAttribute('src',local);img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
       fragment.querySelectorAll('pre code').forEach(code=>{const lang=[...code.classList].find(c=>c.startsWith('language-'))?.slice(9);if(window.hljs&&lang&&hljs.getLanguage(lang)){try{UIHTML(code,hljs.highlight(code.textContent,{language:lang,ignoreIllegals:true}).value);code.classList.add('hljs');}catch{}}});
       const article=document.createElement('article');article.className='markdown-body';article.append(fragment);ui.view.replaceChildren(article);ui.view.scrollTop=scroll;
@@ -164,29 +278,26 @@
     let content;
     const buildSrcdoc=()=>{
       if(content!==undefined)return content;
-      // Uploaded HTML keeps its own handlers for execution only inside the sandbox.
       const doc=document.implementation.createHTMLDocument('');doc.documentElement.innerHTML=text;
-      doc.querySelectorAll('iframe,frame,frameset,object,embed,base,meta[http-equiv],portal,fencedframe').forEach(el=>el.remove());
-      // Scripts and handlers intentionally run inside the frame, never in the app document.
-      const policy="default-src 'none'; script-src 'unsafe-inline' https:; connect-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline' https:; font-src data: https:; media-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'";
+      doc.querySelectorAll('iframe,frame,frameset,object,embed,base,link,meta[http-equiv],portal,fencedframe').forEach(el=>el.remove());
+      // As the server's preview policy: no scripts, and nothing from other
+      // sites; inline styles, and images and fonts embedded as data, only.
+      const policy="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
       const meta=document.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=policy;doc.head.prepend(meta);
       const referrer=document.createElement('meta');referrer.name='referrer';referrer.content='no-referrer';doc.head.prepend(referrer);
       if(!doc.querySelector('meta[name=viewport]')){const viewport=document.createElement('meta');viewport.name='viewport';viewport.content='width=device-width, initial-scale=1';doc.head.prepend(viewport);}
       const charset=document.createElement('meta');charset.setAttribute('charset','utf-8');doc.head.prepend(charset);
       const defaults=document.createElement('style');defaults.textContent='html{color-scheme:light}body{margin:20px;font:16px/1.5 system-ui;background:#fff;color:#202020;overflow-wrap:anywhere}img{max-width:100%}';meta.after(defaults);
-      const escapeKey=document.createElement('script');escapeKey.textContent="document.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();parent.postMessage({type:'oneloop-preview-escape'},'*');}},true);";defaults.after(escapeKey);
       return content='<!doctype html>'+doc.documentElement.outerHTML;
     };
     const start=()=>{
-      const frame=document.createElement('iframe');frame.className='html-preview';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; payment 'none'");frame.title=file.name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'')+' preview';frame.tabIndex=0;
+      const frame=document.createElement('iframe');frame.className='html-preview';frame.setAttribute('sandbox','');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; payment 'none'");frame.title=file.name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'')+' preview';frame.tabIndex=0;
       if(file.htmlPreviewUrl){const url=new URL(file.htmlPreviewUrl,location.href);url.searchParams.set('reload',String(Date.now()));frame.src=url.href;}else{frame.setAttribute('credentialless','');frame.srcdoc=buildSrcdoc();}ui.view.replaceChildren(frame);
     };
     ui.onMode(rendered=>{restart.hidden=!rendered;if(rendered){if(!ui.view.firstChild)start();}else ui.view.replaceChildren();});
     restart.onclick=start;start();
   }
 
-  // The frame can request dismissal only. Never expose app data or commands over messages.
-  window.addEventListener('message',event=>{const frame=document.querySelector('.file-dialog .html-preview');if(frame&&event.source===frame.contentWindow&&event.data?.type==='oneloop-preview-escape')document.querySelector('[data-file-close]')?.click();});
   /** Plain text, with JSON indented when the whole file is present. */
   function text(host,file,value,truncated){
     host.replaceChildren();let shown=value;
