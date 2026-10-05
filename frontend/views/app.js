@@ -436,7 +436,7 @@
       inerted.forEach(([el, wasInert]) => { el.inert = wasInert; });
       if (!accepted) cancel?.();
       if (restoreFocus) {
-        const focus = returnFocus?.isConnected && !returnFocus.closest('[inert]') ? returnFocus :
+        const focus = returnFocus?.isConnected && returnFocus !== document.body && !returnFocus.closest('[inert]') ? returnFocus :
           [...document.querySelectorAll('.modal button,.peek button,.me-chip,.menu-btn')].find(el => !el.closest('[inert]') && !el.disabled);
         focus?.focus({preventScroll:true});
       }
@@ -2980,7 +2980,8 @@
       ], 0, 0, {trigger:ev.currentTarget, trackId:id});
     },
     _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
-    menuAction(i) { const it = state.menu?.items[i];dismissMenu(false);it?.fn(); },
+    // The action starts from the menu's button, so a dialog it opens returns focus there.
+    menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
 
     // CRUD — epics
     saveEpic(ev, id) {

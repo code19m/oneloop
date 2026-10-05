@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp } = require('../../support/dom.cjs');
+const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 // Every element reports the same box, so geometry-based focus code has a layout.
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
@@ -171,4 +172,23 @@ test('a track menu opened from the keyboard sits at its button', () => {
   kebab.focus();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},kebab.closest('.lane').dataset.track);
   const menu=t.d.querySelector('#overlay-root > .menu');
   assert.equal(menu.style.left,'620px');assert.equal(menu.style.top,'224px');
+});
+
+test('backing out of a dialog opened from a menu returns focus to the menu button', () => {
+  const choose=(t,label)=>{const button=[...t.d.querySelectorAll('#overlay-root > .menu button')].find(item=>item.textContent.trim()===label);t.A.menuAction(Number(button.getAttribute('onclick').match(/\d+/)[0]));};
+  const trackMenu=(t,button)=>t.A.trackMenu({currentTarget:button,clientX:0,clientY:0,stopPropagation(){}},button.closest('.lane').dataset.track);
+  const flows=[
+    ['roadmap',t=>t.d.querySelector('.lane[data-track] .kebab'),trackMenu,'Rename track'],
+    ['roadmap',t=>t.d.querySelector('.lane[data-track] .kebab'),trackMenu,'Delete track'],
+    ['board',t=>t.d.querySelector('.switcher-btn'),(t,button)=>t.A.projectMenu({currentTarget:button}),'New project'],
+    ['task/BIR-079',t=>t.d.querySelector('.task-actions-button'),(t,button)=>t.A.taskActions({currentTarget:button},'BIR-079'),'Delete task'],
+  ];
+  // The production bridge asks for confirmation in its own layer; the views alone use a dialog.
+  for(const production of [false,true])for(const [route,find,open,label] of flows){
+    const t=boot(route),name=`${label}${production?' (production)':''}`;
+    if(production)installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:t.w.Recovery,reloadBootstrap:async()=>({})});
+    const button=find(t);button.focus();open(t,button);choose(t,label);
+    assert(t.d.querySelector('.modal,.confirmation-layer'),name);key(t,'Escape');assert.equal(t.d.querySelector('.modal,.confirmation-layer'),null,name);
+    assert.equal(t.d.activeElement.getAttribute('aria-label'),button.getAttribute('aria-label'),name);
+  }
 });
