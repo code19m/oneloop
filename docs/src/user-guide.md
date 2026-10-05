@@ -137,7 +137,9 @@ itself.
 
 After you delete a task, a file or a comment, the message that confirms it has
 an **Undo** button while it is shown. Undo puts the item back where it was,
-with its comments and files. The history keeps both the deletion and the undo.
+with its comments and files. People who left the project meanwhile are no
+longer assigned to a restored task, unless it is done. The history keeps the
+deletion, the undo and these changes.
 
 Deleted files and comment text stay on the server for
 [5 minutes](reference.md#limits), so that Undo can work. Then oneloop removes

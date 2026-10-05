@@ -2539,6 +2539,113 @@ async fn only_people_who_could_delete_an_attachment_restore_it_in_time() {
 }
 
 #[tokio::test]
+async fn an_attachment_already_being_removed_cannot_be_restored() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let file = upload(&service, &f.manager, "going", "going.txt", b"going", false).await;
+    service
+        .delete_attachment(&f.manager, &file.id, file.revision, "delete-going")
+        .await
+        .unwrap();
+    // The purge claimed the bytes, as after the clock stepped back.
+    let id = file.id.clone();
+    f.db.run(move |connection| {
+        connection.execute(
+            "UPDATE file_blobs SET state='deleting'
+             WHERE id=(SELECT blob_id FROM task_attachments WHERE id=?1)",
+            [id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let restored = service
+        .restore_attachment(
+            &f.manager,
+            &file.id,
+            restore("undo-going", file.revision + 1),
+        )
+        .await;
+    assert!(
+        matches!(&restored, Err(AppError::Conflict(message)) if message.contains("being removed")),
+        "{restored:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_task_whose_files_are_already_being_removed_stays_deleted() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let file = upload(
+        &service,
+        &fixture.manager,
+        "claimed-parent",
+        "notes.txt",
+        b"notes",
+        false,
+    )
+    .await;
+    let domain = oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc());
+    let envelope = |operation, key: &str, revision| oneloop::domain::CommandEnvelope {
+        operation,
+        payload: serde_json::json!({"id":"task"}),
+        idempotency_key: key.into(),
+        expected_revision: Some(revision),
+    };
+    domain
+        .execute(
+            &fixture.manager,
+            envelope(
+                oneloop::domain::DomainOperation::DeleteTask,
+                "delete-claimed",
+                1,
+            ),
+        )
+        .await
+        .unwrap();
+    // A deletion job for its file is pending, as one from before an upgrade
+    // or after the clock stepped back would be.
+    let id = file.id.clone();
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute(
+                "UPDATE file_blobs SET state='deleting'
+                 WHERE id=(SELECT blob_id FROM task_attachments WHERE id=?1)",
+                [&id],
+            )?;
+            connection.execute(
+                "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
+                 SELECT 'claimed-job',b.id,b.storage_key,'manual',unixepoch(),unixepoch()
+                 FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
+                [&id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let restored = domain
+        .execute(
+            &fixture.manager,
+            envelope(
+                oneloop::domain::DomainOperation::RestoreTask,
+                "restore-claimed",
+                2,
+            ),
+        )
+        .await;
+    assert!(
+        matches!(&restored, Err(AppError::Conflict(message)) if message.contains("being removed")),
+        "{restored:?}"
+    );
+    // The job then finishes with the task still deleted.
+    assert_eq!(
+        service.reconcile().await.unwrap().deletion_jobs_completed,
+        1
+    );
+}
+
+#[tokio::test]
 async fn a_deleted_attachment_frees_its_slot_until_it_is_restored() {
     let f = Fixture::new().await;
     let service = f.service(100 * 1024 * 1024);

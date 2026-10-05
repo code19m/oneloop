@@ -518,6 +518,19 @@ pub(super) fn restore_task(
     };
     ensure_revision(before.revision, expected)?;
     require_undo_window("task", deleted_at, now)?;
+    // A purge that already claimed its files would remove them from the
+    // restored task, as after the clock stepped back.
+    let purging: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_attachments a JOIN file_deletion_jobs j ON j.blob_id=a.blob_id
+                       WHERE a.task_id=?1 AND a.deleted_at IS NULL AND j.reason<>'cleanup')",
+        [&input.id],
+        |row| row.get(0),
+    )?;
+    if purging {
+        return Err(AppError::Conflict(
+            "the task's files are being removed, so it can no longer be restored".into(),
+        ));
+    }
     let epic: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM epics WHERE id=?1 AND project_id=?2 AND deleted_at IS NULL)",
         params![before.epic_id, before.project_id],
@@ -545,7 +558,30 @@ pub(super) fn restore_task(
          WHERE id=?4 AND revision=?5 AND deleted_at IS NOT NULL",
         params![position, now, revision, input.id, expected],
     )?;
-    let mut events = vec![activity(
+    // Removing a member needs their unfinished tasks reassigned first, which
+    // skips deleted tasks. So people who left meanwhile come off an
+    // unfinished task here; a Done task keeps them, as it does when they leave.
+    let departed: Vec<String> = if before.status == "done" {
+        Vec::new()
+    } else {
+        let mut statement = tx.prepare(
+            "SELECT a.user_id FROM task_assignees a WHERE a.task_id=?1
+               AND NOT EXISTS(SELECT 1 FROM project_memberships m
+                              WHERE m.user_id=a.user_id AND m.project_id=?2)
+             ORDER BY a.user_id",
+        )?;
+        statement
+            .query_map(params![input.id, before.project_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?
+    };
+    let mut events = Vec::new();
+    for user_id in &departed {
+        tx.execute(
+            "DELETE FROM task_assignees WHERE task_id=?1 AND user_id=?2",
+            params![input.id, user_id],
+        )?;
+    }
+    events.push(activity(
         tx,
         actor,
         ActivityInput {
@@ -561,7 +597,27 @@ pub(super) fn restore_task(
             entity_revision: Some(revision),
         },
         now,
-    )?];
+    )?);
+    for user_id in departed {
+        let field_key = format!("assignee:{user_id}");
+        events.push(activity(
+            tx,
+            actor,
+            ActivityInput {
+                project_id: Some(&before.project_id),
+                entity_type: "task",
+                entity_id: &input.id,
+                task_id: Some(&input.id),
+                event_type: "task.assignee.removed",
+                field_key: Some(&field_key),
+                before: Some(json!(user_id)),
+                after: Some(Value::Null),
+                metadata: json!({}),
+                entity_revision: Some(revision),
+            },
+            now,
+        )?);
+    }
     let mut entities = vec![task_entity(tx, &input.id)?];
     if matches!(before.status.as_str(), "in_progress" | "in_review")
         && let Some(event) =

@@ -1547,6 +1547,121 @@ async fn a_restored_task_goes_last_when_its_place_was_taken() {
 }
 
 #[tokio::test]
+async fn a_restored_task_drops_assignees_who_left_the_project() {
+    let f = fixture().await;
+    let mut ids = Vec::new();
+    for (title, key) in [
+        ("Open work", "open-assigned"),
+        ("Finished work", "done-assigned"),
+    ] {
+        let task = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":title,"assigneeIds":["u3"]}),
+                    key,
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        ids.push(task.entities[0]["id"].as_str().unwrap().to_owned());
+    }
+    for (operation, payload, key, revision) in [
+        (
+            DomainOperation::MoveTask,
+            json!({"taskId":ids[1],"status":"done"}),
+            "finish-assigned",
+            1,
+        ),
+        (
+            DomainOperation::DeleteTask,
+            json!({"id":ids[0]}),
+            "delete-open",
+            1,
+        ),
+        (
+            DomainOperation::DeleteTask,
+            json!({"id":ids[1]}),
+            "delete-done",
+            2,
+        ),
+    ] {
+        f.service
+            .execute(&f.manager, command(operation, payload, key, Some(revision)))
+            .await
+            .unwrap();
+    }
+    // The check for unfinished tasks skips deleted ones, so the person can
+    // leave the project during the Undo window.
+    f.service
+        .execute(
+            &f.admin,
+            command(
+                DomainOperation::RemoveMembership,
+                json!({"projectId":"p1","userId":"u3"}),
+                "remove-assignee",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let open = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":ids[0]}),
+                "restore-open",
+                Some(2),
+            ),
+        )
+        .await
+        .unwrap();
+    let events: Vec<_> = open
+        .events
+        .iter()
+        .map(|event| (event.event_type.as_str(), event.before.clone()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("task.restored", None),
+            ("task.assignee.removed", Some(json!("u3")))
+        ]
+    );
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::RestoreTask,
+                json!({"id":ids[1]}),
+                "restore-done",
+                Some(3),
+            ),
+        )
+        .await
+        .unwrap();
+    let assignees: Vec<(String, String)> =
+        f.db.run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT t.title,a.user_id FROM task_assignees a JOIN tasks t ON t.id=a.task_id
+                 WHERE t.title IN ('Open work','Finished work')",
+            )?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    // A Done task keeps them, as it does when someone leaves.
+    assert_eq!(assignees, [("Finished work".to_owned(), "u3".to_owned())]);
+}
+
+#[tokio::test]
 async fn a_task_whose_epic_was_deleted_cannot_be_restored() {
     let f = fixture().await;
     let epic = f
