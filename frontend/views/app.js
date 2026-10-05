@@ -2868,7 +2868,9 @@
       const sc = document.getElementById('rmScroll');
       const { start } = rmRange();
       state.rmScrollLeft = Math.max(RAIL + (today - start) / DAY * state.pxPerDay - (sc ? sc.clientWidth : 900) * 0.42, 0);
-      render();
+      // Scroll the mounted Roadmap in place; rebuilding the page would only repeat it.
+      if (sc && state.view === 'roadmap' && Number(sc.dataset.rangeStart) === +start) sc.scrollLeft = state.rmScrollLeft;
+      else render();
     },
     epicHover(ev, id, keyboard = false, kind = 'epic') {
       if (!keyboard && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;

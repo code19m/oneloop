@@ -33,6 +33,16 @@ test('ctrl-wheel zoom is scoped to the Roadmap and re-renders only its canvas af
   assert.notEqual(d.getElementById('rmScroll'), sc); assert.equal(d.querySelector('.sidebar'), shell); assert.equal(d.querySelector('.rm-canvas').style.willChange, '');
 });
 
+test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
+  const { d, A } = bootApp({ route: 'roadmap' });
+  const sc = d.getElementById('rmScroll'), rail = parseFloat(d.querySelector('.lane-head').style.width), shell = d.querySelector('.sidebar'), pill = d.querySelector('.today-pill');
+  Object.defineProperty(sc, 'clientWidth', { value: 1000 });
+  sc.scrollLeft = 0;
+  A.goToday();
+  assert.equal(d.getElementById('rmScroll'), sc); assert.equal(d.querySelector('.sidebar'), shell);
+  assert(Math.abs(rail + parseFloat(pill.style.left) - sc.scrollLeft - 420) <= 0.5, 'today sits at 42% of the view');
+});
+
 test('an ongoing epic that starts after every other date stays on the timeline', () => {
   const { d } = boot('roadmap', { prepare: D => { D.epics.find(epic => epic.id === 'e11').start = '2099-01-01'; } });
   const rail = parseFloat(d.querySelector('.lane-head').style.width), bar = d.querySelector('[data-epic="e11"]');
