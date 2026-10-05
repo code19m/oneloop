@@ -96,7 +96,7 @@ const buildMonitor=createBuildMonitor({
     return response.ok?response.json():null;
   },
   onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version,build:value.revision});},
-  onUpdate:()=>recovery.buildChanged(),
+  onUpdate:(value)=>recovery.buildChanged(value),
 });
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)

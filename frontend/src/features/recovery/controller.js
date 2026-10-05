@@ -38,6 +38,11 @@ function changedControl(element) {
 const NOT_TYPED = new Set(['password','file','submit','button','reset','image','hidden','search']);
 /** A field that saves itself when it loses focus, such as a task's title. */
 const AUTOSAVE = '[data-autosave]';
+/** Reload after updates, a choice each browser makes. */
+const AUTO_RELOAD = 'oneloop.autoReload';
+/** The versions a tab already reloaded itself for. */
+const RELOADED_FOR = 'oneloop.reloadedFor';
+const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000;
 
 /**
  * Whether an open editor holds text the person typed and has not saved or
@@ -152,7 +157,7 @@ export function presentDomConflict({target,latestValue,myValue,isCurrent=()=>tru
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
@@ -162,6 +167,7 @@ export function createRecoveryController({
   clearTimer = globalThis.clearTimeout.bind(globalThis),
   random = Math.random,
   online = () => globalThis.navigator?.onLine !== false,
+  now = () => Date.now(),
   windowObject = globalThis.window,
   documentObject = globalThis.document,
 }) {
@@ -181,6 +187,8 @@ export function createRecoveryController({
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
   /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
   let writes=0;
+  /** @type {{version:string,revision:string}|null} */ let newBuild=null;
+  let autoReloaded=false,autoReloadTimer=null,lastActivity=now();
 
   function entityKey(entity){
     if(!entity)return null;
@@ -248,6 +256,33 @@ export function createRecoveryController({
     if(!hasUnsavedInput())return;
     // The browser shows its own prompt; returnValue is for older browsers.
     event.preventDefault();event.returnValue=true;
+  }
+
+  /** Browser storage, which privacy settings can turn off. @param {'localStorage'|'sessionStorage'} kind */
+  function storage(kind){try{return windowObject?.[kind]??null;}catch{return null;}}
+  function autoReloadOn(){try{return storage('localStorage')?.getItem(AUTO_RELOAD)==='on';}catch{return false;}}
+  /** @returns {string[]} */
+  function reloadedFor(){try{const list=JSON.parse(storage('sessionStorage')?.getItem(RELOADED_FOR)??'[]');return Array.isArray(list)?list:[];}catch{return [];}}
+  const noteActivity=()=>{lastActivity=now();};
+
+  /**
+   * After an update, a browser with Reload after updates on reloads at the
+   * first moment nothing would be lost: no unsaved input, and the tab is
+   * hidden or the person has been idle for a minute. Until then it checks
+   * again every 30 seconds, when the tab hides and when a save settles. A tab
+   * reloads by itself once per page load and once per version, so servers
+   * that disagree about the version can't make it loop.
+   */
+  function reloadWhenSafe(){
+    clearTimer(autoReloadTimer);autoReloadTimer=null;
+    if(disposed||!updatedBuild||autoReloaded||!autoReloadOn())return;
+    const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
+    if(reloadedFor().includes(version))return;
+    const away=documentObject?.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
+    if(!away||hasUnsavedInput()){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
+    autoReloaded=true;
+    try{storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));}catch{}
+    controller.reloadClient();
   }
 
   const requestContext=()=>({sessionGeneration,connectivityGeneration,sessionId:data.session?.id??null,userId:data.session?.userId??null});
@@ -346,7 +381,7 @@ export function createRecoveryController({
     if(!pending){
       const state=pendingSaves.get(key);
       if(state){clearTimer(state.timer);getApp()?.clearTaskSaving?.(state.token);pendingSaves.delete(key);}
-      pendingEditors.delete(key);return;
+      pendingEditors.delete(key);reloadWhenSafe();return;
     }
     const snapshot=documentObject?captureOpenEditor(documentObject):null;
     if(snapshot)pendingEditors.set(key,snapshot);
@@ -552,7 +587,11 @@ export function createRecoveryController({
     trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
     /** Count a save or upload that is not a command until it settles. */
     trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
-    buildChanged(){updatedBuild=true;updateNotice();},
+    /** The server runs another version than this page; `build` is that version. */
+    buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
+    /** Whether this browser reloads by itself after an update. */
+    get autoReload(){return autoReloadOn();},
+    setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}reloadWhenSafe();},
     reloadClient(){windowObject?.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
@@ -573,9 +612,9 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',rememberCommitted,true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',rememberCommitted,true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',reloadWhenSafe);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }

@@ -204,6 +204,11 @@ Click your name at the bottom of the sidebar. The menu has **Profile**,
 **Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
 default, follows your device's light or dark setting.
 
+When oneloop is upgraded, open tabs show **oneloop was updated**. With
+**Reload after updates** on, a tab reloads by itself once nothing you typed
+would be lost and the tab is hidden or you haven't used it for a minute. Both
+choices apply to this browser only.
+
 On your **Profile**:
 
 - Change your avatar (PNG, JPEG or WebP) and your full name. See the

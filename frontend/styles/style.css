@@ -1042,6 +1042,9 @@ a.attachment-name:hover { text-decoration:underline; }
 .profile-menu button { font-weight:500;gap:10px; }
 .profile-menu .menu-icon { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:16px;height:16px; }
 .profile-menu .menu-icon svg { width:16px;height:16px; }
+/* Reload after updates is a toggle; its check sits at the end of the row. */
+.profile-menu .menu-check { display:flex;align-items:center;justify-content:center;flex:0 0 14px;margin-left:auto; }
+.profile-menu .menu-check svg { width:13px;height:13px; }
 /* Three choices share the menu width, so each puts its icon above its label. */
 .profile-menu .theme-options button { flex-direction:column;gap:3px;padding:6px 2px;font-size:var(--text-xs);line-height:1.25; }
 

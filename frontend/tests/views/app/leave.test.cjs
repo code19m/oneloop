@@ -1,5 +1,6 @@
 // views/app.js with the recovery controller and the view bridge: oneloop asks
-// before typed text would be lost.
+// before typed text would be lost, and reloads after an update only when the
+// person chose that.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
@@ -118,4 +119,16 @@ test('Discard works while offline, because nothing changes on the server', () =>
   t.A.nav('board');
   t.d.querySelector('[data-confirm-accept]').click();
   assert.equal(t.A.context().view, 'board');
+});
+
+test('Reload after updates is a choice in the account menu, which stays open', () => {
+  const t = bootApp({ route: 'board' });
+  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
+  const toggle = () => t.d.querySelector('[data-auto-reload]');
+  assert.equal(toggle().textContent, 'Reload after updates'); assert.equal(toggle().getAttribute('aria-pressed'), 'false');
+  t.A.toggleAutoReload();
+  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(t.d.querySelector('.profile-menu'), 'the menu stays open');
+  assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), 'on'); assert.equal(t.w.Recovery.autoReload, true);
+  t.A.toggleAutoReload();
+  assert.equal(toggle().getAttribute('aria-pressed'), 'false'); assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), null);
 });

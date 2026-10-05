@@ -325,3 +325,75 @@ test('removing an unresolved editor cancels its prompt without retaining a draft
   try{const pending=presentDomConflict({target:document.querySelector('textarea'),latestValue:'latest',myValue:'mine'});document.body.replaceChildren();assert.equal(await pending,'cancelled');}
   finally{globalThis.document=previous;dom.window.close();}
 });
+
+/**
+ * A page that learns about an update, with storage, visibility and a clock
+ * the test controls. `stores` is the tab's storage, which a reload keeps.
+ */
+function updatable({autoReload=true,hidden=false,stores={local:new Map(),session:new Map()}}={}){
+  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false;
+  const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
+  if(autoReload)stores.local.set('oneloop.autoReload','on');
+  const documentObject={visibilityState:hidden?'hidden':'visible',activeElement:null,querySelectorAll:()=>[],addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);}};
+  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener(){}};
+  const app={context:()=>({view:'board',projectId:'p1'}),refresh(){}};
+  const controller=createRecoveryController({data:{session:{id:'s1',userId:'u1'}},api:{counts:async()=>({})},gateway:{hasPending:()=>saving,invalidate(){}},getApp:()=>app,
+    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject});
+  controller.bind(app,{});
+  return {controller,stores,documentObject,get reloads(){return reloads;},set saving(value){saving=value;},
+    fire(type){for(const listener of listeners[type]??[])listener({});},
+    advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();}};
+}
+const newVersion={version:'0.2.0',revision:'b2'},oldVersion={version:'0.1.0',revision:'a1'};
+
+test('with Reload after updates off, an update only shows the notice',()=>{
+  const page=updatable({autoReload:false,hidden:true});
+  page.controller.buildChanged(newVersion);page.fire('visibilitychange');page.advance(10*60_000);
+  assert.equal(page.reloads,0);assert.match(page.controller.connectionHtml(),/oneloop was updated/);
+});
+
+test('a hidden tab reloads after an update once no save is running',()=>{
+  const page=updatable({hidden:true});page.saving=true;
+  page.controller.buildChanged(newVersion);
+  assert.equal(page.reloads,0,'a save is still running');
+  page.saving=false;page.controller.interactionPending('task.update:t1:title',false);
+  assert.equal(page.reloads,1);
+});
+
+test('a tab that is shown reloads only after a minute without activity',()=>{
+  const page=updatable();
+  page.controller.buildChanged(newVersion);
+  page.advance(30_000);page.fire('keydown');page.advance(30_000);
+  assert.equal(page.reloads,0,'the person typed half a minute ago');
+  page.advance(60_000);
+  assert.equal(page.reloads,1);
+});
+
+test('unsaved input keeps an updated tab from reloading until it is gone',()=>{
+  const page=updatable({hidden:true});let draft=true;
+  page.controller.trackUnsaved(()=>draft);
+  page.controller.buildChanged(newVersion);page.advance(5*60_000);
+  assert.equal(page.reloads,0);
+  draft=false;page.advance(30_000);
+  assert.equal(page.reloads,1);
+});
+
+test('a tab reloads by itself once for each version, so servers that disagree cannot make it loop',()=>{
+  const first=updatable({hidden:true});
+  first.controller.buildChanged(newVersion);first.controller.buildChanged(newVersion);first.fire('visibilitychange');
+  assert.equal(first.reloads,1,'once per page');
+  // The reloaded page met a server that still runs the old version, then the new one again.
+  const second=updatable({hidden:true,stores:first.stores});second.controller.buildChanged(oldVersion);
+  assert.equal(second.reloads,1);
+  const third=updatable({hidden:true,stores:first.stores});third.controller.buildChanged(newVersion);third.advance(10*60_000);
+  assert.equal(third.reloads,0);assert.match(third.controller.connectionHtml(),/Reload/);
+});
+
+test('turning Reload after updates on applies to an update that is already waiting',()=>{
+  const page=updatable({autoReload:false,hidden:true});
+  page.controller.buildChanged(newVersion);
+  assert.equal(page.controller.autoReload,false);
+  page.controller.setAutoReload(true);
+  assert.equal(page.controller.autoReload,true);assert.equal(page.reloads,1);
+  page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
+});
