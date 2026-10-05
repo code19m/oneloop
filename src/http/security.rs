@@ -208,9 +208,13 @@ pub async fn add_main_security_headers(
 }
 
 /// Only validated OAuth callback origins may extend native form navigation.
+/// A callback in an app's own scheme, which has no origin, adds that scheme.
 pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
     let extra = callback
-        .map(|url| format!(" {}", url.origin().ascii_serialization()))
+        .map(|url| match url.scheme() {
+            "http" | "https" => format!(" {}", url.origin().ascii_serialization()),
+            scheme => format!(" {scheme}:"),
+        })
         .unwrap_or_default();
     HeaderValue::from_str(&format!(
         "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \

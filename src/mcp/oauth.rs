@@ -9,6 +9,7 @@ use axum::{
     Form, Json, Router,
     extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Query, RawForm, State},
     http::{HeaderMap, Method, StatusCode, header},
+    middleware,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -19,6 +20,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
+use super::cors;
 use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
@@ -48,8 +50,9 @@ pub(super) const SCOPES: &[&str] = &[
     crate::auth::McpScope::Destructive.as_str(),
 ];
 
-pub(super) fn router() -> Router<AppState> {
-    Router::new()
+pub(super) fn router(state: &AppState) -> Router<AppState> {
+    // These use no cookies, so any page may call them (see `cors`).
+    let public = Router::new()
         .route(
             "/.well-known/oauth-protected-resource",
             get(protected_resource_metadata),
@@ -62,15 +65,24 @@ pub(super) fn router() -> Router<AppState> {
             "/.well-known/oauth-authorization-server",
             get(authorization_server_metadata),
         )
+        .route("/oauth/token", post(token))
+        .route("/oauth/revoke", post(revoke))
+        .layer(middleware::from_fn(cors::any_origin));
+    let registration = Router::new()
         .route(
             "/oauth/register",
             post(register_client).layer(DefaultBodyLimit::max(16 * 1024)),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            cors::listed_origins,
+        ));
+    Router::new()
         .route("/oauth/authorize", get(authorize).post(consent))
-        .route("/oauth/token", post(token))
-        .route("/oauth/revoke", post(revoke))
         .route("/mcp/assets/consent.js", get(consent_script))
         .route("/mcp/assets/consent.css", get(consent_style))
+        .merge(public)
+        .merge(registration)
 }
 
 #[derive(Serialize)]
@@ -176,7 +188,7 @@ async fn register_client_inner(
     headers: HeaderMap,
     Json(request): Json<RegistrationRequest>,
 ) -> AppResult<(StatusCode, Json<RegistrationResponse>)> {
-    if headers.contains_key(header::ORIGIN) {
+    if headers.contains_key(header::ORIGIN) && !cors::listed_origin(&state, &headers) {
         require_canonical_origin(&Method::POST, &headers, &state.config.public_url)?;
     }
     if let Some(name) = request.client_name.as_deref() {
@@ -229,7 +241,10 @@ async fn register_client_inner(
     }
     let mut redirects = BTreeSet::new();
     for value in request.redirect_uris {
-        redirects.insert(validate_redirect_uri(&value)?);
+        redirects.insert(validate_redirect_uri(
+            &value,
+            &state.config.mcp_redirect_schemes,
+        )?);
     }
     let client_uri = request
         .client_uri
@@ -1159,8 +1174,8 @@ async fn validate_authorization_query(
             "must identify this oneloop MCP server",
         ));
     }
+    let redirect = validate_redirect_uri(&query.redirect_uri, &state.config.mcp_redirect_schemes)?;
     let client = query.client_id.clone();
-    let redirect = validate_redirect_uri(&query.redirect_uri)?;
     let valid = state
         .db
         .run(move |connection| {
@@ -1284,7 +1299,9 @@ fn redirect_matches(registered: &str, requested: &str) -> bool {
     registered == requested
 }
 
-fn validate_redirect_uri(value: &str) -> AppResult<String> {
+/// Checks a callback: `https`, loopback `http`, or a scheme an admin listed
+/// in `ONELOOP_MCP_REDIRECT_SCHEMES` for apps that receive their own links.
+fn validate_redirect_uri(value: &str, schemes: &[String]) -> AppResult<String> {
     if value.len() > 512 {
         return Err(AppError::validation(
             "redirect_uris",
@@ -1302,12 +1319,16 @@ fn validate_redirect_uri(value: &str) -> AppResult<String> {
     let safe = match url.scheme() {
         "https" => url.host_str().is_some(),
         "http" => loopback(&url),
-        _ => false,
+        scheme => !url.cannot_be_a_base() && schemes.iter().any(|listed| listed == scheme),
     };
     if !safe {
         return Err(AppError::validation(
             "redirect_uris",
-            "must use HTTPS or loopback HTTP",
+            if schemes.is_empty() {
+                "must use HTTPS or loopback HTTP"
+            } else {
+                "must use HTTPS, loopback HTTP or an allowed app scheme"
+            },
         ));
     }
     if url.as_str().len() > 512 {
@@ -1492,18 +1513,21 @@ fn consent_html(
             )
         })
         .collect::<String>();
-    let destination = Url::parse(presentation.redirect)
-        .map(|url| {
-            if url.scheme() == "http" && loopback(&url) {
-                format!(
-                    "An app on this computer ({})",
-                    &url[url::Position::BeforeHost..url::Position::AfterPort]
-                )
-            } else {
+    let callback = Url::parse(presentation.redirect).ok();
+    let destination = callback
+        .as_ref()
+        .map(|url| match url.scheme() {
+            "http" if loopback(url) => format!(
+                "An app on this computer ({})",
+                &url[url::Position::BeforeHost..url::Position::AfterPort]
+            ),
+            "http" | "https" => {
                 format!("You will be sent to {}", url.origin().ascii_serialization())
             }
+            // These have no origin to show; any app can claim a scheme.
+            scheme => format!("An app on this computer that opens {scheme}: links ({url})"),
         })
-        .unwrap_or_else(|_| presentation.redirect.to_owned());
+        .unwrap_or_else(|| presentation.redirect.to_owned());
     let destination = escape(&destination);
     let error = presentation
         .retry

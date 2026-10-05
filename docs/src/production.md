@@ -214,6 +214,27 @@ servers, install them, for example with `apt install git openssh-client`.
 The example systemd unit already allows this. With your own sandbox, allow the
 service to run `git` and `ssh` and to open outgoing connections.
 
+## AI assistant connections
+
+By default, an AI assistant registers itself when it connects, and its sign-in
+callback must be on its own computer (`localhost`, `127.0.0.1` or `[::1]`) or
+use `https://`. Two settings, both off by default, let more clients connect.
+Turn on only what your clients need.
+
+- **App callbacks.** Some desktop apps receive the sign-in through a link of
+  their own, such as `cursor://…`. List those schemes in
+  `ONELOOP_MCP_REDIRECT_SCHEMES`, for example `cursor`. Any app on a computer
+  can claim a scheme, but a code it catches is useless without the secret that
+  only the app that started the sign-in holds (PKCE). The **Connect** page shows
+  the whole callback address.
+- **Browser clients.** Tools that run in a web page, such as MCP Inspector, call
+  oneloop from another site. List their exact origins in
+  `ONELOOP_MCP_ALLOWED_ORIGINS`, for example `http://localhost:6274`. Only these
+  pages may register an app and call `/mcp` from a browser. Any site may read
+  oneloop's OAuth metadata and use its token and revocation endpoints, because
+  they use no cookies, and a request needs a code or token that the site
+  doesn't have.
+
 ## Security checklist
 
 - Serve oneloop only over HTTPS, and keep the redirect from HTTP to HTTPS.
@@ -229,6 +250,8 @@ service to run `git` and `ssh` and to open outgoing connections.
 - Keep backups and logs private. Backups contain everything, and logs contain
   usernames and IP addresses.
 - Install new releases, because security fixes come in new versions.
+- Turn on the [AI assistant connection](#ai-assistant-connections) settings
+  only for clients that need them.
 - `/healthz` is public and shows the version. If you want, allow it only from
   your monitoring network; the nginx example shows how.
 

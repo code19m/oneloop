@@ -65,6 +65,10 @@ the rest at `/.well-known/oauth-protected-resource/mcp`. The client's callback
 address must be on its own computer (`localhost`, `127.0.0.1` or `[::1]`) or use
 `https://`. oneloop is tested with MCP protocol version 2025-11-25.
 
+An admin can let more clients connect: apps whose callback uses their own link
+scheme, such as `cursor://`, and tools that run in a browser, such as MCP
+Inspector. See [AI assistant connections](production.md#ai-assistant-connections).
+
 OAuth requests may repeat `resource` only when every value is this server's
 exact MCP address. Other parameters must appear once. The `Bearer` scheme in
 an `Authorization` header accepts any letter case; the token stays unchanged.

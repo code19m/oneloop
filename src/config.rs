@@ -30,8 +30,10 @@ pub const PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_PASSWORD_MIN_LENGTH";
 pub const ADMIN_PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_ADMIN_PASSWORD_MIN_LENGTH";
 pub const PASSWORD_BLOCKLIST_ENV: &str = "ONELOOP_PASSWORD_BLOCKLIST";
 pub const TEMPORARY_PASSWORD_LIFETIME_ENV: &str = "ONELOOP_TEMPORARY_PASSWORD_LIFETIME";
+pub const MCP_REDIRECT_SCHEMES_ENV: &str = "ONELOOP_MCP_REDIRECT_SCHEMES";
+pub const MCP_ALLOWED_ORIGINS_ENV: &str = "ONELOOP_MCP_ALLOWED_ORIGINS";
 
-const KNOWN_ENV: [&str; 12] = [
+const KNOWN_ENV: [&str; 14] = [
     PUBLIC_URL_ENV,
     LISTEN_ENV,
     DATA_DIR_ENV,
@@ -44,6 +46,8 @@ const KNOWN_ENV: [&str; 12] = [
     ADMIN_PASSWORD_MIN_LENGTH_ENV,
     PASSWORD_BLOCKLIST_ENV,
     TEMPORARY_PASSWORD_LIFETIME_ENV,
+    MCP_REDIRECT_SCHEMES_ENV,
+    MCP_ALLOWED_ORIGINS_ENV,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +61,10 @@ pub struct Config {
     pub trusted_proxies: Vec<IpNet>,
     pub log_level: Level,
     pub password_policy: PasswordPolicy,
+    /// Link schemes, such as `cursor`, that MCP clients may use for callbacks.
+    pub mcp_redirect_schemes: Vec<String>,
+    /// Origins of browser-based MCP clients, as browsers send them.
+    pub mcp_allowed_origins: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +108,10 @@ impl Config {
             parse_trusted_proxies(env.get(TRUSTED_PROXIES_ENV).unwrap_or_default())?;
         let log_level = parse_log_level(env.get(LOG_LEVEL_ENV).unwrap_or("info"))?;
         let password_policy = parse_password_policy(&env)?;
+        let mcp_redirect_schemes =
+            parse_redirect_schemes(env.get(MCP_REDIRECT_SCHEMES_ENV).unwrap_or_default())?;
+        let mcp_allowed_origins =
+            parse_allowed_origins(env.get(MCP_ALLOWED_ORIGINS_ENV).unwrap_or_default())?;
 
         Ok(Self {
             public_url,
@@ -111,8 +123,109 @@ impl Config {
             trusted_proxies,
             log_level,
             password_policy,
+            mcp_redirect_schemes,
+            mcp_allowed_origins,
         })
     }
+}
+
+/// Schemes that browsers handle themselves, or that carry content or
+/// commands, never name an app that receives a sign-in.
+const RESERVED_SCHEMES: &[&str] = &[
+    "about",
+    "blob",
+    "chrome",
+    "chrome-extension",
+    "data",
+    "file",
+    "filesystem",
+    "ftp",
+    "http",
+    "https",
+    "intent",
+    "jar",
+    "javascript",
+    "mailto",
+    "moz-extension",
+    "resource",
+    "sms",
+    "tel",
+    "vbscript",
+    "view-source",
+    "ws",
+    "wss",
+];
+
+fn parse_redirect_schemes(raw: &str) -> AppResult<Vec<String>> {
+    let mut schemes = Vec::new();
+    for item in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let scheme = item.to_ascii_lowercase();
+        let mut characters = scheme.chars();
+        let valid = characters
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
+            && characters.all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '-' | '.')
+            });
+        if !valid {
+            return Err(invalid_env(
+                MCP_REDIRECT_SCHEMES_ENV,
+                format!("{item} is not a URL scheme; write it without :// "),
+            ));
+        }
+        if RESERVED_SCHEMES.contains(&scheme.as_str()) {
+            return Err(invalid_env(
+                MCP_REDIRECT_SCHEMES_ENV,
+                format!("{scheme} can't be used for app callbacks"),
+            ));
+        }
+        if !schemes.contains(&scheme) {
+            schemes.push(scheme);
+        }
+    }
+    Ok(schemes)
+}
+
+fn parse_allowed_origins(raw: &str) -> AppResult<Vec<String>> {
+    let mut origins = Vec::new();
+    for item in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let invalid = || {
+            invalid_env(
+                MCP_ALLOWED_ORIGINS_ENV,
+                format!("{item} must be https:// or loopback http://, a host and an optional port"),
+            )
+        };
+        let url = Url::parse(item).map_err(|_| invalid())?;
+        let loopback = match url.host() {
+            Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            None => return Err(invalid()),
+        };
+        let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+        if !allowed_scheme
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(invalid());
+        }
+        let origin = url.origin().ascii_serialization();
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    Ok(origins)
 }
 
 /// The password settings, for the commands that set passwords.
@@ -489,6 +602,8 @@ mod generated_tests {
             let _ = parse_trusted_proxies(&raw);
             let _ = parse_public_url(&raw);
             let _ = parse_lifetime(&raw);
+            let _ = parse_redirect_schemes(&raw);
+            let _ = parse_allowed_origins(&raw);
         }
     }
 }

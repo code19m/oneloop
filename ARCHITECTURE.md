@@ -89,8 +89,9 @@ small hints over SSE, and clients then fetch what changed.
   headers. `assets` serves the embedded client. `server` bounds connections and
   shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
-  registration, the Connect page and tokens, and `mod.rs` wires the transport
-  and file transfer endpoints.
+  registration, the Connect page and tokens, `cors` answers clients that run
+  in a web page, and `mod.rs` wires the transport and file transfer
+  endpoints.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes.
 - `text.rs`: validation for display text such as titles and comments.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired

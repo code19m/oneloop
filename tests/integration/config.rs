@@ -285,3 +285,65 @@ fn password_settings_are_opt_in_and_checked() {
         assert!(error.to_string().contains(variable), "{entries:?}: {error}");
     }
 }
+
+#[test]
+fn ai_assistant_connection_settings_are_opt_in_and_checked() {
+    let with = |entries: &[(&str, &str)]| {
+        let mut all = vec![("ONELOOP_PUBLIC_URL", "https://work.example.com")];
+        all.extend_from_slice(entries);
+        Config::from_os_iter(environment(&all))
+    };
+    let defaults = with(&[]).unwrap();
+    assert!(defaults.mcp_redirect_schemes.is_empty());
+    assert!(defaults.mcp_allowed_origins.is_empty());
+
+    let config = with(&[
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", " cursor, Cursor ,com.example.app,,"),
+        (
+            "ONELOOP_MCP_ALLOWED_ORIGINS",
+            "http://localhost:6274, https://Inspector.Example/,https://inspector.example:443,http://[::1]:8000",
+        ),
+    ])
+    .unwrap();
+    assert_eq!(config.mcp_redirect_schemes, ["cursor", "com.example.app"]);
+    assert_eq!(
+        config.mcp_allowed_origins,
+        [
+            "http://localhost:6274",
+            "https://inspector.example",
+            "http://[::1]:8000"
+        ]
+    );
+
+    let refused = [
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "cursor://"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "1password"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "my_app"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "https"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "JavaScript"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "data"),
+        ("ONELOOP_MCP_REDIRECT_SCHEMES", "file"),
+        ("ONELOOP_MCP_ALLOWED_ORIGINS", "*"),
+        ("ONELOOP_MCP_ALLOWED_ORIGINS", "null"),
+        ("ONELOOP_MCP_ALLOWED_ORIGINS", "inspector.example"),
+        ("ONELOOP_MCP_ALLOWED_ORIGINS", "http://inspector.example"),
+        (
+            "ONELOOP_MCP_ALLOWED_ORIGINS",
+            "https://inspector.example/app",
+        ),
+        (
+            "ONELOOP_MCP_ALLOWED_ORIGINS",
+            "https://inspector.example?x=1",
+        ),
+        (
+            "ONELOOP_MCP_ALLOWED_ORIGINS",
+            "https://user@inspector.example",
+        ),
+        ("ONELOOP_MCP_ALLOWED_ORIGINS", "chrome-extension://abcdef"),
+    ];
+    for (variable, value) in refused {
+        let error = with(&[(variable, value)]).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains(variable), "{value}: {error}");
+    }
+}
