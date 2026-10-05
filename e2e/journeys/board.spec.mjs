@@ -269,6 +269,33 @@ test('a dropped card settles into its new column, not back to its old one', asyn
   expect(Math.abs(targets[0].top - card.top)).toBeLessThanOrEqual(2);
 });
 
+test('Done can list the newest finished tasks first, and the browser keeps the choice', async ({ page, instance }) => {
+  const { project, epic } = instance.projects[0];
+  // Each task is newer than the one before, so the order holds even when two
+  // finish within the same second.
+  const create = async (title) => (await command(instance.api, 'task.create', { projectId: project.id, epicId: epic.id, title })).entities[0];
+  for (const title of ['Finished earlier', 'Finished later']) {
+    const task = await create(title);
+    await command(instance.api, 'task.move', { taskId: task.id, status: 'done' }, task.revision);
+  }
+  const now = await create('Finished now');
+  await openApp(page, instance, 'board');
+  const done = page.locator('[data-col="done"]'), titles = done.locator('.card-title-button');
+  const toggle = done.getByRole('button', { name: 'Newest first' });
+  await expect(titles).toHaveText(['Finished earlier', 'Finished later']);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(titles).toHaveText(['Finished later', 'Finished earlier']);
+  await page.locator('.card').filter({ hasText: 'Finished now' }).locator('.card-move').click();
+  await page.getByRole('button', { name: 'Move to Done' }).click();
+  await expect(titles).toHaveText(['Finished now', 'Finished later', 'Finished earlier']);
+  await expect.poll(async () => (await (await instance.api.get(`/api/tasks/${now.id}`)).json()).status).toBe('done');
+  await page.reload();
+  await expect(done.getByRole('button', { name: 'Newest first' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(titles).toHaveText(['Finished now', 'Finished later', 'Finished earlier']);
+});
+
 test('touch and pen grips reorder without taking away card-body scrolling', async ({ page, instance, browserName }) => {
   test.skip(browserName !== 'chromium', 'CDP supplies native touch and pen input');
   await page.emulateMedia({ reducedMotion: 'reduce' });
