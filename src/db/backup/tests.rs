@@ -155,3 +155,136 @@ fn validate_a_hundred_thousand_file_manifest_above_old_limit() {
     assert!(fs::metadata(backup.join(MANIFEST_FILE)).unwrap().len() > 16 * 1024 * 1024);
     assert_eq!(validate_backup(&backup).unwrap().files.len(), 100_001);
 }
+
+/// The ID of a process that has exited, as an interrupted backup's would be.
+fn exited_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+fn owner(kind: &str, pid: u32) -> WorkOwner {
+    WorkOwner {
+        kind: kind.into(),
+        host: host_name(),
+        pid,
+        data_dir: "/srv/oneloop".into(),
+        started_at: 1,
+        working: None,
+        publishes: Vec::new(),
+    }
+}
+
+fn plant(path: &Path, owner: &WorkOwner) {
+    fs::write(path, serde_json::to_vec(owner).unwrap()).unwrap();
+}
+
+#[test]
+fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let record = root.path().join(OWNER_FILE);
+    let gone = exited_pid();
+    plant(&record, &owner("backup", gone));
+    let (lock, found) = claim_abandoned(&record).unwrap();
+    assert_eq!(found.pid, gone);
+    // A lock belongs to one open file, so a second open of the record sees it.
+    assert!(claim_abandoned(&record).is_none());
+    drop(lock);
+    fs::remove_file(&record).unwrap();
+    let writer = OwnerLock::create(&record, &owner("backup", gone)).unwrap();
+    assert!(
+        claim_abandoned(&record).is_none(),
+        "the writer still holds its lock"
+    );
+    drop(writer);
+    assert!(claim_abandoned(&record).is_some());
+    plant(&record, &owner("backup", std::process::id()));
+    assert!(claim_abandoned(&record).is_none(), "the process still runs");
+    let mut elsewhere = owner("backup", gone);
+    elsewhere.host.push_str("-elsewhere");
+    plant(&record, &elsewhere);
+    assert!(claim_abandoned(&record).is_none(), "another computer");
+    fs::write(&record, b"").unwrap();
+    assert!(
+        claim_abandoned(&record).is_none(),
+        "a record from an older version"
+    );
+    fs::remove_file(&record).unwrap();
+    assert!(claim_abandoned(&record).is_none());
+}
+
+#[test]
+fn a_backup_removes_only_copies_whose_writer_is_gone() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let live = root.path().join("live");
+    migration::migrate(&live, None).unwrap();
+    let parent = root.path().join("backups");
+    fs::create_dir(&parent).unwrap();
+    let copy = |name: &str| {
+        let path = parent.join(format!(".{name}.partial-{}", Uuid::now_v7()));
+        fs::create_dir_all(path.join("data")).unwrap();
+        fs::write(path.join("data/oneloop.sqlite3"), b"partial").unwrap();
+        path
+    };
+    let (abandoned, running, unowned) = (copy("nightly"), copy("other"), copy("old"));
+    plant(&abandoned.join(OWNER_FILE), &owner("backup", exited_pid()));
+    let _writer =
+        OwnerLock::create(&running.join(OWNER_FILE), &owner("backup", exited_pid())).unwrap();
+    let published = create_backup(&live, parent.join("new")).unwrap();
+    assert!(!abandoned.exists());
+    assert!(running.exists() && unowned.exists());
+    assert!(!published.join(OWNER_FILE).exists());
+    validate_backup(&published).unwrap();
+}
+
+#[test]
+fn restoring_again_removes_only_what_an_interrupted_restore_left() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let live = root.path().join("live");
+    migration::migrate(&live, None).unwrap();
+    let backup = root.path().join("backup");
+    create_backup(&live, &backup).unwrap();
+    // A restore stopped while it moved its copy into place.
+    let interrupted = |target: &Path, publishes: &[&str]| {
+        fs::create_dir_all(target).unwrap();
+        let working = format!(".oneloop-restore-{}", Uuid::now_v7());
+        fs::create_dir_all(target.join(&working).join("files")).unwrap();
+        fs::write(target.join("oneloop.sqlite3"), b"half published").unwrap();
+        let mut record = owner("restore", exited_pid());
+        record.working = Some(working.clone());
+        record.publishes = publishes.iter().map(|name| (*name).to_owned()).collect();
+        plant(&target.join(crate::db::RESTORE_MARKER), &record);
+        working
+    };
+    let target = root.path().join("target");
+    let working = interrupted(&target, &["oneloop.sqlite3", "files"]);
+    restore_backup(&backup, &target).unwrap();
+    assert!(!target.join(&working).exists());
+    assert!(!target.join(crate::db::RESTORE_MARKER).exists());
+    drop(crate::db::Db::open(&target).unwrap());
+
+    // Anything the restore did not publish stays, so the target stays refused.
+    let kept = root.path().join("kept");
+    interrupted(&kept, &["oneloop.sqlite3"]);
+    fs::write(kept.join("notes.txt"), b"mine").unwrap();
+    let error = restore_backup(&backup, &kept).unwrap_err().to_string();
+    assert!(error.contains("not empty"), "{error}");
+    assert_eq!(fs::read(kept.join("notes.txt")).unwrap(), b"mine");
+
+    // A record that names anything outside the target removes nothing.
+    let escape = root.path().join("escape");
+    interrupted(&escape, &["../live"]);
+    let error = restore_backup(&backup, &escape).unwrap_err().to_string();
+    assert!(error.contains("incomplete restore"), "{error}");
+    assert!(live.join("oneloop.sqlite3").exists());
+    assert!(escape.join("oneloop.sqlite3").exists());
+
+    // A marker from an older version has no record and stays refused.
+    let older = root.path().join("older");
+    fs::create_dir(&older).unwrap();
+    fs::write(older.join(crate::db::RESTORE_MARKER), b"").unwrap();
+    let error = restore_backup(&backup, &older).unwrap_err().to_string();
+    assert!(error.contains("incomplete restore"), "{error}");
+    assert!(older.join(crate::db::RESTORE_MARKER).exists());
+}
