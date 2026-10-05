@@ -210,3 +210,13 @@ test('the task heading keeps focus while a slow task load shows its skeleton', a
   await waitFor(()=>t.d.querySelector('.loading-task'),'the loading skeleton shows again');
   assert.equal(t.d.activeElement,t.d.getElementById('main'),'the main area keeps focus too');
 });
+
+test('one Escape closes a track menu opened while an epic tooltip showed', () => {
+  const t=boot('roadmap'),bar=t.d.querySelector('.bar[data-epic]'),kebab=t.d.querySelector('.lane[data-track] .kebab');
+  bar.focus();t.A.epicHover({currentTarget:bar},bar.dataset.epic,true);assert(t.d.querySelector('.epic-tooltip'),'focus shows the tooltip');
+  // The menu opens before the tooltip's own delay hides it.
+  kebab.focus();t.A.epicLeave();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},kebab.closest('.lane').dataset.track);
+  assert(t.d.querySelector('#overlay-root > .menu'));
+  key(t,'Escape');
+  assert.equal(t.d.querySelector('#overlay-root > .menu'),null);assert.equal(t.d.activeElement,kebab);
+});
