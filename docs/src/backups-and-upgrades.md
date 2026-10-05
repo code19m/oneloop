@@ -38,7 +38,9 @@ backup into the same folder removes that hidden folder; `db migrate` does the
 same in its backup folder. oneloop removes it only when it can tell that the
 backup that wrote it has ended: the backup ran on the same computer, and its
 process no longer runs. Otherwise oneloop prints the folder's path. Delete it
-yourself once you are sure that no backup is running.
+yourself once you are sure that no backup is running. oneloop tells computers
+apart by their host name, so don't share a backup folder between computers
+that have the same host name.
 
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:

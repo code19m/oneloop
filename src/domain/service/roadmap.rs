@@ -328,6 +328,20 @@ pub(super) fn create_epic(
         },
         now,
     )?;
+    // A new epic has no tasks. With its counts, the Roadmap that created it
+    // shows 0/0 at once instead of waiting for a read; the activity above
+    // records only the epic.
+    let mut entity = entity;
+    for field in [
+        "taskTotal",
+        "taskDone",
+        "taskOpen",
+        "completedThisWeek",
+        "completedSinceStart",
+    ] {
+        entity[field] = json!(0);
+    }
+    entity["weeklyCompletions"] = json!(vec![0; 7]);
     Ok(Mutation::one(entity, event, "epic", &id))
 }
 

@@ -220,7 +220,15 @@ impl OutboxWorker {
                 }
                 Err(error) => {
                     tracing::error!(error = %error, "collaboration outbox delivery failed");
-                    sleep(error_pause).await;
+                    tokio::select! {
+                        _ = sleep(error_pause) => {},
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                        },
+                        result = runtime_shutdown.changed() => {
+                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
+                        }
+                    }
                     error_pause = (error_pause * 2).min(LONGEST_IDLE);
                 }
             }
@@ -261,7 +269,7 @@ impl OutboxWorker {
         let batch = self
             .runtime
             .db()
-            .delivery_transaction(move |tx| deliver_batch(tx, now))
+            .delivery_transaction(move |tx| deliver_batch(tx, now, BATCH_TIME))
             .await?;
         for hint in batch.hints {
             let _ = self.runtime.inner.hints.send(Arc::new(hint));
@@ -310,7 +318,12 @@ struct Batch {
     failures: Vec<AppError>,
 }
 
-fn deliver_batch(tx: &rusqlite::Transaction<'_>, now: i64) -> AppResult<Batch> {
+/// Takes ready messages until `budget` is spent, and always at least one.
+fn deliver_batch(
+    tx: &rusqlite::Transaction<'_>,
+    now: i64,
+    budget: std::time::Duration,
+) -> AppResult<Batch> {
     let started = std::time::Instant::now();
     let messages = tx
         .prepare_cached(&format!(
@@ -341,7 +354,7 @@ fn deliver_batch(tx: &rusqlite::Transaction<'_>, now: i64) -> AppResult<Batch> {
         failures: Vec::new(),
     };
     for message in messages {
-        if batch.delivered + batch.failures.len() > 0 && started.elapsed() >= BATCH_TIME {
+        if batch.delivered + batch.failures.len() > 0 && started.elapsed() >= budget {
             break;
         }
         tx.execute_batch("SAVEPOINT outbox_message")?;
@@ -583,6 +596,33 @@ pub(crate) fn enqueue_access_change_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_batch_takes_ready_messages_until_its_time_is_up() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        db.run(|connection| {
+            for index in 0..70 {
+                connection.execute(
+                    "INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+                     VALUES(?1,'inbox.state_changed','inbox','nobody','{}',1,1)",
+                    [format!("m{index:03}")],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let batch = |budget| db.delivery_transaction(move |tx| deliver_batch(tx, 10, budget));
+        // With time to spare, one batch takes as many messages as it may.
+        assert_eq!(
+            batch(Duration::MAX).await.unwrap().delivered,
+            BATCH_MESSAGES
+        );
+        // Out of time, it still takes one, so delivery always moves on.
+        assert_eq!(batch(Duration::ZERO).await.unwrap().delivered, 1);
+    }
 
     #[test]
     fn an_idle_worker_looks_again_when_the_next_message_is_due() {

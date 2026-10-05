@@ -465,6 +465,14 @@ pub fn restore_backup(
 ) -> AppResult<PathBuf> {
     let backup = absolute_path(backup.as_ref())?;
     let target = absolute_path(&data_dir.into())?;
+    if backup.starts_with(&target) || target.starts_with(&backup) {
+        return Err(AppError::PreconditionFailed(
+            "backup source cannot be inside the restore target".to_owned(),
+        ));
+    }
+    // Check the backup before removing anything, so that a wrong backup path
+    // leaves an interrupted restore as it is.
+    let manifest = validate_backup(&backup)?;
     if let Some(parent) = target.parent().filter(|path| path.is_dir()) {
         reclaim_partial_copies(parent);
     }
@@ -473,11 +481,6 @@ pub fn restore_backup(
         reclaim_partial_copies(&target);
     }
     ensure_restore_target(&target)?;
-    if backup.starts_with(&target) || target.starts_with(&backup) {
-        return Err(AppError::PreconditionFailed(
-            "backup source cannot be inside the restore target".to_owned(),
-        ));
-    }
     let parent = target.parent().ok_or_else(|| {
         AppError::validation(
             "data directory",
@@ -518,7 +521,6 @@ pub fn restore_backup(
     let result = (|| {
         fs::create_dir(&partial)?;
         secure_directory(&partial)?;
-        let manifest = validate_backup(&backup)?;
         for entry in &manifest.files {
             let source = backup.join(&entry.path);
             let relative = Path::new(&entry.path).strip_prefix("data").map_err(|_| {
@@ -595,8 +597,8 @@ fn reclaim_partial_copies(parent: &Path) {
             continue;
         }
         let path = entry.path();
-        if let Some((_lock, owner)) = claim_abandoned(&path.join(OWNER_FILE)) {
-            match fs::remove_dir_all(&path) {
+        if let Some((lock, owner)) = claim_abandoned(&path.join(OWNER_FILE)) {
+            match remove_claimed(&path, lock) {
                 Ok(()) => {
                     let _ = sync_directory(parent);
                     eprintln!(
@@ -633,6 +635,28 @@ fn reclaim_partial_copies(parent: &Path) {
     }
 }
 
+/// Removes a claimed working folder. Its owner record goes last, and only
+/// after its lock is closed: network filesystems keep a deleted file that is
+/// still open under another name, which would keep the folder in place. When
+/// something can't be removed, the record stays, so that a later command can
+/// claim the folder again and finish.
+fn remove_claimed(path: &Path, lock: File) -> std::io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_name() == OWNER_FILE {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    drop(lock);
+    fs::remove_file(path.join(OWNER_FILE))?;
+    fs::remove_dir(path)
+}
+
 /// Clears an interrupted restore from `target` when its marker proves the
 /// restore is gone, so that the restore can start again. It removes only the
 /// working folder and the names the marker lists as published, then the
@@ -648,7 +672,7 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
             target.display()
         ))
     };
-    let Some((_lock, owner)) = claim_abandoned(&marker) else {
+    let Some((lock, owner)) = claim_abandoned(&marker) else {
         return Err(refused());
     };
     let working = owner.working.as_deref().filter(|name| {
@@ -659,7 +683,11 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
         .publishes
         .iter()
         .all(|name| is_plain_name(name) && !name.starts_with(".oneloop-"));
-    if owner.kind != "restore" || working.is_none() || !published {
+    if owner.kind != "restore"
+        || working.is_none()
+        || !published
+        || !names_claimed_file(&marker, &lock)?
+    {
         return Err(refused());
     }
     for name in working
@@ -674,13 +702,47 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
             Err(error) => return Err(error.into()),
         }
     }
-    fs::remove_file(&marker)?;
+    if !remove_claimed_marker(&marker, lock)? {
+        return Err(refused());
+    }
     sync_directory(target)?;
     eprintln!(
         "removed what an interrupted restore left in {}; restoring again",
         target.display()
     );
     Ok(())
+}
+
+/// Whether `path` still names the file `claimed` has open. Another restore
+/// may have removed a claimed marker and written its own in its place.
+fn names_claimed_file(path: &Path, claimed: &File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let claimed = claimed.metadata()?;
+        match fs::symlink_metadata(path) {
+            Ok(current) => Ok(current.dev() == claimed.dev() && current.ino() == claimed.ino()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = claimed;
+        Ok(path.exists())
+    }
+}
+
+/// Closes a claimed restore marker and removes it (see `remove_claimed`),
+/// unless the path names another file by now. The check runs while the
+/// claimed file is still open, so its inode can't be in use by another.
+fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
+    let same = names_claimed_file(marker, &lock)?;
+    drop(lock);
+    if same {
+        fs::remove_file(marker)?;
+    }
+    Ok(same)
 }
 
 /// A single file or folder name, with no path separators or dot segments.

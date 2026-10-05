@@ -41,6 +41,10 @@ const AUTHORIZATION_REQUEST_SECONDS: i64 = 10 * 60;
 const AUTHORIZATION_CODE_SECONDS: i64 = 5 * 60;
 const MAX_CLIENTS_PER_CALLER_HOUR: i64 = 10;
 const MAX_CLIENTS_GLOBAL_HOUR: i64 = 300;
+/// Clients described by metadata documents that no app has used yet, at
+/// most, besides those with a sign-in under way. Each new authorization
+/// makes its client the newest.
+const MAX_UNUSED_DESCRIBED_CLIENTS: i64 = 1_000;
 
 pub(super) const SCOPES: &[&str] = &[
     crate::auth::McpScope::ProjectRead.as_str(),
@@ -357,7 +361,7 @@ async fn authorize_inner(
         Err(error) => return Err(error),
     };
     // Only someone signed in can make oneloop fetch a metadata document.
-    let document = described_client(&state, &query).await?;
+    let document = described_client(&state, &actor, &query).await?;
     let projects = accessible_projects(&state, &actor).await?;
     let request_id = random_token(24)?;
     let stored_id = hash_token(&request_id);
@@ -407,6 +411,7 @@ async fn authorize_inner(
 /// the requested callback checked against the callbacks it lists.
 async fn described_client(
     state: &AppState,
+    actor: &Actor,
     query: &AuthorizationQuery,
 ) -> AppResult<Option<ClientDocument>> {
     if !client_metadata::is_document_client_id(&query.client_id) {
@@ -415,7 +420,7 @@ async fn described_client(
     let schemes = &state.config.mcp_redirect_schemes;
     let document = state
         .client_documents
-        .document(&query.client_id, |value| {
+        .document(&actor.user_id, &query.client_id, |value| {
             validate_redirect_uri(value, schemes)
         })
         .await
@@ -423,7 +428,7 @@ async fn described_client(
             // The page says only "invalid request", so that it can't be used
             // to probe the server's network; the log tells the admin why.
             if let AppError::Validation { message, .. } = error {
-                tracing::info!(client_id = %query.client_id, %message, "client metadata document refused");
+                tracing::info!(user_id = %actor.user_id, client_id = %query.client_id, %message, "client metadata document refused");
             }
         })?;
     let redirect = validate_redirect_uri(&query.redirect_uri, schemes)?;
@@ -443,6 +448,9 @@ async fn described_client(
 /// Stores a described client like a registered one, so that consent, codes
 /// and tokens work the same. An unused row is removed after a day, as for
 /// registrations; each new authorization request starts that day again.
+/// Beyond `MAX_UNUSED_DESCRIBED_CLIENTS` unused rows, the oldest go. A client
+/// with an unexpired authorization request or code stays: deleting it would
+/// also delete those, and end a sign-in under way.
 fn remember_described_client(
     tx: &rusqlite::Transaction<'_>,
     document: &ClientDocument,
@@ -459,6 +467,10 @@ fn remember_described_client(
             document.client_uri,
             now
         ],
+    )?;
+    tx.execute(
+        DELETE_OLD_DESCRIBED_CLIENTS_SQL,
+        params![document.client_id, MAX_UNUSED_DESCRIBED_CLIENTS - 1, now],
     )?;
     Ok(())
 }
@@ -1613,18 +1625,13 @@ fn consent_html(
         .unwrap_or_else(|| presentation.redirect.to_owned());
     let destination = escape(&destination);
     let returns_to_this_computer = callback.as_ref().is_some_and(|url| url.scheme() != "https");
+    // The whole address: one host can serve documents for many authors.
     let client_source = match client_metadata::document_url(presentation.client_id) {
         Err(_) => "App name supplied by the client; identity is unverified.".to_owned(),
-        Ok(url) => {
-            let host = url.host_str().unwrap_or_default();
-            if returns_to_this_computer {
-                format!(
-                    "App name published by {host}. The app runs on your computer, where another app could use the same name. Continue only if you started this connection."
-                )
-            } else {
-                format!("App name published by {host}.")
-            }
-        }
+        Ok(url) if returns_to_this_computer => format!(
+            "App name from {url}. The app runs on your computer, where another app could use the same name. Continue only if you started this connection."
+        ),
+        Ok(url) => format!("App name from {url}."),
     };
     let error = presentation
         .retry
@@ -1811,7 +1818,13 @@ async fn authorize(
         Ok(response) => response,
         Err(error) => {
             let mapped = OAuthError::from_app(error, false);
-            (mapped.status, Html(format!("<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>", escape(&mapped.description)))).into_response()
+            let mut response = (mapped.status, Html(format!("<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>", escape(&mapped.description)))).into_response();
+            if let Some(seconds) = mapped.retry_after {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header::HeaderValue::from(seconds));
+            }
+            response
         }
     }
 }
@@ -1871,6 +1884,13 @@ const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,c
              ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,
                redirect_uris_json=excluded.redirect_uris_json,client_uri=excluded.client_uri,
                created_at=CASE WHEN last_used_at IS NULL THEN excluded.created_at ELSE oauth_clients.created_at END";
+const DELETE_OLD_DESCRIBED_CLIENTS_SQL: &str = "DELETE FROM oauth_clients WHERE client_id IN (
+             SELECT client_id FROM oauth_clients
+             WHERE client_id LIKE 'https://%' AND last_used_at IS NULL AND client_id<>?1
+               AND client_id NOT IN (
+                 SELECT client_id FROM oauth_authorization_requests WHERE consumed_at IS NULL AND expires_at>?3
+                 UNION SELECT client_id FROM oauth_authorization_codes WHERE used_at IS NULL AND expires_at>?3)
+             ORDER BY created_at DESC,client_id DESC LIMIT -1 OFFSET ?2)";
 const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
             AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
 
@@ -1975,14 +1995,20 @@ mod tests {
         assert_eq!(codes, 0);
     }
 
-    #[tokio::test]
-    async fn a_client_described_by_its_document_connects_like_a_registered_one() {
-        use axum::body::{Body, to_bytes};
-        use axum::http::Request;
-        use tower::ServiceExt;
+    const LOCAL_CALLBACK: &str = "http://127.0.0.1:49152/callback";
 
-        const CLIENT: &str = "https://app.example.com/oauth/client.json";
-        const LOCAL_CALLBACK: &str = "http://127.0.0.1:49152/callback";
+    /// A server with client metadata documents turned on, and an admin who
+    /// is signed in and sees one project.
+    struct Described {
+        _root: tempfile::TempDir,
+        db: Db,
+        state: AppState,
+        app: axum::Router,
+        cookie: String,
+        user_id: String,
+    }
+
+    async fn described() -> Described {
         let root = tempfile::tempdir_in("target").unwrap();
         crate::db::migrate(root.path(), None).unwrap();
         let db = Db::open(root.path()).unwrap();
@@ -2020,7 +2046,62 @@ mod tests {
         else {
             panic!("the owner signs in");
         };
-        let cookie = format!("oneloop_session={}", session.token);
+        Described {
+            _root: root,
+            db,
+            app: crate::application(state.clone()).router,
+            state,
+            cookie: format!("oneloop_session={}", session.token),
+            user_id: session.actor.user_id,
+        }
+    }
+
+    fn authorize_request(
+        cookie: &str,
+        client: &str,
+        redirect: &str,
+        challenge: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client),
+                ("redirect_uri", redirect),
+                ("code_challenge", challenge),
+                ("code_challenge_method", "S256"),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+                ("state", "described"),
+            ])
+            .finish();
+        axum::http::Request::builder()
+            .uri(format!("/oauth/authorize?{query}"))
+            .header(header::COOKIE, cookie)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    async fn text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_client_described_by_its_document_connects_like_a_registered_one() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        const CLIENT: &str = "https://app.example.com/oauth/client.json";
+        let Described {
+            _root,
+            db,
+            state,
+            app,
+            cookie,
+            ..
+        } = described().await;
         let document = |name: &str| ClientDocument {
             client_id: CLIENT.into(),
             client_name: name.into(),
@@ -2031,16 +2112,6 @@ mod tests {
         state
             .client_documents
             .insert_for_test(document("Described App"));
-        let app = crate::application(state.clone()).router;
-        let text = |response: Response| async move {
-            String::from_utf8(
-                to_bytes(response.into_body(), usize::MAX)
-                    .await
-                    .unwrap()
-                    .to_vec(),
-            )
-            .unwrap()
-        };
 
         let response = app
             .clone()
@@ -2057,24 +2128,7 @@ mod tests {
 
         let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let authorize = |redirect: &str| {
-            let query = url::form_urlencoded::Serializer::new(String::new())
-                .extend_pairs([
-                    ("response_type", "code"),
-                    ("client_id", CLIENT),
-                    ("redirect_uri", redirect),
-                    ("code_challenge", challenge.as_str()),
-                    ("code_challenge_method", "S256"),
-                    ("resource", "http://127.0.0.1:8080/mcp"),
-                    ("state", "described"),
-                ])
-                .finish();
-            Request::builder()
-                .uri(format!("/oauth/authorize?{query}"))
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap()
-        };
+        let authorize = |redirect: &str| authorize_request(&cookie, CLIENT, redirect, &challenge);
         let response = app
             .clone()
             .oneshot(authorize("http://127.0.0.1:49152/elsewhere"))
@@ -2089,9 +2143,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = text(response).await;
         assert!(html.contains("Connect <bdi>Described App</bdi>"), "{html}");
-        assert!(
-            html.contains("App name published by app.example.com. The app runs on your computer")
-        );
+        assert!(html.contains(&format!(
+            "App name from {CLIENT}. The app runs on your computer"
+        )));
         let request_id = html
             .split("name=request_id value=\"")
             .nth(1)
@@ -2179,6 +2233,210 @@ mod tests {
         assert_eq!(
             (name.as_str(), renamed_at),
             ("Renamed App", created_at - 100)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_person_who_used_up_their_fetches_is_told_when_to_try_again() {
+        use tower::ServiceExt;
+        let described = described().await;
+        let ask = |index: u32| {
+            authorize_request(
+                &described.cookie,
+                &format!("https://localhost/client-{index}.json"),
+                LOCAL_CALLBACK,
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            )
+        };
+        // A refused fetch counts too: these names resolve to this computer.
+        for index in 0..client_metadata::FETCHES_PER_PERSON_MINUTE {
+            let response = described.app.clone().oneshot(ask(index)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let response = described.app.clone().oneshot(ask(99)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let wait: u64 = response.headers()[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
+    }
+
+    #[tokio::test]
+    async fn only_the_newest_unused_described_clients_are_kept() {
+        let Described { _root, db, .. } = described().await;
+        db.transaction(|tx| {
+            // Registered apps and described apps in use are never removed.
+            tx.execute(
+                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at)
+                 VALUES('olc_registered','Registered','[]',1)",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at,last_used_at)
+                 VALUES('https://used.example/client.json','Used','[]',1,1)",
+                [],
+            )?;
+            for index in 0..MAX_UNUSED_DESCRIBED_CLIENTS + 5 {
+                let document = ClientDocument {
+                    client_id: format!("https://app{index}.example/client.json"),
+                    client_name: "App".into(),
+                    redirect_uris: vec![LOCAL_CALLBACK.into()],
+                    client_uri: None,
+                };
+                remember_described_client(tx, &document, 1_000 + index)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let counts = db
+            .run(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*),MIN(created_at),
+                        (SELECT COUNT(*) FROM oauth_clients WHERE client_id IN ('olc_registered','https://used.example/client.json'))
+                     FROM oauth_clients WHERE client_id LIKE 'https://%' AND last_used_at IS NULL",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(counts, (MAX_UNUSED_DESCRIBED_CLIENTS, 1_005, 2));
+    }
+
+    #[tokio::test]
+    async fn the_cap_keeps_described_clients_with_a_sign_in_under_way() {
+        let Described {
+            _root, db, user_id, ..
+        } = described().await;
+        let now = 10_000_i64;
+        db.transaction(move |tx| {
+            // The oldest clients: two with a sign-in under way, one whose
+            // request expired.
+            for (client, name) in [
+                ("https://requested.example/client.json", "Pending"),
+                ("https://consented.example/client.json", "Pending"),
+                ("https://expired.example/client.json", "Expired"),
+            ] {
+                tx.execute(
+                    "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at)
+                     VALUES(?1,?2,'[]',1)",
+                    params![client, name],
+                )?;
+            }
+            for (id, client, expires_at) in [
+                ("open", "https://requested.example/client.json", now + 600),
+                ("stale", "https://expired.example/client.json", now - 1),
+            ] {
+                tx.execute(
+                    "INSERT INTO oauth_authorization_requests(id,user_id,client_id,redirect_uri,resource,requested_scopes_json,code_challenge,created_at,expires_at)
+                     VALUES(?1,?2,?3,?4,?5,'[\"project_read\"]','challenge',?6,?7)",
+                    params![id, user_id, client, LOCAL_CALLBACK, RESOURCE, now - 1, expires_at],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO oauth_authorization_codes(code_hash,user_id,client_id,client_name,redirect_uri,resource,projects_json,scopes_json,code_challenge,issued_at,expires_at)
+                 VALUES('code',?1,'https://consented.example/client.json','Pending',?2,?3,'[\"p1\"]','[\"project_read\"]','challenge',?4,?5)",
+                params![user_id, LOCAL_CALLBACK, RESOURCE, now - 1, now + 300],
+            )?;
+            for index in 0..MAX_UNUSED_DESCRIBED_CLIENTS {
+                let document = ClientDocument {
+                    client_id: format!("https://app{index}.example/client.json"),
+                    client_name: "App".into(),
+                    redirect_uris: vec![LOCAL_CALLBACK.into()],
+                    client_uri: None,
+                };
+                remember_described_client(tx, &document, now)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let kept = db
+            .run(|c| {
+                let mut statement = c.prepare(
+                    "SELECT client_name,COUNT(*) FROM oauth_clients GROUP BY client_name ORDER BY client_name",
+                )?;
+                let rows = statement
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let pending: i64 = c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM oauth_authorization_requests)
+                        + (SELECT COUNT(*) FROM oauth_authorization_codes)",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((rows, pending))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                vec![
+                    ("App".to_owned(), MAX_UNUSED_DESCRIBED_CLIENTS),
+                    ("Pending".to_owned(), 2)
+                ],
+                2
+            ),
+            "both sign-ins under way keep their clients, request and code"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_document_is_logged_with_the_person_who_asked() {
+        use tower::ServiceExt;
+        // With a second subscriber alive, tracing asks this thread's one about
+        // each log call; see tests/integration/errors.rs.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let capture = Capture::default();
+        let _default = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(capture.clone())
+                .finish(),
+        );
+        let described = described().await;
+        // The name resolves to this computer, so the fetch is refused.
+        let response = described
+            .app
+            .clone()
+            .oneshot(authorize_request(
+                &described.cookie,
+                "https://localhost/oneloop-test-client.json",
+                LOCAL_CALLBACK,
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("client metadata document refused"), "{log}");
+        assert!(
+            log.contains(&format!("user_id={}", described.user_id)),
+            "{log}"
         );
     }
 }

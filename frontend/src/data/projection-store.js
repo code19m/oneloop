@@ -59,6 +59,8 @@ function mapEpic(epic) {
     desc: epic.description ?? '', start: epic.startDate, end: epic.endDate ?? null,
     state: epic.state, order: epic.position, revision: epic.revision,
     done: epic.taskDone ?? epic.done ?? 0, total: epic.taskTotal ?? epic.total ?? 0,
+    // Only Roadmap reads carry task counts; until one arrives, they are unknown.
+    counted: epic.taskTotal !== undefined || epic.total !== undefined,
     open: epic.taskOpen, closedThisWeek: epic.completedThisWeek,
     completedSinceStart: epic.completedSinceStart,
     weekly: epic.weeklyCompletions ?? epic.weekly, activity: [],
@@ -68,7 +70,7 @@ function mapEpic(epic) {
 /** Only Roadmap reads carry epic task counts; other reads keep the last ones known. */
 function keepEpicCounts(mapped, view, previous) {
   if (view.taskTotal !== undefined || !previous) return mapped;
-  for (const key of ['done','total','open','closedThisWeek','completedSinceStart','weekly']) mapped[key] = previous[key];
+  for (const key of ['done','total','open','closedThisWeek','completedSinceStart','weekly','counted']) mapped[key] = previous[key];
   return mapped;
 }
 
@@ -341,7 +343,7 @@ function patchEntity(target,entity){
   set('revision');
   if(entity.entityType==='project'){set('name');set('taskPrefix','key');set('taskPrefix');}
   if(entity.entityType==='track'){set('projectId');set('name');set('description','desc');set('position','order');}
-  if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
+  if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');if(Object.hasOwn(entity,'taskTotal'))target.counted=true;set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
   if(entity.entityType==='milestone'){set('projectId');set('title','name');set('description','desc');set('milestoneDate','date');}
   if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('completedAt','completedAt',(value)=>secondsToMilliseconds(value)??null);set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
   if(entity.entityType==='poolItem'){set('projectId');set('scope','scope',(value)=>SCOPE_TO_LEGACY[value]??value);set('ownerUserId','ownerId');set('title');set('description','desc');set('createdAt','created',secondsToMilliseconds);}

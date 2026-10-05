@@ -201,7 +201,10 @@ test('a newest-first Done reads, adopts and patches the Done column in completio
   await reads.patchBoard('p1',{},[{entityId:'finished-now'}]);
   changed=done('long-ago',50);
   await reads.patchBoard('p1',{},[{entityId:'long-ago'}]);
-  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['finished-now','later','earlier','earliest'],'only cards inside the loaded window join it');
+  // The loaded window ends at the oldest loaded completion, not at the last card in manual order.
+  changed=done('in-between',150);
+  await reads.patchBoard('p1',{},[{entityId:'in-between'}]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['finished-now','later','earlier','in-between','earliest'],'only cards inside the loaded window join it');
 });
 
 test('a Board hint waits for foreground pagination instead of aborting or discarding it',async()=>{

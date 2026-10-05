@@ -192,7 +192,9 @@ fn parse_redirect_schemes(raw: &str) -> AppResult<Vec<String>> {
                 format!("{item} is not a URL scheme; write it without :// "),
             ));
         }
-        if RESERVED_SCHEMES.contains(&scheme.as_str()) {
+        // Websites register handlers for web+ schemes, so their callbacks
+        // need not reach an app on the person's computer.
+        if RESERVED_SCHEMES.contains(&scheme.as_str()) || scheme.starts_with("web+") {
             return Err(invalid_env(
                 MCP_REDIRECT_SCHEMES_ENV,
                 format!("{scheme} can't be used for app callbacks"),

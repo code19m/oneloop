@@ -231,17 +231,19 @@ service to run `git` and `ssh` and to open outgoing connections.
 
 ## AI assistant connections
 
-By default, an AI assistant registers itself when it connects, and its sign-in
-callback must be on its own computer (`localhost`, `127.0.0.1` or `[::1]`) or
-use `https://`. Three settings, all off by default, let more clients connect.
-Turn on only what your clients need.
+By default, assistants connect as [Other clients](mcp.md#other-clients)
+describes. Three settings, all off by default, let more clients connect. Turn
+on only what your clients need.
 
 - **App callbacks.** Some desktop apps receive the sign-in through a link of
   their own, such as `cursor://…`. List those schemes in
   `ONELOOP_MCP_REDIRECT_SCHEMES`, for example `cursor`. Any app on a computer
   can claim a scheme, but a code it catches is useless without the secret that
   only the app that started the sign-in holds (PKCE). The **Connect** page shows
-  the whole callback address.
+  the whole callback address. List only the schemes of the AI apps you use:
+  anyone can register an app, so with a listed scheme they can send a person
+  who chooses **Connect** to any address in that scheme, and some schemes,
+  such as `ms-msdt`, start programs on the computer.
 - **Browser clients.** Tools that run in a web page, such as MCP Inspector, call
   oneloop from another site. List their exact origins in
   `ONELOOP_MCP_ALLOWED_ORIGINS`, for example `http://localhost:6274`. Only these
@@ -253,19 +255,37 @@ Turn on only what your clients need.
   `ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS=true`, an assistant may use an HTTPS
   address as its client ID. oneloop then fetches the document at that address
   for the app's name and callbacks, and the **Connect** page shows the
-  document's host. A fetch happens only for someone who is signed in. To
-  protect your network, oneloop fetches only `https` addresses with a path, on
-  the default port, and only when every address the host name resolves to is
-  public; never a private, loopback, link-local or other special address. It
-  connects to an address it checked, follows no redirects, and reads at most
-  5 KiB within 5 seconds. It keeps a document as long as its `Cache-Control`
-  header says, from 1 to 60 minutes (10 minutes if it doesn't say), and fetches
-  at most 30 documents a minute. The server needs outgoing HTTPS for this.
-  oneloop connects directly, without a proxy, and trusts the system's
-  certificate authorities, which the Docker image includes. It refuses to start
-  with this setting if it finds none. Turning the setting off stops new
-  connections this way; apps that are already connected keep working until
-  someone disconnects them.
+  document's whole address, because one host can serve documents for many
+  authors. The server needs outgoing HTTPS for this. oneloop connects
+  directly, without a proxy, and trusts the system's certificate authorities,
+  which the Docker image includes. It refuses to start with this setting if it
+  finds none. Turning the setting off stops new connections this way; apps
+  that are already connected keep working until someone disconnects them.
+
+### Fetching client metadata documents
+
+Anyone who can sign in can make oneloop fetch an address of their choice, so
+oneloop limits what it fetches:
+
+- It fetches only for someone who is signed in, and only `https` addresses
+  with a path, on the default port.
+- Every address the host name resolves to must be public, never a private,
+  loopback, link-local or other special address. oneloop connects to an
+  address it checked, and follows no redirects.
+- It reads at most 5 KiB within 5 seconds, and fetches at most 30 documents a
+  minute, 10 of them for one person. It keeps a document as long as its
+  `Cache-Control` header says, from 1 to 60 minutes (10 minutes if it doesn't
+  say), and at most 1,000 apps described this way that haven't connected yet,
+  besides those with a sign-in under way.
+
+Two risks remain:
+
+- On a network with its own NAT64 prefix, an address that looks public can
+  lead to an internal server. oneloop may then connect to it and start TLS; the
+  certificate check stops it there.
+- A server on a public address that trusts your oneloop server's address, such
+  as a site that admits only some IP addresses, can get one GET request
+  without credentials from it. oneloop never shows the answer.
 
 ## Security checklist
 

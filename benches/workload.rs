@@ -203,6 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("workload acceptance budget was not met".into());
     }
     if !measure {
+        assert_eq!(latency_summary(Vec::new()), json!({"count":0}));
         outbox_burst(true).await?;
     }
     Ok(())
@@ -384,11 +385,6 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    let summary = |mut values: Vec<f64>| {
-        values.sort_by(f64::total_cmp);
-        let at = |fraction: f64| values[((values.len() - 1) as f64 * fraction).ceil() as usize];
-        json!({"count":values.len(),"p50Ms":at(0.5),"p95Ms":at(0.95),"maxMs":at(1.0)})
-    };
     app.collaboration.shutdown();
     let _ = shutdown.send(true);
     outbox.await??;
@@ -401,12 +397,23 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "burstMessages":queued,
                 "burstDeliveryMs":burst_ms,
                 "messagesPerSecond":queued as f64 / (burst_ms / 1000.0),
-                "taskEditsBefore":summary(before),
-                "taskEditsDuring":summary(during),
+                "taskEditsBefore":latency_summary(before),
+                "taskEditsDuring":latency_summary(during),
             }
         }))?
     );
     Ok(())
+}
+
+/// Percentiles of a latency sample. A fast host can deliver the whole burst
+/// between two rounds of edits, so a sample may be empty.
+fn latency_summary(mut values: Vec<f64>) -> serde_json::Value {
+    if values.is_empty() {
+        return json!({"count":0});
+    }
+    values.sort_by(f64::total_cmp);
+    let at = |fraction: f64| values[((values.len() - 1) as f64 * fraction).ceil() as usize];
+    json!({"count":values.len(),"p50Ms":at(0.5),"p95Ms":at(0.95),"maxMs":at(1.0)})
 }
 
 fn fixture_token(client: usize) -> String {

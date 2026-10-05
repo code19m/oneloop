@@ -859,22 +859,25 @@
   /** A goal label's center: under its date, but kept inside the timeline. */
   const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
 
+  /** Task counts arrive with the Roadmap's own read; until then, a placeholder. */
+  const countsLoading = '<span style="color:var(--ink-faint)" aria-hidden="true">…</span><span class="sr-only">Loading task counts</span>';
   function epicBar(item, ppd, top) {
     const e = item.epic, s = d(e.start);
-    const ongoing = item.to === null;
-    const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
+    const ongoing = item.to === null, counted = e.counted !== false;
+    const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (counted && ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
 
     const right = e.state === 'done' ? I.check : '';
 
     let meta;
-    if (e.state === 'done') meta = `${e.total ? e.done+'/'+e.total+' · ' : ''}<span style="color:var(--ok)">complete</span>`;
+    if (!counted && e.state !== 'done') meta = countsLoading;
+    else if (e.state === 'done') meta = `${counted && e.total ? e.done+'/'+e.total+' · ' : ''}<span style="color:var(--ok)">complete</span>`;
     else if (ongoing && e.total === 0) meta = '<span style="color:var(--ink-faint)">ongoing</span>';
     else if (ongoing) meta = `<span style="color:var(--ink-soft)">ongoing</span> · ${e.completedSinceStart ?? e.done} done · ${e.open ?? e.total - e.done} open`;
     else if (e.state === 'planning') meta = `${e.done}/${e.total} · starts ${humanShort(s)}`;
     else meta = `${e.done}/${e.total}`;
 
-    const prog = (ongoing || e.total === 0) ? '' :
+    const prog = (!counted || ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
     return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
@@ -908,7 +911,7 @@
     const status = { planning: 'Planning', active: 'In progress', done: 'Done' }[epic.state] || epic.state;
     mountRoadmapTip(anchor, 'epic-tooltip', `<div class="epic-tip-title">${esc(epic.title)}</div>
       <div class="epic-tip-track">${esc(trackById(epic.trackId)?.name || '')}</div>
-      <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.done} / ${epic.total} done</dd></div>
+      <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.counted === false ? countsLoading : `${epic.done} / ${epic.total} done`}</dd></div>
       <div><dt>Start</dt><dd>${esc(epic.start)}</dd></div><div><dt>End</dt><dd>${epic.end ? esc(epic.end) : 'No end date'}</dd></div></dl>
       ${epic.desc ? `<div class="epic-tip-description">${esc(epic.desc)}</div>` : ''}`);
   }
@@ -1748,7 +1751,7 @@
     }).join('') || '<div class="empty-note" style="margin:14px 0">no tasks yet</div>';
 
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
-    const midBlock = ongoing && e.weekly
+    const midBlock = e.counted === false ? '' : ongoing && e.weekly
       ? `<div data-epic-throughput style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px">${sparkline(e.weekly)}
           <div><div class="mono" style="font-size:var(--text-xs);color:var(--ink-soft)">${e.closedThisWeek} closed this week</div>
           <div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${e.completedSinceStart ?? e.done} since ${humanShort(d(e.start))} · ${e.open ?? e.total - e.done} open</div></div></div>`
