@@ -179,3 +179,22 @@ test('temporary passwords show the account, copy exactly, report clipboard failu
     t.A.showTemporaryPassword(user.id,password);t.D.session={...session,id:'replacement-session'};t.A.refresh();
     assert.equal(t.A.context().modal,null);assert.equal(t.d.getElementById('tmpPw'),null);
 });
+
+test('a temporary password stays reachable when its New user dialog closed while saving',async()=>{
+ const t=bootApp({route:'users',prepare(D){D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
+ const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
+ try{
+ let release;
+ const api={createUser:()=>new Promise(resolve=>{release=resolve;})};
+ installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
+ const save=()=>{t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value='newcomer';form.querySelector('[name="name"]').value='New Comer';t.A.saveUser({target:form,preventDefault(){}},'');};
+ const answer=(id,temporaryPassword)=>release({user:{id,username:'newcomer',displayName:'New Comer',isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword});
+ save();t.A.closeOverlays();answer('u-new','Shown-Once-1');await settle();
+ assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-1','the password opens once nothing else is open');
+ t.A.closeOverlays();
+ save();t.A.closeOverlays();t.A.openModal('user','robin');answer('u-next','Shown-Once-2');await settle();
+ assert.equal(t.d.querySelector('.modal h2').textContent,'Edit user','another open dialog is not replaced');
+ t.A.closeOverlays();
+ assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-2','it opens when that dialog closes');
+ }finally{globalThis.FormData=originalFormData;}
+});

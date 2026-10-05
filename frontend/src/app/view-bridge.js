@@ -463,11 +463,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const account=mapAccount(user);
       if(data.adminUsers.loaded){mergeAdminUsersPage(data,[account],{append:true,nextCursor:data.adminUsers.nextCursor});data.adminUsers.ids.sort((left,right)=>(data.users.find((item)=>item.id===left)?.username??'').localeCompare(data.users.find((item)=>item.id===right)?.username??''));}
       else data.users.push(account);
-      app.refreshUsers?.();if(!completeForm(form,()=>app.showTemporaryPassword(user.id,temporaryPassword)))app.toast('User created. Reset their password in Users to get a temporary password.');
+      app.refreshUsers?.();
+      // The password is shown once, so a closed dialog must not lose it.
+      if(!completeForm(form,()=>app.showTemporaryPassword(user.id,temporaryPassword))&&app.showTemporaryPassword(user.id,temporaryPassword,{wait:true})===false)app.toast('User created. Its temporary password appears when this dialog closes.');
     });
     return fire((values.has('admin')?auth.withRecentAuth(create):create()).catch(reportFor(scope,{form})));
   };
-  app.resetPassword=(id)=>{const scope=sessionScope();return app.confirm({title:'Reset password?',text:'Existing sessions and connected app access will be revoked.',action:'Reset password',confirm:()=>fire(auth.withRecentAuth(()=>api.resetUserPassword(id)).then(({temporaryPassword})=>{if(sessionScope()===scope)app.showTemporaryPassword(id,temporaryPassword);}).catch((/** @type {any} */ error)=>recoverUser(error,scope,id)))});};
+  app.resetPassword=(id)=>{const scope=sessionScope();return app.confirm({title:'Reset password?',text:'Existing sessions and connected app access will be revoked.',action:'Reset password',confirm:()=>fire(auth.withRecentAuth(()=>api.resetUserPassword(id)).then(({temporaryPassword})=>{if(sessionScope()===scope&&app.showTemporaryPassword(id,temporaryPassword,{wait:true})===false)app.toast('Password reset. The temporary password appears when this dialog closes.');}).catch((/** @type {any} */ error)=>recoverUser(error,scope,id)))});};
 
   app.updTask = (id, field, value) => {
     if(app.isRendering?.())return false;

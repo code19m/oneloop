@@ -2101,7 +2101,13 @@
       if(innerWidth<=900 && state.sideOpen && sidebar && !sidebar.inert && !sidebar.closest('[inert]') && document.activeElement===document.body)sidebar.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
     }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
   }
+  /** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
+  const waitingPasswords=[];
+  function showWaitingPassword(){
+    while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
+  }
   function renderOverlays(){
+    showWaitingPassword();
     const root=document.getElementById('overlay-root');
     if(!root||!D.session||!me()?.active){render();return;}
     const oldModalElement=/** @type {HTMLElement|null} */(root.querySelector('.modal')),oldPeekElement=/** @type {HTMLElement|null} */(root.querySelector('.peek')),oldFocus=document.activeElement;
@@ -2130,6 +2136,7 @@
     const oldModalKey = oldModalElement?.dataset.motionKey,oldPeekKey = oldPeekElement?.dataset.motionKey;
     const oldPanelFocus = (oldModalElement || oldPeekElement)?.contains(oldFocus) ? rememberOpener(oldFocus) : null;
     fieldSequence = 0;
+    showWaitingPassword();
     if(state.modal?.type==='temppw'&&(!D.session||state.modal.ownerSession!==D.session.id||state.modal.ownerId!==me()?.id||!isAdmin()))state.modal=null;
     if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
     today.setTime(instanceToday().getTime());
@@ -2474,7 +2481,13 @@
     confirm: askConfirmation,
     fieldError: failField,
     showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
-    showTemporaryPassword(id, password) { state.modal = { type:'temppw', id, pw:password, ownerSession:D.session?.id, ownerId:me()?.id }; renderOverlays(); },
+    // With `wait`, a password that arrives while another dialog is open shows
+    // when that dialog closes, so it neither replaces the dialog nor gets lost.
+    showTemporaryPassword(id, password, { wait = false } = {}) {
+      const modal = { type:'temppw', id, pw:password, ownerSession:D.session?.id, ownerId:me()?.id };
+      if (wait && state.modal && !(state.modal.type === 'user' && state.modal.id === id)) { waitingPasswords.push(modal); return false; }
+      state.modal = modal; renderOverlays(); return true;
+    },
     async copyTemporaryPassword() {
       const modal=state.modal;
       if(modal?.type!=='temppw'||!isAdmin()||modal.ownerSession!==D.session?.id||modal.ownerId!==me()?.id)return;
