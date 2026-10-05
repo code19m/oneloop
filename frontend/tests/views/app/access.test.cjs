@@ -198,3 +198,20 @@ test('a temporary password stays reachable when its New user dialog closed while
  assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-2','it opens when that dialog closes');
  }finally{globalThis.FormData=originalFormData;}
 });
+
+test('Escape in the password prompt closes only the prompt and keeps the dialog behind it',async()=>{
+ const t=bootApp({route:'users'});
+ const {createAuthController}=require('../../../src/auth/auth-controller.js');
+ const previous={document:globalThis.document,HTMLElement:globalThis.HTMLElement};
+ Object.assign(globalThis,{document:t.d,HTMLElement:t.w.HTMLElement});
+ try{
+  const auth=createAuthController({api:{serverNow:()=>Date.now()},data:t.D,refresh(){},loadBootstrap:async()=>{},reportError(){}});
+  t.A.openModal('user');t.d.querySelector('.modal [name="name"]').value='Typed name';
+  t.D.session.authenticatedAt=Date.now()-31*60_000;
+  const pending=auth.withRecentAuth(async()=>{});
+  t.d.getElementById('reauth-password').dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  await assert.rejects(pending,error=>error.code==='reauth_cancelled');
+  assert.equal(t.d.querySelector('.reauth-layer'),null);
+  assert.equal(t.d.querySelector('.modal [name="name"]')?.value,'Typed name');
+ }finally{Object.assign(globalThis,previous);}
+});

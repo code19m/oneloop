@@ -206,7 +206,8 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
         actions.append(cancel,submit);form.append(heading,label,input,actions);wrap.append(form);layer.append(scrim,wrap);document.body.append(layer);
         let closed=false,phase='password';
         const authController=new AbortController();
-        const keydown=(event)=>{if(event.key==='Escape'&&!cancel.disabled){event.preventDefault();cancel.click();}else if(event.key==='Tab'){const controls=[input,cancel,submit].filter((control)=>!control.disabled),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}};
+        // Escape belongs to this prompt only; the dialog behind it stays open.
+        const keydown=(event)=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(!cancel.disabled)cancel.click();}else if(event.key==='Tab'){const controls=[input,cancel,submit].filter((control)=>!control.disabled),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}};
         document.addEventListener('keydown',keydown,true);
         const close=()=>{if(closed)return;closed=true;document.removeEventListener('keydown',keydown,true);if(appRoot)appRoot.inert=false;layer.remove();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
         cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
