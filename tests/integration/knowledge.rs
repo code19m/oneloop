@@ -739,7 +739,7 @@ async fn large_files_are_sent_in_bounded_chunks() {
     let (mut received, mut frames) = (Vec::new(), 0);
     while let Some(frame) = body.frame().await {
         let chunk = frame.unwrap().into_data().unwrap();
-        assert!(chunk.len() <= 256 * 1024, "{} bytes at once", chunk.len());
+        assert!(chunk.len() <= 64 * 1024, "{} bytes at once", chunk.len());
         received.extend_from_slice(&chunk);
         frames += 1;
     }
