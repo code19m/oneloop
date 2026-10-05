@@ -64,16 +64,14 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
   assert(d.querySelector('.markdown-body img[src="https://example.invalid/image.png"]')); assert(!d.querySelector('[data-view-resources]')); close();
 });
 
-test('HTML previews run no scripts, load nothing from other sites and restart from the same content', async () => {
-  const { d, open, close } = await taskWithFiles();
+test('HTML previews frame the server preview in a sandbox and restart it', async () => {
+  const { d, file, open, close } = await taskWithFiles();
+  file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
   open('report.html');
   let frame = d.querySelector('iframe');
-  assert.equal(frame.getAttribute('sandbox'), ''); assert(frame.hasAttribute('credentialless'));
-  const policy = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(frame.srcdoc)[1];
-  assert.equal(policy, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'");
-  assert(!frame.srcdoc.includes('<iframe')); assert(!frame.srcdoc.includes('<link')); assert(!frame.srcdoc.includes('oneloop-preview-escape'));
-  assert(frame.srcdoc.includes('onerror')); assert(!frame.srcdoc.includes('disabled')); assert(!d.querySelector('[data-view-resources]'));
-  const contents = frame.srcdoc; d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(frame.srcdoc, contents);
+  assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
+  assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html'); assert(!frame.hasAttribute('srcdoc'));
+  d.querySelector('[data-html-restart]').click(); assert(!frame.isConnected); frame = d.querySelector('iframe'); assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html');
   d.querySelector('[data-view-source]').click(); assert(!frame.isConnected); assert(!d.querySelector('.document-preview iframe')); assert(d.querySelector('[data-html-restart]').hidden);
   d.querySelector('[data-view-preview]').click(); assert(d.querySelector('.document-preview iframe')); assert(!d.querySelector('[data-html-restart]').hidden); close();
 });
@@ -253,18 +251,20 @@ test('Markdown loads only the libraries it needs and retries a failed math libra
   await open('<pre><code class="language-js">const answer = 42;</code></pre>'); assert(host.querySelector('.hljs-keyword'));
 });
 
-test('server HTML previews keep Source usable without parsing, and local srcdoc is built once', () => {
+test('HTML previews keep Source usable without parsing, and show nothing without a server preview', () => {
   const { w, d, host } = lazyPreviews();
   let parses = 0;
   const create = d.implementation.createHTMLDocument.bind(d.implementation);
   d.implementation.createHTMLDocument = (...args) => { parses++; return create(...args); };
   w.FileViews.html(host, { name: 'server.html', size: 20, htmlPreviewUrl: '/api/attachments/f/preview' }, '<h1>Source</h1>');
-  assert.equal(parses, 0); assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
+  assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
   host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click();
   assert(!host.querySelector('iframe')); assert.equal(host.querySelector('.html-source').textContent, '<h1>Source</h1>');
-  host.querySelector('[data-view-preview]').click(); assert.equal(parses, 0);
-  w.FileViews.html(host, { name: 'demo.html', size: 20 }, '<h1>Demo</h1><iframe src="bad"></iframe>'); assert.equal(parses, 1); assert(!host.querySelector('iframe').srcdoc.includes('<iframe'));
-  host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click(); host.querySelector('[data-view-preview]').click(); assert.equal(parses, 1);
+  host.querySelector('[data-view-preview]').click();
+  w.FileViews.html(host, { name: 'local.html', size: 20 }, '<h1>Local</h1><iframe src="bad"></iframe>');
+  assert(!host.querySelector('iframe')); assert.match(host.querySelector('.preview-unavailable').textContent, /Preview unavailable/);
+  assert(host.querySelector('[data-html-restart]').hidden); assert.equal(host.querySelector('.html-source').textContent, '<h1>Local</h1><iframe src="bad"></iframe>');
+  assert.equal(parses, 0, 'uploaded HTML is never parsed in the app page');
 });
 
 /** File views with the Markdown libraries present, outside the app. */

@@ -35,11 +35,12 @@ test('HTML attachments keep their file name and preview in an isolated sandbox w
   assert(task.attachments.every(f => f.ephemeral === false)); assert(!d.querySelector('[name=uploadEphemeral]'));
   assert(d.querySelector('.attachment-title').textContent === 'receipt-preview.html'); assert(d.querySelector('.attachment-thumbnail').getAttribute('aria-label').includes('Preview'));
   assert(!d.querySelector('.file-preview-action')); assert(d.querySelector('.file-download').textContent.includes('Download'));
+  // The server's preview address serves the page under its sandbox policy.
+  file.htmlPreviewUrl = '/api/attachments/receipt/preview/html';
   A.previewAttachment(task.id, file.id);
   let frame = d.querySelector('.html-preview');
   assert(frame); assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
-  assert(frame.srcdoc.includes("default-src 'none'")); assert(frame.srcdoc.includes('<script>')); assert(frame.srcdoc.includes('onerror=')); assert(frame.srcdoc.includes('https://example.invalid'));
-  assert(!frame.srcdoc.includes('<iframe')); assert(frame.srcdoc.includes('Visible field')); assert(!frame.srcdoc.includes('disabled'));
+  assert.equal(new URL(frame.src).pathname, '/api/attachments/receipt/preview/html');
   assert(d.querySelector('.file-info').hidden);
   const detailsButton = d.querySelector('[data-file-details]');
   detailsButton.click(); assert(!d.querySelector('.file-info').hidden); assert.equal(detailsButton.getAttribute('aria-expanded'), 'true'); assert.equal(d.querySelector('.html-preview'), frame);
@@ -136,6 +137,7 @@ test('retention changes require board access while previews stay readable', asyn
   const { d, A, task, file } = t;
   withoutBoardAccess(t);
   assert.equal(A.setAttachmentTemporary(task.id, file.id, true), false);
+  file.htmlPreviewUrl = '/api/attachments/receipt/preview/html';
   A.previewAttachment(task.id, file.id); assert(!d.querySelector('#attachment-display-name')); assert(!d.querySelector('[data-file-ephemeral]')); assert(d.querySelector('.html-preview'));
   assert(!d.querySelector('.attachment-count')); assert(!d.querySelector('.file-history'));
 });
