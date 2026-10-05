@@ -64,6 +64,21 @@ impl Repository {
         self.git(&["commit", "--quiet", "--message", "Change"], time);
     }
 
+    /// Adds commits from a `git fast-import` stream.
+    fn import(&self, stream: &[u8]) {
+        use std::io::Write;
+        let mut import = Command::new("git")
+            .current_dir(self.path())
+            .args(["fast-import", "--quiet"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        import.stdin.take().unwrap().write_all(stream).unwrap();
+        assert!(import.wait().unwrap().success());
+    }
+
     fn git(&self, arguments: &[&str], time: i64) -> Vec<u8> {
         let date = format!("{time} +0000");
         let output = Command::new("git")
@@ -742,6 +757,57 @@ async fn search_finds_names_and_section_text() {
         )
         .await;
     assert_eq!(outsider.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn files_with_quotes_in_their_names_keep_their_own_dates() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/say \"hi\".md", b"# Hi\n");
+    repository.write("docs/plain.md", b"# Plain\n");
+    repository.commit(FIRST);
+    repository.write("docs/plain.md", b"# Plain, changed\n");
+    repository.commit(SECOND);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let view = fixture.view(&fixture.member).await;
+    assert_eq!(file(&view, "say \"hi\".md")["updatedAt"], FIRST);
+    assert_eq!(file(&view, "plain.md")["updatedAt"], SECOND);
+}
+
+#[tokio::test]
+async fn a_history_listing_longer_than_the_output_limit_still_syncs() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    // Renaming a folder of long names lists each of them twice per commit:
+    // a small repository whose `git log` prints about 70 MB.
+    let mut stream = format!(
+        "commit refs/heads/main\ncommitter T <t@example.test> {FIRST} +0000\ndata 1\nc\n\
+         M 100644 inline docs/README.md\ndata 7\n# Docs\n\n"
+    );
+    for n in 0..17 {
+        stream.push_str(&format!(
+            "M 100644 inline docs/old/a/{n:02}{}\ndata 1\nx\n",
+            "n".repeat(4_200)
+        ));
+    }
+    for n in 0..490 {
+        let (from, to) = if n % 2 == 0 { ("a", "b") } else { ("b", "a") };
+        stream.push_str(&format!(
+            "\ncommit refs/heads/main\ncommitter T <t@example.test> {} +0000\ndata 1\nc\nR docs/old/{from} docs/old/{to}\n",
+            FIRST + 60 * (n + 1)
+        ));
+    }
+    stream.push_str(&format!(
+        "\ncommit refs/heads/main\ncommitter T <t@example.test> {SECOND} +0000\ndata 1\nc\nD docs/old\n\n"
+    ));
+    repository.import(stream.as_bytes());
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let admin = fixture.view(&fixture.admin).await;
+    assert_eq!(admin["source"]["state"], "ready", "{}", admin["source"]);
+    assert_eq!(paths(&admin), ["README.md"]);
+    assert_eq!(file(&admin, "README.md")["updatedAt"], FIRST);
 }
 
 #[tokio::test]
