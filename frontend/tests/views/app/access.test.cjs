@@ -273,6 +273,18 @@ test('text typed when the session ends is dropped when someone else signs in', (
  assert.equal(t.d.getElementById('cmtIn')?.value ?? '', '');
 });
 
+test('a dialog open when the session ends comes back with its text for the same person', () => {
+ const t = bootApp({ route: 'board' });
+ t.A.openModal('task');
+ const title = t.d.querySelector('.modal [name="title"]'); title.focus(); title.value = 'A task typed before the session ended';
+ const session = endSession(t);
+ assert.equal(t.d.querySelector('.modal'), null);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.querySelector('.modal [name="title"]').value, 'A task typed before the session ended');
+ assert.equal(t.d.activeElement, t.d.querySelector('.modal [name="title"]'));
+ assert.equal(t.w.Recovery.keepsInput, false);
+});
+
 test('a kept comment that waits for its task goes when its writer signs out', () => {
  const t = bootApp({ route: 'task/BIR-079' });
  t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
