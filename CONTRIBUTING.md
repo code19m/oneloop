@@ -182,7 +182,10 @@ The Release workflow then:
   full verification and the dependency checks;
 - builds the linux/amd64 and linux/arm64 image and pushes it to
   `ghcr.io/code19m/oneloop` with SBOM and provenance attestations;
-- creates a GitHub Release with the changelog notes and no binary files.
+- creates a GitHub Release with the changelog notes and no binary files;
+- runs the Docs workflow, which publishes the documentation. Docs pushed to
+  `main` go live only when the version in `Cargo.toml` is released, so the site
+  never names a version that people can't install yet.
 
 A release candidate gets only the `X.Y.Z-rc.N` image tag and never moves
 `latest`. A final release is tagged `X.Y.Z`, `X.Y` and `latest`. oneloop is not

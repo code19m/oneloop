@@ -180,3 +180,16 @@ jobs:
           if [ "$PRERELEASE" = true ]; then args+=(--prerelease --latest=false); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "oneloop $VERSION" --notes-file target/release-notes.md "${args[@]}"
+
+  docs:
+    name: docs
+    needs: github-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Deploy the documentation for this release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main
