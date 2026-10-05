@@ -384,3 +384,28 @@ test('inline image previews work outside the dialog and stop when disposed', asy
   dispose();
   assert.equal(typeof dispose, 'function');
 });
+
+test('an upload, retention change and delete still finish after a live update replaced the task', async () => {
+  const pending = [];
+  const file = (overrides = {}) => ({ id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', downloadUrl: '/download', ...overrides });
+  const held = name => () => new Promise(resolve => pending.push({ name, resolve }));
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: { attachments: async () => ({ items: [] }), uploadAttachment: held('upload'), updateAttachment: held('retention'), deleteAttachment: held('delete') }, subscribe: () => () => {} };
+  } });
+  const replace = () => { const current = t.D.tasks.find(item => item.id === 'BIR-079'), copy = { ...current, attachments: [...(current.attachments || [])].map(item => ({ ...item })) }; t.D.tasks.splice(t.D.tasks.indexOf(current), 1, copy); return copy; };
+  const answer = async (name, value) => { await waitFor(() => pending.some(item => item.name === name), `${name} was sent`); replace(); pending.find(item => item.name === name).resolve(value); };
+  const notices = []; const toast = t.A.toast; t.A.toast = (text, kind) => { notices.push(text); return toast(text, kind); };
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+  await answer('upload', file());
+  await waitFor(() => notices.includes('Attachment added'), 'the upload completes');
+  assert.equal(t.D.tasks.find(item => item.id === 'BIR-079').attachments.filter(item => item.id === 'f1').length, 1);
+  assert.equal(t.d.querySelector('.upload-row'), null, 'no failed upload row offers Retry');
+  t.A.setAttachmentTemporary('BIR-079', 'f1', true);
+  await answer('retention', file({ isEphemeral: true, revision: 2 }));
+  await waitFor(() => notices.includes('Attachment marked temporary'), 'the retention change completes');
+  assert.equal(t.D.tasks.find(item => item.id === 'BIR-079').attachments[0].ephemeral, true);
+  t.A.delAttachment('BIR-079', 0); t.d.querySelector('[data-confirm-accept]').click();
+  await answer('delete', {});
+  await waitFor(() => notices.includes('Attachment deleted'), 'the delete completes');
+  assert.deepEqual(t.D.tasks.find(item => item.id === 'BIR-079').attachments, []);
+});
