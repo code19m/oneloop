@@ -1,12 +1,18 @@
 //! Thumbnails of image attachments: made in the background, served in place
 //! of the original, and removed with it.
 
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, Request, StatusCode, header},
 };
 use image::{ImageEncoder, codecs::jpeg::JpegEncoder};
 use oneloop::files::AttachmentView;
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::http::Fixture;
@@ -91,18 +97,107 @@ impl Fixture {
         (status, headers, body_bytes(response).await)
     }
 
-    fn thumbnail_file(&self, attachment: &AttachmentView) -> std::path::PathBuf {
+    fn storage_key(&self, attachment: &AttachmentView) -> String {
         let id = attachment.id.clone();
-        let key: String = rusqlite::Connection::open(self.db.layout().database())
+        rusqlite::Connection::open(self.db.layout().database())
             .unwrap()
             .query_row(
                 "SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
                 [id],
                 |row| row.get(0),
             )
-            .unwrap();
+            .unwrap()
+    }
+
+    fn thumbnail_file(&self, attachment: &AttachmentView) -> PathBuf {
+        let key = self.storage_key(attachment);
         self.files.store().thumbnail_path(&key).unwrap()
     }
+
+    /// Replaces the stored original with a named pipe: a decode then waits
+    /// to open it until `release` opens the other end.
+    #[cfg(unix)]
+    fn pipe_original(&self, attachment: &AttachmentView) -> PathBuf {
+        let path = self
+            .files
+            .store()
+            .file_path(&self.storage_key(attachment))
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        path
+    }
+
+    /// Runs the worker in the background, as the server does.
+    fn start_worker(&self) -> JoinHandle<u64> {
+        let files = self.files.clone();
+        tokio::spawn(async move { files.make_queued_thumbnails().await })
+    }
+
+    async fn delete(&self, attachment: &AttachmentView) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/attachments/{}?expectedRevision={}",
+                        attachment.id, attachment.revision
+                    ))
+                    .header(header::ORIGIN, "https://tasks.example.test")
+                    .header(header::COOKIE, &self.manager_cookie)
+                    .header("idempotency-key", format!("delete-{}", attachment.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+}
+
+/// Opens the other end of a piped original, if a decode waits on it, and
+/// returns what the worker made. A pipe can't seek, so the decode then fails
+/// as a read error would.
+#[cfg(unix)]
+async fn release(pipe: &Path, worker: JoinHandle<u64>) -> u64 {
+    use rustix::{
+        fs::{Mode, OFlags},
+        io::Errno,
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // Without a reader, opening without blocking fails rather than waits.
+    let _writer = loop {
+        match rustix::fs::open(
+            pipe,
+            OFlags::WRONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(writer) => break Some(writer),
+            Err(Errno::NXIO) if !worker.is_finished() && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(Errno::NXIO) => break None,
+            Err(error) => panic!("open {}: {error}", pipe.display()),
+        }
+    };
+    worker.await.unwrap()
+}
+
+/// Waits up to 10 seconds for `condition`.
+async fn within_seconds(mut condition: impl FnMut() -> bool) -> bool {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 fn decoded(bytes: &[u8]) -> image::DynamicImage {
@@ -254,25 +349,7 @@ async fn removing_a_deleted_image_removes_its_thumbnail() {
     fixture.files.make_queued_thumbnails().await;
     let thumbnail = fixture.thumbnail_file(&attachment);
     assert!(thumbnail.is_file());
-    let response = fixture
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!(
-                    "/api/attachments/{}?expectedRevision={}",
-                    attachment.id, attachment.revision
-                ))
-                .header(header::ORIGIN, "https://tasks.example.test")
-                .header(header::COOKIE, &fixture.manager_cookie)
-                .header("idempotency-key", "delete-image")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    fixture.delete(&attachment).await;
     // Undo still needs it; the purge after the window takes it away.
     assert!(thumbnail.is_file());
     fixture
@@ -346,4 +423,53 @@ async fn reconciliation_removes_thumbnails_without_an_original() {
     assert!(kept.is_file());
     assert!(!orphan.exists());
     assert!(!interrupted.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn at_the_cleanup_threshold_images_wait_without_being_decoded() {
+    let original = png(200, 200, false);
+    // The original alone takes storage past 80%.
+    let fixture = Fixture::with_storage_limit(original.len() as u64 + 1000).await;
+    let attachment = fixture.attach("crowded", "crowded.png", &original).await;
+    let pipe = fixture.pipe_original(&attachment);
+    let worker = fixture.start_worker();
+    let finished = within_seconds(|| worker.is_finished()).await;
+    let made = release(&pipe, worker).await;
+    assert!(finished, "the worker doesn't open the original");
+    assert_eq!(made, 0);
+    assert!(!fixture.thumbnail_file(&attachment).exists());
+}
+
+#[tokio::test]
+async fn images_of_deleted_attachments_and_tasks_are_not_decoded() {
+    let fixture = Fixture::new().await;
+    let deleted = fixture
+        .attach("deleted-image", "deleted.png", &png(300, 300, false))
+        .await;
+    fixture.delete(&deleted).await;
+    let of_deleted_task = fixture
+        .attach("task-image", "task.png", &png(300, 300, false))
+        .await;
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE tasks SET deleted_at=unixepoch() WHERE id='task'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // The check runs under the gate right before each write, so it also
+    // holds for a deletion that lands while an image decodes.
+    assert_eq!(fixture.files.make_queued_thumbnails().await, 0);
+    for attachment in [&deleted, &of_deleted_task] {
+        assert!(
+            !fixture.thumbnail_file(attachment).exists(),
+            "{}",
+            attachment.name
+        );
+    }
 }

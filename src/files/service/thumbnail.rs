@@ -225,6 +225,20 @@ impl FileService {
         if fs::try_exists(&destination).await? {
             return Ok(false);
         }
+        // Thumbnails never take usage to the cleanup threshold, where storage
+        // cleanup would only remove them again, so from there nothing is decoded.
+        let current = match *used {
+            Some(current) => current,
+            None => self.capacity_usage().await?.total(),
+        };
+        *used = Some(current);
+        let threshold = self
+            .storage_limit_bytes
+            .saturating_mul(CLEANUP_HIGH_PERCENT)
+            / 100;
+        if current >= threshold {
+            return Ok(false);
+        }
         let original = self.store.file_path(key)?;
         let permit = AVATAR_DECODE_PERMITS
             .acquire()
@@ -245,17 +259,6 @@ impl FileService {
         let disk = if size == 0 {
             None
         } else {
-            // Thumbnails never take usage to the cleanup threshold, where
-            // storage cleanup would only remove them again.
-            let current = match *used {
-                Some(current) => current,
-                None => self.capacity_usage().await?.total(),
-            };
-            let threshold = self
-                .storage_limit_bytes
-                .saturating_mul(CLEANUP_HIGH_PERCENT)
-                / 100;
-            *used = Some(current);
             if current.saturating_add(size) >= threshold {
                 return Ok(false);
             }
@@ -299,8 +302,8 @@ impl FileService {
         Ok(size > 0)
     }
 
-    /// Whether an attachment still uses the original with `key`, and the
-    /// server can decode its type.
+    /// Whether a task that isn't deleted shows the original with `key` in an
+    /// attachment that isn't deleted, and the server can decode its type.
     async fn wants_thumbnail(&self, key: &str) -> AppResult<bool> {
         let key = key.to_owned();
         self.db
@@ -309,7 +312,9 @@ impl FileService {
                     .query_row(
                         "SELECT b.media_type FROM file_blobs b
                          WHERE b.storage_key=?1 AND b.state='available'
-                           AND EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=b.id)",
+                           AND EXISTS(SELECT 1 FROM task_attachments a JOIN tasks t ON t.id=a.task_id
+                                      WHERE a.blob_id=b.id AND a.deleted_at IS NULL
+                                        AND t.deleted_at IS NULL)",
                         [key],
                         |row| row.get(0),
                     )

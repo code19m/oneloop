@@ -28,6 +28,10 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) async fn new() -> Self {
+        Self::with_storage_limit(100 * 1024 * 1024).await
+    }
+
+    pub(super) async fn with_storage_limit(limit: u64) -> Self {
         let (directory, db) = crate::support::database();
         let manager = support::add_user(&db, "manager", false).await;
         let outsider = support::add_user(&db, "outsider", false).await;
@@ -73,7 +77,7 @@ impl Fixture {
         .unwrap();
 
         let mut config = support::config(directory.path(), "https://tasks.example.test", &[]);
-        config.storage_limit_bytes = 100 * 1024 * 1024;
+        config.storage_limit_bytes = limit;
         config.disk_min_free_bytes = 0;
         let application = application(AppState::new(config, db.clone()));
         Self {
