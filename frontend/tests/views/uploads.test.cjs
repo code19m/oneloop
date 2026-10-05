@@ -450,3 +450,12 @@ test('a live re-read of attachments that lost access stays quiet', async () => {
   await waitFor(() => reads === 2, 'a live update reads them again'); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
 });
+
+test('image files show their thumbnail, or the original when there is none', async () => {
+  const image = (id, overrides) => ({ id, name: `${id}.png`, size: 5, mediaType: 'image/png', previewKind: 'image', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${id}`, downloadUrl: `/download/${id}`, ...overrides });
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: { attachments: async () => ({ items: [image('photo', { thumbnailUrl: '/thumbnail/photo' }), image('spinner', { mediaType: 'image/gif' })] }), uploadAttachment() {} }, subscribe: () => () => {} };
+  } });
+  await waitFor(() => t.d.querySelectorAll('.attachment-thumbnail img').length === 2, 'both images render');
+  assert.deepEqual([...t.d.querySelectorAll('.attachment-thumbnail img')].map(img => img.getAttribute('src')), ['/thumbnail/photo', '/content/spinner']);
+});
