@@ -369,9 +369,10 @@ test('block Inbox wording distinguishes direct and broadcast mentions and keeps 
   ])assert.equal(mapInboxItem({id:'block-item',eventType,blockId:'episode',destinationAvailable:true}).reason,reason);
 });
 
-test('a replacement task projection reloads discussion rather than trusting an old loaded marker',async()=>{
+test('a replacement task projection reloads discussion passively rather than trusting an old loaded marker',async()=>{
   const t=fixture();t.controller.mount({view:'task',taskId:'ONE-101'});await tick();assert.equal(t.apiCalls.length,2);
   t.data.tasks[0]={...t.data.tasks[0],comments:[],activity:[]};t.controller.mount({view:'task',taskId:'ONE-101'});await tick();assert.equal(t.apiCalls.length,4);
+  assert.deepEqual(t.apiCalls.map(([,,options])=>options.background),[false,false,true,true],'only opening the page counts as use');
   t.controller.dispose();
 });
 

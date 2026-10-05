@@ -77,7 +77,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         windows.push(reads.board(current.projectId,current.board,readOptions));
       }
       else if(current.view==='roadmap')app.refreshRoadmap();
-      else if(bridge&&['profile','users','settings'].includes(current.view))windows.push(bridge.loadCurrentRoute({refresh:true}));
+      else if(bridge&&['profile','users','settings'].includes(current.view))windows.push(bridge.loadCurrentRoute({refresh:true,background:!!scope.background}));
       else if(data.projects.some((item)=>item.id===current.projectId)){app.refreshCounts();if(current.view==='task')app.refreshBackground();}
       else app.refresh();
       const results=await Promise.all(windows);

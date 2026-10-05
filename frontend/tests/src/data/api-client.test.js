@@ -91,6 +91,16 @@ test('automatic reconciliation is explicitly passive while interactive reads rem
   assert.equal(calls[2].headers['X-Oneloop-Background'],undefined);
 });
 
+test('every read a live update repeats can be sent as passive',async()=>{
+  const calls=[];const api=createApiClient({fetchImpl:async(url,options)=>{calls.push([url,options.headers['X-Oneloop-Background']]);return Response.json({});}});
+  const reads={
+    attachments:options=>api.attachments('t1',options),sessions:options=>api.sessions(options),connectedApps:options=>api.connectedApps(options),
+    users:options=>api.users(options),storageUsage:options=>api.storageUsage(options),pool:options=>api.pool('p1',{scope:'personal'},options),
+  };
+  for(const read of Object.values(reads)){await read({background:true});await read();}
+  assert.deepEqual(calls.map(([,header])=>header),Object.keys(reads).flatMap(()=>['1',undefined]),calls.map(([url])=>url).join(' '));
+});
+
 test('collection filters use stable comma-separated project identifiers',async()=>{
   const urls=[];const api=createApiClient({fetchImpl:async(url)=>{urls.push(url);return Response.json({items:[]});}});
   await api.inbox({projectIds:['p1','p two'],unreadOnly:true});

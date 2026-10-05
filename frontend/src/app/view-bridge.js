@@ -414,9 +414,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
     }});
   };
-  app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(loadProfileAccess).catch(report))});
-  app.revokeOtherSessions = () => app.confirm({title:'Sign out other sessions?',text:'All other browser sessions will end.',action:'Sign out other sessions',confirm:()=>fire(auth.revokeOtherSessions().then(loadProfileAccess).catch(report))});
-  app.revokeAppAccess=(id)=>app.confirm({title:'Revoke connected app?',text:'The app will lose its authorized access.',action:'Revoke access',confirm:()=>fire(api.revokeConnectedApp(id).then(loadProfileAccess).catch(report))});
+  app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(()=>loadProfileAccess()).catch(report))});
+  app.revokeOtherSessions = () => app.confirm({title:'Sign out other sessions?',text:'All other browser sessions will end.',action:'Sign out other sessions',confirm:()=>fire(auth.revokeOtherSessions().then(()=>loadProfileAccess()).catch(report))});
+  app.revokeAppAccess=(id)=>app.confirm({title:'Revoke connected app?',text:'The app will lose its authorized access.',action:'Revoke access',confirm:()=>fire(api.revokeConnectedApp(id).then(()=>loadProfileAccess()).catch(report))});
   /** @param {any} error @param {string} scope @param {string} id @param {HTMLFormElement|null} form */
   async function recoverUser(error,scope,id,form=null) {
     if(sessionScope()!==scope)return;
@@ -609,17 +609,20 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>app.nav('roadmap'))).catch(report))});};
 
   const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
-  /** A refresh with `keepDepth` reloads as many pages as were loaded, so the list keeps its place. */
-  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null),{keepDepth=false}={}){
+  /**
+   * A refresh with `keepDepth` reloads as many pages as were loaded, so the list keeps its place.
+   * A `background` (live) refresh is passive: it never counts as the person using the session.
+   */
+  async function loadUsers(append=false,throughUser=/** @type {string|null} */(null),{keepDepth=false,background=false}={}){
     const generation=++usersGeneration,expectedSession=sessionScope();usersController?.abort();usersController=new AbortController();
     const depth=keepDepth&&data.adminUsers.loaded?usersDepth:1;
     data.adminUsers.loading=true;data.adminUsers.error=null;app.refreshUsers?.({loadingOnly:true});
     let response,pages=1;
     try{
-      response=await api.users({afterUsername:append?usersAfter:undefined,background:false,signal:usersController.signal});
+      response=await api.users({afterUsername:append?usersAfter:undefined,background,signal:usersController.signal});
       while((throughUser&&!response.users.some((/** @type {any} */ user)=>user.id===throughUser)||pages<depth)&&response.nextCursor){
         if(generation!==usersGeneration||expectedSession!==sessionScope())return {stale:true};
-        const page=await api.users({afterUsername:response.nextCursor,background:false,signal:usersController.signal});
+        const page=await api.users({afterUsername:response.nextCursor,background,signal:usersController.signal});
         response={...page,users:[...response.users,...page.users]};pages++;
       }
     }
@@ -631,11 +634,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.loadMoreUsers=()=>{if(usersAfter&&!data.adminUsers.loading)return fire(loadUsers(true).catch(report));};
 
   app.retryProfileAccess=()=>fire(loadProfileAccess().catch(report));
-  async function loadProfileAccess(){
+  async function loadProfileAccess({background=false}={}){
     const generation=++profileGeneration,expectedSession=sessionScope();profileController?.abort();profileController=new AbortController();
     let sessionResponse,appResponse;
     app.refreshProfileAccess?.({loading:true});
-    try{[sessionResponse,appResponse]=await Promise.all([api.sessions({signal:profileController.signal}),api.connectedApps({signal:profileController.signal})]);}
+    try{[sessionResponse,appResponse]=await Promise.all([api.sessions({signal:profileController.signal,background}),api.connectedApps({signal:profileController.signal,background})]);}
     catch(error){if(generation!==profileGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};app.refreshProfileAccess?.({error:'Could not load account access. Try again.'});return {error};}
     if(generation!==profileGeneration||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};
     const userId=data.session?.userId;
@@ -645,7 +648,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return {stale:false};
   }
 
-  async function loadCurrentRoute({reuseBootstrap=false,refresh=false}={}){
+  /** A `background` (live) load reads passively, so it never keeps an idle session open. */
+  async function loadCurrentRoute({reuseBootstrap=false,refresh=false,background=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
     if(!data.session)return;
     const routeHash=globalThis.location?.hash;
@@ -653,8 +657,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(!['users','settings'].includes(current.view)){usersGeneration++;usersController?.abort();}
     if(current.view!=='profile'){profileGeneration++;profileController?.abort();}
     try{
-      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard?.(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true});}
-      else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId);}
+      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard?.(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
+      else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
           if(current.view!=='task'){recovery?.clearPageError?.();app.openTask(task(current.taskId).id);}
@@ -672,11 +676,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           recovery?.clearPageError?.();app.openTask(loaded.task.id);
         }
       }
-      else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh});
-      else if(current.view==='profile')await loadProfileAccess();
+      else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh,background});
+      else if(current.view==='profile')await loadProfileAccess({background});
       if(!stillCurrent())return {stale:true};
       const projectId=context().projectId;
-      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId);
+      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId,{background});
       return {stale:!stillCurrent()};
     }catch(error){
       if(!stillCurrent())return {stale:true};

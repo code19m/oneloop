@@ -27,6 +27,20 @@ test('an unloaded valid task hash is fetched before the shell decides it is miss
   }finally{if(previous===undefined)delete globalThis.location;else globalThis.location=previous;}
 });
 
+test('a live refresh of Profile, Users and Settings reads passively, and a visit does not',async()=>{
+  for(const view of ['profile','users','settings']){
+    const reads=[];
+    const answer=(name,body)=>async(options={})=>{reads.push([name,options.background]);return body;};
+    const api={sessions:answer('sessions',{sessions:[]}),connectedApps:answer('apps',{apps:[]}),users:answer('users',{users:[],nextCursor:null})};
+    const state=fixture({view,projectId:'p1',board:{}},{api});
+    await state.bridge.loadCurrentRoute({refresh:true,background:true});
+    const live=reads.splice(0);
+    await state.bridge.loadCurrentRoute();
+    assert.deepEqual(live,view==='profile'?[['sessions',true],['apps',true]]:[['users',true]],view);
+    assert.deepEqual(reads,view==='profile'?[['sessions',false],['apps',false]]:[['users',false]],view);
+  }
+});
+
 test('a save uses the editor focus revision even after live data advances',async()=>{
   let options,finished='';
   const gateway={execute:async(_operation,_payload,input)=>{options=input;return {entities:[],events:[]};}};

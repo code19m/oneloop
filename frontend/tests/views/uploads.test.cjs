@@ -409,3 +409,30 @@ test('an upload, retention change and delete still finish after a live update re
   await waitFor(() => notices.includes('Attachment deleted'), 'the delete completes');
   assert.deepEqual(t.D.tasks.find(item => item.id === 'BIR-079').attachments, []);
 });
+
+test('live updates read attachments and storage usage again passively', async () => {
+  const reads = [];
+  let listener = () => {};
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopTransport = { api: {
+      attachments: async (_id, options = {}) => { reads.push(['attachments', !!options.background]); return { items: [] }; },
+      storageUsage: async (options = {}) => { reads.push(['storage', !!options.background]); return { budgetBytes: 100, highWatermarkBytes: 90, lowWatermarkBytes: 80, usedBytes: 1, permanentBytes: 1, temporaryBytes: 0, cleanedRecords: 0, reservedBytes: 0, projects: [], recentCleanup: [] }; },
+      uploadAttachment() {},
+    }, subscribe: fn => { listener = fn; return () => {}; } };
+  } });
+  // Each read answers at once; let its reply land before the next step.
+  const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await new Promise(resolve => setImmediate(resolve)); };
+  await answered(1, 'the task page reads its attachments');
+  listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
+  await answered(2, 'a live update reads them again');
+  const current = t.D.tasks.find(item => item.id === 'BIR-079');
+  t.D.tasks.splice(t.D.tasks.indexOf(current), 1, { ...current, attachments: [] }); t.A.refresh();
+  await answered(3, 'a replaced task reads them again');
+  t.A.nav('storage');
+  await answered(4, 'Storage reads usage');
+  listener({ type: 'sse', kind: 'activity.changed' });
+  await answered(5, 'a live update reads usage again');
+  listener({ type: 'bootstrap' }); t.A.refresh();
+  await answered(6, 'a refresh reads usage again');
+  assert.deepEqual(reads, [['attachments', false], ['attachments', true], ['attachments', true], ['storage', false], ['storage', true], ['storage', true]]);
+});

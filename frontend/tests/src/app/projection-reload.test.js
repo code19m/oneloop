@@ -70,14 +70,14 @@ test('a refresh with the epic drawer open reads the drawer tasks again',async()=
   assert.deepEqual(t.data.epicPageInfo.e1.taskIds,['t1','t2']);
 });
 
-test('a refresh of an account page reloads the pages already shown',async()=>{
+test('a live refresh of an account page reloads the pages already shown, passively',async()=>{
   const requests=[],context={view:'users',projectId:'p1'};
   const data=createLegacyData();hydrateLegacyData(data,projection('p1'));
   const bootstrap={idle:async()=>{},load:async()=>({stale:false})},reads={idle:async()=>{}};
   const bridge={loadCurrentRoute:async options=>{requests.push(options);return {stale:false};}};
   const reload=createProjectionReload({data,bootstrap,reads,getApp:()=>({context:()=>context,updateDocumentTitle(){}}),getBridge:()=>bridge,getRecovery:()=>({refreshSucceeded(){}}),location:{hash:'#/users'}});
-  await reload({background:true});
-  assert.deepEqual(requests,[{refresh:true}]);
+  await reload({background:true});await reload();
+  assert.deepEqual(requests,[{refresh:true,background:true},{refresh:true,background:false}]);
 });
 
 test('the route decides the bootstrap view',()=>{
