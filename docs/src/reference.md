@@ -51,9 +51,9 @@ When usage reaches 80% of the limit, oneloop removes temporary attachments that
 nobody has opened for 24 hours, until usage is back at 70%. It never removes
 other files by itself. It refuses new uploads when the limit is reached, or when
 an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
-Uploads and Knowledge syncs reserve space from the same disk budget before
-starting. A reservation stays in place until publication or temporary-file
-cleanup finishes.
+Uploads, and Knowledge syncs that download a new commit, reserve space from the
+same disk budget before they start. A reservation stays in place until
+publication or temporary-file cleanup finishes.
 When a delayed attachment deletion finishes, activity records the person and
 app that requested it.
 
@@ -122,7 +122,7 @@ and PDFs can still preview.
 | Folder | 5,000 files and 100 MiB of files to show; a larger folder doesn't sync |
 | File | Files over 10 MiB are left out |
 | Sync disk use | 300 MiB for the folder's files and Git's copy of them, files left out included; a larger folder doesn't sync |
-| Free disk space | Each sync reserves 400 MiB free on top of `ONELOOP_DISK_MIN_FREE` |
+| Free disk space | A download reserves 400 MiB on top of `ONELOOP_DISK_MIN_FREE`; a check that finds no new commit needs none |
 | File path | 1,024 bytes |
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |
