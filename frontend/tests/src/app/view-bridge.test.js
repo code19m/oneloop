@@ -516,6 +516,28 @@ test('a conflict prompt that closes without a choice keeps the typed value as No
   assert.equal(state.requests[2].command.payload.description,'My description');assert.equal(state.requests[2].command.expectedRevision,1,'Save keeps the revision the text was written against');
 });
 
+test('a Not saved field edited again still saves from the revision it was typed on',async()=>{
+  // The prompt closed without a choice after reading someone else's revision 2.
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async()=>{Object.assign(state.item,{revision:2,desc:'Their description'});return {handled:true,saved:false};},handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','desc','My description');state.requests[0].reject(changedElsewhere());await tick();await tick();
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'My description',unsaved:true});
+  // The field shows the draft, never their text. The person adds to it.
+  state.app.updTask('ONE-1','desc','My description, longer');await tick();
+  assert.equal(state.requests[1].command.expectedRevision,1,'it still meets their change');
+});
+
+test('text kept when edit rights ended saves from its revision after they come back',async()=>{
+  let remembered=1;
+  const recovery={revisionKey:()=>'task:t1',expectedRevision:(_key,latest)=>remembered??latest,handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.bridge.keepTaskDraft('ONE-1','title','Typed before rights ended');
+  // Someone else saved revision 2, and the page that remembered revision 1 is gone.
+  Object.assign(state.item,{revision:2,title:'Their title'});remembered=undefined;
+  state.app.updTask('ONE-1','title','Typed before rights ended, and more');await tick();
+  assert.equal(state.requests[0].command.expectedRevision,1);
+});
+
 test('a task field edited while offline stays as typed and saves when the connection returns',async()=>{
   let online=false,reconnected;
   const recovery={ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}};

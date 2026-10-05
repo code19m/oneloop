@@ -262,6 +262,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(field==='title'||field==='desc'){
       draft=draftKey(item.internalId,field);
       const previous=drafts.get(draft);
+      // The field shows a Not saved draft instead of newer saved text, so text
+      // typed over it still builds on the revision the draft was typed on.
+      if(previous?.unsaved)base??=previous.base;
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }
