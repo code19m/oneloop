@@ -546,6 +546,76 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
 }
 
 #[tokio::test]
+async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_delivered() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let attachment = upload(
+        &service,
+        &f.manager,
+        "lost-file",
+        "lost.txt",
+        b"data",
+        false,
+    )
+    .await;
+    let id = attachment.id.clone();
+    let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
+    let path = service.store().file_path(&key).unwrap();
+    // A folder in the file's place leaves the deletion to reconciliation.
+    let held = f._root.path().join("held-original");
+    std::fs::rename(&path, &held).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let failed = service
+        .delete_attachment(
+            &f.manager,
+            &attachment.id,
+            attachment.revision,
+            "lost-delete",
+        )
+        .await;
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(held, &path).unwrap();
+    assert!(matches!(failed, Err(AppError::Unavailable(_))));
+    f.db.transaction(|tx| {
+        // An upgraded job whose retry receipt had already expired.
+        tx.execute("UPDATE file_deletion_jobs SET actor_user_id=NULL,actor_mcp_grant_id=NULL,actor_name=NULL,available_at=0", [])?;
+        tx.execute("DELETE FROM idempotency_keys WHERE operation='attachment.delete'", [])?;
+        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
+        tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
+            VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let mut admin = f.manager.clone();
+    admin.is_admin = true;
+    oneloop::domain::DomainService::new(f.db.clone(), chrono_tz::UTC)
+        .execute(
+            &admin,
+            oneloop::domain::CommandEnvelope {
+                operation: oneloop::domain::DomainOperation::DeleteProject,
+                payload: serde_json::json!({"projectId":"p1","confirmedName":"Project"}),
+                idempotency_key: "delete-project".into(),
+                expected_revision: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service.reconcile().await.unwrap().deletion_jobs_completed,
+        1
+    );
+    // Nobody can be told about the deletion, so nothing waits for delivery.
+    let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
+    while runtime.worker().run_once().await.unwrap() {}
+    let id = attachment.id;
+    let (events, undelivered): (i64, i64) = f.db.run(move |c| Ok((
+        c.query_row("SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'
+            AND project_id IS NULL AND actor_user_id IS NULL AND json_extract(metadata_json,'$.attributionUnavailable')", [id], |r| r.get(0))?,
+        c.query_row("SELECT count(*) FROM outbox_messages WHERE delivered_at IS NULL", [], |r| r.get(0))?,
+    ))).await.unwrap();
+    assert_eq!((events, undelivered), (1, 0));
+}
+
+#[tokio::test]
 async fn retention_and_deletion_require_current_revisions_but_replay_safely() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
