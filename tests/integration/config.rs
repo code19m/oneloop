@@ -296,6 +296,7 @@ fn ai_assistant_connection_settings_are_opt_in_and_checked() {
     let defaults = with(&[]).unwrap();
     assert!(defaults.mcp_redirect_schemes.is_empty());
     assert!(defaults.mcp_allowed_origins.is_empty());
+    assert!(!defaults.mcp_client_metadata_documents);
 
     let config = with(&[
         ("ONELOOP_MCP_REDIRECT_SCHEMES", " cursor, Cursor ,com.example.app,,"),
@@ -303,6 +304,7 @@ fn ai_assistant_connection_settings_are_opt_in_and_checked() {
             "ONELOOP_MCP_ALLOWED_ORIGINS",
             "http://localhost:6274, https://Inspector.Example/,https://inspector.example:443,http://[::1]:8000",
         ),
+        ("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "true"),
     ])
     .unwrap();
     assert_eq!(config.mcp_redirect_schemes, ["cursor", "com.example.app"]);
@@ -313,6 +315,12 @@ fn ai_assistant_connection_settings_are_opt_in_and_checked() {
             "https://inspector.example",
             "http://[::1]:8000"
         ]
+    );
+    assert!(config.mcp_client_metadata_documents);
+    assert!(
+        !with(&[("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "false")])
+            .unwrap()
+            .mcp_client_metadata_documents
     );
 
     let refused = [
@@ -340,6 +348,8 @@ fn ai_assistant_connection_settings_are_opt_in_and_checked() {
             "https://user@inspector.example",
         ),
         ("ONELOOP_MCP_ALLOWED_ORIGINS", "chrome-extension://abcdef"),
+        ("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "yes"),
+        ("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "1"),
     ];
     for (variable, value) in refused {
         let error = with(&[(variable, value)]).unwrap_err();

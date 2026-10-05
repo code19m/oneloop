@@ -148,6 +148,9 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
             "warning: HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
         );
     }
+    if config.mcp_client_metadata_documents {
+        crate::mcp::client_metadata::check_trust_roots()?;
+    }
     if arguments.check {
         crate::db::DataLayout::new(&config.data_dir).ensure_restore_complete()?;
         let database = config.data_dir.join("oneloop.sqlite3");

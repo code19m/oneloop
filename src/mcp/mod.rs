@@ -1,3 +1,4 @@
+pub(crate) mod client_metadata;
 mod cors;
 mod oauth;
 mod tools;

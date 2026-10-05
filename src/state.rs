@@ -7,6 +7,7 @@ use crate::{
     domain::DomainService,
     files::FileService,
     knowledge::KnowledgeService,
+    mcp::client_metadata::ClientDocuments,
 };
 
 /// Shared service configuration for browser handlers, MCP tools and workers.
@@ -20,6 +21,7 @@ pub struct AppState {
     pub collaboration: CollaborationService,
     pub collaboration_runtime: CollaborationRuntime,
     pub knowledge: KnowledgeService,
+    pub(crate) client_documents: Arc<ClientDocuments>,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             collaboration: CollaborationService::new(db.clone()),
             collaboration_runtime: CollaborationRuntime::new(db.clone()),
             knowledge: KnowledgeService::new(db.clone(), config.disk_min_free_bytes),
+            client_documents: Arc::new(ClientDocuments::new(config.mcp_client_metadata_documents)),
             config: Arc::new(config),
             db,
         }

@@ -2488,3 +2488,64 @@ async fn app_schemes_need_listing_and_still_match_exactly() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in() {
+    const DOCUMENT: &str = "https://app.example.com/oauth/client.json";
+    const CALLBACK: &str = "http://127.0.0.1:49152/callback";
+    let metadata = |app: Router| async move {
+        body_json(
+            app.oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+    };
+    let (_dir, _db, app, session, _) = fixture().await;
+    assert!(
+        metadata(app.clone())
+            .await
+            .get("client_id_metadata_document_supported")
+            .is_none()
+    );
+    let (status, html) =
+        consent_page(&app, &session, &authorization_path(DOCUMENT, CALLBACK)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+
+    let (_dir, _db, app, _, _) =
+        fixture_with(&[("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "true")]).await;
+    assert_eq!(
+        metadata(app.clone()).await["client_id_metadata_document_supported"],
+        true
+    );
+    let signed_out = |client: &str| {
+        Request::builder()
+            .uri(authorization_path(client, CALLBACK))
+            .body(Body::empty())
+            .unwrap()
+    };
+    // Refused before the sign-in page; nothing is fetched for them.
+    for refused in [
+        "https://127.0.0.1/client.json",
+        "https://app.example.com",
+        "https://app.example.com:8443/client.json",
+        "https://app.example.com/client.json?version=2",
+        "https://APP.example.com/client.json",
+    ] {
+        let response = app.clone().oneshot(signed_out(refused)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{refused}");
+    }
+    let response = app.clone().oneshot(signed_out(DOCUMENT)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .starts_with("/?oauth_return=")
+    );
+}

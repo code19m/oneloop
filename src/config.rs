@@ -32,8 +32,9 @@ pub const PASSWORD_BLOCKLIST_ENV: &str = "ONELOOP_PASSWORD_BLOCKLIST";
 pub const TEMPORARY_PASSWORD_LIFETIME_ENV: &str = "ONELOOP_TEMPORARY_PASSWORD_LIFETIME";
 pub const MCP_REDIRECT_SCHEMES_ENV: &str = "ONELOOP_MCP_REDIRECT_SCHEMES";
 pub const MCP_ALLOWED_ORIGINS_ENV: &str = "ONELOOP_MCP_ALLOWED_ORIGINS";
+pub const MCP_CLIENT_METADATA_ENV: &str = "ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS";
 
-const KNOWN_ENV: [&str; 14] = [
+const KNOWN_ENV: [&str; 15] = [
     PUBLIC_URL_ENV,
     LISTEN_ENV,
     DATA_DIR_ENV,
@@ -48,6 +49,7 @@ const KNOWN_ENV: [&str; 14] = [
     TEMPORARY_PASSWORD_LIFETIME_ENV,
     MCP_REDIRECT_SCHEMES_ENV,
     MCP_ALLOWED_ORIGINS_ENV,
+    MCP_CLIENT_METADATA_ENV,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +67,8 @@ pub struct Config {
     pub mcp_redirect_schemes: Vec<String>,
     /// Origins of browser-based MCP clients, as browsers send them.
     pub mcp_allowed_origins: Vec<String>,
+    /// Whether MCP clients may identify themselves with metadata documents.
+    pub mcp_client_metadata_documents: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +116,16 @@ impl Config {
             parse_redirect_schemes(env.get(MCP_REDIRECT_SCHEMES_ENV).unwrap_or_default())?;
         let mcp_allowed_origins =
             parse_allowed_origins(env.get(MCP_ALLOWED_ORIGINS_ENV).unwrap_or_default())?;
+        let mcp_client_metadata_documents = match env.get(MCP_CLIENT_METADATA_ENV) {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => {
+                return Err(invalid_env(
+                    MCP_CLIENT_METADATA_ENV,
+                    "expected true or false",
+                ));
+            }
+        };
 
         Ok(Self {
             public_url,
@@ -125,6 +139,7 @@ impl Config {
             password_policy,
             mcp_redirect_schemes,
             mcp_allowed_origins,
+            mcp_client_metadata_documents,
         })
     }
 }

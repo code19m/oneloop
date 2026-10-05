@@ -20,7 +20,10 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::cors;
+use super::{
+    client_metadata::{self, ClientDocument},
+    cors,
+};
 use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
@@ -117,6 +120,8 @@ struct AuthorizationServerMetadata {
     code_challenge_methods_supported: [&'static str; 1],
     scopes_supported: &'static [&'static str],
     authorization_response_iss_parameter_supported: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    client_id_metadata_document_supported: bool,
 }
 
 async fn authorization_server_metadata(
@@ -135,6 +140,7 @@ async fn authorization_server_metadata(
         code_challenge_methods_supported: ["S256"],
         scopes_supported: SCOPES,
         authorization_response_iss_parameter_supported: true,
+        client_id_metadata_document_supported: state.client_documents.enabled(),
     })
 }
 
@@ -273,8 +279,9 @@ async fn register_client_inner(
                 "DELETE FROM oauth_clients WHERE last_used_at IS NULL AND created_at<=?1",
                 [now - 24 * 3600],
             )?;
+            // Clients described by metadata documents didn't register.
             let global_recent: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM oauth_clients WHERE created_at>?1",
+                "SELECT COUNT(*) FROM oauth_clients WHERE created_at>?1 AND client_id NOT LIKE 'https://%'",
                 [now - 3600],
                 |row| row.get(0),
             )?;
@@ -349,6 +356,8 @@ async fn authorize_inner(
         Ok(_) | Err(AppError::Unauthorized) => return Ok(authorization_login_redirect(&query)),
         Err(error) => return Err(error),
     };
+    // Only someone signed in can make oneloop fetch a metadata document.
+    let document = described_client(&state, &query).await?;
     let projects = accessible_projects(&state, &actor).await?;
     let request_id = random_token(24)?;
     let stored_id = hash_token(&request_id);
@@ -363,6 +372,9 @@ async fn authorize_inner(
     let now = unix_now()?;
     state.db.transaction(move |connection| {
         connection.execute("DELETE FROM oauth_authorization_requests WHERE expires_at<=?1 OR consumed_at IS NOT NULL", [now])?;
+        if let Some(document) = &document {
+            remember_described_client(connection, document, now)?;
+        }
         connection.execute(
             "INSERT INTO oauth_authorization_requests
              (id,user_id,client_id,redirect_uri,state,resource,requested_scopes_json,code_challenge,created_at,expires_at)
@@ -381,6 +393,7 @@ async fn authorize_inner(
             &projects,
             &scopes,
             ConsentPresentation {
+                client_id: &query.client_id,
                 redirect: &query.redirect_uri,
                 retry: None,
             },
@@ -388,6 +401,66 @@ async fn authorize_inner(
         .into_response(),
         &query.redirect_uri,
     )
+}
+
+/// The metadata document of a client whose ID is the document's URL, with
+/// the requested callback checked against the callbacks it lists.
+async fn described_client(
+    state: &AppState,
+    query: &AuthorizationQuery,
+) -> AppResult<Option<ClientDocument>> {
+    if !client_metadata::is_document_client_id(&query.client_id) {
+        return Ok(None);
+    }
+    let schemes = &state.config.mcp_redirect_schemes;
+    let document = state
+        .client_documents
+        .document(&query.client_id, |value| {
+            validate_redirect_uri(value, schemes)
+        })
+        .await
+        .inspect_err(|error| {
+            // The page says only "invalid request", so that it can't be used
+            // to probe the server's network; the log tells the admin why.
+            if let AppError::Validation { message, .. } = error {
+                tracing::info!(client_id = %query.client_id, %message, "client metadata document refused");
+            }
+        })?;
+    let redirect = validate_redirect_uri(&query.redirect_uri, schemes)?;
+    if !document
+        .redirect_uris
+        .iter()
+        .any(|listed| redirect_matches(listed, &redirect))
+    {
+        return Err(AppError::validation(
+            "redirect_uri",
+            "is not listed in the client metadata document",
+        ));
+    }
+    Ok(Some(document))
+}
+
+/// Stores a described client like a registered one, so that consent, codes
+/// and tokens work the same. An unused row is removed after a day, as for
+/// registrations; each new authorization request starts that day again.
+fn remember_described_client(
+    tx: &rusqlite::Transaction<'_>,
+    document: &ClientDocument,
+    now: i64,
+) -> AppResult<()> {
+    let redirects = serde_json::to_string(&document.redirect_uris)
+        .map_err(|error| AppError::internal(format!("serialize redirect URIs: {error}")))?;
+    tx.execute(
+        UPSERT_DESCRIBED_CLIENT_SQL,
+        params![
+            document.client_id,
+            document.client_name,
+            redirects,
+            document.client_uri,
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 fn consent_response(mut response: Response, redirect: &str) -> AppResult<Response> {
@@ -537,6 +610,7 @@ async fn consent(
                         &projects,
                         &stored.requested_scopes,
                         ConsentPresentation {
+                            client_id: &stored.client_id,
                             redirect: &stored.redirect_uri,
                             retry: Some((&form, &error.client_message())),
                         },
@@ -1175,6 +1249,14 @@ async fn validate_authorization_query(
         ));
     }
     let redirect = validate_redirect_uri(&query.redirect_uri, &state.config.mcp_redirect_schemes)?;
+    if client_metadata::is_document_client_id(&query.client_id) {
+        if !state.client_documents.enabled() {
+            return Err(AppError::validation("client_id", "is not registered"));
+        }
+        // The callback is checked against the document after sign-in.
+        client_metadata::document_url(&query.client_id)?;
+        return Ok(());
+    }
     let client = query.client_id.clone();
     let valid = state
         .db
@@ -1301,7 +1383,7 @@ fn redirect_matches(registered: &str, requested: &str) -> bool {
 
 /// Checks a callback: `https`, loopback `http`, or a scheme an admin listed
 /// in `ONELOOP_MCP_REDIRECT_SCHEMES` for apps that receive their own links.
-fn validate_redirect_uri(value: &str, schemes: &[String]) -> AppResult<String> {
+pub(super) fn validate_redirect_uri(value: &str, schemes: &[String]) -> AppResult<String> {
     if value.len() > 512 {
         return Err(AppError::validation(
             "redirect_uris",
@@ -1340,7 +1422,7 @@ fn validate_redirect_uri(value: &str, schemes: &[String]) -> AppResult<String> {
     Ok(url.to_string())
 }
 
-fn validate_client_uri(value: &str) -> AppResult<String> {
+pub(super) fn validate_client_uri(value: &str) -> AppResult<String> {
     if value.len() > 2048 {
         return Err(AppError::validation(
             "client_uri",
@@ -1447,6 +1529,7 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 struct ConsentPresentation<'a> {
+    client_id: &'a str,
     redirect: &'a str,
     retry: Option<(&'a ConsentForm, &'a str)>,
 }
@@ -1529,6 +1612,20 @@ fn consent_html(
         })
         .unwrap_or_else(|| presentation.redirect.to_owned());
     let destination = escape(&destination);
+    let returns_to_this_computer = callback.as_ref().is_some_and(|url| url.scheme() != "https");
+    let client_source = match client_metadata::document_url(presentation.client_id) {
+        Err(_) => "App name supplied by the client; identity is unverified.".to_owned(),
+        Ok(url) => {
+            let host = url.host_str().unwrap_or_default();
+            if returns_to_this_computer {
+                format!(
+                    "App name published by {host}. The app runs on your computer, where another app could use the same name. Continue only if you started this connection."
+                )
+            } else {
+                format!("App name published by {host}.")
+            }
+        }
+    };
     let error = presentation
         .retry
         .map(|(_, error)| format!("<p class=warning role=alert>{}</p>", escape(error)))
@@ -1536,6 +1633,7 @@ fn consent_html(
     format!(
         include_str!("consent/page.html"),
         destination = destination,
+        client_source = escape(&client_source),
         error = error,
         project_rows = project_rows,
         scope_rows = scope_rows,
@@ -1768,6 +1866,11 @@ const UPDATE_MCP_TOKENS_4_SQL: &str = "UPDATE mcp_tokens SET revoked_at=?1,last_
                      revoked_at IS NULL";
 const SELECT_MCP_GRANT_SCOPES_SQL: &str =
     "SELECT scope FROM mcp_grant_scopes WHERE grant_id=?1 ORDER BY scope";
+const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,client_uri,created_at)
+             VALUES(?1,?2,?3,?4,?5)
+             ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,
+               redirect_uris_json=excluded.redirect_uris_json,client_uri=excluded.client_uri,
+               created_at=CASE WHEN last_used_at IS NULL THEN excluded.created_at ELSE oauth_clients.created_at END";
 const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
             AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
 
@@ -1870,5 +1973,212 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(codes, 0);
+    }
+
+    #[tokio::test]
+    async fn a_client_described_by_its_document_connects_like_a_registered_one() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        const CLIENT: &str = "https://app.example.com/oauth/client.json";
+        const LOCAL_CALLBACK: &str = "http://127.0.0.1:49152/callback";
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        let config = Config::from_os_iter([
+            ("ONELOOP_PUBLIC_URL", "http://127.0.0.1:8080"),
+            ("ONELOOP_DATA_DIR", root.path().to_str().unwrap()),
+            ("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "true"),
+        ])
+        .unwrap();
+        let state = AppState::new(config, db.clone());
+        let user = NewUser {
+            username: "owner".into(),
+            display_name: "Owner".into(),
+            password: "test-only-password-012345".into(),
+            is_admin: true,
+            must_change_password: false,
+        };
+        db.transaction(move |tx| {
+            create_user(tx, user, unix_now()?)?;
+            tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1)", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let LoginResult::Authenticated(session) = state
+            .auth
+            .login(
+                "owner",
+                "test-only-password-012345",
+                Default::default(),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("the owner signs in");
+        };
+        let cookie = format!("oneloop_session={}", session.token);
+        let document = |name: &str| ClientDocument {
+            client_id: CLIENT.into(),
+            client_name: name.into(),
+            redirect_uris: vec![LOCAL_CALLBACK.into()],
+            client_uri: None,
+        };
+        // Stands in for a fetch, which tests can't make to a public address.
+        state
+            .client_documents
+            .insert_for_test(document("Described App"));
+        let app = crate::application(state.clone()).router;
+        let text = |response: Response| async move {
+            String::from_utf8(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&text(response).await).unwrap();
+        assert_eq!(metadata["client_id_metadata_document_supported"], true);
+
+        let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let authorize = |redirect: &str| {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("response_type", "code"),
+                    ("client_id", CLIENT),
+                    ("redirect_uri", redirect),
+                    ("code_challenge", challenge.as_str()),
+                    ("code_challenge_method", "S256"),
+                    ("resource", "http://127.0.0.1:8080/mcp"),
+                    ("state", "described"),
+                ])
+                .finish();
+            Request::builder()
+                .uri(format!("/oauth/authorize?{query}"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = app
+            .clone()
+            .oneshot(authorize("http://127.0.0.1:49152/elsewhere"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = app
+            .clone()
+            .oneshot(authorize(LOCAL_CALLBACK))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text(response).await;
+        assert!(html.contains("Connect <bdi>Described App</bdi>"), "{html}");
+        assert!(
+            html.contains("App name published by app.example.com. The app runs on your computer")
+        );
+        let request_id = html
+            .split("name=request_id value=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .to_owned();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header(header::ORIGIN, "http://127.0.0.1:8080")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "request_id={request_id}&decision=allow&project=p1"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        assert!(location.as_str().starts_with(LOCAL_CALLBACK));
+        let code = location
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .unwrap()
+            .1
+            .into_owned();
+        let exchange = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "authorization_code"),
+                ("client_id", CLIENT),
+                ("code", code.as_str()),
+                ("redirect_uri", LOCAL_CALLBACK),
+                ("code_verifier", verifier),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+            ])
+            .finish();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(exchange))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = || {
+            db.run(|c| {
+                Ok(c.query_row(
+                    "SELECT c.client_name,c.created_at,g.client_name FROM oauth_clients c JOIN mcp_grants g ON g.client_id=c.client_id WHERE c.client_id=?1",
+                    [CLIENT],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+                )?)
+            })
+        };
+        let (name, created_at, grant_name) = stored().await.unwrap();
+        assert_eq!(
+            (name.as_str(), grant_name.as_str()),
+            ("Described App", "Described App")
+        );
+        // A changed document updates the client; a used client keeps its age.
+        db.run(|c| Ok(c.execute("UPDATE oauth_clients SET created_at=created_at-100", [])?))
+            .await
+            .unwrap();
+        state
+            .client_documents
+            .insert_for_test(document("Renamed App"));
+        let response = app
+            .clone()
+            .oneshot(authorize(LOCAL_CALLBACK))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (name, renamed_at, _) = stored().await.unwrap();
+        assert_eq!(
+            (name.as_str(), renamed_at),
+            ("Renamed App", created_at - 100)
+        );
     }
 }

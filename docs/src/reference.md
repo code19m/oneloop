@@ -31,6 +31,7 @@ service manager can load them for it.
 | `ONELOOP_TEMPORARY_PASSWORD_LIFETIME` | None (no expiry) | How long a temporary password works for signing in, in hours or days, such as `36h` or `7d`, up to `365d`. |
 | `ONELOOP_MCP_REDIRECT_SCHEMES` | None | Link schemes of apps, such as `cursor`, that AI assistants may use for their sign-in callback, separated by commas. `http`, `https` and the schemes browsers handle themselves, such as `javascript` and `data`, aren't allowed. See [AI assistant connections](production.md#ai-assistant-connections). |
 | `ONELOOP_MCP_ALLOWED_ORIGINS` | None | Origins of browser-based MCP clients, such as `http://localhost:6274`, separated by commas. Each is `https://` and a host, or `http://` and a loopback host, with an optional port and no path. |
+| `ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS` | `false` | `true` lets AI assistants use an HTTPS address of a client ID metadata document as their client ID. oneloop fetches the document. |
 
 Logs go to standard error. In a terminal they are colored, unless `NO_COLOR` is
 set.
