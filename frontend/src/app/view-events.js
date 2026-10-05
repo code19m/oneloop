@@ -18,7 +18,7 @@ const ALLOWED_APP_METHODS = new Set([
   'saveEpic','saveMilestone','savePoolDescription','saveProjectNew','saveTask','saveTrack','saveUser',
   'setAttachmentTemporary','setAvatar','setBlockedFilter','setMemberPermission','setNotificationRead','setPassword','setPoolTab','setTheme',
   'setBoardQ','sizeDescription','sizeDescriptionEditors','sizeTaskTitle','taskActions','taskDragStart',
-  'taskMoveMenu','toggleCommentText','toggleDescription','togglePoolDescription','toggleSidebar','trackDragStart','trackDrop',
+  'taskMoveMenu','toggleCommentText','toggleDescription','toggleDoneOrder','togglePoolDescription','toggleSidebar','trackDragStart','trackDrop',
   'toggleReplies','trackReorderKey','trackMenu','toast','updMe','updTask','updateProjectField','userMenu',
 ]);
 const ALLOWED_RECOVERY_METHODS = new Set(['activateNotice','copyReference','reconnect','retryLoad','retryRefresh','reloadClient']);

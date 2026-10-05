@@ -5,10 +5,14 @@ import {
   setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts, wireStatus,
 } from './projection-store.js';
 import {mapActivity} from './activity-mapper.js';
+import {savedDoneOrder} from './done-order.js';
+import {secondsToMilliseconds} from './time.js';
 
 const STATUSES=['planning','progress','review','done'];
 function boardFilters(filters={}){
-  return {limit:50,search:String(filters.search??'').trim()||undefined,trackIds:[...(filters.trackIds??[])].sort(),epicIds:[...(filters.epicIds??[])].sort(),assigneeIds:(filters.assigneeIds??[]).filter(id=>id!=='__unassigned__').sort(),noAssignee:(filters.assigneeIds??[]).includes('__unassigned__')||undefined,blocked:filters.blocked||undefined};
+  return {limit:50,search:String(filters.search??'').trim()||undefined,trackIds:[...(filters.trackIds??[])].sort(),epicIds:[...(filters.epicIds??[])].sort(),assigneeIds:(filters.assigneeIds??[]).filter(id=>id!=='__unassigned__').sort(),noAssignee:(filters.assigneeIds??[]).includes('__unassigned__')||undefined,blocked:filters.blocked||undefined,
+    // The browser's Done order travels with every Board read; only Done uses it.
+    ...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
 }
 
 export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
@@ -25,6 +29,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   function adoptBoard(projectId,filters={}){
     if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
     if(filters.search||filters.blocked||(filters.trackIds??[]).length||(filters.epicIds??[]).length||(filters.assigneeIds??[]).length)return false;
+    if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
     remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});
     onBoard(boardState);return true;
   }
@@ -75,7 +80,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
         const status=view&&({in_progress:'progress',in_review:'review'}[view.status]??view.status);
         const page=boardState.pages[status];
         const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
-        const edge=loaded.sort(compareTaskOrder).at(-1);
+        const edge=loaded.sort((left,right)=>compareTaskOrder(left,right,common.doneOrder)).at(-1);
         const parent=view&&data.epics.find(item=>item.id===view.epicId);
         const matches=view&&view.projectId===projectId&&
           (!common.search||view.title.toLowerCase().includes(common.search.toLowerCase())||view.taskKey.toLowerCase().includes(common.search.toLowerCase()))&&
@@ -83,7 +88,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
           (!common.epicIds.length||common.epicIds.includes(view.epicId))&&
           (!(common.assigneeIds.length||common.noAssignee)||view.assigneeIds.some(id=>common.assigneeIds.includes(id))||common.noAssignee&&!view.assigneeIds.length)&&
           (!common.blocked||!!view.activeBlock);
-        if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id},edge)<=0))appendBoardTasks(data,[view]);
+        if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
         else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
       }
       const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked};

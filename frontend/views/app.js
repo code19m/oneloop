@@ -943,6 +943,9 @@
   }
 
   function applyTaskMove(t, col, beforeId = null) {
+    // A newest-first Done shows a finished task on top and has no manual order to change.
+    const newest = col === 'done' && doneNewest();
+    if (newest) { if (t.state === 'done') return null; beforeId = tasks().find((item) => item.state === 'done')?.id ?? null; }
     const plan = taskMovePlan(t, col, beforeId); if (!plan) return null;
     const previousState = t.state, projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId, sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
     const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
@@ -960,6 +963,7 @@
     const at = anchor ? D.tasks.indexOf(anchor) + (beforeId ? 0 : 1) : D.tasks.length;
     D.tasks.splice(Math.max(0, at), 0, t);
     t.state = col;
+    if (newest) t.completedAt = Date.now();
     for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
     const epic = epicById(t.epicId);
     if (epic) {
@@ -978,7 +982,7 @@
       previousTaskBefore,previousTaskAfter,previousOrders,optimisticOrders,
       pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
       countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
-      payload:{ taskId:t.internalId||t.id, status:col, ...plan.placement, optimistic:true },
+      payload:{ taskId:t.internalId||t.id, status:col, ...(newest ? {} : plan.placement), optimistic:true },
     };
   }
 
@@ -1045,6 +1049,8 @@
     { key: 'done', name: 'Done' },
   ];
   const stIcon = (state) => I['st_' + state] || '';
+  /** Whether the loaded Done column lists the most recently completed task first. */
+  const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
 
   function taskBits(t) {
     if (t.state === 'done') return { right: stIcon('done'), cls: 'done' };
@@ -1090,7 +1096,7 @@
           </div></div>`;
       }).join('');
       return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `ondragover="App.colOver(event)" ondragleave="App.colLeave(event)" ondrop="App.dropTask(event,'${UIArg(c.key)}')"` : ''}>
-        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span></div>
+        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" onclick="App.toggleDoneOrder()">Newest first</button>` : ''}</div>
         </div>
         <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" onclick="App.loadMoreBoard('${UIArg(c.key)}')">Load more</button></div>` : ''}</div></section>`;
     }).join('');
@@ -1215,6 +1221,8 @@
       while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}
       const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
       if(count.textContent!==nextCount)count.textContent=nextCount;
+      const order=column.querySelector('.col-head .done-order'),pressed=next.querySelector('.col-head .done-order')?.getAttribute('aria-pressed');
+      if(order&&pressed&&order.getAttribute('aria-pressed')!==pressed)order.setAttribute('aria-pressed',pressed);
       list.scrollTop = scrollTop;
       filterScroll.set(list, { wanted: scrollTop, applied: list.scrollTop });
       if (!animate) return;
@@ -3195,7 +3203,7 @@
         if (ev.clientY >= r.top - 4 && ev.clientY <= r.bottom + 4) return;
       }
       const cards = [...colEl.querySelectorAll('.card:not(.dragging)')];
-      const next = cards.find((c) => {
+      const next = colEl.dataset.col === 'done' && doneNewest() ? cards[0] : cards.find((c) => {
         // Hit-test the final layout, not a sibling's in-flight transform.
         const y = list.getBoundingClientRect().top + c.offsetTop - list.scrollTop;
         return ev.clientY < y + c.offsetHeight / 2;
@@ -3564,6 +3572,7 @@
     isRendering:()=>rendering,
     clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
     retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
+    toggleDoneOrder(){bootWindow.OneloopRuntime?.invoke('board.doneOrder',{order:doneNewest()?'manual':'completed'}).catch(bootWindow.OneloopRuntime.report);},
     loadMoreBoard(col){if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.more',{status:col}).catch(bootWindow.OneloopRuntime.report);return;}state.boardLimits[col]=(state.boardLimits[col]||50)+50;applyBoardFilters(false);},
     loadMoreUsers(){const count=document.querySelectorAll('.user-row').length;state.usersLimit+=50;render();[...document.querySelectorAll('.user-row')].slice(count).forEach(el=>UIMotion.enter(el));},
     loadOlderActivity(id){state.activityLimits[id]=(state.activityLimits[id]||50)+50;const timeline=document.querySelector('.task-page .timeline'),task=taskById(id);if(timeline&&task){const scroll=document.querySelector('.task-page'),before=scroll.scrollHeight;setHTML(timeline,taskFeedHtml(task,canBoard()));scroll.scrollTop+=scroll.scrollHeight-before;fadeContent(timeline);}},
@@ -3571,8 +3580,9 @@
       if(App._boardMovePending)return;
       if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
       const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){render();focusMovedTask(id);}}}}));
-      if(index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
-      if(index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
+      const ordered=!(task.state==='done'&&doneNewest());
+      if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
+      if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
       App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
     },
     moveTaskOrder(id,anchor,before){if(!canBoard())return;const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);render();focusMovedTask(id);animateLayout(old,'.card[data-task]');},

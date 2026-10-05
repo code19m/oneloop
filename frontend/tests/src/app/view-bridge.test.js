@@ -3,6 +3,7 @@ import test from 'node:test';
 import {installViewBridge} from '../../../src/app/view-bridge.js';
 import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {ApiError} from '../../../src/data/api-client.js';
+import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
@@ -275,6 +276,16 @@ test('Pool read actions rely on in-place read callbacks without whole-app refres
   const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:async()=>({stale:false}),morePool:async()=>({stale:false})}});
   await state.bridge.invoke('pool.open',{});await state.bridge.invoke('pool.select',{scope:'mine'});await state.bridge.invoke('pool.more',{scope:'mine'});
   assert.deepEqual(state.paints,[]);
+});
+
+test('choosing a Done order saves it and reads the Board again with the same filters',async(t)=>{
+  t.after(()=>saveDoneOrder('manual',undefined));
+  const reads=[],board={search:'checkout',trackIds:[],epicIds:[],assigneeIds:[],blocked:false};
+  const state=fixture({view:'board',projectId:'p1',board},{reads:{board:async(...args)=>{reads.push([...args,savedDoneOrder(undefined)]);return {stale:false};}}});
+  await state.bridge.invoke('board.doneOrder',{order:'completed'});
+  assert.deepEqual(reads,[['p1',board,'completed']]);
+  await state.bridge.invoke('board.doneOrder',{order:'anything'});
+  assert.equal(reads.at(-1)[2],'manual');
 });
 
 test('a failed obsolete task read cannot put the new Profile page into an error state',async()=>{

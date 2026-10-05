@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData} from '../../../src/data/projection-store.js';
+import {saveDoneOrder} from '../../../src/data/done-order.js';
 
 const task=(id,status)=>({id,projectId:'p1',epicId:'e1',taskKey:`BIR-${id}`,title:id,description:'',status,position:1,deadline:null,createdAt:1_800_000_000_000,updatedAt:1_800_000_000_000,revision:1,assigneeIds:[],activeBlock:null});
 
@@ -119,6 +120,30 @@ test('Board hint removes deleted or filtered-out cards and ignores tasks beyond 
   const reads=createReadController({api,data});await reads.board('p1');
   changed={...task('far','planning'),position:99};await reads.patchBoard('p1',{},[{entityId:'far'}]);assert.equal(data.tasks.length,1);
   api.task=async()=>{throw {status:404};};await reads.patchBoard('p1',{},[{entityId:'one'}]);assert.equal(data.tasks.length,0);assert.equal(data.boardPageInfo.pages.planning.nextCursor,'next');
+});
+
+test('a newest-first Done reads, adopts and patches the Done column in completion order',async(t)=>{
+  saveDoneOrder('completed',undefined);t.after(()=>saveDoneOrder('manual',undefined));
+  const calls=[],data=createLegacyData();let changed;
+  const done=(id,completedAt)=>({...task(id,'done'),completedAt});
+  const api={
+    boardView:async(_project,filters)=>{calls.push(['view',filters]);return {planning:{items:[],total:0},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[done('later',300),done('earlier',200)],nextCursor:'done-next',total:9},counts:{planning:0,inProgress:0,inReview:0,done:9,blocked:0}};},
+    board:async(_project,filters)=>{calls.push(['page',filters]);return {items:[done('earliest',100)],nextCursor:'older',total:9};},
+    task:async()=>changed,counts:async()=>({planning:0,inProgress:0,inReview:0,done:10,blocked:0}),
+  };
+  const reads=createReadController({api,data});
+  data.bootstrapView='board';data.boardPageInfo={projectId:'p1',filters:{},pages:{done:{nextCursor:null,total:9}}};
+  assert.equal(reads.adoptBoard('p1'),false,'Board pages in manual order are not reused');
+  data.boardPageInfo.filters={doneOrder:'completed'};assert.equal(reads.adoptBoard('p1'),true);
+  await reads.board('p1');
+  assert.equal(calls[0][1].doneOrder,'completed');
+  await reads.moreBoard('done');
+  assert.equal(calls[1][1].doneOrder,'completed');assert.equal(calls[1][1].status,'done');
+  changed=done('finished-now',400);
+  await reads.patchBoard('p1',{},[{entityId:'finished-now'}]);
+  changed=done('long-ago',50);
+  await reads.patchBoard('p1',{},[{entityId:'long-ago'}]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['finished-now','later','earlier','earliest'],'only cards inside the loaded window join it');
 });
 
 test('a Board hint waits for foreground pagination instead of aborting or discarding it',async()=>{

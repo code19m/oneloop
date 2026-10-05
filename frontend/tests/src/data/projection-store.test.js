@@ -93,6 +93,22 @@ test('a bootstrap without epic counts keeps the counts the Roadmap read last',()
   assert.deepEqual([fresh.epics[0].done,fresh.epics[0].total],[0,0]);
 });
 
+test('a newest-first Done keeps live cards in completion order, newest first',()=>{
+  const data=createLegacyData(),value=bootstrap();
+  value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  hydrateLegacyData(data,value);
+  assert.equal(data.boardPageInfo.filters.doneOrder,'completed');
+  const done=(id,position,completedAt)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position,completedAt});
+  appendBoardTasks(data,[done('old',1,100),done('undated',2,null),done('new',3,300),done('tie-b',4,200),done('tie-a',5,200)]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['new','tie-b','tie-a','old','undated']);
+  assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,300000);
+  data.boardPageInfo.filters={};
+  appendBoardTasks(data,[]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['old','undated','new','tie-b','tie-a']);
+  reconcileCommandResult(data,{entities:[{...done('new',3,null),entityType:'task',status:'in_review',revision:9}]});
+  assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,null);
+});
+
 test('an explicitly empty roadmap clears stale project collections',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());
   replaceRoadmap(data,{projectId:'p1',tracks:[],epics:[],milestones:[]});
