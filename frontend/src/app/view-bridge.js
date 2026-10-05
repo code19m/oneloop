@@ -564,7 +564,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
     }));
   };
-  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be permanently removed.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,'Task deleted',{reload:true}).then((result)=>ifCurrent(result,()=>app.nav('board'))))});};
+  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>app.nav('board')}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
+  // Undo restores the task at the revision its deletion left.
+  function undoTaskDeletion(item,result){
+    const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
+    app.toast(`${item.id} deleted`,'success',Number.isSafeInteger(revision)?{action:{label:'Undo',run:()=>fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision}))}}:{});
+  }
   app.moveTaskOrder = (id,anchor,before) => {
     const item=task(id),target=task(anchor);if(!item||!target||app._boardMovePending)return false;
     const projectId=item.projectId,scope=sessionScope(),projectTasks=data.tasks.filter((entry)=>entry.projectId===projectId),index=projectTasks.indexOf(item),previousBefore=index>0?projectTasks[index-1]:null,previousAfter=projectTasks[index+1]||null,revision=item.revision;

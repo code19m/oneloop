@@ -187,3 +187,17 @@ test('text typed into a task field when edit rights end stays as Not saved, read
   t.A.saveTaskDraft(t.task.id, 'desc');
   assert.deepEqual(t.requests.map(request => [request.operation, request.payload.description, request.options.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
 });
+
+test('a message with an action runs it once and closes, and never merges with another', () => {
+  const t = bootApp({ route: 'board' });
+  const runs = [];
+  t.A.toast('Comment deleted', 'success', { action: { label: 'Undo', run: () => runs.push('first') } });
+  t.A.toast('Comment deleted', 'success', { action: { label: 'Undo', run: () => runs.push('second') } });
+  const toasts = [...t.d.querySelectorAll('#toast-region .toast')];
+  assert.equal(toasts.length, 2, 'each deletion keeps its own Undo');
+  const undo = toasts[0].querySelector('.toast-action');
+  assert.equal(undo.textContent, 'Undo');
+  undo.click(); undo.click();
+  assert.deepEqual(runs, ['first']);
+  assert.equal(t.d.querySelectorAll('#toast-region .toast[data-toast-id]').length, 1);
+});
