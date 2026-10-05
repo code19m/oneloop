@@ -172,7 +172,8 @@ and an update here.
   `Content-Security-Policy` allows scripts and style elements from the app
   only, and Trusted Types let HTML reach the page only through the app's
   `oneloop` policy and DOMPurify. Mermaid lays out diagrams in a separate
-  document, `views/diagram-renderer.html`, the one page with inline styles.
+  document, `views/diagram-renderer.html`, the one app page that allows
+  inline style elements.
 - **A write and its record commit together.** Data, audit activity and outbox
   messages share one transaction. Nothing reaches clients that was not
   committed.
