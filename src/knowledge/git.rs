@@ -178,6 +178,8 @@ struct Session<'a> {
     ssh_key: Option<PathBuf>,
     credentials: &'a Credentials,
     origin: Option<String>,
+    /// Where Git stops looking for a repository above its working directory.
+    ceiling: Option<OsString>,
 }
 
 impl Drop for Session<'_> {
@@ -537,7 +539,7 @@ impl Git {
         if let Some(disk) = &disk {
             disk.keep_until_removed(root.clone());
         }
-        let session = Session {
+        let mut session = Session {
             disk,
             home: root.join("home"),
             global_config: root.join("gitconfig"),
@@ -547,10 +549,17 @@ impl Git {
             root,
             credentials,
             origin: url.origin(),
+            ceiling: None,
         };
         for directory in [&session.home, &session.hooks, &session.templates] {
             crate::db::create_private_directories(directory).map_err(io)?;
         }
+        // Commands outside the clone, such as `ls-remote`, would otherwise read
+        // the settings of a checkout that contains the data directory, such as
+        // `url.<base>.insteadOf`. A path with the list separator can't be a
+        // ceiling; Git then keeps looking upward, as without one.
+        let work_root = std::fs::canonicalize(&self.work_root).map_err(io)?;
+        session.ceiling = std::env::join_paths([work_root]).ok();
         if let Some(parent) = self.known_hosts.parent() {
             crate::db::create_private_directories(parent).map_err(io)?;
         }
@@ -587,6 +596,9 @@ impl Git {
             )
             .env("LC_ALL", "C")
             .env("LANG", "C");
+        if let Some(ceiling) = &session.ceiling {
+            command.env("GIT_CEILING_DIRECTORIES", ceiling);
+        }
         let mut settings: Vec<(String, OsString)> = [
             ("credential.helper", OsString::new()),
             ("core.hooksPath", session.hooks.clone().into_os_string()),
@@ -1400,6 +1412,29 @@ pub(super) mod tests {
             stopped.is_ok(),
             "the helper must stop and the Git parent must be reaped"
         );
+    }
+
+    #[tokio::test]
+    async fn a_checkout_around_the_data_directory_cannot_change_git_settings() {
+        let root = tempfile::tempdir_in("target").unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), "# Docs\n").unwrap();
+        let commit = commit_all(&source);
+        let url = GitUrl::parse(&format!("file://{}", source.display()), true).unwrap();
+        // The data directory sits in a checkout whose settings send the URL elsewhere.
+        let checkout = root.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        git(&checkout, &["init", "--quiet"]);
+        let elsewhere = format!(
+            "url.file://{}.insteadOf",
+            root.path().join("missing").display()
+        );
+        git(&checkout, &["config", &elsewhere, &url.fetch_url()]);
+        let data = checkout.join("data");
+        let git = Git::new(data.join("knowledge"), data.join("known_hosts"), true);
+        let head = git.remote_head(&url, "main", &Credentials::None).await;
+        assert_eq!(head.map_err(|error| error.detail).unwrap(), commit);
     }
 
     fn listing(entries: &[(&str, &str, &str)]) -> Vec<u8> {
