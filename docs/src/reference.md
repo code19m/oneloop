@@ -71,12 +71,17 @@ until they change it.
   such as a list of common passwords, of at most 16 MiB. Letter case doesn't
   matter, and empty lines are skipped. With a list, a password that equals the
   username is refused too. oneloop reads the file when it starts, and refuses
-  to start if it can't.
+  to start if it can't. Give an absolute path: the server and the `user`
+  commands can run in different folders, and a relative path depends on the
+  folder.
 - With `ONELOOP_TEMPORARY_PASSWORD_LIFETIME`, a temporary password that is older
   than this no longer signs in. The person sees "This temporary password has
   expired", and an admin resets it again. Temporary passwords come from
   **Create user** and **Reset password** in the app, and from
-  `oneloop user add` and `oneloop user passwd`.
+  `oneloop user add` and `oneloop user passwd`. When you turn the setting on,
+  temporary passwords that are already older stop working at once.
+  `oneloop user passwd` gives a new one, also to the last admin, whom nobody
+  else can reset.
 
 ### Storage
 
