@@ -116,22 +116,16 @@ fn data_dir_rejects_parent_component_after_a_broken_symbolic_link() {
 
 #[test]
 fn documented_fixed_offset_timezone_workarounds_cover_current_boundaries() {
-    use chrono::{Offset, TimeZone};
     for (zone, seconds) in [
         ("Etc/GMT+7", -7 * 3600),
         ("Etc/GMT+6", -6 * 3600),
         ("Etc/UTC", 0),
     ] {
-        let zone: chrono_tz::Tz = zone.parse().unwrap();
+        let zone = oneloop::timezone::TimeZone::built_in(zone).unwrap();
         for (month, day) in [(9, 21), (11, 2)] {
-            assert_eq!(
-                zone.with_ymd_and_hms(2026, month, day, 0, 0, 0)
-                    .unwrap()
-                    .offset()
-                    .fix()
-                    .local_minus_utc(),
-                seconds
-            );
+            let midnight = jiff::civil::date(2026, month, day).at(0, 0, 0, 0);
+            let zoned = midnight.to_zoned(zone.rules().clone()).unwrap();
+            assert_eq!(zoned.offset().seconds(), seconds);
         }
     }
 }

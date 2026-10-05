@@ -587,7 +587,7 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
     }).await.unwrap();
     let mut admin = f.manager.clone();
     admin.is_admin = true;
-    oneloop::domain::DomainService::new(f.db.clone(), chrono_tz::UTC)
+    oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {
@@ -1659,7 +1659,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
             .len(),
         1
     );
-    oneloop::domain::DomainService::new(fixture.db.clone(), chrono_tz::UTC)
+    oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc())
         .execute(
             &admin,
             oneloop::domain::CommandEnvelope {

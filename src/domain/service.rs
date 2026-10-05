@@ -33,6 +33,7 @@ use crate::{
         ActivityInput, NotificationInput, record_activity_tx, snapshot_notification_tx,
     },
     error::{AppError, AppResult},
+    timezone::TimeZone,
 };
 
 use super::{
@@ -58,11 +59,11 @@ const MILESTONE_DESCRIPTION_MAX: usize = 500;
 #[derive(Clone)]
 pub struct DomainService {
     pub(super) db: Db,
-    pub(super) time_zone: chrono_tz::Tz,
+    pub(super) time_zone: TimeZone,
 }
 
 impl DomainService {
-    pub fn new(db: Db, time_zone: chrono_tz::Tz) -> Self {
+    pub fn new(db: Db, time_zone: TimeZone) -> Self {
         Self { db, time_zone }
     }
 

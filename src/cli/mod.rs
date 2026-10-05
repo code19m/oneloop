@@ -139,7 +139,10 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
             );
         }
         println!("SQLite {}", rusqlite::version());
-        println!("IANA timezone database {}", chrono_tz::IANA_TZDB_VERSION);
+        println!(
+            "IANA timezone database {}",
+            crate::timezone::built_in_version()
+        );
         return Ok(());
     }
 
@@ -164,7 +167,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let files_worker = crate::runtime::spawn_file_maintenance(application.files, signal);
     tracing::info!(
         sqlite_version = rusqlite::version(),
-        tzdb_version = chrono_tz::IANA_TZDB_VERSION,
+        tzdb_version = crate::timezone::built_in_version(),
         version = crate::build_info::VERSION,
         revision = crate::build_info::REVISION,
         address = %listen,

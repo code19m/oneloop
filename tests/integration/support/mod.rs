@@ -22,6 +22,7 @@ use oneloop::{
     Config, Db,
     auth::{Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user},
     db::{DataLayout, migrate},
+    timezone::TimeZone,
 };
 use tempfile::TempDir;
 
@@ -102,6 +103,11 @@ pub fn config(root: &Path, public_url: &str, extra: &[(&str, &str)]) -> Config {
     ];
     values.extend_from_slice(extra);
     Config::from_os_iter(values).unwrap()
+}
+
+/// UTC from the timezone database built into oneloop.
+pub fn utc() -> TimeZone {
+    TimeZone::built_in("UTC").unwrap()
 }
 
 /// A loopback port that is free now, from the range reserved for servers
