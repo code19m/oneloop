@@ -5,7 +5,9 @@ use oneloop::{
     AppError, Db,
     auth::Actor,
     db,
-    files::{AttachmentPatch, AttachmentReorder, FileService, ReadMode, UploadStart},
+    files::{
+        AttachmentPatch, AttachmentReorder, AttachmentRestore, FileService, ReadMode, UploadStart,
+    },
 };
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
@@ -71,6 +73,23 @@ fn stored_file_count(root: &std::path::Path) -> usize {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .count()
+}
+
+/// Moves every deletion back past the Undo window, as if it had passed.
+async fn end_undo_window(db: &Db) {
+    db.run(|connection| {
+        for table in ["tasks", "task_attachments"] {
+            connection.execute(
+                &format!(
+                    "UPDATE {table} SET deleted_at=deleted_at-?1 WHERE deleted_at IS NOT NULL"
+                ),
+                [oneloop::domain::UNDO_WINDOW_SECONDS],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
 }
 
 async fn upload(
@@ -346,7 +365,7 @@ async fn failed_deletion_of_a_cleaned_attachment_can_retry_with_its_key() {
         })
     };
     set_failure(
-        "CREATE TRIGGER fail_once BEFORE DELETE ON task_attachments
+        "CREATE TRIGGER fail_once BEFORE UPDATE OF deleted_at ON task_attachments
          BEGIN SELECT RAISE(ABORT, 'disk error'); END",
     )
     .await
@@ -535,13 +554,36 @@ async fn deletion_is_byte_complete_and_safe_to_replay() {
             .items
             .is_empty()
     );
-    let stored_files = std::fs::read_dir(fixture.db.layout().files())
-        .unwrap()
-        .flat_map(|entry| walkdir::WalkDir::new(entry.unwrap().path()))
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .count();
-    assert_eq!(stored_files, 0);
+    // The bytes stay for the Undo window.
+    let files = fixture.db.layout().files();
+    assert_eq!(
+        service.reconcile().await.unwrap().deletion_jobs_completed,
+        0
+    );
+    assert_eq!(stored_file_count(&files), 1);
+    end_undo_window(&fixture.db).await;
+    assert_eq!(
+        service.reconcile().await.unwrap().deletion_jobs_completed,
+        1
+    );
+    assert_eq!(stored_file_count(&files), 0);
+    let rows: (i64, i64) = fixture
+        .db
+        .run(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows, (0, 0));
+    // The receipt still answers a retry after the purge.
+    service
+        .delete_attachment(&fixture.manager, &file.id, file.revision, "delete-request")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -576,20 +618,26 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         let id = attachment.id.clone();
         let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
         let path = service.store().file_path(&key).unwrap();
-        let held = f._root.path().join("held-original");
-        std::fs::rename(&path, &held).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        let failed = service
+        service
             .delete_attachment(
                 &actor,
                 &attachment.id,
                 attachment.revision,
                 "pending-delete",
             )
-            .await;
+            .await
+            .unwrap();
+        // A folder in the file's place makes the first removal fail.
+        let held = f._root.path().join("held-original");
+        std::fs::rename(&path, &held).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        end_undo_window(&f.db).await;
+        assert_eq!(
+            service.reconcile().await.unwrap().deletion_jobs_completed,
+            0
+        );
         std::fs::remove_dir(&path).unwrap();
         std::fs::rename(held, &path).unwrap();
-        assert!(matches!(failed, Err(AppError::Unavailable(_))));
         f.db.run(|c| {
             c.execute(
                 "UPDATE idempotency_keys SET expires_at=0 WHERE operation='attachment.delete'",
@@ -675,27 +723,21 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
     )
     .await;
     let id = attachment.id.clone();
-    let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
-    let path = service.store().file_path(&key).unwrap();
-    // A folder in the file's place leaves the deletion to reconciliation.
-    let held = f._root.path().join("held-original");
-    std::fs::rename(&path, &held).unwrap();
-    std::fs::create_dir(&path).unwrap();
-    let failed = service
-        .delete_attachment(
-            &f.manager,
-            &attachment.id,
-            attachment.revision,
-            "lost-delete",
-        )
-        .await;
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(held, &path).unwrap();
-    assert!(matches!(failed, Err(AppError::Unavailable(_))));
-    f.db.transaction(|tx| {
-        // An upgraded job whose retry receipt had already expired.
-        tx.execute("UPDATE file_deletion_jobs SET actor_user_id=NULL,actor_mcp_grant_id=NULL,actor_name=NULL,available_at=0", [])?;
-        tx.execute("DELETE FROM idempotency_keys WHERE operation='attachment.delete'", [])?;
+    f.db.transaction(move |tx| {
+        // A deletion from before Undo that an upgrade left in progress, whose
+        // retry receipt had already expired: the job knows the file, not who
+        // asked for it.
+        tx.execute(
+            "UPDATE file_blobs SET state='deleting' WHERE id=(SELECT blob_id FROM task_attachments WHERE id=?1)",
+            [&id],
+        )?;
+        tx.execute(
+            "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,
+               project_id,task_id,attachment_id,attachment_name)
+             SELECT 'legacy-job',b.id,b.storage_key,'manual',1,0,a.project_id,a.task_id,a.id,a.original_name
+             FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
+            [&id],
+        )?;
         tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
             VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
@@ -2319,4 +2361,435 @@ async fn download_buffer_measurement_under_cpu_load() {
             );
         }
     }
+}
+
+fn restore(key: &str, expected_revision: i64) -> AttachmentRestore {
+    AttachmentRestore {
+        expected_revision,
+        idempotency_key: key.into(),
+    }
+}
+
+async fn listed_names(service: &FileService, actor: &oneloop::auth::Actor) -> Vec<String> {
+    service
+        .list_attachments(actor, "task")
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|item| item.name)
+        .collect()
+}
+
+#[tokio::test]
+async fn undo_brings_a_deleted_attachment_back_with_its_bytes() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let first = upload(&service, &f.manager, "first", "first.txt", b"first", false).await;
+    upload(
+        &service,
+        &f.manager,
+        "second",
+        "second.txt",
+        b"second",
+        false,
+    )
+    .await;
+    service
+        .delete_attachment(&f.manager, &first.id, first.revision, "delete-first")
+        .await
+        .unwrap();
+    assert_eq!(listed_names(&service, &f.viewer).await, ["second.txt"]);
+    assert!(matches!(
+        service
+            .open_for_read(&f.viewer, &first.id, ReadMode::Download)
+            .await,
+        Err(AppError::NotFound { .. })
+    ));
+    assert!(matches!(
+        service
+            .set_ephemeral(
+                &f.manager,
+                &first.id,
+                AttachmentPatch {
+                    is_ephemeral: true,
+                    expected_revision: first.revision + 1
+                }
+            )
+            .await,
+        Err(AppError::NotFound { .. })
+    ));
+
+    let restored = service
+        .restore_attachment(
+            &f.manager,
+            &first.id,
+            restore("undo-first", first.revision + 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.revision, first.revision + 2);
+    assert_eq!(restored.state, oneloop::files::BlobState::Available);
+    let replayed = service
+        .restore_attachment(
+            &f.manager,
+            &first.id,
+            restore("undo-first", first.revision + 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replayed, restored);
+    assert_eq!(
+        listed_names(&service, &f.viewer).await,
+        ["first.txt", "second.txt"]
+    );
+    let mut read = service
+        .open_for_read(&f.viewer, &first.id, ReadMode::Download)
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    read.file.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"first");
+
+    let id = first.id.clone();
+    let history: Vec<(String, Option<String>)> = f
+        .db
+        .run(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT event_type,actor_user_id FROM activity_events WHERE entity_id=?1 ORDER BY created_at,id",
+            )?;
+            Ok(statement
+                .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+        .unwrap();
+    let manager = Some("manager".to_owned());
+    assert_eq!(
+        history,
+        [
+            ("attachment.created".to_owned(), manager.clone()),
+            ("attachment.deleted".to_owned(), manager.clone()),
+            ("attachment.restored".to_owned(), manager),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn only_people_who_could_delete_an_attachment_restore_it_in_time() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let file = upload(&service, &f.manager, "kept", "kept.txt", b"kept", false).await;
+    assert!(matches!(
+        service
+            .restore_attachment(&f.manager, &file.id, restore("live", file.revision))
+            .await,
+        Err(AppError::Conflict(_))
+    ));
+    service
+        .delete_attachment(&f.manager, &file.id, file.revision, "delete-kept")
+        .await
+        .unwrap();
+    let deleted = file.revision + 1;
+    assert!(matches!(
+        service
+            .restore_attachment(&f.viewer, &file.id, restore("viewer", deleted))
+            .await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        service
+            .restore_attachment(&f.outsider, &file.id, restore("outsider", deleted))
+            .await,
+        Err(AppError::NotFound { .. })
+    ));
+    assert!(matches!(
+        service
+            .restore_attachment(&f.manager, &file.id, restore("stale", file.revision))
+            .await,
+        Err(AppError::RevisionConflict { .. })
+    ));
+    end_undo_window(&f.db).await;
+    let late = service
+        .restore_attachment(&f.manager, &file.id, restore("late", deleted))
+        .await;
+    assert!(
+        matches!(&late, Err(AppError::PreconditionFailed(message)) if message.contains("5 minutes")),
+        "{late:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_attachment_frees_its_slot_until_it_is_restored() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let mut files = Vec::new();
+    for index in 0..25 {
+        let name = format!("file-{index}.txt");
+        files.push(upload(&service, &f.manager, &name, &name, b"x", false).await);
+    }
+    service
+        .delete_attachment(&f.manager, &files[0].id, files[0].revision, "free-slot")
+        .await
+        .unwrap();
+    upload(&service, &f.manager, "replacement", "new.txt", b"y", false).await;
+    let full = service
+        .restore_attachment(
+            &f.manager,
+            &files[0].id,
+            restore("full", files[0].revision + 1),
+        )
+        .await;
+    assert!(
+        matches!(&full, Err(AppError::Conflict(message)) if message.contains("25")),
+        "{full:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_restored_attachment_keeps_its_place_unless_the_files_were_reordered() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let mut files = Vec::new();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        files.push(upload(&service, &f.manager, name, name, name.as_bytes(), false).await);
+    }
+    let (a, b, c) = (&files[0], &files[1], &files[2]);
+    service
+        .delete_attachment(&f.manager, &b.id, b.revision, "delete-b")
+        .await
+        .unwrap();
+    let b = service
+        .restore_attachment(&f.manager, &b.id, restore("restore-b", b.revision + 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        listed_names(&service, &f.viewer).await,
+        ["a.txt", "b.txt", "c.txt"]
+    );
+
+    service
+        .delete_attachment(&f.manager, &b.id, b.revision, "delete-b-again")
+        .await
+        .unwrap();
+    service
+        .reorder(
+            &f.manager,
+            "task",
+            AttachmentReorder {
+                attachment_id: c.id.clone(),
+                target_id: a.id.clone(),
+                after: false,
+                expected_revision: c.revision,
+                idempotency_key: "c-first".into(),
+            },
+        )
+        .await
+        .unwrap();
+    service
+        .restore_attachment(
+            &f.manager,
+            &b.id,
+            restore("restore-b-again", b.revision + 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        listed_names(&service, &f.viewer).await,
+        ["c.txt", "a.txt", "b.txt"]
+    );
+}
+
+#[tokio::test]
+async fn deleted_attachments_wait_out_the_undo_window_across_restarts() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let kept = upload(&service, &f.manager, "kept", "kept.txt", b"kept", false).await;
+    let purged = upload(
+        &service,
+        &f.manager,
+        "purged",
+        "purged.txt",
+        b"purged",
+        false,
+    )
+    .await;
+    for (file, key) in [(&kept, "delete-kept"), (&purged, "delete-purged")] {
+        service
+            .delete_attachment(&f.manager, &file.id, file.revision, key)
+            .await
+            .unwrap();
+    }
+    // A restart reconciles before it serves, and keeps both for Undo.
+    let restarted = f.service(100 * 1024 * 1024);
+    oneloop::runtime::prepare_files(&restarted).await.unwrap();
+    assert_eq!(stored_file_count(&f.db.layout().files()), 2);
+    restarted
+        .restore_attachment(
+            &f.manager,
+            &kept.id,
+            restore("undo-kept", kept.revision + 1),
+        )
+        .await
+        .unwrap();
+
+    end_undo_window(&f.db).await;
+    let restarted = f.service(100 * 1024 * 1024);
+    oneloop::runtime::prepare_files(&restarted).await.unwrap();
+    assert_eq!(listed_names(&restarted, &f.viewer).await, ["kept.txt"]);
+    assert_eq!(stored_file_count(&f.db.layout().files()), 1);
+    let id = purged.id.clone();
+    let remaining: i64 =
+        f.db.run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT count(*) FROM task_attachments WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    assert!(matches!(
+        restarted
+            .restore_attachment(
+                &f.manager,
+                &purged.id,
+                restore("too-late", purged.revision + 1)
+            )
+            .await,
+        Err(AppError::NotFound { .. })
+    ));
+}
+
+#[tokio::test]
+async fn deleted_files_wait_for_removal_instead_of_temporary_file_cleanup() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    let temporary = upload(
+        &service,
+        &f.manager,
+        "temporary",
+        "old.tmp",
+        b"temporary",
+        true,
+    )
+    .await;
+    f.db.run(|connection| {
+        connection.execute(
+            "UPDATE task_attachments SET created_at=1,last_accessed_at=1",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    service
+        .delete_attachment(
+            &f.manager,
+            &temporary.id,
+            temporary.revision,
+            "delete-temporary",
+        )
+        .await
+        .unwrap();
+    let admin = {
+        let mut admin = f.manager.clone();
+        admin.is_admin = true;
+        admin
+    };
+    f.db.run(|connection| {
+        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let usage = service.storage_usage(&admin).await.unwrap();
+    assert_eq!(
+        (usage.temporary_bytes, usage.pending_deletion_bytes),
+        (0, temporary.size)
+    );
+    let report = f.service(1).cleanup_to_low_watermark().await.unwrap();
+    assert_eq!(report.temporary_files_cleaned, 0);
+    let restored = service
+        .restore_attachment(
+            &f.manager,
+            &temporary.id,
+            restore("undo-temporary", temporary.revision + 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.state, oneloop::files::BlobState::Available);
+    let usage = service.storage_usage(&admin).await.unwrap();
+    assert_eq!(
+        (usage.temporary_bytes, usage.pending_deletion_bytes),
+        (temporary.size, 0)
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_cleaned_attachment_is_restorable_and_then_forgotten() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    upload(
+        &service,
+        &f.manager,
+        "cleaned",
+        "cleaned.tmp",
+        b"cleaned",
+        true,
+    )
+    .await;
+    f.db.run(|connection| {
+        connection.execute(
+            "UPDATE task_attachments SET created_at=1,last_accessed_at=1",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    f.service(1).cleanup_to_low_watermark().await.unwrap();
+    let cleaned = service
+        .list_attachments(&f.manager, "task")
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(cleaned.state, oneloop::files::BlobState::Cleaned);
+    service
+        .delete_attachment(&f.manager, &cleaned.id, cleaned.revision, "delete-cleaned")
+        .await
+        .unwrap();
+    let restored = service
+        .restore_attachment(
+            &f.manager,
+            &cleaned.id,
+            restore("undo-cleaned", cleaned.revision + 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.state, oneloop::files::BlobState::Cleaned);
+    service
+        .delete_attachment(
+            &f.manager,
+            &cleaned.id,
+            restored.revision,
+            "delete-cleaned-again",
+        )
+        .await
+        .unwrap();
+    end_undo_window(&f.db).await;
+    service.reconcile().await.unwrap();
+    let rows: (i64, i64) =
+        f.db.run(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows, (0, 0));
 }

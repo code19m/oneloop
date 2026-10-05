@@ -221,7 +221,7 @@ impl FileService {
                 Ok(connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
                      WHERE a.is_ephemeral=1 AND a.last_accessed_at<=?1 AND a.created_at<=?1
-                       AND b.state='available'
+                       AND b.state='available' AND a.deleted_at IS NULL
                        AND NOT EXISTS(SELECT 1 FROM file_leases l WHERE l.blob_id=b.id AND l.expires_at>?2))",
                     params![now-ACCESS_GRACE_SECONDS,now], |r| r.get::<_,bool>(0))?)
             }).await?;
@@ -252,8 +252,11 @@ impl FileService {
                     connection.query_row(SELECT_TASK_ATTACHMENTS_SQL, [], |r| r.get(0))?;
                 let temporary: i64 =
                     connection.query_row(SELECT_TASK_ATTACHMENTS_2_SQL, [], |r| r.get(0))?;
+                // Deleted attachments keep their bytes for the Undo window.
                 let pending_deletion: i64 = connection.query_row(
-                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state='deleting'",
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM file_blobs b WHERE b.state='deleting'
+                       OR (b.state='available' AND EXISTS(SELECT 1 FROM task_attachments a
+                           WHERE a.blob_id=b.id AND a.deleted_at IS NOT NULL))",
                     [],
                     |r| r.get(0),
                 )?;
@@ -363,7 +366,7 @@ impl FileService {
             let mut statement = connection.prepare(
                 "SELECT a.blob_id,b.storage_key,b.size_bytes,a.revision FROM task_attachments a
                  JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE a.is_ephemeral=1 AND b.state='available'
+                 WHERE a.is_ephemeral=1 AND b.state='available' AND a.deleted_at IS NULL
                    AND a.created_at<=?1 AND a.last_accessed_at<=?1
                    AND NOT EXISTS(SELECT 1 FROM file_leases l WHERE l.blob_id=b.id AND l.expires_at>?2)
                  ORDER BY a.last_accessed_at,a.id")?;
@@ -443,7 +446,7 @@ impl FileService {
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1 AND state='available'
                          AND EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=?1
                            AND a.is_ephemeral=1 AND a.created_at<=?2 AND a.last_accessed_at<=?2
-                           AND a.revision=?4)
+                           AND a.revision=?4 AND a.deleted_at IS NULL)
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?3)",
                         params![blob, now-ACCESS_GRACE_SECONDS, now, revision])?;
                     if changed == 0 { continue; }
@@ -606,19 +609,6 @@ impl FileService {
             .await
     }
 
-    pub(super) async fn fail_idempotency(&self, id: &str) -> AppResult<()> {
-        let id = id.to_owned();
-        self.db
-            .transaction(move |connection| {
-                connection.execute(
-                    "UPDATE idempotency_keys SET state='failed',updated_at=unixepoch() WHERE id=?1 AND state!='succeeded'",
-                    [id],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     pub(super) async fn schedule_blob_deletion(
         &self,
         blob_id: &str,
@@ -652,6 +642,26 @@ impl FileService {
     }
 
     pub(super) async fn schedule_deleted_parent_files(&self) -> AppResult<()> {
+        // A deleted task or attachment keeps its files for the Undo window.
+        let restorable_after = unix_now()? - UNDO_WINDOW_SECONDS;
+        // A deleted attachment without bytes only needs its row removed.
+        loop {
+            let removed = self
+                .db
+                .transaction(move |tx| {
+                    Ok(tx.execute(
+                        "DELETE FROM task_attachments WHERE id IN (
+                    SELECT a.id FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+                    WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='cleaned'
+                    LIMIT 500)",
+                        [restorable_after],
+                    )?)
+                })
+                .await?;
+            if removed < 500 {
+                break;
+            }
+        }
         // Retain cleaned attachment rows while referenced, but reclaim metadata
         // once a hard-deleted task/project has removed the final owner.
         loop {
@@ -674,8 +684,6 @@ impl FileService {
                 break;
             }
         }
-        // A deleted task keeps its files for the Undo window.
-        let restorable_after = unix_now()? - UNDO_WINDOW_SECONDS;
         let rows = self
             .db
             .run(move |connection| {
@@ -684,6 +692,10 @@ impl FileService {
                  CROSS JOIN task_attachments a ON a.task_id=t.id
                  JOIN file_blobs b ON b.id=a.blob_id
                  WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
+                 UNION ALL
+                 SELECT b.id,b.storage_key,'manual' FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id
+                 WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
                  UNION ALL
                  SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
                  WHERE b.state='available'
@@ -712,6 +724,8 @@ impl FileService {
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1 AND state='available'
                          AND (EXISTS(SELECT 1 FROM task_attachments a JOIN tasks t ON t.id=a.task_id
                                      WHERE a.blob_id=?1 AND t.deleted_at IS NOT NULL AND t.deleted_at<=?3)
+                              OR EXISTS(SELECT 1 FROM task_attachments a
+                                     WHERE a.blob_id=?1 AND a.deleted_at IS NOT NULL AND a.deleted_at<=?3)
                               OR (NOT EXISTS(SELECT 1 FROM task_attachments WHERE blob_id=?1)
                                   AND NOT EXISTS(SELECT 1 FROM users WHERE avatar_blob_id=?1)))
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",

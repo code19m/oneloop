@@ -86,6 +86,14 @@ pub struct AttachmentReorder {
     pub idempotency_key: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentRestore {
+    /// The revision that the deletion left.
+    pub expected_revision: i64,
+    pub idempotency_key: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentList {

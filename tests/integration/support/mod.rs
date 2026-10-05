@@ -130,6 +130,24 @@ pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
     connection
 }
 
+/// Creates `oneloop.sqlite3` in `root` at schema 3, the schema of `main`
+/// before 0.1.0-rc.3, and returns a connection for adding rows before an
+/// upgrade.
+pub fn schema_three_database(root: &Path) -> rusqlite::Connection {
+    use sha2::{Digest, Sha256};
+    let connection = schema_two_database(root);
+    let sql = include_str!("../../../migrations/0003_file_deletion_provenance.sql");
+    connection.execute_batch(sql).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations VALUES(3,'file_deletion_provenance',?1,1)",
+            [hex::encode(Sha256::digest(sql.as_bytes()))],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 3).unwrap();
+    connection
+}
+
 /// A fresh migrated data directory and an open database handle.
 pub fn database() -> (TempDir, Db) {
     let root = data_dir();

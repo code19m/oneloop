@@ -246,7 +246,7 @@ async fn images_without_a_thumbnail_show_the_original() {
 }
 
 #[tokio::test]
-async fn deleting_an_image_removes_its_thumbnail() {
+async fn removing_a_deleted_image_removes_its_thumbnail() {
     let fixture = Fixture::new().await;
     let attachment = fixture
         .attach("deleted", "deleted.png", &png(300, 300, false))
@@ -273,6 +273,28 @@ async fn deleting_an_image_removes_its_thumbnail() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    // Undo still needs it; the purge after the window takes it away.
+    assert!(thumbnail.is_file());
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE task_attachments SET deleted_at=deleted_at-?1",
+                [oneloop::domain::UNDO_WINDOW_SECONDS],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .files
+            .reconcile()
+            .await
+            .unwrap()
+            .deletion_jobs_completed,
+        1
+    );
     assert!(!thumbnail.exists());
 }
 

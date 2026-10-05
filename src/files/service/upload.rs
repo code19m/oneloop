@@ -97,7 +97,7 @@ impl FileService {
                     let occupied: i64 = tx.query_row(
                         "SELECT
                        (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-                        WHERE a.task_id=?1 AND b.state IN ('available','deleting')) +
+                        WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
                        (SELECT count(*) FROM upload_reservations
                         WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
                         params![task_id_owned, now],

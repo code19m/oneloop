@@ -18,9 +18,9 @@ use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     files::{
-        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentView, ConditionalRead,
-        FileRead, MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead, UploadDeadline,
-        UploadStart,
+        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
+        ConditionalRead, FileRead, MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead,
+        UploadDeadline, UploadStart,
     },
 };
 
@@ -45,6 +45,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/api/attachments/{attachment_id}",
             patch(update_attachment).delete(delete_attachment),
+        )
+        .route(
+            "/api/attachments/{attachment_id}/restore",
+            post(restore_attachment),
         )
         .route(
             "/api/attachments/{attachment_id}/download",
@@ -272,6 +276,25 @@ async fn delete_attachment(
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn restore_attachment(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(attachment_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<AttachmentRestore>,
+) -> AppResult<Json<AttachmentView>> {
+    require_canonical_origin(
+        &axum::http::Method::POST,
+        &headers,
+        &state.config.public_url,
+    )?;
+    state
+        .files
+        .restore_attachment(&actor, &attachment_id, input)
+        .await
+        .map(Json)
 }
 
 async fn download_attachment(
