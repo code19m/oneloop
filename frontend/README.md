@@ -20,6 +20,7 @@ Whole-app browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
 To change an action, start from `src/app/view-bridge.js`: it replaces many `App` methods in `views/app.js` with server-backed versions, so the method in `views/` may not be the one that runs.
 Inline handlers in `views/` templates only reach methods listed in `ALLOWED_APP_METHODS` (`src/app/view-events.js`); a new one needs an entry there and a test.
 Before someone leaves a page, `hasUnsavedInput` in the recovery controller looks for changed fields in open editors. Mark a field that saves itself when it loses focus with `data-autosave`, so it counts only while it is being typed.
+Put a detail that only a hover would show, such as a full time or a name that may be cut off, in `data-tip` rather than `title`: `src/app/tooltips.js` shows it on hover, keyboard focus and tap. Add `data-tip-overflow` to show it only while the text is cut off.
 
 The page's Content-Security-Policy enforces Trusted Types and refuses inline `<style>` elements:
 

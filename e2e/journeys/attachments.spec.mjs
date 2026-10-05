@@ -268,5 +268,5 @@ test('an attachment response survives task projection replacement', async ({ pag
     await expect.poll(() => page.evaluate(key => window.DATA.tasks.find(item => item.id === key) !== window.__attachmentTaskBefore, taskKey)).toBeTruthy();
   } finally { await held.release(); }
   await expect(page.locator('.attachment-card')).toHaveCount(1);
-  await expect(page.locator('.attachment-title')).toHaveAttribute('title', 'retained.txt');
+  await expect(page.locator('.attachment-title')).toHaveAttribute('data-tip', 'retained.txt');
 });

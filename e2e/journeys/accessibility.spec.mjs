@@ -196,6 +196,35 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
 });
 
+test('keyboard focus shows a Blocked reason and a comment time as tooltips that Escape hides', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.block', { taskId: task.id, reason: 'Waiting for the API', mentions: [] }, task.revision);
+  await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'A comment with a time', mentions: [] });
+  await openApp(page, instance, 'board');
+  const tooltip = page.getByRole('tooltip');
+  await page.locator('.card .card-move').focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('.card .blocked-badge')).toBeFocused();
+  await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => Theme.set(value), theme);
+    await scan(page, `Blocked tooltip (${theme})`);
+  }
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toHaveCount(0);
+  await page.locator('.card-title-button').press('Enter');
+  const time = page.locator('[data-comment] time');
+  await page.locator('[data-comment] .comment-menu-button').focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(time).toBeFocused();
+  await expect(tooltip).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  await expect(time).toHaveAccessibleDescription(await tooltip.textContent());
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toHaveCount(0);
+  await expect(time).toBeFocused();
+});
+
 test('a slow task load and a live update keep focus on the task heading', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { task } = instance.projects[0];
@@ -331,7 +360,7 @@ for (const theme of ['light', 'dark']) {
       await expect(cards).toHaveCount(fileNames.length);
       for (let index = 0; index < fileNames.length; index += 1) {
         const card = cards.nth(index);
-        await expect(card.locator('.attachment-title')).toHaveAttribute('title', fileNames[index]);
+        await expect(card.locator('.attachment-title')).toHaveAttribute('data-tip', fileNames[index]);
         await expect(card.locator('.file-download')).toBeVisible();
         await expect(card.locator('.file-remove')).toBeVisible();
         await expect(card.locator('.retention-switch')).toBeVisible();

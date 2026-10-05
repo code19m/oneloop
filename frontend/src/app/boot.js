@@ -21,6 +21,7 @@ import { installKnowledgeController } from '../features/knowledge/controller.js'
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, routeScope as scopeOfRoute } from './projection-reload.js';
 import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
 
@@ -89,6 +90,7 @@ globalThis.OneloopRecovery=recovery;
 globalThis.Recovery=recovery;
 
 installViewEventOwner(document.documentElement);
+installTooltips(document);
 
 const buildMonitor=createBuildMonitor({
   fetchBuild:async()=>{

@@ -147,7 +147,7 @@
   const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
   const logAct = (obj, text, change, context) => Activity.record(obj, me()?.id || 'system', text, change, undefined, context);
   const actFeed = (list, limit) => Activity.visible(list).slice(-(limit || 8)).reverse().map((a) =>
-    `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" title="${formatInstant(a.ts)}">${ago(a.ts)}</time></div>`).join('')
+    `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
     || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
 
   const counts = () => {
@@ -560,7 +560,7 @@
     const cur = def.options.find((o) => o.v === def.value);
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
       ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" title="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   const MULTI = {};
@@ -568,7 +568,7 @@
     MULTI[key] = def;
     const label = def.summary();
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
-      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" title="${esc(label)}" ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   // Date values always use ISO. The editor owns separators; users enter digits.
@@ -969,7 +969,7 @@
       const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
       lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
-          <h2 class="name" title="${esc(t.name)}">${esc(t.name)}</h2><div class="sub">${sub}</div>
+          <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
             <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" onkeydown="App.trackReorderKey(event,'${UIArg(t.id)}')" data-reorderable="true" ondragstart="App.trackDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()" title="Drag to reorder or use arrow keys">${I.grip}</button>
             <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
@@ -1186,13 +1186,13 @@
         const av = (t.assignees || []).filter(userById);
         const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
         return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ondragstart="App.taskDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()"` : ''} onclick="App.openTask('${UIArg(t.id)}')">
-          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" title="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${formatInstant(t.block.at)}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
+          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" tabindex="0" data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
           <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}">${esc(t.title)}</button>
           <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
-          <div class="epic" title="${esc(e ? e.title : '')}">${esc(e ? e.title : '')}</div>
+          <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
           <div class="card-foot">
-            <span class="mono" title="created">${t.created ? humanInstant(t.created) : ''}</span>
-            ${t.deadline ? `<span class="mono dl${overdue(t) ? ' late' : ''}" title="Deadline ${esc(t.deadline)}">${I.clock}${humanShort(d(t.deadline))}${overdue(t) ? ' · Overdue' : ''}</span>` : ''}
+            <span class="mono card-created"${t.created ? ` data-tip="Created ${esc(formatInstant(t.created))}"` : ''}>${t.created ? humanInstant(t.created) : ''}</span>
+            ${t.deadline ? `<span class="mono dl${overdue(t) ? ' late' : ''}" data-tip="Deadline ${esc(t.deadline)}">${I.clock}${humanShort(d(t.deadline))}${overdue(t) ? ' · Overdue' : ''}</span>` : ''}
             <span class="avs">${avs}</span>
           </div></div>`;
       }).join('');
@@ -1603,7 +1603,7 @@
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
           <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
           <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
-          <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}" title="${formatInstant(t.created)}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
+          <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
         </dl>
       </aside>
       <div class="tp-main">
@@ -1673,7 +1673,7 @@
         <div class="member-access-list" aria-busy="${UIEscape(!!D.adminUsers?.loading)}">
           ${matching.slice(0,memberWindow.limit).map(({ user: u, record: m }) => `
             <div class="member-access-row ${u.active ? '' : 'off'}">
-              <div class="member-person">${avatarHtml(u.id, 24)}<span><b title="${esc(u.name)}">${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
+              <div class="member-person">${avatarHtml(u.id, 24)}<span><b data-tip="${esc(u.name)}" data-tip-overflow>${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
               <div class="member-grants">
                 ${u.admin ? '<span class="admin-access">Full access</span>' : `
                   <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
@@ -1742,7 +1742,7 @@
     const stateBits = (x) => [stIcon(x.state), `<span style="color:${stateColor[x.state]}">${STATUS[x.state].toLowerCase()}</span>`];
     const rows = eTasks.map((x) => {
       const [dot, m] = stateBits(x);
-      return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" title="${esc(x.title)}">${esc(x.title)}</span><span class="tm">${m}</span></div>`;
+      return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" data-tip="${esc(x.title)}" data-tip-overflow>${esc(x.title)}</span><span class="tm">${m}</span></div>`;
     }).join('') || '<div class="empty-note" style="margin:14px 0">no tasks yet</div>';
 
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
@@ -1846,7 +1846,7 @@
   }
   function poolRowHtml(p) {
     const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
-    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" title="${esc(p.title)}" onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
+    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
   }
   function resetPoolCapture(){const capture=document.querySelector('.pool-capture');if(!capture)return;capture.classList.remove('is-expanded');const notes=capture.querySelector('#poolNewDesc');notes.value='';const content=capture.querySelector('.pool-capture-notes');content.inert=true;content.setAttribute('aria-hidden','true');const toggle=capture.querySelector('.pool-capture-toggle');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Add description');toggle.title='Add description';setHTML(toggle,I.note);}
 
@@ -2023,7 +2023,7 @@
     const autoReload = window.Recovery?.autoReload;
     // A choice for this browser, like the theme, so it keeps the menu open.
     const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" onclick="App.toggleAutoReload()"><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
-    const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" title="${esc(it.projectName)}" onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
+    const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
       `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
     return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="App.closeOverlays()"></div>
       <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
@@ -2131,7 +2131,7 @@
         const allowed = new Set(choices.map(epic=>epic.id));
         state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
         const def = MULTI.fEpic;
-        if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.title=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
+        if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.dataset.tip=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
       };
       const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
         options, search: options.length > 6,
@@ -2165,7 +2165,7 @@
     if (state.view === 'inbox') return '<h1>Inbox</h1>';
     if (state.view === 'profile') return `<h1>Profile</h1><span class="meta">${esc(userHandle(me()))}</span>`;
     if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" onclick="App.openModal('user')">${I.plus} New user</button></div>`;
-    return `<h1>Settings</h1><span class="meta" title="${esc(project().name)}">${esc(project().name)}</span>`;
+    return `<h1>Settings</h1><span class="meta" data-tip="${esc(project().name)}" data-tip-overflow>${esc(project().name)}</span>`;
   }
 
   let paintedPage=null;
@@ -3123,7 +3123,7 @@
           const oldE = epicById(t.epicId), newE = taskDestinationEpics().find(epic => epic.id === v);
           if (!newE) {
             const control = document.querySelector('#select-tpEpic');
-            if (control && oldE) { control.querySelector('.sel-label').textContent = oldE.title; control.title = oldE.title; }
+            if (control && oldE) { control.querySelector('.sel-label').textContent = oldE.title; control.dataset.tip = oldE.title; }
             if (SELS.tpEpic) SELS.tpEpic.value = t.epicId;
             App.toast('Choose an open epic. Completed epics must be reopened first.', 'error'); return false;
           }
@@ -3167,7 +3167,7 @@
         if (foot) foot.style.display = def.values().length && def.clear ? '' : 'none';
         [...list.querySelectorAll('.pop-opt')].forEach((oel) => oel.addEventListener('click', () => {
           const focused=document.activeElement===oel,value=oel.dataset.v;def.toggle(value);
-          btn.querySelector('.sel-label').textContent = def.summary(); btn.title = def.summary();
+          btn.querySelector('.sel-label').textContent = def.summary(); btn.dataset.tip = def.summary();
           btn.classList.toggle('empty', !def.values().length);
           paint();if(focused)[...list.querySelectorAll('.pop-opt')].find(option=>option.dataset.v===value)?.focus({preventScroll:true});
         }));
@@ -3179,7 +3179,7 @@
       const input = el.querySelector('.pop-search');
       if (input) { input.focus(); input.addEventListener('input', () => { q = input.value.trim().toLowerCase(); paint(); }); }
       const foot = el.querySelector('.pop-foot button');
-      if (foot) foot.addEventListener('click', () => { def.clear(); btn.querySelector('.sel-label').textContent = def.summary(); btn.title = def.summary(); btn.classList.add('empty'); paint(); });
+      if (foot) foot.addEventListener('click', () => { def.clear(); btn.querySelector('.sel-label').textContent = def.summary(); btn.dataset.tip = def.summary(); btn.classList.add('empty'); paint(); });
       POP.onKey = (e) => {
         if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closePop();btn.focus({preventScroll:true});}
         else if(e.key==='Tab')closePop();
@@ -3847,7 +3847,7 @@
         if (hid) hid.value = o.v;
         def.value = o.v;
         btn.classList.toggle('empty', o.v === '' || o.v == null);
-        btn.querySelector('.sel-label').textContent = o.l; btn.title = o.l;
+        btn.querySelector('.sel-label').textContent = o.l; btn.dataset.tip = o.l;
         clearFieldError(btn);
         if (def.pick) def.pick(o.v);
         restoreOpener(returnFocus);

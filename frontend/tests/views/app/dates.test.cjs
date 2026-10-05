@@ -69,13 +69,13 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
  }});
  assert.equal(t.w.OneloopTime.instant(instant),expected);
  assert.equal(t.d.querySelector('.task-created-at').textContent,expected);
- assert.equal(t.d.querySelector('.tl-cmt .act-time').title,expected);
- assert.equal(t.d.querySelector('.tl-act .act-time').title,expected);
+ assert.equal(t.d.querySelector('.tl-cmt .act-time').dataset.tip,expected);
+ assert.equal(t.d.querySelector('.tl-act .act-time').dataset.tip,expected);
  t.A.previewAttachment('BIR-079','utc-file');assert(t.d.querySelector('.file-info').textContent.includes(expected));
  t.A.nav('storage');assert.equal(t.d.querySelector('.storage-history time').textContent,expected);
  t.A.nav('profile');assert(t.d.querySelector('.profile-access').textContent.includes(expected));
  const board=boot('board',{prepare:D=>{D.timeZone='UTC';const task=D.tasks.find(item=>item.id==='BIR-079');task.block={id:'utc-block',reason:'UTC block',by:'robin',at:instant};}});
- assert(board.d.querySelector('.blocked-badge').title.endsWith(expected));
+ assert(board.d.querySelector('.blocked-badge').dataset.tip.endsWith(expected));
 });
 
 test('the instance time zone decides Today across the UTC day boundary', () => {
@@ -84,5 +84,6 @@ const t=boot('board',{prepare:(D,w)=>{const Native=w.Date,fixed=Native.parse('20
 
 test('compact Board creation dates use the instance time zone', () => {
  const t=boot('board',{prepare:D=>{D.timeZone='America/Los_Angeles';D.tasks.find(task=>task.id==='BIR-079').created=Date.parse('2026-01-01T01:00:00Z');}});
- assert.equal(t.d.querySelector('[data-task="BIR-079"] [title="created"]').textContent,'Dec 31');
+ const created=t.d.querySelector('[data-task="BIR-079"] .card-created');
+ assert.equal(created.textContent,'Dec 31');assert.equal(created.dataset.tip,'Created 2025-12-31 17:00:00');
 });
