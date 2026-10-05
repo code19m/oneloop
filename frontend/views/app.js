@@ -940,23 +940,34 @@
     </div>`;
   }
 
-  function taskMovePlan(t, col, beforeId = null) {
+  /** The cards a Board column shows, in order. */
+  const shownColumn = (col) => boardTasks().filter((item) => item.state === col).slice(0, state.boardLimits[col] || 50);
+  /** Whether a column shows its last card: the server has no more, and every loaded card is drawn. */
+  function columnEndShown(col, except) {
+    const page = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[col] : null;
+    return !page?.nextCursor && boardTasks().filter((item) => item.state === col && item !== except).length <= (state.boardLimits[col] || 50);
+  }
+  // Without a target card, a card follows the last card its column shows, or
+  // goes to the top with `atTop`.
+  function taskMovePlan(t, col, beforeId = null, atTop = false) {
     const originalColumn = tasks().filter((item) => item.state === col);
     const destination = originalColumn.filter((item) => item !== t);
-    const index = beforeId ? destination.findIndex((item) => item.id === beforeId) : destination.length;
+    const last = beforeId || atTop ? null : shownColumn(col).filter((item) => item !== t).at(-1) ?? destination.at(-1);
+    const index = beforeId ? destination.findIndex((item) => item.id === beforeId) : last ? destination.indexOf(last) + 1 : 0;
     if (beforeId && index < 0) return null;
     const nextColumn = [...destination]; nextColumn.splice(index, 0, t);
     if (t.state === col && originalColumn.length === nextColumn.length && originalColumn.every((item, at) => item === nextColumn[at])) return null;
     const placement = beforeId
       ? { beforeTaskId: taskById(beforeId)?.internalId || beforeId }
-      : destination.length
-        ? { afterTaskId: destination.at(-1).internalId || destination.at(-1).id }
+      : last
+        ? { afterTaskId: last.internalId || last.id }
         : { position: 0 };
     return { destination, index, placement };
   }
 
-  function applyTaskMove(t, col, beforeId = null) {
-    const plan = taskMovePlan(t, col, beforeId); if (!plan) return null;
+  function applyTaskMove(t, col, beforeId = null, atTop = false) {
+    const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
+    const shownBefore = shownColumn(col).filter((item) => item !== t);
     const previousState = t.state, projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId, sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
     const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
     const previousProjectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),taskIndex=previousProjectTasks.indexOf(t);
@@ -969,11 +980,14 @@
     const affectedEpics = new Map();
     for (const id of new Set([t.epicId])) { const item = epicById(id); if (item) affectedEpics.set(id, { item, state:item.state, done:item.done }); }
     D.tasks.splice(D.tasks.indexOf(t), 1);
-    const anchor = beforeId ? taskById(beforeId) : plan.destination.at(-1);
-    const at = anchor ? D.tasks.indexOf(anchor) + (beforeId ? 0 : 1) : D.tasks.length;
+    const next = plan.destination[plan.index], previous = plan.destination[plan.index - 1];
+    const at = next ? D.tasks.indexOf(next) : previous ? D.tasks.indexOf(previous) + 1 : D.tasks.length;
     D.tasks.splice(Math.max(0, at), 0, t);
     t.state = col;
     for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
+    // The column keeps showing every card it showed, and shows the moved card too.
+    const column = boardTasks().filter((item) => item.state === col);
+    state.boardLimits[col] = Math.max(state.boardLimits[col] || 50, ...[t, ...shownBefore].map((item) => column.indexOf(item) + 1));
     const epic = epicById(t.epicId);
     if (epic) {
       if (col === 'done') epic.done += 1;
@@ -1025,7 +1039,8 @@
     if (t.state === col) return;
     if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
     if (bootWindow.OneloopRuntime) {
-      const change=applyTaskMove(t,col);if(!change)return false;submitTaskMove(change);return;
+      // A column that does not show its end takes the card at the top, where it stays in view.
+      const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);return;
     }
     const prev = t.state;
     t.state = col;
@@ -1055,6 +1070,7 @@
   function focusMovedTask(id) {
     if (state.view !== 'board' || state.modal) return;
     const card = [...document.querySelectorAll('.card[data-task]')].find(el=>el.dataset.task===id);
+    card?.scrollIntoView?.({block:'nearest',inline:'nearest'});
     (card?.querySelector('.card-move') || card?.querySelector('.card-title-button') || document.getElementById('main'))?.focus({preventScroll:true});
     announce(`${id} moved to ${STATUS[taskById(id)?.state] || 'new position'}`);
   }
