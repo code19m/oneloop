@@ -139,6 +139,18 @@ test('a spoofed heading marker in uploaded HTML gives no server anchor', async (
   assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), ['md-fake', 'md-setup']);
 });
 
+test('in-page links reach headings in any script', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const link = host.querySelector('.markdown-body a');
+  assert.equal(link.getAttribute('href'), '#md-оплата-и-сроки');
+  host.querySelector('.markdown-scroll').scrollTo = () => {};
+  link.click();
+  assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
+});
+
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
