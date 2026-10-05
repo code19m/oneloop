@@ -198,6 +198,6 @@ Some emoji count as two characters.
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
 | Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
 | Request body | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
-| Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes |
+| Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes. A client that stops reading is disconnected within 5 minutes. |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |
