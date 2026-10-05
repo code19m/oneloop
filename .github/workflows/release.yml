@@ -138,6 +138,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Check each platform image before the version tag makes it public. The
+      # multi-architecture image reuses these attestation manifests unchanged.
+      - name: Check the SBOM and provenance attestations
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          for digest in *; do
+            sbom=$(docker buildx imagetools inspect "$IMAGE@sha256:$digest" --format '{{ json .SBOM }}')
+            provenance=$(docker buildx imagetools inspect "$IMAGE@sha256:$digest" --format '{{ json .Provenance }}')
+            # The Rust crates come from the list that cargo-auditable embeds in the binary.
+            case "$sbom" in *'"pkg:cargo/rusqlite@'*) ;; *) echo "The SBOM of $digest is missing or lists no Rust crates" >&2; exit 1 ;; esac
+            case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $digest" >&2; exit 1 ;; esac
+          done
       # A published version never moves; a re-run of failed jobs may only repeat it.
       - name: Create the multi-architecture image
         working-directory: ${{ runner.temp }}/digests
@@ -147,17 +159,6 @@ jobs:
           digests=(*)
           node "$GITHUB_WORKSPACE/scripts/create-release-image.mjs" "$IMAGE" "$VERSION" "${digests[@]}"
           docker buildx imagetools inspect "$IMAGE:$VERSION"
-      - name: Check the SBOM and provenance attestations
-        env:
-          VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          for platform in linux/amd64 linux/arm64; do
-            sbom=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .SBOM \"$platform\") }}")
-            provenance=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .Provenance \"$platform\") }}")
-            # The Rust crates come from the list that cargo-auditable embeds in the binary.
-            case "$sbom" in *'"pkg:cargo/rusqlite@'*) ;; *) echo "The SBOM for $platform is missing or lists no Rust crates" >&2; exit 1 ;; esac
-            case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $platform" >&2; exit 1 ;; esac
-          done
       - name: Promote stable image tags
         id: promote
         if: needs.metadata.outputs.prerelease == 'false'

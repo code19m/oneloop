@@ -193,10 +193,11 @@ The Release workflow then:
   `ghcr.io/code19m/oneloop` with SBOM and provenance attestations. If the
   version's image tag already exists with other images, it stops before it
   changes any tag;
-- checks the attestations. Each image's SBOM must list the Rust crates, which
-  cargo-auditable records in the binary, besides the Debian packages. The
-  browser libraries aren't in it; `THIRD_PARTY_NOTICES.md` lists them with
-  their versions, and the Dependencies workflow audits them;
+- checks the attestations before it tags the version. Each image's SBOM must
+  list the Rust crates, which cargo-auditable records in the binary, besides
+  the Debian packages. The browser libraries aren't in it;
+  `THIRD_PARTY_NOTICES.md` lists them with their versions, and the
+  Dependencies workflow audits them;
 - creates a GitHub Release with the changelog notes and no binary files;
 - runs the Docs workflow, which publishes the documentation. Docs pushed to
   `main` go live only when the version in `Cargo.toml` is released, so the site
