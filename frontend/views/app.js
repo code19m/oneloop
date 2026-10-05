@@ -1624,7 +1624,8 @@
 
   function usersCountLabel() {
     if(window.OneloopTransport&&!D.adminUsers?.loaded)return D.adminUsers?.loading?'…':'';
-    return String(D.adminUsers?.loaded?D.adminUsers.ids.length:D.users.length);
+    // While more pages wait on the server, the loaded count is only a lower bound.
+    return D.adminUsers?.loaded?`${D.adminUsers.ids.length}${D.adminUsers.nextCursor?'+':''}`:String(D.users.length);
   }
   function renderUsers() {
     const awaiting = D.adminUsers?.loading && !D.adminUsers.loaded;

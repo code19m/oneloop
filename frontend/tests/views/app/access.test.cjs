@@ -215,3 +215,23 @@ test('Escape in the password prompt closes only the prompt and keeps the dialog 
   assert.equal(t.d.querySelector('.modal [name="name"]')?.value,'Typed name');
  }finally{Object.assign(globalThis,previous);}
 });
+
+test('Users counts loaded accounts as a lower bound and lists a new account only in its place',async()=>{
+ const t=bootApp({route:'users',prepare(D){for(const user of D.users)user.username=user.id;D.adminUsers={ids:['blairq','danaell','robin'],loaded:true,nextCursor:'robin'};}});
+ const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
+ try{
+  let next;
+  installViewBridge({app:t.A,data:t.D,api:{createUser:async()=>next},reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
+  const count=()=>t.d.querySelector('.users-count').textContent,listed=()=>[...t.d.querySelectorAll('.user-row')].map(row=>row.dataset.userId);
+  const create=async username=>{
+   next={user:{id:`u-${username}`,username,displayName:username,isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword:'Shown-Once'};
+   t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value=username;form.querySelector('[name="name"]').value=username;
+   t.A.saveUser({target:form,preventDefault(){}},'');await settle();t.A.closeOverlays();
+  };
+  assert.equal(count(),'3+');
+  await create('zz.new');
+  assert.deepEqual(listed(),['blairq','danaell','robin'],'an account after the loaded pages waits for its page');assert.equal(count(),'3+');
+  await create('carol');
+  assert.deepEqual(listed(),['blairq','u-carol','danaell','robin']);assert.equal(count(),'4+');
+ }finally{globalThis.FormData=originalFormData;}
+});

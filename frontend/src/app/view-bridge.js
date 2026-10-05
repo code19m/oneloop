@@ -13,6 +13,8 @@ import {
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
 
+/** The server's username order: SQLite's binary collation, not the browser's locale. */
+const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 /** Cut at `max` UTF-16 units, as maxlength does, without splitting a surrogate pair. */
 const text = (value, max) => {
   const cut = String(value ?? '').trim().slice(0, max);
@@ -466,7 +468,15 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const create=()=>api.createUser({username:text(values.get('username'),32),displayName,isAdmin:values.has('admin')}).then(({user,temporaryPassword})=>{
       if(sessionScope()!==scope)return;
       const account=mapAccount(user);
-      if(data.adminUsers.loaded){mergeAdminUsersPage(data,[account],{append:true,nextCursor:data.adminUsers.nextCursor});data.adminUsers.ids.sort((left,right)=>(data.users.find((item)=>item.id===left)?.username??'').localeCompare(data.users.find((item)=>item.id===right)?.username??''));}
+      if(data.adminUsers.loaded){
+        // Users list in the server's username order, a page at a time. A new
+        // account joins only the loaded range; otherwise its own page brings it.
+        const name=(id)=>data.users.find((item)=>item.id===id)?.username??'',last=name(data.adminUsers.ids.at(-1));
+        if(!data.adminUsers.nextCursor||compareUsernames(account.username,last)<0){
+          mergeAdminUsersPage(data,[account],{append:true,nextCursor:data.adminUsers.nextCursor});
+          data.adminUsers.ids.sort((left,right)=>compareUsernames(name(left),name(right)));
+        }else data.users.push(account);
+      }
       else data.users.push(account);
       app.refreshUsers?.();
       // The password is shown once, so a closed dialog must not lose it.
