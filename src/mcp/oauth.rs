@@ -1816,7 +1816,13 @@ async fn authorize(
         Ok(response) => response,
         Err(error) => {
             let mapped = OAuthError::from_app(error, false);
-            (mapped.status, Html(format!("<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>", escape(&mapped.description)))).into_response()
+            let mut response = (mapped.status, Html(format!("<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>", escape(&mapped.description)))).into_response();
+            if let Some(seconds) = mapped.retry_after {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header::HeaderValue::from(seconds));
+            }
+            response
         }
     }
 }
@@ -2223,6 +2229,33 @@ mod tests {
             (name.as_str(), renamed_at),
             ("Renamed App", created_at - 100)
         );
+    }
+
+    #[tokio::test]
+    async fn a_person_who_used_up_their_fetches_is_told_when_to_try_again() {
+        use tower::ServiceExt;
+        let described = described().await;
+        let ask = |index: u32| {
+            authorize_request(
+                &described.cookie,
+                &format!("https://localhost/client-{index}.json"),
+                LOCAL_CALLBACK,
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            )
+        };
+        // A refused fetch counts too: these names resolve to this computer.
+        for index in 0..client_metadata::FETCHES_PER_PERSON_MINUTE {
+            let response = described.app.clone().oneshot(ask(index)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let response = described.app.clone().oneshot(ask(99)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let wait: u64 = response.headers()[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
     }
 
     #[tokio::test]

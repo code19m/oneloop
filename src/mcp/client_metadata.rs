@@ -45,7 +45,7 @@ const PARALLEL_FETCHES: usize = 4;
 const FETCHES_PER_MINUTE: u32 = 30;
 /// One person's share of `FETCHES_PER_MINUTE`, so that one person can't
 /// keep everyone else from connecting.
-const FETCHES_PER_PERSON_MINUTE: u32 = 10;
+pub(super) const FETCHES_PER_PERSON_MINUTE: u32 = 10;
 
 /// A client described by its metadata document, checked and normalized.
 #[derive(Clone, Debug, PartialEq, Eq)]
