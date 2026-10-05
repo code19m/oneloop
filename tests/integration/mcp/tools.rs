@@ -700,6 +700,48 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
 }
 
 #[tokio::test]
+async fn an_upload_body_that_breaks_off_is_a_client_error() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let mut mcp =
+        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let task_id = create_protocol_task(&mut mcp, "project-1", "broken-body").await;
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId":task_id,"fileName":"data.txt","sizeBytes":4,"idempotencyKey":"broken-body"}),
+        )
+        .await,
+    );
+    // The client's connection ends after two of the four bytes.
+    let chunks: [Result<axum::body::Bytes, std::io::Error>; 2] = [
+        Ok(axum::body::Bytes::from_static(b"da")),
+        Err(std::io::Error::other("connection reset by peer")),
+    ];
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from_stream(tokio_stream::iter(chunks)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = body_json(response).await;
+    assert_eq!(error["error"]["code"], "validation_failed", "{error}");
+    assert!(error["error"].get("reference").is_none(), "{error}");
+}
+
+#[tokio::test]
 async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
     let (_dir, db, app, session, user) = fixture().await;
     let client = register(&app).await;
