@@ -138,7 +138,9 @@ With `docker run`, use `--restart unless-stopped --stop-timeout 35`.
    ```
 
 Logs go to the journal; read them with `journalctl -u oneloop -f`. If oneloop
-fails, systemd restarts it after five seconds.
+fails, systemd restarts it after five seconds. Invalid settings (exit code 2)
+stop the service instead, because a restart can't fix them. Fix the unit file,
+then run `sudo systemctl daemon-reload` and `sudo systemctl restart oneloop`.
 
 ### launchd (macOS)
 
@@ -162,10 +164,13 @@ folder has three files to download:
 
 - `com.oneloop.example.plist` is the job. Replace every `REPLACE_ME`, set your
   environment, and save it as `~/Library/LaunchAgents/com.oneloop.plist`.
-- `oneloop-launchd.sh` starts oneloop. It runs `oneloop serve --check`
-  first, so a configuration mistake stops the job with a message in the log,
-  instead of restarting it again and again.
-- `oneloop.newsyslog.conf.example` rotates the log.
+- `oneloop-launchd.sh` starts oneloop. It runs `oneloop serve --check` first.
+  If the binary is missing, a setting is invalid or the data folder has no
+  database, it stops the job and writes the reason to the log, because a
+  restart can't help. After other failures, launchd starts oneloop again, at
+  most once a minute.
+- `oneloop.newsyslog.conf.example` rotates the log. Replace `REPLACE_ME` and
+  save it as `~/oneloop.newsyslog.conf`.
 
 From the folder where you saved the launcher, install it and load the job:
 
@@ -175,13 +180,23 @@ sudo install -m 0755 oneloop-launchd.sh /usr/local/libexec/oneloop-launchd.sh
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.oneloop.plist
 ```
 
-After you change the plist, unload the job with
+After you change the plist, or after the job stopped because of a mistake,
+unload the job with
 `launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.oneloop.plist` and
 load it again.
 
 The log is `~/Library/Logs/oneloop.log`. launchd doesn't rotate it. Rotate it
-with `newsyslog -f` and the example file, but only while the job is unloaded,
-because a running job keeps writing to the old file.
+only while the job is unloaded, because a running job keeps writing to the old
+file:
+
+```sh
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.oneloop.plist
+newsyslog -r -f ~/oneloop.newsyslog.conf
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.oneloop.plist
+```
+
+`-r` lets newsyslog run without root. It rotates the log when it is larger than
+10 MiB, and it keeps seven old logs.
 
 ### Stopping and restarting
 

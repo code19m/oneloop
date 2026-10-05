@@ -1,5 +1,7 @@
-# Run explicitly with newsyslog -f only while the launchd job is booted out.
-# Do not install in /etc/newsyslog.d: a running job retains the old file descriptor.
-# Replace REPLACE_ME with the service account in both the path and owner field.
+# Save as ~/oneloop.newsyslog.conf, and replace REPLACE_ME with your account
+# name in the path and the owner. Run it only while the launchd job is booted out:
+#   newsyslog -r -f ~/oneloop.newsyslog.conf
+# -r lets newsyslog run without root. Don't install this file in /etc/newsyslog.d,
+# because a running job keeps writing to the old file.
 # logfile                                            owner:group        mode count size(KiB) when flags
 /Users/REPLACE_ME/Library/Logs/oneloop.log              REPLACE_ME:staff   600  7     10240     *    JN
