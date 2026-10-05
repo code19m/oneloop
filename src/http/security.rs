@@ -221,6 +221,17 @@ pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
     .expect("URL origins are valid header values")
 }
 
+/// The off-screen document where Mermaid lays out diagrams for the app.
+/// Mermaid writes inline styles, so this document allows them. Only the app
+/// may frame it.
+pub fn diagram_renderer_policy() -> HeaderValue {
+    HeaderValue::from_static(
+        "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; \
+         form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data:; font-src 'self'",
+    )
+}
+
 pub fn require_canonical_origin(
     method: &Method,
     headers: &HeaderMap,

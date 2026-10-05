@@ -12,7 +12,7 @@
     return {view,tools,onMode(callback){onMode=callback;}};
   }
   const assetBase=new URL('../',document.currentScript?.src||new URL('/views/file-views.js',location.href));
-  const mermaidURL=new URL('vendor/mermaid/mermaid.min.js',assetBase);
+  const rendererURL=new URL('views/diagram-renderer.html',assetBase);
   const markdownAssets=new Map();
   /** @type {Promise<void>|null} */
   let markdownLoad=null;
@@ -70,11 +70,19 @@
     }
     return Promise.all(groups);
   }
-  let mermaidLoad,diagramSequence=0,diagramQueue=Promise.resolve();
-  function loadMermaid(){
-    if(window.mermaid)return Promise.resolve(window.mermaid);
-    if(!mermaidLoad)mermaidLoad=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=mermaidURL.href;script.onload=()=>window.mermaid?resolve(window.mermaid):reject(new Error('Diagram renderer unavailable'));script.onerror=()=>{script.remove();mermaidLoad=null;reject(new Error('Diagram renderer unavailable'));};document.head.append(script);});
-    return mermaidLoad;
+  // Mermaid draws in its own off-screen document: it writes inline styles and
+  // HTML strings that this page's security policy refuses.
+  let renderer=null,diagramSequence=0,diagramQueue=Promise.resolve();
+  function diagramRenderer(){
+    if(!renderer)renderer=new Promise((resolve,reject)=>{
+      const frame=document.createElement('iframe');frame.className='diagram-renderer';frame.title='Diagram renderer';frame.tabIndex=-1;frame.inert=true;frame.setAttribute('aria-hidden','true');
+      const fail=()=>{clearTimeout(timer);frame.remove();renderer=null;reject(new Error('Diagram renderer unavailable'));};
+      const timer=setTimeout(fail,30_000);
+      frame.addEventListener('load',()=>{const render=frame.contentWindow?.renderDiagram;if(typeof render!=='function'){fail();return;}clearTimeout(timer);resolve(render);},{once:true});
+      frame.addEventListener('error',fail,{once:true});
+      frame.src=rendererURL.href;document.body.append(frame);
+    });
+    return renderer;
   }
   function renderDiagrams(article,context){
     for(const code of article.querySelectorAll('pre code.language-mermaid')){
@@ -85,14 +93,12 @@
       diagramQueue=diagramQueue.then(async()=>{
         if(!figure.isConnected)return;
         try{
-          const mermaid=await loadMermaid();if(!figure.isConnected)return;
-          mermaid.initialize({startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
+          const render=await diagramRenderer();if(!figure.isConnected)return;
+          const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
             secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
-          const {svg}=await mermaid.render('attachment-diagram-'+(++diagramSequence),source);
           if(!figure.isConnected)return;
-          // Display the generated SVG as an image: its CSS, links and scripts cannot affect the app.
-          const clean=DOMPurify.sanitize(svg,{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['foreignObject','a','image'],FORBID_ATTR:['onload','onclick']});
-          const picture=document.createElement('img');picture.alt='Mermaid diagram';const svgDoc=new DOMParser().parseFromString(clean,'image/svg+xml'),bounds=svgDoc.documentElement.getAttribute('viewBox')?.trim().split(/[ ,]+/).map(Number);if(bounds?.length===4&&bounds[2]>0&&bounds[3]>0){picture.width=Math.ceil(bounds[2]);picture.height=Math.ceil(bounds[3]);}picture.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(clean);figure.replaceChildren(picture);figure.removeAttribute('aria-busy');UIMotion.fade(figure);
+          // The renderer returns sanitized SVG, shown as an image.
+          const picture=document.createElement('img');picture.alt='Mermaid diagram';if(drawn.width&&drawn.height){picture.width=drawn.width;picture.height=drawn.height;}picture.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(drawn.svg);figure.replaceChildren(picture);figure.removeAttribute('aria-busy');UIMotion.fade(figure);
         }catch{if(figure.isConnected)fallback('This diagram could not be rendered. Check its Mermaid syntax.');}
       });
     }

@@ -121,6 +121,60 @@ async fn serves_frontend_tree_and_excludes_development_files() {
 }
 
 #[tokio::test]
+async fn only_the_app_may_frame_the_diagram_renderer_which_keeps_its_own_policy() {
+    let (_directory, app, _token) = fixture().await;
+    let page = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(page.headers()["x-frame-options"], "DENY");
+    let html = body_text(page).await;
+    let version = html
+        .split("\"/v/")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .expect("versioned asset paths")
+        .to_owned();
+    for path in [
+        "/views/diagram-renderer.html".to_owned(),
+        format!("/v/{version}/views/diagram-renderer.html"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let own = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(own.contains("frame-ancestors 'self'"), "{path}: {own}");
+        assert!(own.contains("script-src 'self';"), "{path}: {own}");
+        assert!(
+            own.contains("style-src 'self' 'unsafe-inline'"),
+            "{path}: {own}"
+        );
+        assert!(!own.contains("trusted-types"), "{path}: {own}");
+        assert_eq!(
+            response.headers()["x-frame-options"],
+            "SAMEORIGIN",
+            "{path}"
+        );
+    }
+    let script = app
+        .oneshot(
+            Request::builder()
+                .uri("/views/diagram-renderer.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(script.headers()["x-frame-options"], "DENY");
+}
+
+#[tokio::test]
 async fn distribution_notices_are_embedded_as_plain_text() {
     let (_directory, app, _token) = fixture().await;
     let response = app

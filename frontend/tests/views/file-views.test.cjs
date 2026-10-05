@@ -138,25 +138,55 @@ Inline code: ${'`'}$x$${'`'}. Prices: $5 and $10.
   assert(extras.querySelector('code').textContent.includes('$x$')); assert(extras.textContent.includes('Prices: $5 and $10.'));
 });
 
-test('diagrams render safely, fall back on syntax errors and drop stale results', async () => {
+/** Stand in for the Mermaid renderer document; `answer.render` draws each diagram. */
+function stubRenderer(w, answer) {
+  const append = w.document.body.append.bind(w.document.body);
+  w.document.body.append = (...nodes) => {
+    append(...nodes);
+    for (const node of nodes) if (node.classList?.contains('diagram-renderer')) {
+      node.contentWindow.renderDiagram = (...args) => answer.render(...args);
+      node.dispatchEvent(new w.Event('load'));
+    }
+  };
+}
+
+test('diagrams render in their own document, fall back on syntax errors and drop stale results', async () => {
   const { w, d } = boot();
   let config;
-  w.mermaid = { initialize(value) { config = value; }, async render(id, text) { if (text.includes('invalid')) throw Error('syntax'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"><script>evil()</script><text>Ready</text></svg>' }; } };
+  const answer = { async render(_id, text, value) { config = value; if (text.includes('invalid')) throw Error('syntax'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"><text>Ready</text></svg>', width: 420, height: 180 }; } };
+  stubRenderer(w, answer);
   const host = d.createElement('div'); d.body.append(host);
   w.FileViews.markdown(host, { name: 'diagrams.md' }, '```mermaid\nflowchart LR\n A-->B\n```\n\n```mermaid\ninvalid\n```', false);
   await waitFor(() => !host.querySelector('[aria-busy]'), 'diagrams finish rendering');
   const diagram = host.querySelector('.markdown-diagram img');
-  assert(diagram); assert.equal(diagram.width, 420); assert.equal(diagram.height, 180); assert(!decodeURIComponent(diagram.src).includes('<script>'));
+  assert(diagram); assert.equal(diagram.width, 420); assert.equal(diagram.height, 180); assert.match(decodeURIComponent(diagram.src), /^data:image\/svg\+xml;charset=utf-8,<svg .*Ready/);
   assert.equal(config.securityLevel, 'strict'); assert(host.textContent.includes('could not be rendered')); assert(host.querySelector('pre code').textContent.includes('invalid'));
+  const frame = d.querySelectorAll('.diagram-renderer');
+  assert.equal(frame.length, 1, 'one renderer document draws every diagram');
+  assert.equal(new URL(frame[0].src).pathname, '/views/diagram-renderer.html'); assert(frame[0].inert); assert.equal(frame[0].getAttribute('aria-hidden'), 'true');
   let finish, started;
   const rendering = new Promise(resolve => { started = resolve; });
-  w.mermaid.render = () => { started(); return new Promise(resolve => finish = resolve); };
+  answer.render = () => { started(); return new Promise(resolve => finish = resolve); };
   w.FileViews.markdown(host, { name: 'slow.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
   await rendering;
   const pending = host.querySelector('.markdown-diagram'); host.remove();
-  finish({ svg: '<svg viewBox="0 0 10 10"></svg>' });
+  finish({ svg: '<svg viewBox="0 0 10 10"></svg>', width: 10, height: 10 });
   await new Promise(resolve => setImmediate(resolve));
   assert(!pending.querySelector('img'));
+});
+
+test('the renderer document returns sanitized SVG with its size', async () => {
+  const { window: w } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/views/diagram-renderer.html', runScripts: 'outside-only' });
+  w.eval(source('vendor/dompurify/purify'));
+  let config;
+  w.mermaid = { initialize(value) { config = value; }, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 419.2 180"><style>text{fill:red}</style><script>evil()</script><a href="https://example.invalid"><text onclick="evil()">Ready</text></a></svg>' }; } };
+  w.eval(source('diagram-renderer'));
+  const settings = { securityLevel: 'strict', flowchart: { htmlLabels: false } };
+  const drawn = await w.renderDiagram('d1', 'flowchart LR\n A-->B', settings);
+  assert.deepEqual([drawn.width, drawn.height], [420, 180]);
+  assert.match(drawn.svg, /Ready/); assert.match(drawn.svg, /<style>/);
+  assert.doesNotMatch(drawn.svg, /<script|onclick|<a\b/);
+  assert.deepEqual(JSON.parse(JSON.stringify(config)), settings); assert.notEqual(config, settings, 'Mermaid gets its own copy');
 });
 
 /** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */
