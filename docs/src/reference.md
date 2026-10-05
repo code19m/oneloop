@@ -92,8 +92,8 @@ an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
 Uploads, and Knowledge syncs that download a new commit, reserve space from the
 same disk budget before they start. A reservation stays in place until
 publication or temporary-file cleanup finishes.
-When a delayed attachment deletion finishes, activity records the person and
-app that requested it.
+A deleted file still counts toward the limit, as pending deletion, until
+oneloop removes it after the [Undo](user-guide.md#undo-a-deletion) window.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of
@@ -214,6 +214,7 @@ Some emoji count as two characters.
 | --- | --- |
 | `@everyone` | Once a minute per person in each project |
 | Archived Inbox items | Removed after 90 days; cannot be restored |
+| Undo of a deletion | Within 5 minutes; then oneloop removes the deleted files and comment text |
 | Activity | Edits by one person to the same field within 5 minutes show as one entry. History is kept forever. |
 
 **AI assistants**

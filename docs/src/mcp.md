@@ -106,7 +106,8 @@ also needs at least one capability that manages something.
   projects it needs.
 - Delete tools are marked as destructive, so a good client asks you before each
   one. oneloop can't see that question, so grant delete access only to a client
-  you trust.
+  you trust. **Undo** is only in the browser, so an assistant's deletions can't
+  be undone.
 
 Changes from an assistant appear in the activity under your name, with "via"
 and the app's name. To test the connection, ask the assistant: "Which oneloop

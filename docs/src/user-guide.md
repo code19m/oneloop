@@ -130,6 +130,16 @@ Mark a file **Temporary** if oneloop may remove it when storage runs low. A
 removed file then shows **Cleaned up**. oneloop never removes other files by
 itself.
 
+### Undo a deletion
+
+After you delete a task, a file or a comment, the message that confirms it has
+an **Undo** button while it is shown. Undo puts the item back where it was,
+with its comments and files. The history keeps both the deletion and the undo.
+
+Deleted files and comment text stay on the server for
+[5 minutes](reference.md#limits), so that Undo can work. Then oneloop removes
+them for good, together with the files of a deleted task.
+
 ## Knowledge
 
 **Knowledge** in the sidebar opens the project's **Knowledge base**: your
@@ -165,7 +175,7 @@ read-only Board.
 
 - **Reply** answers a comment in its thread.
 - You can edit and delete your own comments. Admins can edit and delete any
-  comment.
+  comment. You can [undo a deletion](#undo-a-deletion).
 - To mention someone, type `@` and pick the person from the list. Only people
   you pick get a notification. A name you type yourself, or a mention inside
   `code` or a quote, is plain text.

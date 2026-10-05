@@ -103,8 +103,7 @@ impl DomainOperation {
             | Self::AddMembership
             | Self::UpdateMembership
             | Self::RemoveMembership => None,
-            // Undo belongs to the browser's delete flow. An assistant's
-            // deletion is confirmed by the person before it runs.
+            // Undo belongs to the browser's delete flow (see the MCP tools).
             Self::RestoreTask => None,
             Self::DeleteTrack
             | Self::DeleteEpic

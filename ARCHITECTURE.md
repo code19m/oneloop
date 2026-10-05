@@ -207,6 +207,12 @@ never contain passwords, tokens or request bodies.
 dates such as deadlines are `YYYY-MM-DD` strings in the instance time zone,
 `ONELOOP_TIMEZONE`, which also defines "today" and "this week".
 
+**Undo.** Deleting a task, comment or attachment hides it at once and keeps
+its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore operation can
+bring it back. After the window, file maintenance removes the files with
+deletion jobs, and the collaboration worker empties deleted comments. Restoring
+is a browser operation; MCP doesn't offer it.
+
 **IDs.** Records have UUIDv7 string IDs, created by the server. Tasks also get
 a readable key such as `WEB-042` from the project prefix and a per-project
 counter. A prefix stays reserved even after its project is deleted.
