@@ -84,6 +84,8 @@ test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in vie
   await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.rm-month-grid .rm-week').first()).toBeVisible();
   expect(await todayShows()).toBe(true);
+  // Safari leaves focus on the page after a click on a button, as a click on empty space does.
+  await page.evaluate(() => document.activeElement?.blur());
   await page.keyboard.press('q');
   await expect(scale.getByRole('button', { name: 'Quarters' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(todayShows).toBe(true);

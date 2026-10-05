@@ -4178,12 +4178,14 @@
     if (state.menu && !event.target.closest?.('#overlay-root > .menu')) dismissMenu(false);
   }, true);
   // W, M and Q switch the Roadmap's scale while focus is on the Roadmap page,
-  // except in a text field, a menu or a dialog. Single-letter keys work only
-  // there, so they can't fire by accident elsewhere.
+  // or on the page itself, as after a click on empty space or, in Safari, on a
+  // button. Not in a text field, a menu or a dialog: single-letter keys work
+  // only there, so they can't fire by accident elsewhere.
   document.addEventListener('keydown', (event) => {
     if (state.view !== 'roadmap' || event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
     const scale = ROADMAP_SCALES.find((item) => item.shortcut === String(event.key).toUpperCase());
-    if (!scale || !event.target.closest?.('#main,.page-header') || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || document.getElementById('app').inert) return;
+    const onPage = event.target === document.body || event.target === document.documentElement || event.target.closest?.('#main,.page-header');
+    if (!scale || !onPage || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || state.sideOpen && innerWidth <= 900 || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || document.getElementById('app').inert) return;
     event.preventDefault();
     App.setRoadmapScale(scale.key);
     announce(`Roadmap scale: ${scale.label}`);

@@ -337,6 +337,9 @@ test('W, M and Q switch the scale on the Roadmap, but not while typing, in a dia
   assert.equal(press(r.w, 'm').defaultPrevented, false, 'not from the sidebar');
   r.d.querySelector('[data-epic]').focus();
   press(r.w, 'm'); assert.deepEqual(scales(r.d), pressed('Months'));
+  // A click on empty lane space, or on a button in Safari, leaves focus on the page itself.
+  r.d.activeElement.blur(); assert.equal(r.d.activeElement, r.d.body);
+  press(r.w, 'w'); assert.deepEqual(scales(r.d), pressed('Weeks'), 'with focus on the page itself');
   assert.equal(r.d.querySelector('.roadmap-scale [data-scale="weeks"]').getAttribute('aria-keyshortcuts'), 'W');
   r.A.nav('board');
   assert.equal(press(r.w, 'w').defaultPrevented, false, 'only on the Roadmap');
