@@ -55,6 +55,23 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
   expect(await unchanged()).toBe(true);
 });
 
+test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in view', async ({ page, instance }) => {
+  await openApp(page, instance, 'roadmap');
+  const scale = page.getByRole('group', { name: 'Timeline scale' });
+  await expect(scale.getByRole('button', { name: 'Months' })).toHaveAttribute('aria-pressed', 'true');
+  const todayShows = async () => {
+    const [pill, view] = await Promise.all([page.locator('.today-pill').boundingBox(), page.locator('#rmScroll').boundingBox()]);
+    return pill.x >= view.x && pill.x + pill.width <= view.x + view.width;
+  };
+  await scale.getByRole('button', { name: 'Weeks' }).click();
+  await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.rm-month-grid .rm-week').first()).toBeVisible();
+  expect(await todayShows()).toBe(true);
+  await page.keyboard.press('q');
+  await expect(scale.getByRole('button', { name: 'Quarters' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(todayShows).toBe(true);
+});
+
 test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project, track, task } = instance.projects[0];

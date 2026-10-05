@@ -195,7 +195,7 @@ t.mock.timers.reset();
 
 test('extreme calendar spans keep Roadmap cells bounded at every zoom and records editable', ctx => {
  const t=boot('roadmap',{prepare:D=>{D.epics[0].start='0000-01-01';D.milestones[0].date='9999-12-31';}});
- const bounded=zoom=>{const months=t.d.querySelectorAll('.rm-month').length;assert(months>0&&months<100,`${months} month labels at ${zoom}`);assert(t.d.querySelectorAll('.rm-axis-divider').length<200,`dividers at ${zoom}`);};
+ const bounded=zoom=>{const labels=t.d.querySelectorAll('.rm-month,.rm-week').length;assert(labels>0&&labels<100,`${labels} month or week labels at ${zoom}`);assert(t.d.querySelectorAll('.rm-axis-divider').length<200,`dividers at ${zoom}`);assert(t.d.querySelectorAll('.rm-month-line,.rm-week-line').length<200,`lines at ${zoom}`);};
  bounded('the default zoom');
  const sc=t.d.querySelector('#rmScroll');
  sc.scrollLeft=0;sc.dispatchEvent(new t.w.Event('scroll'));
@@ -245,4 +245,116 @@ test('a track moved with the keyboard scrolls into view below the date axis', ()
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved to the bottom');
   t.A.moveTrack(first, 0);
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved back to the top');
+});
+
+/** The scale buttons in the Roadmap header, as label and pressed state. */
+const scales = d => [...d.querySelectorAll('.roadmap-scale button')].map(button => [button.textContent, button.getAttribute('aria-pressed')]);
+const pressed = name => ['Weeks', 'Months', 'Quarters'].map(label => [label, String(label === name)]);
+/** A keydown on the focused element, such as a shortcut. */
+const press = (w, key, init = {}) => { const event = new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }); (w.document.activeElement || w.document.body).dispatchEvent(event); return event; };
+/** Boot the Roadmap 1000 px wide, the size the anchors below are measured in. */
+function wide(options = {}) {
+  const t = bootApp({ route: 'roadmap', ...options });
+  Object.defineProperty(t.d.getElementById('rmScroll'), 'clientWidth', { configurable: true, value: 1000 });
+  return { ...t, ...timeline(t.d) };
+}
+
+test('the scale buttons zoom the Roadmap in place to weeks, months or quarters, and show which one it is at', t => {
+  const r = wide(), bar = r.d.querySelector('[data-epic="e6"]');
+  assert.deepEqual(scales(r.d), pressed('Months'), 'Months is the zoom a Roadmap opens at');
+  r.A.setRoadmapScale('weeks');
+  assert(Math.abs(r.barWidth('e6') - 39 * 30) <= 1, 'the 39-day epic is 30 px a day');
+  assert.deepEqual(scales(r.d), pressed('Weeks'));
+  assert.equal(r.d.getElementById('rmScroll'), r.sc); assert.equal(r.d.querySelector('[data-epic="e6"]'), bar, 'no rebuild');
+  r.A.setRoadmapScale('quarters');
+  assert(Math.abs(r.barWidth('e6') - 39 * 2.6) <= 1);
+  assert.deepEqual(scales(r.d), pressed('Quarters'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  zoomWheel(r.w, r.sc); t.mock.timers.tick(150); t.mock.timers.reset();
+  assert.deepEqual(scales(r.d), pressed(null), 'after a free zoom, no scale is on');
+});
+
+test('a scale change keeps today where it was', () => {
+  const r = wide();
+  r.A.goToday();
+  const todayX = () => r.rail + parseFloat(r.d.querySelector('.today-pill').style.left) - r.sc.scrollLeft, before = todayX();
+  for (const scale of ['weeks', 'months']) {
+    r.A.setRoadmapScale(scale);
+    assert(Math.abs(todayX() - before) <= 1, `${scale}: today stays at ${before} px`);
+  }
+});
+
+test('a scale change keeps the selected epic in view: its middle when it fits, else its start', () => {
+  const r = wide({ setup: w => {
+    // Every epic bar shows in the middle of a 1000 × 800 px Roadmap.
+    w.Element.prototype.getBoundingClientRect = function () {
+      const box = this.id === 'rmScroll' ? [0, 0, 1000, 800] : this.dataset?.epic ? [400, 300, 600, 360] : [0, 0, 0, 0];
+      return { left: box[0], top: box[1], right: box[2], bottom: box[3], x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1] };
+    };
+  } });
+  const startX = id => r.startX(id), middleX = id => r.startX(id) + r.barWidth(id) / 2;
+  r.sc.scrollLeft += startX('e7') - 500;
+  r.d.querySelector('[data-epic="e7"]').focus();
+  const middle = middleX('e7');
+  r.A.setRoadmapScale('weeks');
+  assert(anchored(middleX('e7'), middle), 'the 20-day epic keeps its middle where it was');
+  r.A.setRoadmapScale('months');
+  r.sc.scrollLeft += startX('e6') - 300;
+  r.d.querySelector('[data-epic="e6"]').focus();
+  const start = startX('e6');
+  r.A.setRoadmapScale('weeks');
+  assert(anchored(startX('e6'), start), 'the 39-day epic is wider than the view, so its start stays');
+});
+
+test('W, M and Q switch the scale on the Roadmap, but not while typing, in a dialog, with a modifier or elsewhere', () => {
+  const r = wide();
+  r.d.querySelector('.topbar h1').focus();
+  assert(press(r.w, 'w').defaultPrevented); assert.deepEqual(scales(r.d), pressed('Weeks'));
+  press(r.w, 'Q'); assert.deepEqual(scales(r.d), pressed('Quarters'), 'Caps Lock makes no difference');
+  press(r.w, 'm', { ctrlKey: true }); press(r.w, 'm', { shiftKey: true }); press(r.w, 'm', { repeat: true });
+  assert.deepEqual(scales(r.d), pressed('Quarters'));
+  r.A.openModal('epic');
+  r.d.querySelector('.modal [name="title"]').focus();
+  assert.equal(press(r.w, 'm').defaultPrevented, false);
+  r.A.closeOverlays();
+  r.d.querySelector('.sidebar .nav-item').focus();
+  assert.equal(press(r.w, 'm').defaultPrevented, false, 'not from the sidebar');
+  r.d.querySelector('[data-epic]').focus();
+  press(r.w, 'm'); assert.deepEqual(scales(r.d), pressed('Months'));
+  assert.equal(r.d.querySelector('.roadmap-scale [data-scale="weeks"]').getAttribute('aria-keyshortcuts'), 'W');
+  r.A.nav('board');
+  assert.equal(press(r.w, 'w').defaultPrevented, false, 'only on the Roadmap');
+});
+
+test('at the Weeks scale the axis shows a line and a date for each week instead of month names', () => {
+  const r = wide();
+  r.A.setRoadmapScale('weeks');
+  const weeks = [...r.d.querySelectorAll('.rm-month-grid .rm-week')].map(el => el.textContent);
+  assert(weeks.length > 3); assert.equal(r.d.querySelectorAll('.rm-month').length, 0);
+  assert(weeks.every(label => /^[A-Z][a-z]{2} \d{1,2}(, \d{4})?$/.test(label)), weeks.join(' | '));
+  assert(r.d.querySelectorAll('.rm-calendar-lines .rm-week-line').length > 3);
+  r.A.setRoadmapScale('months');
+  assert.equal(r.d.querySelectorAll('.rm-week,.rm-week-line').length, 0);
+  assert(r.d.querySelectorAll('.rm-month').length > 0);
+});
+
+test('a scale change eases over a few frames, and a wheel zoom takes over where it is', () => {
+  // Frames run when the test says, at the times it gives.
+  const queue = new Map(); let next = 0;
+  const r = wide({ media: () => false, setup: w => { w.requestAnimationFrame = callback => { queue.set(++next, callback); return next; }; w.cancelAnimationFrame = id => queue.delete(id); } });
+  const frame = time => { const due = [...queue.values()]; queue.clear(); for (const callback of due) callback(time); };
+  // The 39-day epic's width tells the zoom in pixels per day.
+  const perDay = () => r.barWidth('e6') / 39;
+  r.A.setRoadmapScale('weeks');
+  assert(Math.abs(perDay() - 8.5) < 0.05, 'nothing moves before the first frame');
+  frame(1000);
+  const first = perDay();
+  assert(first > 8.5 && first < 30, `the first frame is part of the way: ${first} px a day`);
+  frame(1060);
+  const second = perDay();
+  assert(second > first && second < 30);
+  zoomWheel(r.w, r.sc, { deltaY: 100 });
+  frame(1120); frame(1400);
+  assert(Math.abs(perDay() / (second / 1.15) - 1) < 0.02, 'the wheel zooms out from where the scale change was');
+  assert.deepEqual(scales(r.d), pressed(null));
 });

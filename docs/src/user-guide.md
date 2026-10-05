@@ -24,7 +24,9 @@ still comment. See [Permissions](admin-guide.md#permissions).
 The Roadmap shows epics and milestones on a timeline, with one row for each
 track. It is the first page you see after you sign in.
 
-- Scroll to move through time. To zoom, hold Ctrl (Cmd on macOS) while you
+- Scroll to move through time. **Weeks**, **Months** and **Quarters** set the
+  scale, and so do the keys W, M and Q. A new scale keeps the epic you last
+  opened, or today, in view. To zoom freely, hold Ctrl (Cmd on macOS) while you
   scroll, or pinch on a touchpad or touch screen. **Today** takes you back to
   today.
 - Hover over an epic or a milestone to see its details. Click an epic to open

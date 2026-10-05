@@ -749,6 +749,17 @@
   let RAIL = 208;
   const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
   const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
+  /** Fixed scales of the timeline, in pixels per day. Months is the zoom a Roadmap opens at. */
+  const ROADMAP_SCALES = [
+    { key: 'weeks', label: 'Weeks', ppd: 30, shortcut: 'W' },
+    { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
+    { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
+  ];
+  /** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
+  const WEEK_AXIS_PPD = 18;
+  const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
+  /** The epic last focused or opened on the Roadmap, which a scale change keeps in view. */
+  let roadmapSelection = null;
 
   /** The data's dates: `start` anchors day 0 and `end` is the last date the timeline must reach before it fills the view. */
   function rmRange() {
@@ -931,6 +942,8 @@
   /** @type {{model:any,layout:any,metrics:{barHeight:number,width:number,height:number}}|null} The latest rendered Roadmap, which mountRoadmap binds. */
   let renderedRoadmap = null;
   function renderRoadmap() {
+    // A scale change still easing finishes first, so the new Roadmap starts at its zoom.
+    roadmapGestureCleanup();
     const barHeight = measureEpicHeight();
     RAIL = window.innerWidth <= 900 ? 132 : 208;
     const model = roadmapModel();
@@ -2104,6 +2117,7 @@
     if (state.view === 'roadmap') {
       return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
       <div class="right">
+        ${roadmapScaleHtml()}
         <button class="btn quiet" onclick="App.goToday()">Today</button>
         ${canRoadmap() ? `<button class="btn" onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span> Milestone</button>
         <button class="btn primary" onclick="App.openModal('epic')">${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
@@ -2418,6 +2432,7 @@
       for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
       for (const el of Object.values(view.cells)) el?.style.setProperty('--ppd', String(ppd));
       applyRoadmapLayout(view, roadmapLayout(model, ppd, view.metrics));
+      syncRoadmapScale();
     }
     const left = Math.max(0, RAIL + day * ppd - cx);
     if (Math.abs(sc.scrollLeft - left) >= 0.5) sc.scrollLeft = left;
@@ -2425,22 +2440,75 @@
     mountRoadmapCalendar(view);
   }
 
+  /** The scale the header shows as pressed; after a free zoom, none. */
+  let pressedScale = null;
+  function roadmapScaleHtml() {
+    pressedScale = roadmapScale()?.key ?? null;
+    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" onclick="App.setRoadmapScale('${UIArg(scale.key)}')">${scale.label}</button>`).join('')}</div>`;
+  }
+  function syncRoadmapScale() {
+    const current = roadmapScale()?.key ?? null;
+    if (current === pressedScale) return;
+    pressedScale = current;
+    document.querySelectorAll('.roadmap-scale [data-scale]').forEach((button) => {
+      const on = button.dataset.scale === current;
+      button.setAttribute('aria-pressed', String(on)); button.classList.toggle('on', on);
+    });
+  }
+
+  /** The selected epic's bar while it shows in the view, or null. */
+  function selectedEpicBar(view) {
+    const found = roadmapSelection && view.lanes.flatMap((lane) => lane.bars).find((bar) => bar.el.dataset.epic === roadmapSelection);
+    if (!found?.el.isConnected) return null;
+    const box = found.el.getBoundingClientRect(), port = view.sc.getBoundingClientRect();
+    const shows = box.right > port.left + RAIL && box.left < port.right && box.bottom > port.top + view.layout.axisHeight && box.top < port.bottom - MONTH_ROW;
+    return shows ? found : null;
+  }
+  /**
+   * What a scale change keeps in place: the selected epic while it shows,
+   * else today while it shows, else the date in the middle of the view.
+   * An epic that fits the view keeps its middle, moved into the view if
+   * needed; a wider one keeps its start when that shows, and otherwise the
+   * middle of the part that shows. Returns the day and its distance from the
+   * scroller's left edge.
+   */
+  function scaleAnchor(view, ppd) {
+    const { sc, model } = view, width = sc.clientWidth, room = width - RAIL;
+    const x = (day) => RAIL + day * view.ppd - sc.scrollLeft;
+    const margin = Math.min(80, room / 4), inside = (cx) => Math.min(Math.max(cx, RAIL + margin), width - margin);
+    const selected = selectedEpicBar(view);
+    if (selected) {
+      const { from, to } = selected.item;
+      if (to !== null && (to - from) * ppd <= room) return { day: (from + to) / 2, cx: inside(x((from + to) / 2)) };
+      if (x(from) >= RAIL) return { day: from, cx: x(from) };
+      const shown = (Math.max(from, sc.scrollLeft / view.ppd) + Math.min(to ?? model.span, (sc.scrollLeft + room) / view.ppd)) / 2;
+      return { day: shown, cx: x(shown) };
+    }
+    const today = x(model.today);
+    if (today >= RAIL && today <= width) return { day: model.today, cx: today };
+    const cx = RAIL + room / 2;
+    return { day: (sc.scrollLeft + cx - RAIL) / view.ppd, cx };
+  }
+
   const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:'short' });
   /**
    * Month labels and lines cover the visible dates plus one view of overscan
-   * each way, so the DOM stays bounded at every zoom level. The cells follow
-   * --ppd, so this redraws them only when the view nears the window's edge,
-   * the window becomes much wider than needed or passes the end of the range,
-   * or a partial month at either end gains or loses its label.
+   * each way, so the DOM stays bounded at every zoom level. From WEEK_AXIS_PPD,
+   * weeks get lines too, and the bottom row labels each week with its Monday's
+   * date instead of each month. The cells follow --ppd, so this redraws them
+   * only when the view nears the window's edge, the window becomes much wider
+   * than needed or passes the end of the range, a partial month at either end
+   * gains or loses its label, or the axis changes between months and weeks.
    */
   function mountRoadmapCalendar(view) {
     const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
     const end = Math.max(model.span, (view.metrics.width - RAIL) / ppd);
     const day = (/** @type {Date} */ dt) => (dt - start) / DAY;
     const labeled = (/** @type {number} */ from, /** @type {number} */ to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
+    const weeks = ppd >= WEEK_AXIS_PPD;
     const startMonth = new Date(start); startMonth.setUTCDate(1); startMonth.setUTCMonth(startMonth.getUTCMonth() + 1);
     const endMonth = new Date(+start + end * DAY); endMonth.setUTCDate(1); endMonth.setUTCHours(0, 0, 0, 0);
-    const labels = `${labeled(0, Math.min(day(startMonth), end))}:${labeled(Math.max(day(endMonth), 0), end)}`;
+    const labels = `${weeks}:${labeled(0, Math.min(day(startMonth), end))}:${labeled(Math.max(day(endMonth), 0), end)}`;
     const margin = width / 2 / ppd;
     const need = { from: Math.max(0, sc.scrollLeft / ppd - margin), to: Math.min(end, (sc.scrollLeft + width - RAIL) / ppd + margin) };
     const shown = view.calendar;
@@ -2453,25 +2521,38 @@
       const next = new Date(m); next.setUTCMonth(next.getUTCMonth() + 1);
       const from = Math.max(day(m), 0), to = Math.min(day(next), end);
       const label = monthFormatter.format(m) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + String(m.getUTCFullYear()).slice(2) : '');
-      if (labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
+      if (!weeks && labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
       if (day(next) < end) {
         seps += `<div class="rm-month-line" aria-hidden="true" style="--d:${day(next)}"></div>`;
         axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${day(next)}"></div>`;
       }
       covered = to;
     }
+    // Each week starts on a Monday, labeled with its date and, outside this year, the year.
+    let weekSeps = '';
+    if (weeks) for (const monday = new Date(+first + ((8 - first.getUTCDay()) % 7) * DAY); day(monday) < Math.min(last, end); monday.setUTCDate(monday.getUTCDate() + 7)) {
+      const at = day(monday);
+      if (at <= 0) continue;
+      if (monday.getUTCDate() !== 1) seps += `<div class="rm-week-line" aria-hidden="true" style="--d:${at}"></div>`;
+      weekSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${at}"></div>`;
+      months += `<div class="rm-week" style="--d:${at}">${humanShort(monday)}</div>`;
+    }
     view.calendar = { from: Math.max(0, day(first)), to: covered, labels };
     setHTML(view.cells.axis, axisSeps);
     setHTML(view.cells.lines, seps);
-    setHTML(view.cells.months, axisSeps + months);
+    setHTML(view.cells.months, (weeks ? weekSeps : axisSeps) + months);
   }
 
   let roadmapGestureCleanup = () => {};
+  /** @type {(RoadmapView & {zoomTo:(ppd:number)=>void})|null} The Roadmap on the page, which a scale change zooms. */
+  let mountedRoadmap = null;
   function mountRoadmap() {
     roadmapGestureCleanup();
     const sc = /** @type {HTMLElement|null} */(document.getElementById('rmScroll'));
     if (!sc || !renderedRoadmap) return;
-    const view = bindRoadmap(sc, renderedRoadmap);
+    const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (/** @type {number} */ _ppd) => {} });
+    mountedRoadmap = view;
+    sc.addEventListener('focusin', (event) => { const bar = /** @type {Element} */(event.target).closest?.('[data-epic]'); if (bar) roadmapSelection = bar.dataset.epic; });
     if (state.rmScrollLeft === null) state.rmScrollLeft = Math.max(RAIL + view.model.today * view.ppd - sc.clientWidth * 0.42, 0);
     sc.scrollLeft = state.rmScrollLeft;
     sc.scrollTop = state.rmScrollTop;
@@ -2504,6 +2585,7 @@
     let frame = 0, pointerX = NaN;
     /** @type {ReturnType<typeof setTimeout>|undefined} */ let idle;
     const begin = (/** @type {'wheel'|'pinch'|'gesture'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
+      stopScale(false);
       hideEpicTip();
       const cx = clientX - left;
       view.zoomLeft = sc.scrollLeft;
@@ -2577,11 +2659,41 @@
       if (e.type === 'gestureend') end();
     };
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) sc.addEventListener(type, pinchGesture);
+
+    // A scale change eases to its zoom in place, over a few frames like the
+    // other short motions; a wheel or pinch takes over from wherever it is.
+    /** @type {{ppd:number,day:number,cx:number,from:number,started:number|null}|null} */ let scaled = null;
+    let scaleFrame = 0;
+    function stopScale(finish = true) {
+      if (scaleFrame) cancelAnimationFrame(scaleFrame);
+      scaleFrame = 0;
+      if (finish && scaled && sc.isConnected) zoomRoadmap(view, scaled.ppd, scaled.day, scaled.cx);
+      scaled = null;
+    }
+    const stepScale = (/** @type {number} */ time) => {
+      scaleFrame = 0;
+      if (!scaled || !sc.isConnected) return;
+      scaled.started ??= time - 1000 / 60;
+      const progress = Math.min(1, (time - scaled.started) / MOTION.normal), eased = 1 - (1 - progress) ** 3;
+      zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
+      if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else scaled = null;
+    };
+    view.zoomTo = (ppd) => {
+      if (gesture) end();
+      stopScale();
+      hideEpicTip();
+      const { day, cx } = scaleAnchor(view, ppd);
+      if (reducedMotion.matches || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); return; }
+      scaled = { ppd, day, cx, from: view.ppd, started: null };
+      scaleFrame = requestAnimationFrame(stepScale);
+    };
     roadmapGestureCleanup = () => {
       if(calendarFrame)cancelAnimationFrame(calendarFrame);
       sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;
       clearTimeout(idle); if (frame) cancelAnimationFrame(frame);
       frame = 0; gesture = null; sc.removeEventListener('touchmove', movePinch);
+      stopScale();
+      if (mountedRoadmap === view) mountedRoadmap = null;
     };
   }
 
@@ -3137,6 +3249,13 @@
       state.modal=null;render();if(message)App.toast(message);return false;
     },
     setBlockedFilter(button){state.boardBlocked=!state.boardBlocked;button?.setAttribute('aria-pressed',String(state.boardBlocked));applyBoardFilters();},
+    /** Zoom the Roadmap to a fixed scale, in place, keeping the selected epic or today where it is. */
+    setRoadmapScale(key) {
+      const scale = ROADMAP_SCALES.find((item) => item.key === key);
+      if (!scale) return;
+      if (state.view === 'roadmap' && mountedRoadmap?.sc.isConnected) { mountedRoadmap.zoomTo(scale.ppd); return; }
+      state.pxPerDay = scale.ppd; syncRoadmapScale();
+    },
     goToday() {
       const sc = document.getElementById('rmScroll');
       const { start } = rmRange();
@@ -3172,7 +3291,7 @@
       App.roadmapTipKey(ev);
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
-    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; renderOverlays(); },
+    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; roadmapSelection = id; renderOverlays(); },
     closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
@@ -4002,6 +4121,17 @@
   document.addEventListener('focusin', (event) => {
     if (state.menu && !event.target.closest?.('#overlay-root > .menu')) dismissMenu(false);
   }, true);
+  // W, M and Q switch the Roadmap's scale while focus is on the Roadmap page,
+  // except in a text field, a menu or a dialog. Single-letter keys work only
+  // there, so they can't fire by accident elsewhere.
+  document.addEventListener('keydown', (event) => {
+    if (state.view !== 'roadmap' || event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const scale = ROADMAP_SCALES.find((item) => item.shortcut === String(event.key).toUpperCase());
+    if (!scale || !event.target.closest?.('#main,.page-header') || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || document.getElementById('app').inert) return;
+    event.preventDefault();
+    App.setRoadmapScale(scale.key);
+    announce(`Roadmap scale: ${scale.label}`);
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Tab' || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || POP.el?.contains(document.activeElement)) return;
     const panel = document.querySelector('#overlay-root > .modal-wrap .modal') || document.querySelector('#overlay-root > .peek');

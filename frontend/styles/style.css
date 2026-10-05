@@ -364,6 +364,10 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rm-axis-divider { position:absolute;top:0;bottom:0;left:calc(var(--d) * var(--ppd) * 1px);width:1px;background:var(--line-soft);pointer-events:none; }
 .rm-month-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:1px;background:var(--line-soft);pointer-events:none; }
 .rm-month { line-height: 16px; position: absolute; top: 7px; left: calc(var(--d) * var(--ppd) * 1px); width: calc(var(--n) * var(--ppd) * 1px); text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
+/* From the zoom where weeks show, week lines are dashed so month lines stand out. */
+.rm-week-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:0;border-left:1px dashed var(--line);pointer-events:none; }
+.rm-week { line-height:16px;position:absolute;top:7px;left:calc(var(--d) * var(--ppd) * 1px);padding-left:8px;white-space:nowrap;font-family:var(--font-sans);font-size:var(--text-sm);color:var(--ink-ghost); }
+.roadmap-scale button { white-space:nowrap; }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
 .rm-axis .rail-cell { z-index: 6; box-shadow: none; }
