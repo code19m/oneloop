@@ -27,8 +27,9 @@ track. It is the first page you see after you sign in.
 - Scroll to move through time. **Weeks**, **Months** and **Quarters** set the
   scale, and so do the keys W, M and Q. A new scale keeps the epic you last
   opened, or today, in view. To zoom freely, hold Ctrl (Cmd on macOS) while you
-  scroll, or pinch on a touchpad or touch screen. **Today** takes you back to
-  today.
+  scroll, or pinch on a touchpad or touch screen. On a narrow screen, the scale
+  buttons make room for the others; pinch or use the keys instead. **Today**
+  takes you back to today.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,

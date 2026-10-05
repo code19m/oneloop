@@ -2136,7 +2136,7 @@
       <div class="right">
         ${roadmapScaleHtml()}
         <button class="btn quiet" onclick="App.goToday()">Today</button>
-        ${canRoadmap() ? `<button class="btn" onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span> Milestone</button>
+        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
         <button class="btn primary" onclick="App.openModal('epic')">${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }

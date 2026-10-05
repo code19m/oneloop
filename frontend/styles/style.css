@@ -882,6 +882,12 @@ div.ms-label {cursor:default}
 @media (max-width:900px) {
   .roadmap-meta { display:none; }
 }
+/* A narrow Roadmap header gives way, least needed first: the summary, then
+   the scale buttons (pinching, the wheel and W, M and Q still zoom), then the
+   word Milestone, so Today, Milestone and Epic stay in view. */
+@container (max-width:924px) { .roadmap-meta { display:none; } }
+@container (max-width:689px) { .roadmap-scale { display:none; } }
+@container (max-width:455px) { .roadmap-milestone .btn-label { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap; } }
 
 /* A persistent notification stack; unrelated renders never restart its timers. */
 .toast-region { position:fixed;right:max(20px,env(safe-area-inset-right));bottom:max(20px,env(safe-area-inset-bottom));width:min(360px,calc(100vw - 32px));max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:8px;z-index:120;pointer-events:none; }

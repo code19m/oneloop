@@ -120,6 +120,22 @@ test.describe('with Reduce motion', () => {
   });
 });
 
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 375, height: 812 } });
+
+  test('the Roadmap header keeps Today, Milestone and Epic in view', async ({ page, instance }) => {
+    await openApp(page, instance, 'roadmap');
+    const header = page.locator('.topbar');
+    for (const name of ['Today', 'Milestone', 'Epic']) {
+      const box = await header.getByRole('button', { name, exact: true }).boundingBox();
+      expect(box.x, name).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, name).toBeLessThanOrEqual(375);
+    }
+    // Pinch zoom, the wheel and W, M and Q still change the scale here.
+    await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
+  });
+});
+
 test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
   const { epic, task } = instance.projects[0];
   await openApp(page, instance, 'roadmap');
