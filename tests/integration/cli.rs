@@ -83,8 +83,29 @@ fn serve_check_accepts_an_uninitialized_data_directory_without_creating_it() {
         .args(["serve", "--check"])
         .assert()
         .success()
+        // deploy/launchd/oneloop-launchd.sh stops the job when it sees this.
         .stdout(contains("database is not initialized"));
     assert!(!data_dir.exists());
+}
+
+/// The launchd launcher and the systemd unit in deploy/ stop instead of
+/// restarting when oneloop exits with 2, because a restart can't fix a setting.
+#[test]
+fn serve_exits_with_2_on_an_invalid_setting() {
+    let data_dir = scratch_dir();
+    for arguments in [["serve", "--check"].as_slice(), ["serve"].as_slice()] {
+        ProcessCommand::cargo_bin("oneloop")
+            .unwrap()
+            .env_clear()
+            .env("ONELOOP_PUBLIC_URL", "https://work.example.com")
+            .env("ONELOOP_DATA_DIR", data_dir.path())
+            .env("ONELOOP_PORT", "8080")
+            .args(arguments)
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(contains("unknown environment variable ONELOOP_PORT"));
+    }
 }
 
 #[cfg(unix)]

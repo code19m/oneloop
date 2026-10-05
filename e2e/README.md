@@ -11,6 +11,9 @@ npm --prefix e2e run test:smoke       # @smoke journeys in Chromium, under 2 min
 npm --prefix e2e test                 # every journey in all three browsers, a few minutes locally
 ```
 
+The Knowledge journeys also need `git` 2.31 or later and `openssl` on your
+`PATH`.
+
 The harness runs `target/debug/oneloop` by default. A debug build serves the
 frontend from disk, so frontend edits need no rebuild. Set `ONELOOP_TEST_BINARY`
 to test another build, such as the release binary CI uses:
@@ -19,19 +22,22 @@ to test another build, such as the release binary CI uses:
 ONELOOP_TEST_BINARY=target/release/oneloop npm --prefix e2e test
 ```
 
-A relative path is resolved from the directory you run the command in.
-`ONELOOP_TEST_BINARY` belongs to this harness only; the application does not
-read it. Pass Playwright options after `--`, for example
+A relative path is resolved from the directory you run the command in. Set
+`ONELOOP_TEST_BINARY` only on the npm command line, as above. oneloop itself
+refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
+`oneloop`. Pass Playwright options after `--`, for example
 `npm --prefix e2e test -- --project=firefox journeys/pool.spec.mjs`.
 
 ## Layout
 
 - `journeys/` groups tests by what a user does: `startup`, `board`, `roadmap`,
-  `task`, `attachments`, `pool`, `inbox`, `administration`, `accessibility`,
-  `dates` and `integrations` (MCP and OAuth clients). Tag a journey
-  `{ tag: '@smoke' }` when it guards a core path and stays fast.
-- `support/test.mjs` is the only import a journey needs: `test`, `expect`,
-  `command` and the helpers below.
+  `task`, `attachments`, `pool`, `inbox`, `knowledge`, `administration`,
+  `accessibility`, `dates` and `integrations` (MCP and OAuth clients). Tag a
+  journey `{ tag: '@smoke' }` when it guards a core path and stays fast.
+- Journeys import `test`, `expect`, `command` and the helpers below from
+  `support/test.mjs`. The Knowledge journeys also use `support/git-server.mjs`,
+  a local HTTPS Git host that runs `git http-backend` with a self-signed
+  certificate from `openssl`.
 - `playwright.config.mjs` is the single configuration. Traces, screenshots and
   reports go to `target/e2e-results` and `target/e2e-report`.
 

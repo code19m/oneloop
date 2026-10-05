@@ -1,16 +1,27 @@
 # Backups and upgrades
 
-The examples use the data directory `/var/lib/oneloop/data` for an install from
-source, and the example `compose.yaml` for Docker. Run the commands as the
-account that runs oneloop, with the same environment.
+The examples use the [systemd setup](production.md#systemd-linux) for an
+install from source, with data in `/var/lib/oneloop/data`, and the example
+`compose.yaml` for Docker. Run `oneloop` commands as the account that runs
+oneloop, with the same environment, for example
+`sudo -u oneloop env ONELOOP_DATA_DIR=/var/lib/oneloop/data /usr/local/bin/oneloop backup create …`.
 
 ## Back up
 
 A backup is a complete, verified copy of the database, all uploaded files and
-oneloop's keys, including the key that encrypts knowledge base credentials, so
-a restored instance can still sync. oneloop keeps running while you make it.
-While the backup copies the database, file uploads, downloads and deletions
-wait. One that waits more than 5 seconds fails, and you can try it again.
+the `keys` folder. That folder holds the key that encrypts Knowledge
+credentials, so a restored instance can still sync. oneloop keeps running
+while you make a backup. While the backup copies the database, file uploads,
+downloads and deletions wait. One that waits more than 5 seconds fails, and you
+can try it again.
+
+First, create a backup folder that only the account that runs oneloop can use:
+
+```sh
+sudo install -d -m 0700 -o oneloop -g oneloop /var/backups/oneloop
+```
+
+Then make a backup in a new folder inside it:
 
 ```sh
 oneloop backup create /var/backups/oneloop/2026-09-28
@@ -26,8 +37,9 @@ container runs as user 10001:
 sudo install -d -m 0700 -o 10001 -g 10001 /srv/oneloop-backups
 ```
 
-Add `- /srv/oneloop-backups:/backups` under `volumes:` in `compose.yaml`, run
-`docker compose up -d`, and then:
+In `compose.yaml`, add `- /srv/oneloop-backups:/backups` to the service's
+`volumes:`, next to `- oneloop-data:/data`. Run `docker compose up -d`, and
+then:
 
 ```sh
 docker compose exec oneloop oneloop backup create /backups/2026-09-28
@@ -41,7 +53,8 @@ docker compose exec oneloop oneloop backup create /backups/2026-09-28
 ### Back up every night
 
 Run the command every night with cron or a systemd timer. For example, add this
-line to the crontab of the account that runs oneloop:
+line to the crontab of the account that runs oneloop, with
+`sudo crontab -u oneloop -e`:
 
 ```
 0 2 * * * ONELOOP_DATA_DIR=/var/lib/oneloop/data /usr/local/bin/oneloop backup create /var/backups/oneloop/$(date -u +\%Y\%m\%dT\%H\%M\%SZ)
@@ -54,17 +67,21 @@ your own schedule.
 
 ### Test your backups
 
-From time to time, restore a backup into a test folder and look around:
+From time to time, restore a backup into a test folder and look around. Only
+the account that runs oneloop can read the backup, so use a test folder that
+this account can write to:
 
 ```sh
-export TEST_DIR=$HOME/oneloop-restore-test
-ONELOOP_DATA_DIR=$TEST_DIR oneloop backup restore /var/backups/oneloop/2026-09-28
-ONELOOP_DATA_DIR=$TEST_DIR ONELOOP_LISTEN=127.0.0.1:19220 \
-  ONELOOP_PUBLIC_URL=http://127.0.0.1:19220 oneloop serve
+sudo -u oneloop env ONELOOP_DATA_DIR=/var/lib/oneloop/restore-test \
+  /usr/local/bin/oneloop backup restore /var/backups/oneloop/2026-09-28
+sudo -u oneloop env ONELOOP_DATA_DIR=/var/lib/oneloop/restore-test \
+  ONELOOP_LISTEN=127.0.0.1:19220 ONELOOP_PUBLIC_URL=http://127.0.0.1:19220 \
+  /usr/local/bin/oneloop serve
 ```
 
 Sign in at `http://127.0.0.1:19220` and open a few tasks and files. Then stop
-the test server and delete the folder.
+the test server with Ctrl+C, and delete the folder with
+`sudo rm -rf /var/lib/oneloop/restore-test`.
 
 ## Restore
 
@@ -118,7 +135,8 @@ you choose, and it changes nothing if the backup fails.
    cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.2 --locked
    sudo install ~/.cargo/bin/oneloop /usr/local/bin/oneloop
    ```
-4. Upgrade the database, and check the result:
+4. Upgrade the database, and check the result. `db migrate` saves its backup
+   in the backup folder from [Back up](#back-up):
    ```sh
    oneloop db migrate --backup-dir /var/backups/oneloop
    oneloop serve --check
@@ -158,8 +176,8 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database migrated from 16 to 3`. Until you do this,
-`oneloop serve` refuses to start.
+It prints something like `database in <data folder> migrated from 16 to 3`.
+Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back
 

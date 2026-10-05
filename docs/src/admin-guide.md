@@ -35,9 +35,9 @@ oneloop. Add everyone else in the app:
    the person privately. They choose their own password when they first sign
    in.
 
-Usernames have 3 to 32 lowercase letters, digits, dots, underscores or hyphens,
-and they can't be changed later. Passwords need at least 5 characters. Ask
-people, especially admins, to use long passphrases.
+Usernames can't be changed later. The rules for usernames and passwords are
+under [Limits](reference.md#limits). Ask people, especially admins, to use long
+passphrases.
 
 You can also create accounts on the server with
 [`oneloop user add`](reference.md#commands).
@@ -92,7 +92,8 @@ A project can show one folder of a Git repository as its
 people change the files in Git, with the review your team already uses.
 
 Connect one with **Connect repository** under **Knowledge base** in the
-project's **Settings**. Leave **Folder** empty to show the whole repository.
+project's **Settings**. **Folder** starts as `docs`; clear it to show the
+whole repository.
 The first sync starts at once. After that, oneloop checks the branch every
 minute and downloads the folder again only when it has changed.
 
