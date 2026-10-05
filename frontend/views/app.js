@@ -604,6 +604,16 @@
     if (kind === 'key') return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
     return value.replace(input.tagName === 'TEXTAREA' ? /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g : /[\x00-\x1f\x7f]/g, '');
   }
+  // Cut text to `max` UTF-16 units, as maxlength counts them, without splitting
+  // a character: half of a surrogate pair cannot be saved.
+  function clampText(text, max) {
+    if (text.length <= max) return text;
+    const head = text.slice(0, max + 32);
+    const parts = typeof Intl.Segmenter === 'function' ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(head), part => part.segment) : Array.from(head);
+    let out = '';
+    for (const part of parts) { if (out.length + part.length > max) break; out += part; }
+    return out;
+  }
   function insertCleanText(input, text) {
     const kind = inputKind(input), old = input.value;
     const from = input.selectionStart ?? old.length, to = input.selectionEnd ?? from;
@@ -611,7 +621,7 @@
       : kind === 'key' ? text.toUpperCase().replace(/[^A-Z0-9]/g, '')
       : sanitizeInputValue(input, text);
     if (!fragment && text) return;
-    if (input.maxLength >= 0) fragment = fragment.slice(0, Math.max(0, input.maxLength - (old.length - (to - from))));
+    if (input.maxLength >= 0) fragment = clampText(fragment, Math.max(0, input.maxLength - (old.length - (to - from))));
     const prefix = old.slice(0, from) + fragment;
     input.value = sanitizeInputValue(input, prefix + old.slice(to));
     const caret = Math.min(sanitizeInputValue(input, prefix).length, input.value.length);

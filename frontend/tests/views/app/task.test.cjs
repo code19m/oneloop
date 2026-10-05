@@ -136,3 +136,19 @@ test('an unsaved description stays on the page through refreshes and offers Save
   assert.match(note.textContent, /Not saved/); assert(note.querySelector('button'));
   assert.equal(t.requests.length, 0);
 });
+
+test('a pasted line break cleans the title without splitting an emoji at its length limit', () => {
+  const t = taskPage(), title = t.d.querySelector('.tp-title');
+  title.focus(); title.value = ''; title.setSelectionRange(0, 0);
+  const paste = new t.w.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'A'.repeat(139) + '😀\n' + 'B'.repeat(10) } });
+  title.dispatchEvent(paste);
+  assert(paste.defaultPrevented);
+  assert.equal(title.value, 'A'.repeat(139));
+  assert(title.value.isWellFormed());
+  title.value = 'A'.repeat(137); title.setSelectionRange(137, 137);
+  const joined = new t.w.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(joined, 'clipboardData', { value: { getData: () => '\t👩‍💻 x' } });
+  title.dispatchEvent(joined);
+  assert.equal(title.value, 'A'.repeat(137) + ' ', 'a joined emoji that does not fit stays whole');
+});

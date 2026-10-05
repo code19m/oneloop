@@ -80,6 +80,14 @@ for(const [latest,fail] of [['Newest title',false],['Original title',false],['Fi
   else{assert(state.saved.length>0);assert.deepEqual(state.toasts,[]);}
 });
 
+test('a title cut at its length limit keeps whole characters',async()=>{
+  const payloads=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:async(_operation,payload)=>{payloads.push(payload);return {entities:[],events:[]};}}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:1,title:'Original'});
+  state.app.updTask('ONE-1','title','A'.repeat(139)+'😀');await new Promise(setImmediate);
+  assert.equal(payloads[0].title,'A'.repeat(139));
+});
+
 test('project autosave keeps the latest name while an earlier name is saving',async()=>{
   let gateway;
   const state=fixture({view:'settings',projectId:'p1'}, {gateway:{execute:(...args)=>gateway.execute(...args)}});

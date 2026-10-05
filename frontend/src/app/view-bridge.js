@@ -13,7 +13,11 @@ import {
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
 
-const text = (value, max) => String(value ?? '').trim().slice(0, max);
+/** Cut at `max` UTF-16 units, as maxlength does, without splitting a surrogate pair. */
+const text = (value, max) => {
+  const cut = String(value ?? '').trim().slice(0, max);
+  return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
+};
 
 /** @param {{app:import('../data/contracts.js').LegacyApp,data:import('../data/contracts.js').LegacyData,gateway:import('../data/contracts.js').CommandGateway,api:import('../data/contracts.js').ApiClient,auth:any,reads:any,recovery:any,reloadBootstrap:Function}} options */
 export function installViewBridge({ app, data, gateway, auth, api, reads, recovery, reloadBootstrap }) {
