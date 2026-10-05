@@ -95,6 +95,8 @@ Click a card to open the task. Your changes save automatically.
 - If someone else changes a task field or comment while you are editing it,
   oneloop keeps your text and shows theirs next to it. Choose **Use latest** or
   **Keep my changes**.
+- A title or description you change while offline stays on the page, marked
+  **Not saved**, and saves when the connection returns.
 - To delete a task, use the **⋯** menu at the top of the page.
 
 ### Blocking
