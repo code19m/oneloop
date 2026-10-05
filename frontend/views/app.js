@@ -726,9 +726,12 @@
   }
 
   // ---------- roadmap geometry ----------
+  // The model holds dates as whole days from the range start; pixels are days
+  // times the zoom level (pixels per day).
   let RAIL = 208;
-  const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60;
+  const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
 
+  /** The data's dates: `start` anchors day 0 and `end` is the last date the timeline must reach before it fills the view. */
   function rmRange() {
     let min = today, max = new Date(today.getTime() + 60 * DAY);
     epics().forEach((e) => {
@@ -737,30 +740,74 @@
       if (e.end) { const en = d(e.end); if (en > max) max = en; }
     });
     milestones().forEach((m) => { const md = d(m.date); if (md < min) min = md; if (md > max) max = md; });
-    const start = new Date(min.getTime() - 10 * DAY);
-    const viewport = document.querySelector('.content')?.clientWidth || window.innerWidth;
-    const visibleDays = Math.max(0, viewport - RAIL) / state.pxPerDay;
-    const end = new Date(Math.max(max.getTime() + 45 * DAY, +start + visibleDays * DAY));
-    return { start, end };
+    return { start: new Date(min.getTime() - 10 * DAY), end: new Date(max.getTime() + 45 * DAY) };
   }
 
-  function epicGeometry(e, x, rangeEnd) {
-    const left = x(d(e.start));
-    return { left, width: e.end ? Math.max(x(d(e.end)) - left, EPIC_MIN_WIDTH) : Math.max(x(rangeEnd) - left, EPIC_MIN_WIDTH) };
-  }
-  function packRows(list, rangeEnd, x) {
-    const rows = [];
-    const sorted = [...list].sort((a, b) => d(a.start) - d(b.start));
-    sorted.forEach((e) => {
-      const start = d(e.start), end = e.end ? d(e.end) : rangeEnd;
-      const { left, width } = epicGeometry(e, x, rangeEnd);
-      // Date intervals and minimum card widths must both fit before reusing a row.
-      let row = rows.findIndex((last) => start > last.end && left >= last.right + EPIC_GAP);
-      if (row < 0) row = rows.length;
-      rows[row] = { end, right: left + width };
-      e._row = row;
+  /** The Roadmap's tracks, epics and milestones as day offsets; nothing here depends on the zoom level. */
+  function roadmapModel() {
+    const { start, end } = rmRange();
+    const day = (dt) => Math.round((dt - start) / DAY);
+    const all = epics();
+    const lanes = tracks().map((track) => ({
+      track,
+      epics: all.filter((e) => e.trackId === track.id).sort((a, b) => d(a.start) - d(b.start))
+        .map((epic) => ({ epic, from: day(d(epic.start)), to: epic.end ? day(d(epic.end)) : null })),
+    }));
+    const goals = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
+      const date = d(m.date);
+      const days = Math.round((date.getTime() - today.getTime()) / DAY);
+      const past = days < 0;
+      const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
+      const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
+      const width = Math.min(240, Math.max(112, name.length * (past ? 7.5 : 8.5) + (past ? 50 : 62), dateLabel.length * 6 + (past ? 50 : 62)));
+      return { m, past, name, dateLabel, width, at: day(date) };
     });
-    return { list: sorted, rows: Math.max(rows.length, 1) };
+    return { start, span: day(end), today: day(today), lanes, goals };
+  }
+
+  /**
+   * The parts of the layout that change at a zoom level: which row each epic
+   * and goal label takes, the lane heights and the axis height. `width` and
+   * `height` are the content area's size.
+   */
+  function roadmapLayout(model, ppd, { barHeight, width, height }) {
+    const x = (days) => dayX(days, ppd);
+    const timeline = timelineWidth(model, ppd, width);
+    // Goal labels pack independently of epic lanes, including room for Today.
+    const todayX = x(model.today);
+    const labelRows = [[{ left: todayX - 34, right: todayX + 34 }]];
+    const goalRows = model.goals.map((goal) => {
+      const left = Math.max(6, Math.min(x(goal.at) - goal.width / 2, timeline - goal.width - 6));
+      let row = labelRows.findIndex((items) => items.every((other) => left + goal.width + 12 <= other.left || left >= other.right + 12));
+      if (row < 0) { row = labelRows.length; labelRows.push([]); }
+      labelRows[row].push({ left, right: left + goal.width });
+      return row;
+    });
+    const axisHeight = AXIS + (labelRows.length - 1) * GOAL_ROW;
+    // Date intervals and minimum card widths must both fit before reusing a row.
+    // An ongoing epic runs to the end of the range, so nothing later shares its row.
+    const packed = model.lanes.map((lane) => {
+      const rows = [];
+      const assigned = lane.epics.map((item) => {
+        const left = x(item.from);
+        const right = item.to === null ? Infinity : left + Math.max(x(item.to) - left, EPIC_MIN_WIDTH);
+        let row = rows.findIndex((last) => item.from > last.to && left >= last.right + EPIC_GAP);
+        if (row < 0) row = rows.length;
+        rows[row] = { to: item.to ?? Infinity, right };
+        return row;
+      });
+      return { assigned, count: Math.max(rows.length, 1) };
+    });
+    // Packed minimum heights, then leftover viewport height shared evenly.
+    const rowsHeight = (count) => count * barHeight + (count - 1) * ROW_GAP;
+    const minHs = packed.map((lane) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88));
+    const availH = height - axisHeight - MONTH_ROW - 8;
+    const extra = packed.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / packed.length, 0) : 0;
+    const lanes = packed.map((lane, i) => {
+      const laneHeight = Math.round(minHs[i] + extra);
+      return { rows: lane.assigned, count: lane.count, height: laneHeight, pad: Math.round((laneHeight - rowsHeight(lane.count)) / 2) };
+    });
+    return { ppd, axisHeight, goalRows, lanes };
   }
 
   /** The zoom factor of one wheel event, as a natural logarithm. */
@@ -775,12 +822,19 @@
     const notch = event.deltaMode !== 0 || Math.abs(delta) >= 50 || Math.abs(delta) % MAC_WHEEL_LINE === 0;
     return notch ? -Math.sign(delta) * WHEEL_NOTCH : Math.max(-WHEEL_NOTCH, Math.min(WHEEL_NOTCH, -delta / 100));
   }
+  // Horizontal places at a zoom level, in whole pixels so text stays on the pixel grid.
+  const dayX = (days, ppd) => Math.round(days * ppd);
+  const barLeft = (item, ppd) => `${dayX(item.from, ppd)}px`;
+  /** An ongoing bar has no width: CSS runs it to the end of its lane. */
+  const barWidth = (item, ppd) => `${Math.max(dayX(item.to, ppd) - dayX(item.from, ppd), EPIC_MIN_WIDTH)}px`;
+  const barTop = (lane, row, barHeight) => `${lane.pad + row * (barHeight + ROW_GAP)}px`;
+  const timelineWidth = (model, ppd, width) => Math.max(dayX(model.span, ppd), width - RAIL);
+  /** A goal label's center: under its date, but kept inside the timeline. */
+  const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
 
-  function epicBar(e, x, rangeEnd, padTop, barHeight = BAR_H) {
-    const s = d(e.start);
-    const ongoing = !e.end;
-    const { left, width } = epicGeometry(e, x, rangeEnd);
-    const top = padTop + e._row * (barHeight + ROW_GAP);
+  function epicBar(item, ppd, top) {
+    const e = item.epic, s = d(e.start);
+    const ongoing = item.to === null;
     const cls = ['bar', e.state, ongoing ? 'ongoing' : '', (ongoing && e.total === 0 && e.state !== 'done') ? 'quiet' : ''].join(' ');
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
 
@@ -796,7 +850,7 @@
     const prog = (ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
-    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${left}px;top:${top}px;width:${width}px" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
+    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
       <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
       <div class="m">${meta}</div>${prog}</div>`;
   }
@@ -857,53 +911,27 @@
   function renderRoadmap() {
     const barHeight = measureEpicHeight();
     RAIL = window.innerWidth <= 900 ? 132 : 208;
-    const trs = tracks();
-    const { start, end } = rmRange();
-    const ppd = state.pxPerDay;
-    const x = (dt) => Math.round((dt - start) / DAY * ppd);
-    const tlWidth = x(end);
-
-    // Pack goal labels independently of epic lanes, including room for Today.
-    const todayX = x(today);
-    const labelRows = [[{ left: todayX - 34, right: todayX + 34 }]];
-    const goalLabels = milestones().slice().sort((a, b) => d(a.date) - d(b.date)).map((m) => {
-      const date = d(m.date);
-      const days = Math.round((date.getTime() - today.getTime()) / DAY);
-      const past = days < 0;
-      const name = m.name.charAt(0).toUpperCase() + m.name.slice(1);
-      const dateLabel = humanShort(date) + (days > 0 ? ` · ${days}d away` : days === 0 ? ' · Today' : '');
-      const width = Math.min(240, Math.max(112, name.length * (past ? 7.5 : 8.5) + (past ? 50 : 62), dateLabel.length * 6 + (past ? 50 : 62)));
-      const cx = x(date);
-      const left = Math.max(6, Math.min(cx - width / 2, tlWidth - width - 6));
-      let row = labelRows.findIndex((items) => items.every((other) => left + width + 12 <= other.left || left >= other.right + 12));
-      if (row < 0) { row = labelRows.length; labelRows.push([]); }
-      labelRows[row].push({ left, right: left + width });
-      return { m, past, name, dateLabel, width, cx, left, row };
-    });
-    const axisHeight = AXIS + (labelRows.length - 1) * 58;
-
-    // Calendar cells are mounted for the viewport, independent of date span.
-    // lanes — packed minimum heights, then leftover viewport height shared evenly
-    const packs = trs.map((t) => packRows(epics().filter((e) => e.trackId === t.id), end, x));
-    const minHs = packs.map((p) => Math.max(2 * LANE_PAD + p.rows * barHeight + (p.rows - 1) * ROW_GAP, 88));
+    const model = roadmapModel();
     const contentEl = document.querySelector('.content');
     roadmapHeight=contentEl ? contentEl.clientHeight : window.innerHeight - 80;
-    const availH = (roadmapHeight) - axisHeight - MONTH_ROW - 8;
-    const extra = trs.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / trs.length, 0) : 0;
+    const metrics = { barHeight, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
+    const ppd = state.pxPerDay;
+    const layout = roadmapLayout(model, ppd, metrics);
+    const { axisHeight } = layout;
+
+    // Calendar cells are mounted for the viewport, independent of date span.
     let lanes = '';
-    trs.forEach((t, ti) => {
-      const packed = packs[ti];
-      const h = Math.round(minHs[ti] + extra);
-      const rowsContent = packed.rows * barHeight + (packed.rows - 1) * ROW_GAP;
-      const padTop = Math.round((h - rowsContent) / 2);
-      const active = packed.list.filter((e) => e.state === 'active').length;
-      const doneN = packed.list.filter((e) => e.state === 'done').length;
-      const cont = packed.list.some((e) => !e.end);
-      const sub = packed.list.length
-        ? `${packed.list.length} epic${packed.list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
+    model.lanes.forEach(({ track: t, epics: items }, ti) => {
+      const lane = layout.lanes[ti];
+      const list = items.map((item) => item.epic);
+      const active = list.filter((e) => e.state === 'active').length;
+      const doneN = list.filter((e) => e.state === 'done').length;
+      const cont = list.some((e) => !e.end);
+      const sub = list.length
+        ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
         : 'no epics yet';
-      const bars = packed.list.map((e) => epicBar(e, x, end, padTop, barHeight)).join('');
-      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${h}px">
+      const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
+      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
           <h2 class="name" title="${esc(t.name)}">${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
@@ -911,26 +939,30 @@
             <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
           </div>` : ''}
         </div>
-        <div class="lane-body" style="width:${tlWidth}px">${bars}</div>
+        <div class="lane-body">${bars}</div>
       </div>`;
     });
 
     // milestones + today (labels live in the sticky axis; lines span the canvas)
+    const timeline = timelineWidth(model, ppd, metrics.width);
     let msHtml = '', msLabels = '';
-    goalLabels.forEach(({ m, past, name, dateLabel, width, cx, left, row }) => {
-      msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + cx}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
-      msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${cx}px;top:${12 + row * 58 + 54}px;bottom:-1px"></div>`;
-      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${left + width / 2}px;top:${12 + row * 58}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
+    model.goals.forEach((goal, i) => {
+      const { m, past, name, dateLabel, width, at } = goal, row = layout.goalRows[i];
+      msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + dayX(at, ppd)}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
+      msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${dayX(at, ppd)}px;top:${12 + row * GOAL_ROW + 54}px;bottom:-1px"></div>`;
+      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
         ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${dateLabel}</span></span></button>`;
     });
-    const tx = RAIL + x(today);
-    const todayHtml = `<div class="today-line" style="left:${tx}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
+    const todayX = dayX(model.today, ppd);
+    const todayHtml = `<div class="today-line" style="left:${RAIL + todayX}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
     const todayPill = `<div class="today-line today-connector" aria-hidden="true" style="left:${todayX}px;top:32px;bottom:-1px"></div><div class="today-pill" style="left:${todayX}px;top:12px">${human(today)}</div>`;
 
-    const emptyProject = trs.length === 0;
-    return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+start)}" data-range-end="${UIEscape(+end)}" data-axis-height="${UIEscape(axisHeight)}">
-      <div class="rm-canvas" style="width:${RAIL + tlWidth}px">
-        <div class="rm-axis" style="width:${RAIL + tlWidth}px;height:${axisHeight}px">
+    // The calendar mounts its cells for the view, up to the end of the timeline.
+    const end = new Date(+model.start + Math.max(model.span, Math.max(0, metrics.width - RAIL) / ppd) * DAY);
+    const emptyProject = model.lanes.length === 0;
+    return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+model.start)}" data-range-end="${UIEscape(+end)}" data-axis-height="${UIEscape(axisHeight)}">
+      <div class="rm-canvas" style="width:${RAIL + dayX(model.span, ppd)}px">
+        <div class="rm-axis" style="height:${axisHeight}px">
           <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" onclick="App.openModal('track')">${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
           <div class="rm-axis-labels"><span class="rm-calendar-axis"></span>${msLabels}${todayPill}</div>
         </div>

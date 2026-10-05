@@ -354,7 +354,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 
 /* ---------- roadmap ---------- */
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
-.rm-canvas { position: relative; }
+.rm-canvas { position: relative; min-width: 100%; }
 .rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
 .rm-axis-labels { position: relative; flex: 1; }
 .rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
@@ -391,7 +391,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .bar .t span.txt { overflow: hidden; text-overflow: ellipsis; }
 .bar .m { line-height: 16px; margin-top: 3px; font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); white-space: nowrap; }
 /* open-ended bars are viewport-wide, so their labels stick to the visible edge */
-.bar.ongoing { overflow: visible; }
+.bar.ongoing { overflow: visible; right: 0; min-width: 60px; }
 .bar.ongoing .t, .bar.ongoing .m { position: sticky; left: 222px; width: fit-content; max-width: 96%; }
 .bar .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: rgb(var(--tone-rgb) / 0.09); width: 100%; }
 .bar .prog i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
