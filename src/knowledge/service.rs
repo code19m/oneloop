@@ -61,6 +61,9 @@ pub(super) struct Inner {
     /// Projects whose sync is running in this process, each with the token
     /// that stops it.
     pub(super) syncing: Mutex<HashMap<String, CancellationToken>>,
+    /// Projects whose last sync could not be read or recorded, and until when
+    /// they wait, so a failing database is not retried in a tight loop.
+    pub(super) waiting: Mutex<HashMap<String, tokio::time::Instant>>,
     /// Search indexes and outlines, most recently used last.
     catalogs: Mutex<Vec<Arc<Catalog>>>,
     /// Indexes are built one at a time; a request that waited finds the result.
@@ -353,6 +356,7 @@ impl KnowledgeService {
                 },
                 wake: Notify::new(),
                 syncing: Mutex::new(HashMap::new()),
+                waiting: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
             }),
@@ -404,7 +408,7 @@ impl KnowledgeService {
         }))?;
         let actor = actor.clone();
         let inner = self.inner.clone();
-        let (result, changed) = self
+        let (result, project_id, changed) = self
             .inner
             .db
             .transaction(move |tx| {
@@ -420,7 +424,7 @@ impl KnowledgeService {
                     &hash,
                 )? {
                     result.replayed = true;
-                    return Ok((result, None));
+                    return Ok((result, None, None));
                 }
                 let id = crate::idempotency::start(
                     tx,
@@ -457,14 +461,16 @@ impl KnowledgeService {
                     },
                     now,
                 )?;
-                Ok((result, changed))
+                Ok((result, Some(project_id), changed))
             })
             .await?;
         // A sync that is still running works for the old source.
         if let Some(project_id) = changed {
             self.inner.stop_sync(&project_id);
         }
-        if !result.replayed {
+        if let Some(project_id) = project_id {
+            // An administrator's change or retry syncs at once.
+            self.inner.stop_waiting(&project_id);
             self.inner.wake.notify_one();
         }
         Ok(result)
