@@ -1072,10 +1072,18 @@ fn connect(
     if place.url.transport() == Transport::Ssh {
         events.extend(ensure_deploy_key(tx, inner, actor, &input.project_id, now)?);
     }
+    // The audit history outlives a disconnected source. Continue from its
+    // highest revision, so a command for an earlier source never matches.
+    let revision: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(entity_revision),0)+1 FROM activity_events
+         WHERE entity_type='knowledge_source' AND entity_id=?1",
+        [&input.project_id],
+        |row| row.get(0),
+    )?;
     tx.execute(
         "INSERT INTO knowledge_sources
-         (project_id,url,branch,folder,token_ciphertext,state,requested_at,created_by,created_at,updated_by,updated_at,generation)
-         VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?6,?7,?6,?8)",
+         (project_id,url,branch,folder,token_ciphertext,state,requested_at,created_by,created_at,updated_by,updated_at,generation,revision)
+         VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?6,?7,?6,?8,?9)",
         params![
             input.project_id,
             place.url.as_str(),
@@ -1084,7 +1092,8 @@ fn connect(
             token_ciphertext,
             now,
             actor.user_id,
-            uuid::Uuid::now_v7().to_string()
+            uuid::Uuid::now_v7().to_string(),
+            revision
         ],
     )?;
     events.push(record_activity_tx(
@@ -1100,7 +1109,7 @@ fn connect(
             before: None,
             after: Some(described(&place.url, &place.branch, &place.folder)),
             metadata: json!({}),
-            entity_revision: Some(1),
+            entity_revision: Some(revision),
         },
         now,
     )?);

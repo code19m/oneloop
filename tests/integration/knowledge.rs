@@ -1294,6 +1294,49 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
 }
 
 #[tokio::test]
+async fn a_command_for_a_disconnected_source_never_changes_its_successor() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/README.md", b"# Guide\n");
+    repository.commit(FIRST);
+    let first = fixture.connect(&repository).await;
+    let first_revision = first["entities"][0]["revision"].as_i64().unwrap();
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(first_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second = fixture.connect(&repository).await;
+    let second_revision = second["entities"][0]["revision"].as_i64().unwrap();
+    assert!(second_revision > first_revision + 1, "{second_revision}");
+    // A tab that still shows the first source sends its revision.
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(first_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "revision_conflict");
+    assert_eq!(fixture.view(&fixture.admin).await["state"], "pending");
+    let (status, body) = fixture
+        .command(
+            &fixture.admin,
+            "knowledge.disconnect",
+            json!({"projectId": "p1"}),
+            Some(second_revision),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
 async fn commands_validate_locations_and_replay_retries() {
     let fixture = Fixture::new().await;
     let connect = |url: &str, branch: &str, folder: &str| json!({"projectId": "p1", "url": url, "branch": branch, "folder": folder});
