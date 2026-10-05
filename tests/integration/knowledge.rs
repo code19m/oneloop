@@ -854,6 +854,31 @@ async fn new_commits_replace_files_and_unchanged_files_keep_their_dates() {
 }
 
 #[tokio::test]
+async fn a_commit_outside_the_folder_records_no_new_sync() {
+    let fixture = Fixture::new().await;
+    let repository = handbook();
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let before = fixture.view(&fixture.member).await;
+    repository.write("other/secret.md", b"# Still not shared\n");
+    repository.commit(SECOND);
+    fixture.sync().await;
+    assert_eq!(
+        fixture.view(&fixture.member).await["files"],
+        before["files"]
+    );
+    assert_eq!(
+        fixture.events("knowledge.synced").await,
+        1,
+        "viewers get no live hint for an unchanged folder"
+    );
+    repository.write("docs/news.md", b"# News\n");
+    repository.commit(SECOND + 60);
+    fixture.sync().await;
+    assert_eq!(fixture.events("knowledge.synced").await, 2);
+}
+
+#[tokio::test]
 async fn a_failed_sync_keeps_the_last_files_and_reports_the_reason_to_administrators() {
     let fixture = Fixture::new().await;
     let repository = handbook();
