@@ -36,8 +36,8 @@ The services are `DomainService`, `CollaborationService`, `FileService`,
 that checks access, validates input, compares the expected revision, records
 the idempotency receipt, changes the data, appends audit activity and adds a
 message to the outbox. After it commits, `CollaborationRuntime` delivers the
-outbox: it creates Inbox notifications and sends small hints over SSE, and
-clients then fetch what changed.
+outbox, many messages per transaction: it creates Inbox notifications and sends
+small hints over SSE, and clients then fetch what changed.
 
 ## Codemap
 

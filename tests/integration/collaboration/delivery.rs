@@ -152,6 +152,119 @@ async fn competing_workers_claim_an_outbox_message_once() {
     assert_eq!(delivered, 1);
 }
 
+/// Inbox changes for bob, as editing an `@everyone` comment queues them.
+async fn queue_inbox_changes(db: &oneloop::Db, ids: &[&str]) {
+    let ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+    let available = now();
+    db.run(move |connection| {
+        for id in &ids {
+            connection.execute(
+                "INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+                 VALUES(?1,'inbox.state_changed','inbox','bob','{}',?2,?2)",
+                rusqlite::params![id, available],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn one_run_delivers_a_burst_in_order_with_one_hint_each() {
+    let SeededProject {
+        root: _root, db, ..
+    } = seeded_project().await;
+    let ids = (0..70)
+        .map(|index| format!("m{index:03}"))
+        .collect::<Vec<_>>();
+    queue_inbox_changes(&db, &ids.iter().map(String::as_str).collect::<Vec<_>>()).await;
+    let runtime = CollaborationRuntime::new(db.clone());
+    let mut hints = runtime.subscribe();
+    let worker = runtime.worker();
+    assert!(worker.run_once().await.unwrap());
+    let delivered = || {
+        db.run(|connection| {
+            Ok(connection.query_row(
+                "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+    };
+    assert!(delivered().await.unwrap() > 1, "one run delivers many");
+    while worker.run_once().await.unwrap() {}
+    assert_eq!(delivered().await.unwrap(), 70);
+    let mut order = Vec::new();
+    while let Ok(hint) = hints.try_recv() {
+        assert_eq!(hint.kind, "inbox.changed");
+        order.push(hint.id.clone());
+    }
+    assert_eq!(order, ids, "one hint per message, in outbox order");
+}
+
+#[tokio::test]
+async fn a_failing_message_waits_for_a_retry_without_holding_back_the_others() {
+    let SeededProject {
+        root: _root, db, ..
+    } = seeded_project().await;
+    queue_inbox_changes(&db, &["a-before"]).await;
+    let available = now();
+    db.run(move |connection| {
+        connection.execute(
+            r#"INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+               VALUES('b-broken','domain.activity','task','one','{"projectId":123}',?1,?1)"#,
+            [available],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    queue_inbox_changes(&db, &["c-after"]).await;
+    let runtime = CollaborationRuntime::new(db.clone());
+    let mut hints = runtime.subscribe();
+    assert!(runtime.worker().run_once().await.unwrap());
+    let rows = db
+        .run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id,delivered_at IS NOT NULL,attempt_count,available_at,last_error IS NOT NULL
+                 FROM outbox_messages ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, bool>(4)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.0.as_str(), row.1, row.2, row.4))
+            .collect::<Vec<_>>(),
+        [
+            ("a-before", true, 0, false),
+            ("b-broken", false, 1, true),
+            ("c-after", true, 0, false)
+        ]
+    );
+    assert!(rows[1].3 > available, "the broken message waits");
+    let mut sent = Vec::new();
+    while let Ok(hint) = hints.try_recv() {
+        sent.push(hint.id.clone());
+    }
+    assert_eq!(sent, ["a-before", "c-after"]);
+    // Nothing else is ready, so the next run finds nothing to do.
+    assert!(!runtime.worker().run_once().await.unwrap());
+}
+
 #[tokio::test]
 async fn activity_hints_include_task_scope_and_revision_for_targeted_reconciliation() {
     let SeededProject {
@@ -1180,8 +1293,8 @@ async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() 
     let mut hints = runtime.subscribe();
     let worker = runtime.worker();
     let mut seen = std::collections::BTreeMap::new();
+    assert!(worker.run_once().await.unwrap());
     for _ in 0..2 {
-        assert!(worker.run_once().await.unwrap());
         let hint = hints.recv().await.unwrap();
         seen.insert(hint.entity_id.clone().unwrap(), hint.recipient_ids.clone());
     }
