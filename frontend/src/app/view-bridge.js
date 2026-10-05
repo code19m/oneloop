@@ -210,11 +210,16 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           const result=await run(job.operation,job.payload,current,job.options.coalesce?null:job.message,{...job.options,expectedRevision:base,paint:job.options.coalesce?false:job.options.paint});
           queue.active=false;
           const saved=result?.entities?.find(item=>item.id===(current?.internalId??current?.id))?.revision;
-          if(!result?.stale&&!result?.skipped&&Number.isSafeInteger(base)&&Number.isSafeInteger(saved)&&saved!==base)chain.set(base,saved);
+          // Keep my changes saved on top of someone else's revision. Only that
+          // revision leads to the save, so other fields typed before it still
+          // meet the other person's change.
+          const from=result?.retriedAt??base;
+          if(!result?.stale&&!result?.skipped&&Number.isSafeInteger(from)&&Number.isSafeInteger(saved)&&saved!==from)chain.set(from,saved);
           const carry=!result?.stale&&!result?.skipped?result:job.carry;
           const newer=queue.jobs.get(jobKey);
           // A newer value of this field is still queued: its callers learn the outcome together.
-          if(newer&&!result?.stale){newer.waiters.unshift(...job.waiters);newer.carry=carry;continue;}
+          // After Keep my changes, it builds on the revision the person chose to keep their value over.
+          if(newer&&!result?.stale){if(Number.isSafeInteger(result?.retriedAt))newer.base=result.retriedAt;newer.waiters.unshift(...job.waiters);newer.carry=carry;continue;}
           const outcome=result?.stale||!carry?result:carry;
           if(result?.stale)unsaved(draft);
           if(draft&&!result?.stale&&drafts.get(job.options.draft)===draft&&draft.value===job.options.draftValue){drafts.delete(job.options.draft);paintDrafts(draft.taskId);}
@@ -302,18 +307,20 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(isServerNoChange(error)){recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();}
       if(recovery?.isRevisionConflict?.(error)&&!options.create){
         try{
+          /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
             error,
             reloadLatest:()=>reloadConflict(operation,payload,entity,options),
             latestEntity:()=>latestEntity(operation,payload,entity),
-            retry:(expectedRevision)=>{if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
+            retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
             target:{element:options.conflictElement,latestValue:(item)=>conflictValue(operation,payload,item)},
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
             // dialog is restored, from the moment the conflict came back.
             snapshot:options.coalesce?false:null,
           });
-          if(resolved.saved)result=resolved.result;
+          // Keep my changes saved the change on the latest revision, which the result names.
+          if(resolved.saved)result={...resolved.result,retriedAt};
           else{
             recovery?.finishRevision?.(revisionKey);
             if(operation==='pool.promote'&&resolved.latest&&sessionScope()===scope&&context().modal?.poolId===payload.poolItemId){

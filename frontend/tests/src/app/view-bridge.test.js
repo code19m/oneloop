@@ -474,6 +474,35 @@ test('two task fields saved close together build on each other instead of confli
   assert.deepEqual(state.saved,['ONE-1'],'Saved shows once, after the last field');assert.deepEqual(state.toasts,[]);
 });
 
+const changedElsewhere=()=>new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
+
+test('Keep my changes on one field leaves the next field to meet the other change',async()=>{
+  // Keep my changes saves the title again on the latest revision, 2.
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async({retry})=>({handled:true,saved:true,result:await retry(2)}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','title','My title');state.app.updTask('ONE-1','desc','My description');
+  // Someone else changed the description at revision 2.
+  state.requests[0].reject(changedElsewhere());await tick();
+  assert.equal(state.requests[1].command.expectedRevision,2);
+  state.accept(1,{title:'My title'});await tick();await tick();
+  assert.equal(state.requests[2].command.payload.description,'My description');
+  assert.equal(state.requests[2].command.expectedRevision,1,'the description was typed on revision 1, so it meets the change at 2');
+});
+
+test('a newer value of a field kept with Keep my changes saves on top of it',async()=>{
+  let keep;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:({retry})=>new Promise(resolve=>{keep=async()=>resolve({handled:true,saved:true,result:await retry(2)});}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','title','My title');
+  state.requests[0].reject(changedElsewhere());await tick();
+  // The person types more while the prompt shows the other title, then keeps theirs.
+  state.app.updTask('ONE-1','title','My longer title');
+  void keep();await tick();
+  state.accept(1,{title:'My title'});await tick();await tick();
+  assert.equal(state.requests[2].command.payload.title,'My longer title');
+  assert.equal(state.requests[2].command.expectedRevision,3,'it builds on the kept title instead of conflicting with it');
+});
+
 test('a conflict prompt that closes without a choice keeps the typed value as Not saved',async()=>{
   const conflict=new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'}),drafted=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async()=>({handled:true,saved:false}),handleCommandFailure:async()=>{}};
