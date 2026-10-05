@@ -363,15 +363,10 @@ async fn removing_a_deleted_image_removes_its_thumbnail() {
         })
         .await
         .unwrap();
-    assert_eq!(
-        fixture
-            .files
-            .reconcile()
-            .await
-            .unwrap()
-            .deletion_jobs_completed,
-        1
-    );
+    let report = fixture.files.reconcile().await.unwrap();
+    assert_eq!(report.deletion_jobs_completed, 1);
+    // The deletion job removed it, not the later pass for orphans.
+    assert_eq!(report.orphan_files_removed, 0);
     assert!(!thumbnail.exists());
 }
 

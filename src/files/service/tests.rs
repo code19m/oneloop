@@ -80,6 +80,66 @@ async fn recovery_scan_does_not_lock_publication_and_rechecks_old_snapshots() {
     drop(gate);
 }
 
+#[tokio::test]
+async fn the_purge_claim_keeps_files_restored_since_its_scan() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    crate::db::migrate(root.path(), None).unwrap();
+    let db = Db::open(root.path()).unwrap();
+    let service = FileService::new(db.clone(), 1_000_000, 0);
+    let window = crate::domain::UNDO_WINDOW_SECONDS;
+    let deleted_at = unix_now().unwrap() - window - 1;
+    db.transaction(move |tx| {
+        tx.execute_batch(
+            "INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
+                 VALUES('u','u','U','x',1,1,1);
+             INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
+             INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
+             INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
+                 VALUES('e','p','tr','Epic','2026-11-01',0,1,1);
+             INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+                 VALUES('t','p','e',1,'ONE-1','Task','planning',0,1,1);",
+        )?;
+        tx.execute(
+            "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+             VALUES('b','key',?1,1,'text/plain','available',1)",
+            ["0".repeat(64)],
+        )?;
+        tx.execute(
+            "INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,position,
+                                          created_at,last_accessed_at,updated_at,deleted_at)
+             VALUES('a','p','t','b','a.txt','u',0,1,1,1,?1)",
+            [deleted_at],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let candidates = service
+        .deletion_candidates(unix_now().unwrap() - window)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    // A restore commits between the scan and the claim.
+    db.transaction(|tx| {
+        tx.execute("UPDATE task_attachments SET deleted_at=NULL", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    service.claim_for_deletion(candidates).await.unwrap();
+    let (state, jobs): (String, i64) = db
+        .run(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT state FROM file_blobs WHERE id='b'),(SELECT count(*) FROM file_deletion_jobs)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!((state.as_str(), jobs), ("available", 0));
+}
+
 #[test]
 fn text_inspection_preserves_utf8_across_every_chunk_boundary() {
     struct Chunks<'a> {

@@ -687,8 +687,18 @@ impl FileService {
                 break;
             }
         }
-        let rows = self
-            .db
+        let candidates = self.deletion_candidates(restorable_after).await?;
+        self.claim_for_deletion(candidates).await
+    }
+
+    /// The available files of tasks and attachments deleted before
+    /// `restorable_after`, and files that nothing refers to: their blob, key
+    /// and deletion reason.
+    pub(super) async fn deletion_candidates(
+        &self,
+        restorable_after: i64,
+    ) -> AppResult<Vec<(String, String, String)>> {
+        self.db
             .run(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT b.id,b.storage_key,'manual' FROM tasks t
@@ -715,8 +725,16 @@ impl FileService {
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
-            .await?;
-        for batch in rows.chunks(500) {
+            .await
+    }
+
+    /// Hands candidates from an earlier scan to deletion jobs, checking each
+    /// again first.
+    pub(super) async fn claim_for_deletion(
+        &self,
+        candidates: Vec<(String, String, String)>,
+    ) -> AppResult<()> {
+        for batch in candidates.chunks(500) {
             let batch = batch.to_vec();
             self.db.transaction(move |tx| {
                 let now = unix_now()?;
