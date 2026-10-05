@@ -2687,11 +2687,16 @@
     },
     validateFormDates,
     /** Show or clear the Not saved notes without touching what is typed. */
+    // Show each field's draft, or its saved value once the draft is gone (such
+    // as after Use latest), and the draft's note. A field being edited keeps
+    // what the person is typing.
     refreshTaskDrafts(id) {
       if (state.view !== 'task' || state.taskId !== id) return;
       const t = taskById(id); if (!t) return;
-      for (const [field, selector] of [['title', '.task-title-field'], ['desc', '.task-description']]) {
+      for (const [field, selector, control] of [['title', '.task-title-field', '.tp-title'], ['desc', '.task-description', '#task-description']]) {
         const host = document.querySelector(`.task-page ${selector}`); if (!host) continue;
+        const input = host.querySelector(control), value = taskDraft(t, field)?.value ?? (field === 'title' ? t.title : t.desc ?? '');
+        if (input && input !== document.activeElement && input.value !== value) { input.value = value; if (field === 'title') sizeTaskTitle(); else sizeDescription(); }
         host.querySelector('[data-draft-note]')?.remove();
         const template = document.createElement('template'); setHTML(template, taskDraftNote(t, field));
         host.append(template.content);

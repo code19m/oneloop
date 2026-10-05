@@ -97,13 +97,14 @@ const x=boot('task/BIR-079');const task=x.D.tasks.find(t=>t.id==='BIR-079');task
 });
 
 /** The task page wired to the production bridge, with commands answered by the test. */
-function productionTaskPage() {
+/** A task page with the production bridge; reading the task again brings someone else's `latest` change. */
+function productionTaskPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
   const t = bootApp({ route: 'task/BIR-079', media: () => true });
   const task = t.D.tasks.find(x => x.id === 'BIR-079');
   Object.assign(task, { internalId: 'bir-079', projectId: 'p1', revision: 1, deadline: null });
   const requests = [];
   const gateway = { execute: (operation, payload, options) => new Promise((resolve, reject) => requests.push({ operation, payload, options, resolve, reject })) };
-  const reads = { task: async () => { Object.assign(task, { revision: 2, title: 'Their title', deadline: '2026-11-30' }); t.A.refresh(); return { stale: false, task }; }, counts: async () => ({}), cancel() {} };
+  const reads = { task: async () => { Object.assign(task, { revision: 2, ...latest }); t.A.refresh(); return { stale: false, task }; }, counts: async () => ({}), cancel() {} };
   const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap: async () => ({}) });
   t.w.OneloopRuntime = bridge;
   return { ...t, task, requests, bridge };
@@ -122,6 +123,18 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
   assert.equal(t.d.querySelector('.tp-title').value, 'My title');
   assert.equal(t.d.getElementById('tpDl-input').value, '2026-11-30', 'other fields show the latest saved values');
   assert.match(t.d.querySelector('[data-recovery-conflict]').textContent, /Latest saved value: Their title/);
+});
+
+test('Use latest on a description shows the saved description, not the typed one', async () => {
+  const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
+  description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
+  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
+  [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === 'Use latest').click();
+  await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'desc'), 'the typed description is dropped');
+  await settle();
+  assert.equal(t.d.getElementById('task-description').value, 'Their description');
+  assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null);
 });
 
 test('an unsaved description stays on the page through refreshes and offers Save', async () => {
