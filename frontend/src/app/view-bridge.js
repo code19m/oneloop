@@ -297,9 +297,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   // Another page discards text typed into this one, so ask first. Drafts and
   // saves that are running carry on, so they don't count.
   const losesInput=()=>!!recovery?.hasUnsavedInput?.({leaving:false});
-  function askToDiscard(leave,stay=()=>{}){
-    if(app.confirm({title:'Discard changes?',text:'Text you typed on this page will be lost.',action:'Discard',local:true,confirm:leave,cancel:stay})===false)stay();
-  }
+  /** @param {()=>void} leave @param {()=>void} [stay] */
+  const askToDiscard=(leave,stay)=>app.askToDiscard(leave,stay);
   /** Resolves whether the page may change. */
   const mayLeavePage=()=>losesInput()?new Promise((resolve)=>askToDiscard(()=>resolve(true),()=>resolve(false))):Promise.resolve(true);
   // A page change someone asks for, from the sidebar, a menu or a back button.

@@ -468,6 +468,10 @@
     (input || layer.querySelector('[data-confirm-cancel]')).focus();
     return true;
   }
+  /** Ask before typed text is lost: Discard runs `leave`; Cancel, or a question already open, runs `stay`. */
+  function askToDiscard(leave, stay = () => {}, text = 'Text you typed on this page will be lost.') {
+    if (askConfirmation({ title:'Discard changes?', text, action:'Discard', local:true, confirm:leave, cancel:stay }) === false) stay();
+  }
 
   // Popovers are imperative on purpose: opening one never re-renders the app,
   // so text already typed into a form is never lost.
@@ -2840,6 +2844,7 @@
     clearTaskSaving,
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
     confirm: askConfirmation,
+    askToDiscard,
     fieldError: failField,
     showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
     // With `wait`, a password that arrives while another dialog is open shows
@@ -4122,13 +4127,36 @@
     }
     state.view=['roadmap','board','settings','profile','users','inbox','storage'].includes(route)?route:'notfound';
   }
+  /** The address Discard let through, which routes without asking again. */
+  let discardedFor = null;
+  /**
+   * Back, Forward or an address typed by hand: a field that saves itself saves
+   * first, as no browser blurs it here. If typed text would still be lost, the
+   * old address comes back while oneloop asks; Discard goes on.
+   */
+  function mayFollowAddress(event) {
+    if (event.newURL === discardedFor) { discardedFor = null; return true; }
+    const active = document.activeElement;
+    if (active?.matches?.('[data-autosave]')) active.blur();
+    if (!window.Recovery?.hasUnsavedInput?.({ leaving:false })) return true;
+    const { oldURL, newURL } = event;
+    history.replaceState(history.state, '', oldURL);
+    askToDiscard(() => {
+      discardedFor = newURL;
+      history.replaceState(history.state, '', newURL);
+      window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL }));
+    });
+    return false;
+  }
   window.addEventListener('hashchange',(event)=>{
-    window.Recovery?.clearPageError();
     // Local navigation already painted its destination. Consume only that
     // exact history event, so external hashes and Back/Forward still route.
     const index=locallyRenderedHashes.indexOf(event.newURL);
-    if(index!==-1){locallyRenderedHashes.splice(index,1);return;}
+    if(index!==-1){locallyRenderedHashes.splice(index,1);window.Recovery?.clearPageError();return;}
     if(event.newURL && event.newURL!==location.href)return;
+    // Staying keeps the page, so the route loader must not load the new one either.
+    if(!mayFollowAddress(event)){event.stopImmediatePropagation();return;}
+    window.Recovery?.clearPageError();
     state.peek=null;state.modal=null;state.menu=null;resolveRoute();render();
   });
   document.addEventListener('scroll', (e) => { if (!EPIC_TIP.el?.contains(e.target)) hideEpicTip(); }, true);

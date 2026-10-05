@@ -3,7 +3,7 @@
 // person chose that.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle } = require('../../support/dom.cjs');
+const { bootApp, settle, waitFor } = require('../../support/dom.cjs');
 const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 /** Whether the browser would ask before the tab leaves oneloop. */
@@ -133,6 +133,39 @@ test('another page asks first: Cancel keeps the text and Discard moves on', () =
   t.A.nav('board');
   t.d.querySelector('[data-confirm-accept]').click();
   assert.equal(t.A.context().view, 'board');
+});
+
+/** The browser's Back button, once the page has handled the change it makes. */
+async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before || ask(t), 'Back changed the page'); await settle(); }
+
+test('Back saves a field that saves itself before the page changes, and does not ask', async () => {
+  const t = bootApp({ route: 'board' });
+  t.A.openTask('BIR-079'); await settle();
+  const description = t.d.getElementById('task-description');
+  // jsdom runs no inline handlers; a browser runs this one when the field loses focus.
+  description.addEventListener('blur', () => t.w.Function(description.getAttribute('onblur')).call(description));
+  type(description, 'Typed before Back');
+  await back(t);
+  assert.equal(ask(t), null);
+  assert.equal(t.A.context().view, 'board');
+  assert.equal(t.D.tasks.find(task => task.id === 'BIR-079').desc, 'Typed before Back');
+});
+
+test('Back with typed text puts the address back and asks; Discard then goes without asking again', async () => {
+  const t = bootApp({ route: 'roadmap' });
+  t.A.nav('board'); await settle();
+  t.A.openTask('BIR-079'); await settle();
+  type(t.d.getElementById('cmtIn'), 'Half a thought');
+  await back(t);
+  assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
+  assert.equal(t.w.location.hash, '#/task/BIR-079', 'the address shows the page that still shows');
+  t.d.querySelector('[data-confirm-cancel]').click();
+  assert.equal(t.A.context().view, 'task'); assert.equal(t.d.getElementById('cmtIn').value, 'Half a thought');
+  await back(t);
+  assert(ask(t));
+  t.d.querySelector('[data-confirm-accept]').click(); await settle();
+  assert.equal(ask(t), null, 'Discard asks once');
+  assert.equal(t.w.location.hash, '#/roadmap'); assert.equal(t.A.context().view, 'roadmap');
 });
 
 test('a page change that follows the person\'s own change, or a clean page, never asks', () => {

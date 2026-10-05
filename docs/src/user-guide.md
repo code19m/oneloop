@@ -104,8 +104,9 @@ Click a card to open the task. Your changes save automatically.
   **Keep my changes**.
 - A title or description you change while offline stays on the page, marked
   **Not saved**, and saves when the connection returns.
-- oneloop asks before you go to another page, reload or close the tab while
-  text you typed, such as a comment, isn't sent or saved yet.
+- oneloop asks before you go to another page, also with the browser's **Back**
+  and **Forward** buttons, while text you typed, such as a comment, isn't sent
+  or saved yet. Most browsers also ask before you reload or close the tab.
 - To delete a task, use the **⋯** menu at the top of the page.
 
 ### Blocking
