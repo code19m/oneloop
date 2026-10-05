@@ -120,17 +120,11 @@ async fn html_preview(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     require_safe_file_destination(&headers)?;
-    let read = state
+    let bytes = state
         .knowledge
-        .file(
-            &actor,
-            &project_id,
-            &query.path,
-            FileMode::HtmlPreview,
-            None,
-        )
+        .html_preview(&actor, &project_id, &query.path)
         .await?;
-    Ok(html_preview_response(read.bytes.unwrap_or_default()))
+    Ok(html_preview_response(bytes))
 }
 
 async fn file(
@@ -146,15 +140,18 @@ async fn file(
         .knowledge
         .file(&actor, &project_id, &query.path, mode, validator(&headers))
         .await?;
-    let mut response = match read.bytes {
-        Some(bytes) => {
-            let mut response = Response::new(Body::from(bytes));
+    let mut response = match read.body {
+        Some(body) => {
+            let length = body.len();
+            // Streamed, so a client that stops reading holds one chunk.
+            let mut response = Response::new(Body::from_stream(body.into_stream()));
             let headers = response.headers_mut();
             headers.insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_str(&read.media_type)
                     .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
             );
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
             headers.insert(
                 header::CONTENT_DISPOSITION,
                 content_disposition(&read.name, mode == FileMode::Download)?,

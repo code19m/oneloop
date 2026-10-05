@@ -13,6 +13,7 @@ use axum::{
     http::{Request, StatusCode, header},
     response::Response,
 };
+use http_body_util::BodyExt;
 use oneloop::{AppState, Db, application, auth::unix_now};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -707,6 +708,77 @@ async fn files_follow_the_attachment_safety_rules() {
         )
         .await;
     assert_eq!(outsider.status(), StatusCode::NOT_FOUND);
+}
+
+/// A binary file several chunks long, with no repeating stretch.
+fn large_file() -> Vec<u8> {
+    (0..1_500_000_u32)
+        .map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect()
+}
+
+#[tokio::test]
+async fn large_files_are_sent_in_bounded_chunks() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    let content = large_file();
+    repository.write("docs/data.bin", &content);
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let response = fixture
+        .get(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=data.bin",
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        content.len().to_string()
+    );
+    let mut body = response.into_body();
+    let (mut received, mut frames) = (Vec::new(), 0);
+    while let Some(frame) = body.frame().await {
+        let chunk = frame.unwrap().into_data().unwrap();
+        assert!(chunk.len() <= 256 * 1024, "{} bytes at once", chunk.len());
+        received.extend_from_slice(&chunk);
+        frames += 1;
+    }
+    assert!(frames > 1);
+    assert!(received == content, "the bytes arrive unchanged");
+}
+
+#[tokio::test]
+async fn a_file_replaced_while_it_is_sent_ends_the_response() {
+    let fixture = Fixture::new().await;
+    let repository = Repository::new();
+    repository.write("docs/data.bin", &large_file());
+    repository.commit(FIRST);
+    fixture.connect(&repository).await;
+    fixture.state.knowledge.sync_due().await;
+    let response = fixture
+        .get(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=data.bin",
+        )
+        .await;
+    let mut body = response.into_body();
+    body.frame().await.unwrap().unwrap();
+    // A sync stores another version of the file.
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute(
+                "UPDATE knowledge_files SET content=zeroblob(size),checksum='other' WHERE path='data.bin'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let next = body.frame().await.unwrap();
+    assert!(next.is_err(), "the rest of another version is never sent");
 }
 
 #[tokio::test]

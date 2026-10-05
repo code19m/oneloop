@@ -26,6 +26,7 @@ use crate::{
 
 use super::{
     MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
+    content::FileBody,
     git::{Git, Limits},
     markdown,
     search::{Content, Index, Results},
@@ -166,8 +167,6 @@ pub enum FileMode {
     Content,
     /// Text, Markdown and HTML source as plain text, cut at the preview limit.
     Text,
-    /// HTML for the sandboxed preview frame.
-    HtmlPreview,
     Download,
 }
 
@@ -176,7 +175,7 @@ pub struct FileRead {
     pub media_type: String,
     pub etag: String,
     /// `None` when the caller's copy is current.
-    pub bytes: Option<Vec<u8>>,
+    pub body: Option<FileBody>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -538,32 +537,49 @@ impl KnowledgeService {
         let path = requested_path(path)?;
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let read = self
-            .inner
+        let db = self.inner.db.clone();
+        self.inner
             .db
             .snapshot(move |connection| {
                 authorize_read(connection, &actor, &project_id)?;
-                let (media_type, kind, checksum): (String, Option<String>, String) = connection
+                let (media_type, kind, checksum, rowid, size): (
+                    String,
+                    Option<String>,
+                    String,
+                    i64,
+                    i64,
+                ) = connection
                     .query_row(
-                        "SELECT media_type,preview_kind,checksum FROM knowledge_files
-                         WHERE project_id=?1 AND path=?2",
+                        "SELECT media_type,preview_kind,checksum,rowid,size FROM knowledge_files
+                             WHERE project_id=?1 AND path=?2",
                         params![project_id, path],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "file" })?;
                 let kind = preview_kind(kind.as_deref(), &media_type);
                 let allowed = match mode {
-                    FileMode::Content => matches!(kind, Some(PreviewKind::Image | PreviewKind::Pdf)),
+                    FileMode::Content => {
+                        matches!(kind, Some(PreviewKind::Image | PreviewKind::Pdf))
+                    }
                     FileMode::Text => matches!(
                         kind,
                         Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)
                     ),
-                    FileMode::HtmlPreview => kind == Some(PreviewKind::Html),
                     FileMode::Download => true,
                 };
                 if !allowed {
-                    return Err(AppError::NotFound { resource: "preview" });
+                    return Err(AppError::NotFound {
+                        resource: "preview",
+                    });
                 }
                 let (media_type, limit) = match mode {
                     FileMode::Content => (media_type, None),
@@ -571,45 +587,64 @@ impl KnowledgeService {
                         "text/plain; charset=utf-8".to_owned(),
                         Some(MAX_TEXT_PREVIEW_BYTES),
                     ),
-                    FileMode::HtmlPreview => ("text/html; charset=utf-8".to_owned(), None),
                     FileMode::Download => ("application/octet-stream".to_owned(), None),
                 };
                 let etag = match limit {
                     Some(limit) => format!("\"{checksum}-text-{limit}\""),
                     None => format!("\"{checksum}\""),
                 };
-                let current = mode != FileMode::HtmlPreview
-                    && validator.as_deref().is_some_and(|value| {
-                        value
-                            .split(',')
-                            .any(|tag| tag.trim().trim_start_matches("W/") == etag)
-                    });
-                let bytes = if current {
-                    None
-                } else {
-                    Some(connection.query_row(
-                        "SELECT substr(content,1,?3) FROM knowledge_files WHERE project_id=?1 AND path=?2",
-                        params![project_id, path, limit.map_or(i64::MAX, |limit| limit as i64)],
-                        |row| row.get::<_, Vec<u8>>(0),
-                    )?)
-                };
+                let current = validator.as_deref().is_some_and(|value| {
+                    value
+                        .split(',')
+                        .any(|tag| tag.trim().trim_start_matches("W/") == etag)
+                });
+                let length = limit.map_or(size as u64, |limit| (size as u64).min(limit));
                 let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
                 Ok(FileRead {
                     name,
                     media_type,
                     etag,
-                    bytes,
+                    body: (!current).then(|| FileBody::new(db, rowid, checksum, length)),
                 })
             })
+            .await
+    }
+
+    /// Sanitized HTML for the sandboxed preview frame.
+    pub async fn html_preview(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        path: &str,
+    ) -> AppResult<Vec<u8>> {
+        actor.require_ready()?;
+        let path = requested_path(path)?;
+        let actor = actor.clone();
+        let project_id = project_id.to_owned();
+        let bytes = self
+            .inner
+            .db
+            .snapshot(move |connection| {
+                authorize_read(connection, &actor, &project_id)?;
+                let (media_type, kind, content): (String, Option<String>, Vec<u8>) = connection
+                    .query_row(
+                        "SELECT media_type,preview_kind,content FROM knowledge_files
+                         WHERE project_id=?1 AND path=?2",
+                        params![project_id, path],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?
+                    .ok_or(AppError::NotFound { resource: "file" })?;
+                // Only files up to the HTML preview limit are classified as HTML.
+                if preview_kind(kind.as_deref(), &media_type) != Some(PreviewKind::Html) {
+                    return Err(AppError::NotFound {
+                        resource: "preview",
+                    });
+                }
+                Ok(content)
+            })
             .await?;
-        if mode == FileMode::HtmlPreview {
-            let bytes = read.bytes.unwrap_or_default();
-            return Ok(FileRead {
-                bytes: Some(crate::files::sanitized_html_preview(bytes).await?),
-                ..read
-            });
-        }
-        Ok(read)
+        crate::files::sanitized_html_preview(bytes).await
     }
 
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
@@ -793,7 +828,11 @@ impl KnowledgeService {
         let read = self
             .file(actor, project_id, path, FileMode::Download, None)
             .await?;
-        Ok(String::from_utf8_lossy(&read.bytes.unwrap_or_default()).into_owned())
+        let bytes = match read.body {
+            Some(body) => body.read_all().await?,
+            None => Vec::new(),
+        };
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     async fn catalog(&self, actor: &Actor, project_id: &str) -> AppResult<Option<Arc<Catalog>>> {
