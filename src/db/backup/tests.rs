@@ -280,6 +280,16 @@ fn restoring_again_removes_only_what_an_interrupted_restore_left() {
     assert!(live.join("oneloop.sqlite3").exists());
     assert!(escape.join("oneloop.sqlite3").exists());
 
+    // A wrong backup path stops the restore before it removes anything.
+    let mistyped = root.path().join("mistyped");
+    let working = interrupted(&mistyped, &["oneloop.sqlite3", "files"]);
+    let error = restore_backup(root.path().join("no-such-backup"), &mistyped)
+        .unwrap_err()
+        .to_string();
+    assert!(mistyped.join(&working).exists());
+    assert!(mistyped.join(crate::db::RESTORE_MARKER).exists());
+    assert!(error.contains("backup directory does not exist"), "{error}");
+
     // A marker from an older version has no record and stays refused.
     let older = root.path().join("older");
     fs::create_dir(&older).unwrap();

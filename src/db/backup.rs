@@ -465,6 +465,14 @@ pub fn restore_backup(
 ) -> AppResult<PathBuf> {
     let backup = absolute_path(backup.as_ref())?;
     let target = absolute_path(&data_dir.into())?;
+    if backup.starts_with(&target) || target.starts_with(&backup) {
+        return Err(AppError::PreconditionFailed(
+            "backup source cannot be inside the restore target".to_owned(),
+        ));
+    }
+    // Check the backup before removing anything, so that a wrong backup path
+    // leaves an interrupted restore as it is.
+    let manifest = validate_backup(&backup)?;
     if let Some(parent) = target.parent().filter(|path| path.is_dir()) {
         reclaim_partial_copies(parent);
     }
@@ -473,11 +481,6 @@ pub fn restore_backup(
         reclaim_partial_copies(&target);
     }
     ensure_restore_target(&target)?;
-    if backup.starts_with(&target) || target.starts_with(&backup) {
-        return Err(AppError::PreconditionFailed(
-            "backup source cannot be inside the restore target".to_owned(),
-        ));
-    }
     let parent = target.parent().ok_or_else(|| {
         AppError::validation(
             "data directory",
@@ -518,7 +521,6 @@ pub fn restore_backup(
     let result = (|| {
         fs::create_dir(&partial)?;
         secure_directory(&partial)?;
-        let manifest = validate_backup(&backup)?;
         for entry in &manifest.files {
             let source = backup.join(&entry.path);
             let relative = Path::new(&entry.path).strip_prefix("data").map_err(|_| {
