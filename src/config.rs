@@ -71,8 +71,11 @@ impl Config {
             .parse::<SocketAddr>()
             .map_err(|_| invalid_env(LISTEN_ENV, "expected an IP address and port"))?;
         let data_dir = resolve_data_dir(env.get(DATA_DIR_ENV).unwrap_or("./data"))?;
-        let timezone = TimeZone::built_in(env.get(TIMEZONE_ENV).unwrap_or("UTC"))
-            .ok_or_else(|| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
+        let timezone = TimeZone::load(
+            env.get(TIMEZONE_ENV).unwrap_or("UTC"),
+            env.zoneinfo.as_deref(),
+        )
+        .ok_or_else(|| invalid_env(TIMEZONE_ENV, "unknown IANA timezone"))?;
         let storage_limit_bytes = parse_size(
             STORAGE_LIMIT_ENV,
             env.get(STORAGE_LIMIT_ENV).unwrap_or("10GiB"),
@@ -118,6 +121,9 @@ impl DataConfig {
 
 struct Environment {
     values: BTreeMap<String, String>,
+    /// `TZDIR`, the folder with the server's zoneinfo, as jiff and the C
+    /// library read it.
+    zoneinfo: Option<PathBuf>,
 }
 
 impl Environment {
@@ -128,6 +134,7 @@ impl Environment {
         V: Into<OsString>,
     {
         let mut found = BTreeMap::new();
+        let mut zoneinfo = None;
         let known = KNOWN_ENV.into_iter().collect::<BTreeSet<_>>();
 
         for (raw_key, raw_value) in values {
@@ -135,6 +142,11 @@ impl Environment {
             let Some(key) = raw_key.to_str() else {
                 continue;
             };
+            if key == "TZDIR" {
+                zoneinfo = Some(PathBuf::from(raw_value.into()))
+                    .filter(|path| !path.as_os_str().is_empty());
+                continue;
+            }
             if !key.starts_with("ONELOOP_") {
                 continue;
             }
@@ -146,7 +158,10 @@ impl Environment {
             let value = os_value(key, &raw_value.into())?;
             found.insert(key.to_owned(), value);
         }
-        Ok(Self { values: found })
+        Ok(Self {
+            values: found,
+            zoneinfo,
+        })
     }
 
     fn get(&self, key: &str) -> Option<&str> {

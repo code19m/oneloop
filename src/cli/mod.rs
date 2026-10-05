@@ -166,10 +166,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
             );
         }
         println!("SQLite {}", rusqlite::version());
-        println!(
-            "IANA timezone database {}",
-            crate::timezone::built_in_version()
-        );
+        println!("IANA timezone database {}", config.timezone.database());
         return Ok(());
     }
 
@@ -180,6 +177,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     tracing::info!(public_url = %config.public_url, trusted_proxies = ?config.trusted_proxies, "proxy configuration");
     let listen = config.listen;
     let data_dir = config.data_dir.clone();
+    let timezone_database = config.timezone.database().to_string();
     let state = AppState::new(config, db);
     let application = crate::application(state);
     crate::runtime::prepare_files(&application.files)
@@ -194,7 +192,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let files_worker = crate::runtime::spawn_file_maintenance(application.files, signal);
     tracing::info!(
         sqlite_version = rusqlite::version(),
-        tzdb_version = crate::timezone::built_in_version(),
+        tzdb = timezone_database,
         version = crate::build_info::VERSION,
         revision = crate::build_info::REVISION,
         address = %listen,

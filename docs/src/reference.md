@@ -34,12 +34,18 @@ One timezone applies to the whole instance. It decides when a deadline day ends,
 where today is on the Roadmap, and how dates and times are shown. Use an IANA
 name, such as `Europe/Berlin` or `America/New_York`.
 
-oneloop has its own timezone database, so the server's clock settings and the
-`TZ` variable of a container have no effect. `oneloop serve --check` prints the
-version of this database, such as `2025b`. If your region changed its clock
-rules after that version, times can be an hour off until a new oneloop release
-brings newer data. Until then, you can set a fixed offset such as `Etc/GMT+7`,
-which means UTC−07 (the sign is reversed).
+oneloop takes the rules for this name from the server's timezone database, in
+`/usr/share/zoneinfo` or the folder that `TZDIR` names, when it is at least as
+new as the copy built into oneloop. Otherwise it uses the built-in copy.
+Browsers show dates and times with their own copy of the rules. The server's
+clock settings and the `TZ` variable have no effect. `oneloop serve --check`
+prints the copy in use and its version, such as `2026c (built in)`.
+
+If your region changes its clock rules, a newer `tzdata` package on the server
+brings them before a new oneloop release does; the Docker image includes the
+one of its Debian release. Until then, times can be an hour off, and you can
+set a fixed offset such as `Etc/GMT+7`, which means UTC−07 (the sign is
+reversed).
 
 ### Storage
 

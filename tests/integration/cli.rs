@@ -251,13 +251,15 @@ fn binary_migrates_backs_up_restores_and_reads_one_password_line() {
         .arg(&backup)
         .assert()
         .failure();
+    // Without a server zoneinfo, the built-in timezone database applies.
     command(&restored)
         .env("ONELOOP_PUBLIC_URL", "http://127.0.0.1:19899")
+        .env("TZDIR", root.path())
         .args(["serve", "--check"])
         .assert()
         .success()
         .stdout(contains(format!(
-            "IANA timezone database {}",
+            "IANA timezone database {} (built in)",
             oneloop::timezone::built_in_version()
         )));
 }

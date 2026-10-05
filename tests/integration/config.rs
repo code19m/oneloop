@@ -136,6 +136,58 @@ fn unusable_data_folders_are_configuration_errors_naming_the_setting() {
 }
 
 #[test]
+fn timezone_rules_come_from_a_server_zoneinfo_at_least_as_new_as_the_built_in_one() {
+    use oneloop::timezone::{Database, built_in_version};
+    // Saved under the name UTC, these rules show whether oneloop used the file.
+    let plus_three = jiff_tzdb::get("Etc/GMT-3").unwrap().1;
+    let newer = "# version 2099a\n".to_owned();
+    let same = format!("# version {}-rearguard\n", built_in_version());
+    for (tzdata, zone, server_rules) in [
+        (newer.as_str(), Some(plus_three), true),
+        (same.as_str(), Some(plus_three), true),
+        ("# version 2000a\n", Some(plus_three), false),
+        ("# version unknown\n", Some(plus_three), false),
+        (newer.as_str(), None, false),
+        (newer.as_str(), Some(&b"not a zone file"[..]), false),
+    ] {
+        let zoneinfo = crate::support::scratch_dir();
+        std::fs::write(zoneinfo.path().join("tzdata.zi"), tzdata).unwrap();
+        if let Some(zone) = zone {
+            std::fs::write(zoneinfo.path().join("UTC"), zone).unwrap();
+        }
+        let config = Config::from_os_iter(environment(&[
+            ("ONELOOP_PUBLIC_URL", "https://work.example.com"),
+            ("TZDIR", zoneinfo.path().to_str().unwrap()),
+        ]))
+        .unwrap();
+        let offset = config
+            .timezone
+            .rules()
+            .to_offset(jiff::Timestamp::UNIX_EPOCH)
+            .seconds();
+        assert_eq!(
+            (
+                offset,
+                matches!(config.timezone.database(), Database::System { .. })
+            ),
+            (if server_rules { 3 * 3600 } else { 0 }, server_rules),
+            "{tzdata:?}"
+        );
+    }
+    // Only IANA names are timezones, whatever else the folder holds.
+    let zoneinfo = crate::support::scratch_dir();
+    std::fs::write(zoneinfo.path().join("tzdata.zi"), "# version 2099a\n").unwrap();
+    std::fs::write(zoneinfo.path().join("localtime"), plus_three).unwrap();
+    let error = Config::from_os_iter(environment(&[
+        ("ONELOOP_PUBLIC_URL", "https://work.example.com"),
+        ("ONELOOP_TIMEZONE", "localtime"),
+        ("TZDIR", zoneinfo.path().to_str().unwrap()),
+    ]))
+    .unwrap_err();
+    assert!(error.to_string().contains("ONELOOP_TIMEZONE"), "{error}");
+}
+
+#[test]
 fn documented_fixed_offset_timezone_workarounds_cover_current_boundaries() {
     for (zone, seconds) in [
         ("Etc/GMT+7", -7 * 3600),

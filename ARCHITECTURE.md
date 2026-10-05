@@ -95,7 +95,9 @@ clients then fetch what changed.
 - `text.rs`: validation for display text such as titles and comments.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
   transient rows and worker supervision.
-- `error.rs`: `AppError`. `clock.rs`: `unix_now`.
+- `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
+  timezone, with rules from the server's zoneinfo when it is at least as new as
+  the IANA database built into oneloop.
 
 ### `frontend/`
 
