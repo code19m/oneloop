@@ -517,10 +517,11 @@ impl FileService {
         ));
         let idempotency_id = Uuid::now_v7().to_string();
         enum DeleteStart {
-            Replayed,
+            Done,
             Pending {
                 stored: Box<StoredFile>,
-                job_id: Option<String>,
+                storage_key: String,
+                job_id: String,
                 idempotency_id: String,
             },
         }
@@ -530,7 +531,7 @@ impl FileService {
                 let now = unix_now()?;
                 if let Some(replay)=delete_idempotency_replay(tx,&actor_owned,&key_owned,&request_hash)?{
                     require_file_access_tx(tx,&actor_owned,&replay.0,false,true,now)?;
-                    return Ok(DeleteStart::Replayed);
+                    return Ok(DeleteStart::Done);
                 }
                 let stored = attachment_by_id(tx, &attachment_id_owned)?;
                 require_file_access_tx(
@@ -555,37 +556,50 @@ impl FileService {
                         "the attachment is currently being transferred; retry shortly".into(),
                     ));
                 }
-                let mut job_id = None;
-                if let Some(storage_key) = stored.storage_key.as_deref() {
-                    tx.execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [&stored.blob_id])?;
-                    tx.execute("INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
-                        VALUES(?1,?2,?3,'manual',?4,?4)", params![Uuid::now_v7().to_string(), stored.blob_id, storage_key, now])?;
-                    let id: String = tx.query_row("SELECT id FROM file_deletion_jobs WHERE blob_id=?1", [&stored.blob_id], |r| r.get(0))?;
-                    // Freeze the first deleting actor. A retry must not replace it.
-                    // A previously queued cleanup becomes a manual deletion.
-                    tx.execute("UPDATE file_deletion_jobs SET reason='manual',actor_user_id=?2,actor_mcp_grant_id=?3,
-                        actor_name=?4,project_id=?5,task_id=?6,attachment_id=?7,attachment_name=?8
-                        WHERE id=?1 AND attachment_id IS NULL",
-                        params![id, actor_owned.user_id, actor_owned.mcp_grant_id(), actor_owned.display_name,
-                            stored.attachment.project_id, stored.attachment.task_id, stored.attachment.id, stored.attachment.name])?;
-                    job_id=Some(id);
-                }
+                let response = json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string();
+                let Some(storage_key) = stored.storage_key.as_deref() else {
+                    // Cleaned files have no bytes to unlink, so their deletion,
+                    // audit record and receipt complete in this transaction.
+                    let removed = tx.execute("DELETE FROM task_attachments WHERE id=?1", [&attachment_id_owned])?;
+                    tx.execute("DELETE FROM file_blobs WHERE id=?1", [&stored.blob_id])?;
+                    if removed > 0 {
+                        record_attachment_deletion(tx, &DeleteActivityContext {
+                            id: attachment_id_owned.clone(), project_id: Some(stored.attachment.project_id.clone()),
+                            task_id: Some(stored.attachment.task_id.clone()), name: stored.attachment.name.clone(),
+                        }, Some(&actor_owned), now)?;
+                    }
+                    crate::idempotency::succeed(tx, &actual_id, crate::idempotency::Receipt {
+                        status: 204, response: &response,
+                        resource_type: Some("attachment"), resource_id: Some(&attachment_id_owned),
+                        project_id: Some(&stored.attachment.project_id),
+                    }, now)?;
+                    return Ok(DeleteStart::Done);
+                };
+                tx.execute("UPDATE file_blobs SET state='deleting' WHERE id=?1", [&stored.blob_id])?;
+                tx.execute("INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
+                    VALUES(?1,?2,?3,'manual',?4,?4)", params![Uuid::now_v7().to_string(), stored.blob_id, storage_key, now])?;
+                let job_id: String = tx.query_row("SELECT id FROM file_deletion_jobs WHERE blob_id=?1", [&stored.blob_id], |r| r.get(0))?;
+                // Freeze the first deleting actor. A retry must not replace it.
+                // A previously queued cleanup becomes a manual deletion.
+                tx.execute("UPDATE file_deletion_jobs SET reason='manual',actor_user_id=?2,actor_mcp_grant_id=?3,
+                    actor_name=?4,project_id=?5,task_id=?6,attachment_id=?7,attachment_name=?8
+                    WHERE id=?1 AND attachment_id IS NULL",
+                    params![job_id, actor_owned.user_id, actor_owned.mcp_grant_id(), actor_owned.display_name,
+                        stored.attachment.project_id, stored.attachment.task_id, stored.attachment.id, stored.attachment.name])?;
 
                 tx.execute(
                     "UPDATE idempotency_keys SET resource_type='attachment',resource_id=?1,response_json=?2
                      WHERE id=?3",
-                    params![
-                        attachment_id_owned,
-                        json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string(),
-                        actual_id
-                    ],
+                    params![attachment_id_owned, response, actual_id],
                 )?;
-                Ok(DeleteStart::Pending { stored: Box::new(stored), job_id, idempotency_id: actual_id })
+                let storage_key = storage_key.to_owned();
+                Ok(DeleteStart::Pending { stored: Box::new(stored), storage_key, job_id, idempotency_id: actual_id })
             })
             .await?;
 
         let DeleteStart::Pending {
             stored,
+            storage_key,
             job_id,
             idempotency_id,
         } = start
@@ -593,45 +607,27 @@ impl FileService {
             return Ok(());
         };
 
-        if let Some(key) = stored.storage_key.as_deref() {
-            let path = self.store.file_path(key)?;
-            if let Err(error) = self.store.remove_file_if_present(&path).await {
-                if let Some(job_id) = job_id.as_deref() {
-                    log_cleanup_failure(
-                        self.record_deletion_failure(job_id, &error.to_string())
-                            .await,
-                    );
-                }
-                log_cleanup_failure(self.fail_idempotency(&idempotency_id).await);
-                return Err(AppError::Unavailable(
-                    "attachment deletion is pending and will be retried".into(),
-                ));
-            }
-            FileStore::sync_deletion_parent(path).await?;
+        let path = self.store.file_path(&storage_key)?;
+        if let Err(error) = self.store.remove_file_if_present(&path).await {
+            log_cleanup_failure(
+                self.record_deletion_failure(&job_id, &error.to_string())
+                    .await,
+            );
+            log_cleanup_failure(self.fail_idempotency(&idempotency_id).await);
+            return Err(AppError::Unavailable(
+                "attachment deletion is pending and will be retried".into(),
+            ));
         }
+        FileStore::sync_deletion_parent(path).await?;
 
-        let actor = actor.clone();
+        // If this fails, reconciliation finishes the job and the receipt.
         let attachment_id = attachment_id.to_owned();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(job_id) = job_id {
-                    finish_deletion_job(tx, &DeletionJob {
-                        id: job_id, blob_id: stored.blob_id.clone(),
-                        storage_key: stored.storage_key.clone().expect("deletion job has bytes"),
-                    })?;
-                } else {
-                    // Cleaned files have no bytes to unlink, so their deletion
-                    // and audit record complete in this single transaction.
-                    let removed = tx.execute("DELETE FROM task_attachments WHERE id=?1", [&attachment_id])?;
-                    tx.execute("DELETE FROM file_blobs WHERE id=?1", [&stored.blob_id])?;
-                    if removed > 0 {
-                        record_attachment_deletion(tx, &DeleteActivityContext {
-                            id: attachment_id.clone(), project_id: Some(stored.attachment.project_id.clone()),
-                            task_id: Some(stored.attachment.task_id.clone()), name: stored.attachment.name.clone(),
-                        }, Some(&actor), now)?;
-                    }
-                }
+                finish_deletion_job(tx, &DeletionJob {
+                    id: job_id, blob_id: stored.blob_id.clone(), storage_key,
+                })?;
                 crate::idempotency::succeed(tx, &idempotency_id, crate::idempotency::Receipt {
                     status: 204,
                     response: &json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string(),

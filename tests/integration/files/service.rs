@@ -315,6 +315,55 @@ async fn temporary_cleanup_keeps_metadata_while_permanent_bytes_survive() {
 }
 
 #[tokio::test]
+async fn failed_deletion_of_a_cleaned_attachment_can_retry_with_its_key() {
+    let fixture = Fixture::new().await;
+    let roomy = fixture.service(100 * 1024 * 1024);
+    let temporary = upload(&roomy, &fixture.manager, "temp", "old.bin", b"old", true).await;
+    let old = now() - 2 * 24 * 60 * 60;
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute(
+                "UPDATE task_attachments SET created_at=?1,last_accessed_at=?1",
+                [old],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    fixture.service(1).cleanup_to_low_watermark().await.unwrap();
+    let cleaned = roomy
+        .list_attachments(&fixture.manager, "task")
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(cleaned.state, oneloop::files::BlobState::Cleaned);
+    let set_failure = |sql: &'static str| {
+        fixture.db.run(move |connection| {
+            connection.execute_batch(sql)?;
+            Ok(())
+        })
+    };
+    set_failure(
+        "CREATE TRIGGER fail_once BEFORE DELETE ON task_attachments
+         BEGIN SELECT RAISE(ABORT, 'disk error'); END",
+    )
+    .await
+    .unwrap();
+    let delete =
+        || roomy.delete_attachment(&fixture.manager, &temporary.id, cleaned.revision, "gone");
+    assert!(delete().await.is_err());
+    set_failure("DROP TRIGGER fail_once").await.unwrap();
+    delete().await.unwrap();
+    let remaining = roomy
+        .list_attachments(&fixture.manager, "task")
+        .await
+        .unwrap();
+    assert!(remaining.items.is_empty());
+}
+
+#[tokio::test]
 async fn soft_deleted_tasks_are_reconciled_to_byte_and_metadata_removal() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
