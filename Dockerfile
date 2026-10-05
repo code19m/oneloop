@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.92.0-bookworm AS builder
+# cargo-auditable embeds the crate list in the binary, where SBOM and
+# vulnerability scanners find it. This layer stays cached across source changes.
+RUN cargo install cargo-auditable --locked --version 0.7.6
 ARG SOURCE_REVISION=unknown
 ENV SOURCE_REVISION=$SOURCE_REVISION
 WORKDIR /build
@@ -7,7 +10,7 @@ COPY Cargo.toml Cargo.lock build.rs THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 COPY migrations ./migrations
 COPY frontend ./frontend
-RUN cargo build --locked --release --bin oneloop
+RUN cargo auditable build --locked --release --bin oneloop
 
 FROM debian:bookworm-slim AS runtime
 LABEL org.opencontainers.image.title="oneloop" \

@@ -134,8 +134,8 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database migrated from 1 to 2` and the folder of its
-backup, or `database schema 2 is current` if there was nothing to do.
+`db migrate` prints `database migrated from 2 to 3` and the folder of its
+backup, or `database schema 3 is current` if there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
 Reloading the page loses unsaved text, so people can reload when they are ready.
@@ -156,7 +156,7 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database migrated from 16 to 1`. Until you do this,
+It prints something like `database migrated from 16 to 3`. Until you do this,
 `oneloop serve` refuses to start.
 
 ## Roll back
@@ -167,7 +167,7 @@ To go back, restore the backup that `db migrate` made:
 1. Stop oneloop. Move the data directory aside, or create a new Docker volume.
 2. Install the previous version, or set the previous image tag.
 3. Restore the backup that `db migrate` printed. Its name looks like
-   `oneloop-pre-migration-v1-1790000000`.
+   `oneloop-pre-migration-v2-1790000000`.
 4. Start oneloop.
 
 Changes made after the upgrade are not in that backup.

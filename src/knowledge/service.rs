@@ -55,6 +55,7 @@ pub(super) struct Inner {
     pub(super) keys: PathBuf,
     pub(super) allow_file: bool,
     pub(super) disk_min_free_bytes: u64,
+    pub(super) disk: crate::files::disk::DiskAdmission,
     pub(super) limits: Limits,
     pub(super) wake: Notify,
     /// Projects whose sync is running in this process, each with the token
@@ -330,6 +331,7 @@ impl KnowledgeService {
 
     fn build(db: Db, disk_min_free_bytes: u64, allow_file: bool) -> Self {
         let keys = db.layout().keys();
+        let disk = crate::files::disk::DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
         let git = Git::new(
             db.layout().root().join("knowledge"),
             keys.join("knowledge_known_hosts"),
@@ -342,6 +344,7 @@ impl KnowledgeService {
                 keys,
                 allow_file,
                 disk_min_free_bytes,
+                disk,
                 limits: Limits {
                     max_files: MAX_FILES,
                     max_file_bytes: MAX_FILE_BYTES,
@@ -487,7 +490,7 @@ impl KnowledgeService {
                     });
                 };
                 let mut statement = connection.prepare(
-                    "SELECT path,size,preview_kind,updated_at,substr(checksum,1,16) FROM knowledge_files
+                    "SELECT path,size,preview_kind,updated_at,substr(checksum,1,16),media_type FROM knowledge_files
                      WHERE project_id=?1 ORDER BY path",
                 )?;
                 let files = statement
@@ -495,7 +498,7 @@ impl KnowledgeService {
                         Ok(KnowledgeFile {
                             path: row.get(0)?,
                             size: row.get(1)?,
-                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref()),
+                            kind: preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(5)?),
                             updated_at: row.get(3)?,
                             version: row.get(4)?,
                         })
@@ -543,7 +546,7 @@ impl KnowledgeService {
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "file" })?;
-                let kind = preview_kind(kind.as_deref());
+                let kind = preview_kind(kind.as_deref(), &media_type);
                 let allowed = match mode {
                     FileMode::Content => matches!(kind, Some(PreviewKind::Image | PreviewKind::Pdf)),
                     FileMode::Text => matches!(
@@ -877,14 +880,15 @@ impl KnowledgeService {
                 }
                 let mut statement = connection.prepare(
                     "SELECT path,preview_kind,
-                            CASE WHEN preview_kind IN ('markdown','text') AND size<=?2 THEN content END
+                            CASE WHEN preview_kind IN ('markdown','text') AND media_type LIKE 'text/%' AND size<=?2 THEN content END,
+                            media_type
                      FROM knowledge_files WHERE project_id=?1 ORDER BY path",
                 )?;
                 let files = statement
                     .query_map(params![project, INDEXED_FILE_BYTES], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref()),
+                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref(), &row.get::<_, String>(3)?),
                             row.get::<_, Option<Vec<u8>>>(2)?,
                         ))
                     })?
@@ -1396,7 +1400,12 @@ fn is_manager(actor: &Actor) -> bool {
     actor.is_admin && matches!(actor.source, ActorSource::BrowserSession { .. })
 }
 
-fn preview_kind(value: Option<&str>) -> Option<PreviewKind> {
+fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
+    // Older snapshots could label binary .md files as Markdown. Every read,
+    // listing and catalog must reject that persisted classification.
+    if matches!(value, Some("markdown" | "text" | "html")) && !media_type.starts_with("text/") {
+        return None;
+    }
     match value? {
         "image" => Some(PreviewKind::Image),
         "pdf" => Some(PreviewKind::Pdf),

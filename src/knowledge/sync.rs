@@ -23,10 +23,11 @@ use crate::{
     AppResult,
     auth::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
+    files::disk::DiskReservation,
 };
 
 use super::{
-    git::{Credentials, Failure, Snapshot, SyncError},
+    git::{Credentials, Failure, Snapshot, SnapshotOptions, SyncError},
     secrets::Purpose,
     service::{Inner, KnowledgeService},
     source::{GitUrl, Transport},
@@ -52,7 +53,9 @@ struct Due {
 
 enum Fetched {
     Unchanged,
-    Changed(Snapshot),
+    /// The branch moved. The download keeps its disk space until the files
+    /// are stored.
+    Changed(Snapshot, DiskReservation),
 }
 
 /// Marks a project as syncing until its sync ends, is cancelled or is stopped
@@ -269,7 +272,9 @@ impl KnowledgeService {
         if due.commit.as_deref() == Some(head.as_str()) {
             return Ok(Fetched::Unchanged);
         }
-        self.require_space()?;
+        // Only a download needs disk space. Its working copy and Git keep the
+        // reservation until they are gone, even when the sync is stopped.
+        let reservation = self.require_space()?;
         let depth = if due.commit.is_none() {
             FIRST_HISTORY_DEPTH
         } else {
@@ -281,11 +286,14 @@ impl KnowledgeService {
                 &due.branch,
                 &due.folder,
                 &credentials,
-                self.inner.limits,
-                depth,
+                SnapshotOptions {
+                    limits: self.inner.limits,
+                    history_depth: depth,
+                },
+                reservation.clone(),
             )
             .await?;
-        Ok(Fetched::Changed(snapshot))
+        Ok(Fetched::Changed(snapshot, reservation))
     }
 
     fn credentials(
@@ -336,23 +344,31 @@ impl KnowledgeService {
 
     /// A sync briefly holds the folder twice, in its working copy and in the
     /// database, on top of the configured free-space reserve.
-    fn require_space(&self) -> Result<(), SyncError> {
-        let available = fs4::available_space(self.inner.db.layout().root()).map_err(|error| {
-            SyncError::new(Failure::Failed, format!("check free space: {error}"))
-        })?;
+    fn require_space(&self) -> Result<DiskReservation, SyncError> {
         let limits = self.inner.limits;
-        let needed = self
-            .inner
-            .disk_min_free_bytes
-            .saturating_add(limits.max_download_bytes)
-            .saturating_add(limits.max_total_bytes);
-        if available < needed {
-            return Err(SyncError::new(
-                Failure::StorageFull,
-                format!("{available} bytes free; {needed} needed"),
-            ));
-        }
-        Ok(())
+        self.inner
+            .disk
+            .reserve(
+                limits
+                    .max_download_bytes
+                    .saturating_add(limits.max_total_bytes),
+            )
+            .map_err(|error| {
+                SyncError::new(
+                    if matches!(
+                        error,
+                        crate::AppError::Rule {
+                            kind: crate::error::RuleKind::StorageFull,
+                            ..
+                        }
+                    ) {
+                        Failure::StorageFull
+                    } else {
+                        Failure::Failed
+                    },
+                    error.to_string(),
+                )
+            })
     }
 
     /// Store the outcome unless an administrator changed, disconnected or
@@ -365,6 +381,11 @@ impl KnowledgeService {
         started: i64,
         result: Result<Fetched, SyncError>,
     ) -> AppResult<()> {
+        // New files use their reserved space until the transaction has ended.
+        let _reservation = match &result {
+            Ok(Fetched::Changed(_, reservation)) => Some(reservation.clone()),
+            _ => None,
+        };
         self.inner
             .db
             .transaction(move |tx| {
@@ -400,7 +421,7 @@ impl KnowledgeService {
                         }
                         ("knowledge.synced", json!({}))
                     }
-                    Ok(Fetched::Changed(snapshot)) => {
+                    Ok(Fetched::Changed(snapshot, _)) => {
                         let count = store_files(tx, &project_id, &snapshot)?;
                         tx.execute(
                             &format!(
@@ -473,10 +494,20 @@ fn store_files(
     for file in &snapshot.files {
         kept.insert(file.path.as_str());
         let checksum = hex::encode(Sha256::digest(&file.content));
+        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
         if stored.get(&file.path) == Some(&checksum) {
+            tx.execute(
+                "UPDATE knowledge_files SET media_type=?3,preview_kind=?4
+                 WHERE project_id=?1 AND path=?2 AND (media_type<>?3 OR preview_kind IS NOT ?4)",
+                params![
+                    project_id,
+                    file.path,
+                    media_type,
+                    kind.map(|kind| kind.as_str())
+                ],
+            )?;
             continue;
         }
-        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
         tx.execute(
             "INSERT OR REPLACE INTO knowledge_files
              (project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
@@ -508,9 +539,16 @@ mod tests {
     use crate::{
         Db,
         auth::{Actor, ActorSource},
-        knowledge::{KnowledgeCommand, git::SnapshotFile},
+        knowledge::{
+            KnowledgeCommand,
+            git::{
+                SnapshotFile,
+                tests::{commit_all, git},
+            },
+        },
     };
     use serde_json::Value;
+    use std::path::Path;
     use tokio::io::AsyncReadExt;
 
     /// A project `p1` whose source points at `url`, and an administrator.
@@ -552,17 +590,203 @@ mod tests {
         .unwrap()
     }
 
-    fn snapshot() -> Fetched {
-        Fetched::Changed(Snapshot {
-            commit: "a".repeat(40),
-            committed_at: 100,
-            files: vec![SnapshotFile {
-                path: "README.md".to_owned(),
-                changed_at: None,
-                content: b"# Old folder".to_vec(),
-            }],
-            skipped: 0,
+    fn snapshot(service: &KnowledgeService) -> Fetched {
+        Fetched::Changed(
+            Snapshot {
+                commit: "a".repeat(40),
+                committed_at: 100,
+                files: vec![SnapshotFile {
+                    path: "README.md".to_owned(),
+                    changed_at: None,
+                    content: b"# Old folder".to_vec(),
+                }],
+                skipped: 0,
+            },
+            service.inner.disk.reserve(0).unwrap(),
+        )
+    }
+
+    /// A repository with `docs/README.md` on `main`, and its commit.
+    fn docs_repository(path: &Path) -> String {
+        std::fs::create_dir_all(path.join("docs")).unwrap();
+        std::fs::write(path.join("docs/README.md"), "# Docs\n").unwrap();
+        commit_all(path)
+    }
+
+    #[tokio::test]
+    async fn unchanged_branches_are_checked_without_disk_space_above_the_floor() {
+        let source = tempfile::tempdir_in("target").unwrap();
+        let commit = docs_repository(source.path());
+        let url = format!("file://{}", source.path().display());
+        let (_root, db, _) = fixture(&url).await;
+        db.run(move |c| {
+            for (project, prefix) in [("p2", "TWO"), ("p3", "THR"), ("p4", "FOU")] {
+                c.execute(
+                    "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,?1,?2,1,1)",
+                    [project, prefix],
+                )?;
+                c.execute(
+                    "INSERT INTO knowledge_sources(project_id,url,branch,folder,state,requested_at,created_at,updated_at,generation)
+                     VALUES(?1,?2,'main','docs','pending',1,1,1,'current')",
+                    [project, url.as_str()],
+                )?;
+            }
+            // Only p4 has never stored the branch's files.
+            c.execute(
+                "UPDATE knowledge_sources SET state='ready',commit_id=?1 WHERE project_id<>'p4'",
+                [commit],
+            )?;
+            Ok(())
         })
+        .await
+        .unwrap();
+        // No download fits above this floor.
+        let service = KnowledgeService::new(db.clone(), u64::MAX).allowing_local_repositories();
+        assert_eq!(service.sync_due().await, 4);
+        let sources: Vec<(String, String, Option<String>)> = db
+            .run(|c| {
+                let mut statement = c.prepare(
+                    "SELECT project_id,state,error_code FROM knowledge_sources ORDER BY project_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<_, _>>()?;
+                Ok(rows)
+            })
+            .await
+            .unwrap();
+        let source = |project: &str, state: &str, error: Option<&str>| {
+            (
+                project.to_owned(),
+                state.to_owned(),
+                error.map(str::to_owned),
+            )
+        };
+        assert_eq!(
+            sources,
+            [
+                source("p1", "ready", None),
+                source("p2", "ready", None),
+                source("p3", "ready", None),
+                source("p4", "failed", Some("storage_full")),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
+        let source = tempfile::tempdir_in("target").unwrap();
+        docs_repository(source.path());
+        // Only a download reads the root tree. As a pipe without a writer, it
+        // stops Git in the clone, after the check found a new commit.
+        let tree = git(source.path(), &["rev-parse", "HEAD^{tree}"]);
+        let object = source
+            .path()
+            .join(".git/objects")
+            .join(&tree[..2])
+            .join(&tree[2..]);
+        std::fs::remove_file(&object).unwrap();
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&object)
+            .status()
+            .unwrap();
+        assert!(fifo.success());
+        let url = format!("file://{}", source.path().display());
+        let (_root, db, _) = fixture(&url).await;
+        db.run(|c| {
+            c.execute_batch("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','p1','Track',0,1,1);
+                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('epic','p1','track','Epic','2026-01-01',0,1,1);
+                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('task','p1','epic',1,'ONE-001','Task','planning',0,1,1);")?;
+            Ok(())
+        }).await.unwrap();
+        let second_url = url.clone();
+        db.run(move |c| {
+            c.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p2','Two','TWO',1,1)", [])?;
+            c.execute("INSERT INTO knowledge_sources(project_id,url,branch,folder,state,requested_at,created_at,updated_at,generation) VALUES('p2',?1,'main','docs','pending',1,1,1,'second')", [second_url])?;
+            Ok(())
+        }).await.unwrap();
+        let free = fs4::available_space(db.layout().root()).unwrap();
+        let mut service = KnowledgeService::new(db.clone(), 0).allowing_local_repositories();
+        let inner = Arc::get_mut(&mut service.inner).unwrap();
+        inner.limits.max_download_bytes = free / 4 * 3 - inner.limits.max_total_bytes;
+        // Large margins tolerate unrelated disk activity. The upload service
+        // uses a higher floor because attachment requests are limited to 25 MiB.
+        let files = crate::files::FileService::new(db.clone(), 100 * 1024 * 1024, free / 2);
+        let actor = Actor {
+            user_id: "admin".into(),
+            username: "admin".into(),
+            display_name: "Admin".into(),
+            is_admin: true,
+            must_change_password: false,
+            authenticated_at: 1,
+            source: ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        let (shutdown, stop) = watch::channel(false);
+        let worker = service.spawn_worker(stop);
+        // Both syncs see a new commit. The one that reserved space waits in
+        // the clone, and the other is refused.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let rejected: i64 = db.run(|c| Ok(c.query_row("SELECT count(*) FROM knowledge_sources WHERE error_code='storage_full'", [], |r| r.get(0))?)).await.unwrap();
+                if rejected == 1 { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let upload = files
+            .begin_attachment_upload(
+                &actor,
+                "task",
+                "data.bin",
+                crate::files::MAX_ATTACHMENT_BYTES,
+                false,
+                "competing",
+            )
+            .await;
+        let blocked = matches!(
+            upload,
+            Err(crate::AppError::Rule {
+                kind: crate::error::RuleKind::StorageFull,
+                ..
+            })
+        );
+        if let Ok(crate::files::UploadStart::Pending(upload)) = upload {
+            upload.abort().await.unwrap();
+        }
+        shutdown.send(true).unwrap();
+        worker.await.unwrap();
+        assert!(
+            blocked,
+            "the upload must account for the worker's reservation"
+        );
+        // Cleanup and parent reaping may finish after the worker is cancelled.
+        let upload = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match files
+                    .begin_attachment_upload(
+                        &actor,
+                        "task",
+                        "data.bin",
+                        crate::files::MAX_ATTACHMENT_BYTES,
+                        false,
+                        "competing",
+                    )
+                    .await
+                {
+                    Ok(crate::files::UploadStart::Pending(upload)) => break upload,
+                    Err(crate::AppError::Rule {
+                        kind: crate::error::RuleKind::StorageFull,
+                        ..
+                    }) => tokio::task::yield_now().await,
+                    _ => panic!("unexpected upload admission result"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        upload.abort().await.unwrap();
     }
 
     fn command(operation: &str, payload: Value, revision: Option<i64>) -> KnowledgeCommand {
@@ -580,13 +804,23 @@ mod tests {
 
         // Disconnect and connect again keep the revision but not the generation.
         service
-            .record("p1".to_owned(), "earlier".to_owned(), 1, Ok(snapshot()))
+            .record(
+                "p1".to_owned(),
+                "earlier".to_owned(),
+                1,
+                Ok(snapshot(&service)),
+            )
             .await
             .unwrap();
         assert_eq!(stored(&db).await.0, 0);
 
         service
-            .record("p1".to_owned(), "current".to_owned(), 1, Ok(snapshot()))
+            .record(
+                "p1".to_owned(),
+                "current".to_owned(),
+                1,
+                Ok(snapshot(&service)),
+            )
             .await
             .unwrap();
         assert_eq!(stored(&db).await.0, 1);

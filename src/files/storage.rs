@@ -100,8 +100,20 @@ impl FileStore {
         .map_err(|error| AppError::internal(format!("directory sync worker failed: {error}")))?
     }
 
-    pub fn available_space(&self) -> AppResult<u64> {
-        fs4::available_space(self.layout.root()).map_err(Into::into)
+    pub(crate) async fn sync_deletion_parent(path: PathBuf) -> AppResult<()> {
+        tokio::task::spawn_blocking(move || {
+            let parent = path
+                .parent()
+                .ok_or_else(|| AppError::internal("file path has no parent"))?;
+            match OpenOptions::new().read(true).open(parent) {
+                Ok(directory) => directory.sync_all().map_err(Into::into),
+                // Backups omit already-deleting bytes and may omit the shard.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+        .map_err(|error| AppError::internal(format!("directory sync worker failed: {error}")))?
     }
 
     fn reject_managed_symlinks(&self) -> AppResult<()> {

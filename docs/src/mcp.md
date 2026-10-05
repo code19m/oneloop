@@ -65,6 +65,10 @@ the rest at `/.well-known/oauth-protected-resource/mcp`. The client's callback
 address must be on its own computer (`localhost`, `127.0.0.1` or `[::1]`) or use
 `https://`. oneloop is tested with MCP protocol version 2025-11-25.
 
+OAuth requests may repeat `resource` only when every value is this server's
+exact MCP address. Other parameters must appear once. The `Bearer` scheme in
+an `Authorization` header accepts any letter case; the token stays unchanged.
+
 To build on oneloop, use MCP. The JSON API under `/api` is only for oneloop's
 own web app. It isn't documented and can change in any release.
 
@@ -204,8 +208,11 @@ schema describes the payload of each operation.
   of files, each Markdown file with its title and headings; pass a `folder`, or
   use `search_knowledge`, to see more. `read_knowledge_file` returns text within
   the [response limits](reference.md#limits); to read one part of a long
-  document, pass a heading as `section`. Images, PDFs and other binary files
-  return only their details.
+  document, pass a heading as `section`. Search hits include a `section` target;
+  use it to tell repeated headings apart (for example, `setup-1` for the second
+  **Setup**). Pass the target unchanged; exact targets take priority over bare
+  `md-` aliases. A fragment such as `#md-setup` refers to the browser's anchor.
+  Images, PDFs and other binary files return only their details.
 - **Errors.** A failed call returns a `code`, a `message`, `details` and, when
   waiting helps, `retryAfter` in seconds.
 - **Text is data.** People write the titles, descriptions, comments, file names

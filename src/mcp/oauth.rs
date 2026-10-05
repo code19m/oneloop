@@ -668,6 +668,44 @@ struct TokenForm {
     resource: String,
 }
 
+/// URL-encoded extractors do not collect repeated fields into a Vec inside a
+/// struct. Normalize resources first, while retaining singleton validation.
+fn resource_parameters<T: serde::de::DeserializeOwned>(
+    state: &AppState,
+    pairs: Vec<(String, String)>,
+) -> AppResult<T> {
+    let canonical = resource_url(state);
+    let mut resources = 0;
+    let mut valid_resources = true;
+    let mut singletons = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for (name, value) in pairs {
+        if name == "resource" {
+            resources += 1;
+            valid_resources &= value == canonical;
+        } else {
+            if !singletons.insert(name.clone()) {
+                return Err(AppError::validation("request", "duplicate parameter"));
+            }
+            normalized.push((name, value));
+        }
+    }
+    // An empty target fails the existing resource check after required fields
+    // have been parsed, preserving invalid_request for incomplete requests.
+    normalized.push((
+        "resource".to_owned(),
+        if resources > 0 && valid_resources {
+            canonical
+        } else {
+            String::new()
+        },
+    ));
+    let encoded = serde_urlencoded::to_string(normalized)
+        .map_err(|error| AppError::internal(format!("normalize OAuth parameters: {error}")))?;
+    serde_urlencoded::from_str(&encoded)
+        .map_err(|_| AppError::validation("request", "invalid request"))
+}
+
 #[derive(Serialize)]
 struct TokenResponse {
     access_token: String,
@@ -1593,9 +1631,13 @@ async fn register_client(
 }
 async fn token(
     State(state): State<AppState>,
-    form: Result<Form<TokenForm>, axum::extract::rejection::FormRejection>,
+    form: Result<Form<Vec<(String, String)>>, axum::extract::rejection::FormRejection>,
 ) -> Result<impl IntoResponse, OAuthError> {
     let form = form.map_err(|_| OAuthError::invalid("invalid_request"))?;
+    let form = Form(
+        resource_parameters::<TokenForm>(&state, form.0)
+            .map_err(|e| OAuthError::from_app(e, false))?,
+    );
     let client = form.client_id.clone();
     let known = state
         .db
@@ -1629,10 +1671,13 @@ async fn revoke(
 async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
-    query: Result<Query<AuthorizationQuery>, axum::extract::rejection::QueryRejection>,
+    query: Result<Query<Vec<(String, String)>>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let result = match query {
-        Ok(query) => authorize_inner(State(state), headers, query).await,
+        Ok(query) => match resource_parameters::<AuthorizationQuery>(&state, query.0) {
+            Ok(query) => authorize_inner(State(state), headers, Query(query)).await,
+            Err(error) => Err(error),
+        },
         Err(_) => Err(AppError::validation(
             "request",
             "invalid authorization request",

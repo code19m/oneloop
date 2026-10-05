@@ -14,6 +14,105 @@ use super::initialize;
 use crate::support;
 
 #[tokio::test]
+async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore() {
+    let root = support::scratch_dir();
+    let live = root.path().join("live");
+    fs::create_dir(&live).unwrap();
+    let connection = Connection::open(live.join("oneloop.sqlite3")).unwrap();
+    // This predecessor database cannot be opened by the current Db yet, but
+    // its stored triggers still need the server's Unicode lower-case function.
+    connection
+        .create_scalar_function(
+            "oneloop_lower",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| Ok(context.get::<String>(0)?.to_lowercase()),
+        )
+        .unwrap();
+    connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,checksum TEXT NOT NULL,applied_at INTEGER NOT NULL)").unwrap();
+    for (version, name, sql) in [
+        (
+            1,
+            "initial",
+            include_str!("../../../migrations/0001_initial.sql"),
+        ),
+        (
+            2,
+            "knowledge",
+            include_str!("../../../migrations/0002_knowledge.sql"),
+        ),
+    ] {
+        connection.execute_batch(sql).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations VALUES(?1,?2,?3,1)",
+                params![version, name, hex::encode(Sha256::digest(sql.as_bytes()))],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+    }
+    connection.execute_batch("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Original','hash',1,1,1);
+        INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('e','p','tr','Epic','2026-01-01',0,1,1);
+        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES('t','p','e',1,'PRJ-001','Task','planning',0,1,1);
+        INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at) VALUES('g','u','client','Files app',1,1,2);").unwrap();
+    let store = oneloop::files::FileStore::new(oneloop::db::DataLayout::new(&live));
+    let key = store.new_storage_key().unwrap();
+    connection.execute("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at) VALUES('b',?1,?2,4,'text/plain','available',1)", params![key, "0".repeat(64)]).unwrap();
+    connection.execute_batch("INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,position,created_at,last_accessed_at,updated_at) VALUES('a','p','t','b','original.txt','u',0,0,1,1,1);
+        INSERT INTO idempotency_keys(id,actor_user_id,actor_mcp_grant_id,idempotency_key,operation,request_hash,state,resource_type,resource_id,created_at,updated_at,expires_at) VALUES('receipt','u','g','delete','attachment.delete','hash','failed','attachment','a',1,1,2);").unwrap();
+    connection
+        .execute("UPDATE file_blobs SET state='deleting' WHERE id='b'", [])
+        .unwrap();
+    connection.execute("INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at) VALUES('job','b',?1,'manual',1,1)", [key]).unwrap();
+    drop(connection);
+
+    assert!(
+        migrate(&live, None).is_err(),
+        "upgrading requires a verified backup"
+    );
+    fs::create_dir(root.path().join("before")).unwrap();
+    let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
+    assert_eq!(upgrade.applied, vec![3]);
+    assert_eq!(
+        validate_backup(upgrade.backup_path.unwrap())
+            .unwrap()
+            .schema_version,
+        2
+    );
+    let backup = root.path().join("after");
+    oneloop::db::create_backup(&live, &backup).unwrap();
+    assert_eq!(
+        validate_backup(&backup).unwrap().schema_version,
+        CURRENT_SCHEMA_VERSION
+    );
+    let restored = root.path().join("restored");
+    oneloop::db::restore_backup(&backup, &restored).unwrap();
+    let db = Db::open(&restored).unwrap();
+    db.run(|c| {
+        c.execute("DELETE FROM idempotency_keys", [])?;
+        c.execute("UPDATE users SET display_name='Renamed'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    oneloop::retention::prune_transient_state(&db, support::now())
+        .await
+        .unwrap();
+    let files = oneloop::files::FileService::new(db.clone(), 100 * 1024 * 1024, 0);
+    assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 1);
+    assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 0);
+    let attribution: (String,String,String) = db.run(|c| Ok(c.query_row(
+        "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'",
+        [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await.unwrap();
+    assert_eq!(attribution, ("u".into(), "g".into(), "Original".into()));
+}
+
+#[tokio::test]
 async fn migration_initializes_once_and_transactions_rollback() {
     let root = support::scratch_dir();
     let db = initialize(&root);
@@ -378,7 +477,10 @@ fn schema_four_repairs_only_historical_assignee_projections() {
 
     let outcome = migrate(&data, Some(backups)).unwrap();
     assert_eq!(outcome.previous_version, 3);
-    assert_eq!(outcome.applied, vec![1, 2]);
+    assert_eq!(
+        outcome.applied,
+        (1..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>()
+    );
     let connection = Connection::open(database).unwrap();
     let repaired = connection
         .prepare(
