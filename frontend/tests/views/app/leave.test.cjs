@@ -199,6 +199,34 @@ test('Discard works while offline, because nothing changes on the server', () =>
   assert.equal(t.A.context().view, 'board');
 });
 
+test('Sign out says that typed text will be lost, only when there is some', () => {
+  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  t.A.logout();
+  assert.equal(ask(t).querySelector('p').textContent, 'End your current browser session.');
+  t.d.querySelector('[data-confirm-cancel]').click();
+  type(t.d.getElementById('cmtIn'), 'Half a thought');
+  t.A.logout();
+  assert.equal(ask(t).querySelector('p').textContent, 'End your current browser session. Text you typed and have not saved will be lost.');
+});
+
+test('Escape or a click beside a dialog with typed text asks first; a clean dialog closes at once', () => {
+  const t = bootApp({ route: 'roadmap' });
+  const escape = () => t.d.activeElement.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  t.A.openModal('epic');
+  escape();
+  assert.equal(t.d.querySelector('.modal'), null, 'nothing typed');
+  t.A.openModal('epic');
+  type(t.d.querySelector('.modal [name="title"]'), 'Payment retries');
+  escape();
+  assert.equal(ask(t).querySelector('p').textContent, 'Text you typed in this dialog will be lost.');
+  t.d.querySelector('[data-confirm-cancel]').click();
+  assert.equal(t.d.querySelector('.modal [name="title"]').value, 'Payment retries');
+  t.w.Function(t.d.querySelector('.modal-wrap').previousElementSibling.getAttribute('onclick'))();
+  assert(ask(t), 'a click beside the dialog asks too');
+  t.d.querySelector('[data-confirm-accept]').click();
+  assert.equal(t.d.querySelector('.modal'), null);
+});
+
 test('Reload after updates is a choice in the account menu, which stays open', () => {
   const t = bootApp({ route: 'board' });
   t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });

@@ -2030,7 +2030,7 @@
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
-    return `<div class="scrim" onclick="App.closeOverlays()"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
+    return `<div class="scrim" onclick="App.dismissOverlays()"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
   }
 
   function renderMenu() {
@@ -2933,10 +2933,14 @@
       const complete = () => { D.session = { userId:u.id,authenticatedAt:Date.now() }; currentBrowserSession(); state.rmScrollLeft = null; const target=window.Recovery?.consumeReturn() || '#/roadmap'; setLocalHash(target); resolveRoute(); render(); };
       if (window.Recovery) Recovery.loginAtLimit(u,complete); else complete(); return false;
     },
+    /** What Sign out asks, which says when typed text would be lost. */
+    signOutText() {
+      return window.Recovery?.hasUnsavedInput?.() ? 'End your current browser session. Text you typed and have not saved will be lost.' : 'End your current browser session.';
+    },
     logout() {
       if (!D.session) return;
       const userId = me().id, sessionId = D.session.id;
-      askConfirmation({ title:'Sign out?', text:'End your current browser session.', action:'Sign out', confirm:() => {
+      askConfirmation({ title:'Sign out?', text:App.signOutText(), action:'Sign out', confirm:() => {
         if (!D.session || me().id !== userId || D.session.id !== sessionId) return;
         const current = currentBrowserSession(); if (current) current.revokedAt = Date.now();
         window.Uploads?.clearAccount(userId); clearToasts(); D.session = null; state.modal = null; state.menu = null; state.peek = null; render();
@@ -3312,6 +3316,13 @@
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
     openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; roadmapSelection = id; renderOverlays(); },
+    /** Escape, or a click beside a dialog: a dialog with typed text asks before it closes. */
+    dismissOverlays() {
+      const close = () => state.modal?.poolId ? App.returnToPool() : App.closeOverlays();
+      const dialog = state.modal ? document.querySelector('#overlay-root .modal') : null;
+      if (dialog && window.Recovery?.hasTypedInputIn?.(dialog)) { askToDiscard(close, () => {}, 'Text you typed in this dialog will be lost.'); return; }
+      close();
+    },
     closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
@@ -4194,9 +4205,9 @@
   }, true);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.sideOpen && !state.menu && !state.modal && !state.peek && !POP.el) { e.preventDefault(); App.toggleSidebar(false); return; }
-    if (e.key === 'Escape' && state.modal?.poolId) { App.returnToPool(); return; }
+    if (e.key === 'Escape' && state.modal?.poolId) { App.dismissOverlays(); return; }
     if (e.key === 'Escape' && state.menu&&!state.modal&&!state.peek) {e.preventDefault();dismissMenu();return;}
-    if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.closeOverlays(); }
+    if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.dismissOverlays(); }
   });
   document.addEventListener('pointerdown', (e) => {
     clearTimeout(pressedControlTimer);

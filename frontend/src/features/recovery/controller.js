@@ -53,13 +53,14 @@ const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUIL
  * sent: a changed field in a dialog, a drawer, the task page or a settings
  * page. A field that saves itself counts only while it has focus with a value
  * it has not saved yet; a checkbox that saves itself never counts, because it
- * saves when it changes. `skip` leaves out controls that keep their own state.
+ * saves when it changes. `skip` leaves out controls that keep their own state;
+ * `roots` limits the check to some editors, such as one dialog.
  * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
- * @param {(element:Element)=>boolean} [skip]
+ * @param {(element:Element)=>boolean} [skip] @param {Iterable<Element>} [roots]
  */
-export function hasTypedInput(doc, committed, skip = () => false) {
+export function hasTypedInput(doc, committed, skip = () => false, roots = doc.querySelectorAll(EDITOR_ROOT)) {
   const active=doc.activeElement;
-  for (const root of doc.querySelectorAll(EDITOR_ROOT)) for (const element of root.querySelectorAll('input,textarea,select')) {
+  for (const root of roots) for (const element of root.querySelectorAll('input,textarea,select')) {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) || element.disabled || skip(element)) continue;
     if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
     if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
@@ -664,6 +665,8 @@ export function createRecoveryController({
     hasUnsavedInput,
     /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
     markSaved(element){rememberCommitted(element);},
+    /** Whether one editor, such as a dialog, holds text the person typed. @param {Element} root */
+    hasTypedInputIn(root){return !!documentObject&&hasTypedInput(documentObject,committed,()=>false,[root]);},
     /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
     trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
     /** Count a save or upload that is not a command until it settles. */
