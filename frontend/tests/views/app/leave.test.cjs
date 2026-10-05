@@ -168,6 +168,21 @@ test('Back with typed text puts the address back and asks; Discard then goes wit
   assert.equal(t.w.location.hash, '#/roadmap'); assert.equal(t.A.context().view, 'roadmap');
 });
 
+test('a link to another page with typed text asks once, and Discard follows it', async () => {
+  const page = bootApp({ route: 'task/BIR-079' });
+  // The bridge watches link clicks on the document it runs in, as in a browser.
+  const previous = globalThis.document; globalThis.document = page.d;
+  let t; try { t = withBridge(page); } finally { globalThis.document = previous; }
+  type(t.d.getElementById('cmtIn'), 'Half a thought');
+  const link = t.d.createElement('a'); link.href = '#/board'; link.textContent = 'Board'; t.d.querySelector('.task-page').append(link);
+  link.click();
+  assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => t.A.context().view === 'board' || ask(t), 'the link is followed');
+  assert.equal(ask(t), null, 'Discard is the only question');
+  assert.equal(t.A.context().view, 'board');
+});
+
 test('a page change that follows the person\'s own change, or a clean page, never asks', () => {
   const t = withBridge(bootApp({ route: 'task/BIR-079' }));
   t.A.nav('roadmap');

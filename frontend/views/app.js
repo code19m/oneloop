@@ -2845,6 +2845,7 @@
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
     confirm: askConfirmation,
     askToDiscard,
+    followAddress,
     fieldError: failField,
     showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
     // With `wait`, a password that arrives while another dialog is open shows
@@ -4143,6 +4144,8 @@
   }
   /** The address Discard let through, which routes without asking again. */
   let discardedFor = null;
+  /** Go to an address that the person already chose to leave typed text for. */
+  function followAddress(hash) { discardedFor = new URL(hash, location.href).href; location.hash = hash; }
   /**
    * Back, Forward or an address typed by hand: a field that saves itself saves
    * first, as no browser blurs it here. If typed text would still be lost, the

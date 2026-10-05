@@ -313,7 +313,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const link=/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]');
     if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
     event.preventDefault();
-    askToDiscard(()=>{globalThis.location.hash=link.getAttribute('href');});
+    askToDiscard(()=>app.followAddress(link.getAttribute('href')));
   },true);
 
   async function execute(operation, payload, entity, message, options = {}) {
