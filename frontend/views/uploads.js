@@ -8,7 +8,7 @@
   const textExtensions=new Set('txt log md markdown mdx json jsonc jsonl ndjson csv tsv yaml yml toml xml ini cfg conf config properties sql graphql gql js mjs cjs jsx ts mts cts tsx py pyi rs go java c h cc cpp cxx hpp cs php rb swift kt kts scala dart lua pl pm r sh bash zsh fish ps1 bat cmd css scss sass less svelte vue astro diff patch gitignore gitattributes editorconfig env dockerfile makefile cmake tex rst adoc svg'.split(' '));
   const textNames=new Set(['.dockerignore', '.editorconfig', '.env', '.gitattributes', '.gitignore', '.npmrc', '.nvmrc', 'authors', 'changelog', 'containerfile', 'dockerfile', 'gemfile', 'gnumakefile', 'justfile', 'licence', 'license', 'makefile', 'notice', 'procfile', 'rakefile', 'readme']);
   let productionLoaded=new WeakSet();
-  const jobs=[],sources=new Map(),productionLoading=new Map(),productionRefreshPending=new Set(),retentionPending=new Set(),reorderPending=new Set();
+  const jobs=[],sources=new Map(),productionLoading=new Map(),productionRefreshPending=new Map(),retentionPending=new Set(),reorderPending=new Set();
   /** Attachment hooks supplied by the shared renderer's bind call.
    * @type {{task:(id:string)=>any, can:(id:string)=>boolean, canRead:(id:string)=>boolean,
    * confirm:(options:{title:string,text:string,action:string,confirm:()=>void})=>void,
@@ -17,7 +17,11 @@
    * refreshAttachments:(id:string)=>void}}
    */
   let hooks;
-  let next=0,app,failedOnce=false,preview=null,serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',runtimeUnsubscribe=null;
+  let next=0,app,failedOnce=false,preview=null,serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',serverStorageRead=false,runtimeUnsubscribe=null;
+  // Tasks whose attachments this account has read. Reading them again, after a
+  // live update or a refresh replaced the task, is passive: it never keeps an
+  // idle session open.
+  let attachmentsRead=new Set();
   const transport=()=>window.OneloopTransport?.api?.uploadAttachment?window.OneloopTransport.api:null;
   function cachedSource(id) {
     const source=sources.get(id);
@@ -37,24 +41,27 @@
   }
   const errorMessage=(error,fallback)=>window.OneloopErrorMessage?window.OneloopErrorMessage(error,fallback):(error?.message||fallback);
   const serverFile=file=>({id:file.id,name:file.name,size:file.size,type:file.mediaType,previewKind:file.previewKind,checksum:file.checksum,ephemeral:file.isEphemeral,uploadedBy:file.uploadedBy,uploadedAt:file.uploadedAt*1000,lastAccessAt:file.lastAccessedAt*1000,state:file.state,revision:file.revision,url:file.contentUrl||file.downloadUrl,downloadUrl:file.downloadUrl,contentUrl:file.contentUrl,sourceUrl:file.sourceUrl,htmlPreviewUrl:file.htmlPreviewUrl});
-  function loadProduction(taskId,force=false){
+  // A live update replaces task objects, so a reply finds its task again by id.
+  const sameTask=(taskId,task)=>{const current=hooks.task(taskId);return current&&(current===task||!!current.internalId&&current.internalId===task.internalId)?current:null;};
+  function loadProduction(taskId,force=false,background=false){
     const api=transport(),task=hooks?.task(taskId);
     if(!api||!task||!force&&productionLoaded.has(task))return;
+    const sessionId=window.DATA.session?.id,internalId=task.internalId||taskId;
+    background||=attachmentsRead.has(internalId);
     if(productionLoading.has(taskId)){
-      if(force)productionRefreshPending.add(taskId);
+      if(force)productionRefreshPending.set(taskId,(productionRefreshPending.get(taskId)??true)&&background);
       return productionLoading.get(taskId);
     }
     if(force)productionLoaded.delete(task);
-    const sessionId=window.DATA.session?.id,internalId=task.internalId||taskId;
     // A task detail read can replace its projection while this request is in flight.
     const currentTask=()=>{
       const current=hooks.task(taskId);
       return current&&window.DATA.session?.id===sessionId&&(current.internalId||taskId)===internalId?current:null;
     };
-    const request=api.attachments(internalId).then(result=>{
+    const request=api.attachments(internalId,{background}).then(result=>{
       const current=currentTask();if(!current)return;
       current.attachments=(result.items||[]).map(serverFile);
-      productionLoaded.add(current);
+      productionLoaded.add(current);attachmentsRead.add(internalId);
       if(preview?.taskId===taskId){
         const file=current.attachments.find(item=>item.id===preview.fileId);
         if(!file||file.state!=='available')closePreview();else syncRetention(taskId,file);
@@ -66,12 +73,15 @@
         current.attachments=[];productionLoaded.delete(current);
         if(preview?.taskId===taskId)closePreview();
         hooks.refreshAttachments(taskId);
+        // Lost access during a live refresh: the page itself says what happened.
+        if(background)return;
       }
       app.toast(errorMessage(error,'Attachments could not be loaded.'),'error');
     }).finally(()=>{
       if(productionLoading.get(taskId)!==request)return;
       productionLoading.delete(taskId);
-      if(productionRefreshPending.delete(taskId))loadProduction(taskId,true);
+      const pending=productionRefreshPending.get(taskId);
+      if(productionRefreshPending.delete(taskId))loadProduction(taskId,true,pending);
     });
     productionLoading.set(taskId,request);
   }
@@ -151,9 +161,9 @@
     job.cancelled=false;job.state='uploading';job.progress=0;job.error='';job.validation=false;const controller=new AbortController();job.reader={abort:()=>controller.abort()};mount(job.taskId);
     try{
       const value=await transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
-      if(job.cancelled)return;if(hooks.task(job.taskId)!==task)throw new Error('The task is no longer available.');
-      const mapped=serverFile(value),index=(task.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)task.attachments[index]=mapped;else(task.attachments ||= []).push(mapped);
-      productionLoaded.add(task);jobs.splice(jobs.indexOf(job),1);hooks.refreshAttachments(job.taskId);app.toast('Attachment added');
+      if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
+      const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
+      productionLoaded.add(current);jobs.splice(jobs.indexOf(job),1);hooks.refreshAttachments(job.taskId);app.toast('Attachment added');
     }catch(error){if(job.cancelled)return;reject(job,errorMessage(error,'Upload failed. Please try again.'),error?.status===400&&error?.code==='validation_failed');}
   }
   const displayText=value=>String(value??'').replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'');
@@ -176,7 +186,7 @@
     const task=hooks.task(taskId),file=editableAttachment(taskId,fileId);if(!file)return false;if(retentionPending.has(fileId)){app.toast('This retention change is still being saved.','info');return false;}
     const before=!!file.ephemeral;if(before===!!value)return true;file.ephemeral=!!value;syncRetention(taskId,file);
     if(transport()){
-      retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{if(hooks.task(taskId)!==task||!task.attachments.includes(file))return;Object.assign(file,serverFile(saved));syncRetention(taskId,file);app.toast(file.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{if(hooks.task(taskId)===task&&task.attachments.includes(file)){file.ephemeral=before;syncRetention(taskId,file);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
+      retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);app.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
       return true;
     }
     hooks.log(task,`made ${file.name} ${file.ephemeral?'temporary':'permanent'}`,{field:'attachment-retention:'+file.id,before,after:file.ephemeral});hooks.refreshActivity(taskId);
@@ -253,13 +263,14 @@
     <section class="storage-projects"><div class="storage-section-heading"><h2>By project</h2><span>${all.length} ${all.length===1?'attachment':'attachments'}</span></div><div class="storage-project-list">${projects.map(({project,count,bytes})=>`<div class="storage-project-row"><span class="storage-project-avatar">${escape(project.name.slice(0,1).toUpperCase())}</span><span class="storage-project-name">${escape(project.name)}</span><span class="storage-project-count">${count} ${count===1?'file':'files'}</span><strong>${size(bytes)}</strong></div>`).join('')}</div></section>
     <section class="storage-history"><div class="storage-section-heading"><h2>Recent cleanup</h2></div>${history.length?history.map(event=>`<div class="storage-history-row"><span class="storage-history-icon">${icons.clock}</span><div><strong>${event.count} temporary ${event.count===1?'file':'files'} cleaned up</strong><time datetime="${new Date(event.at).toISOString()}">${hooks.instant(event.at)}</time></div><span>${size(event.bytes)} freed</span></div>`).join(''):`<div class="storage-history-empty">${icons.clock}<span>No cleanup runs yet</span></div>`}</section>`;
   }
-  function loadStorageUsage(){
+  /** A `background` read (a live update, or a refresh of usage already shown) is passive. */
+  function loadStorageUsage({background=false}={}){
     if(!transport()?.storageUsage||serverStorageLoading)return serverStorageLoading;
     serverStorageState='loading';
-    serverStorageLoading=transport().storageUsage().then(value=>{serverStorage=value;serverStorageState='ready';if(app.context?.().view==='storage')hooks.refresh();return value;}).catch(error=>{serverStorageState='error';if(app.context?.().view==='storage')hooks.refresh();return null;}).finally(()=>serverStorageLoading=null);return serverStorageLoading;
+    serverStorageLoading=transport().storageUsage({background}).then(value=>{serverStorage=value;serverStorageState='ready';serverStorageRead=true;if(app.context?.().view==='storage')hooks.refresh();return value;}).catch(error=>{serverStorageState='error';if(app.context?.().view==='storage')hooks.refresh();return null;}).finally(()=>serverStorageLoading=null);return serverStorageLoading;
   }
   function productionStorageHtml(){
-    if(!serverStorage){if(serverStorageState==='unloaded')loadStorageUsage();return `<section class="storage-capacity"><div class="storage-section-heading"><h2>Storage usage</h2></div>${serverStorageState==='error'?'<p class="access-note" role="alert">Could not load storage usage. <button class="btn quiet" onclick="App.retryStorageUsage()">Retry</button></p>':'<p class="access-note" role="status">Loading storage usage…</p>'}</section>`;}
+    if(!serverStorage){if(serverStorageState==='unloaded')loadStorageUsage({background:serverStorageRead});return `<section class="storage-capacity"><div class="storage-section-heading"><h2>Storage usage</h2></div>${serverStorageState==='error'?'<p class="access-note" role="alert">Could not load storage usage. <button class="btn quiet" onclick="App.retryStorageUsage()">Retry</button></p>':'<p class="access-note" role="status">Loading storage usage…</p>'}</section>`;}
     const c={budgetBytes:serverStorage.budgetBytes,high:serverStorage.highWatermarkBytes/serverStorage.budgetBytes,low:serverStorage.lowWatermarkBytes/serverStorage.budgetBytes},used=serverStorage.usedBytes,permanent=serverStorage.permanentBytes,temporary=serverStorage.temporaryBytes,pending=serverStorage.pendingDeletionBytes||0,other=Math.max(0,used-permanent-temporary-pending),free=Math.max(0,c.budgetBytes-used),canClean=used>=serverStorage.highWatermarkBytes;
     const breakdown=[['Permanent',permanent,'permanent'],['Temporary',temporary,'temporary'],...(pending?[['Pending deletion',pending,'other']]:[]),...(other?[['Other usage',other,'other']]:[])],projects=serverStorage.projects||[],history=serverStorage.recentCleanup||[];
     return `${serverStorageState==='error'?'<p class="access-note" role="alert">Could not refresh storage usage. <button class="btn quiet" onclick="App.retryStorageUsage()">Retry</button></p>':''}<section class="storage-capacity"><div class="storage-section-heading"><h2>Storage usage</h2><span class="storage-health${canClean?' attention':''}">${used>=c.budgetBytes?'Storage full':canClean?'Cleanup threshold reached':'Within capacity'}</span></div><div class="storage-amount"><strong>${size(used)}</strong><span>of ${size(c.budgetBytes)} used</span><span class="storage-free">${size(free)} free</span></div><div class="storage-meter" role="meter" aria-label="Attachment storage usage" aria-valuemin="0" aria-valuemax="${c.budgetBytes}" aria-valuenow="${Math.min(used,c.budgetBytes)}" aria-valuetext="${size(used)} of ${size(c.budgetBytes)} used">${breakdown.map(([label,bytes,kind])=>`<span class="storage-segment ${kind}" style="width:${Math.min(100,bytes/c.budgetBytes*100)}%" title="${label}: ${size(bytes)}"></span>`).join('')}<i class="storage-threshold" style="left:${Math.min(100,c.high*100)}%" title="Cleanup starts at ${Math.round(c.high*100)}%"></i></div><div class="storage-breakdown">${breakdown.map(([label,bytes,kind])=>`<span><i class="${kind}"></i>${label}<strong>${size(bytes)}</strong></span>`).join('')}</div></section>
@@ -425,7 +436,7 @@
     const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
     if(ordered.every((f,i)=>f===task.attachments[i]))return false;
     task.attachments=ordered;
-    if(transport()){reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{if(hooks.task(taskId)!==task)return;task.attachments=(result.items||[]).map(serverFile);hooks.refreshAttachments(taskId);app.toast('Attachment order updated');}).catch(error=>{if(hooks.task(taskId)===task&&task.attachments===ordered){task.attachments=before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean);hooks.refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));}
+    if(transport()){reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;current.attachments=(result.items||[]).map(serverFile);hooks.refreshAttachments(taskId);app.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){current.attachments=before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean);hooks.refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));}
     else hooks.log(task,'reordered attachments',{field:'attachment-order',before,after:ordered.map(f=>f.id)});hooks.refreshAttachments(taskId);
     [...document.querySelectorAll('[data-reorder-file]')].find(el=>el.dataset.reorderFile===fileId)?.focus({preventScroll:true});if(!transport())app.toast('Attachment order updated');return true;
   }
@@ -514,14 +525,14 @@
       return ()=>disposePreview(owner);
     },
     /** Open read-only files, such as synced Knowledge files, in the file dialog. */
-    previewCollection(files,fileId,canRead){if(typeof canRead==='function'&&canRead())previewAttachment(null,fileId,{files,canRead});},inspect,mount,attachmentHeader,renderAttachments,storageHtml,cleanup,usage,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(owner){jobs.filter(j=>j.owner===owner).forEach(j=>{j.cancelled=true;j.reader?.abort();});if(transport()){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();serverStorage=null;serverStorageState='unloaded';closePreview();}},
+    previewCollection(files,fileId,canRead){if(typeof canRead==='function'&&canRead())previewAttachment(null,fileId,{files,canRead});},inspect,mount,attachmentHeader,renderAttachments,storageHtml,cleanup,usage,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(owner){jobs.filter(j=>j.owner===owner).forEach(j=>{j.cancelled=true;j.reader?.abort();});if(transport()){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();serverStorage=null;serverStorageState='unloaded';serverStorageRead=false;closePreview();}},
     bind(api,callbacks){app=api;hooks=callbacks;
       let accountScope=window.DATA.session?.id;
-      runtimeUnsubscribe?.();runtimeUnsubscribe=window.OneloopTransport?.subscribe?.(change=>{if(change?.type==='auth'&&accountScope!==window.DATA.session?.id){window.Uploads.clearAccount();accountScope=window.DATA.session?.id;}if(change?.type==='bootstrap'){productionLoaded=new WeakSet();serverStorage=null;serverStorageState='unloaded';return;}if(change?.type==='sse'){if(app.context?.().view==='storage')loadStorageUsage();if(change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=hooks.task(change.taskId);if(changedTask)loadProduction(changedTask.id,true);}}});
+      runtimeUnsubscribe?.();runtimeUnsubscribe=window.OneloopTransport?.subscribe?.(change=>{if(change?.type==='auth'&&accountScope!==window.DATA.session?.id){window.Uploads.clearAccount();accountScope=window.DATA.session?.id;}if(change?.type==='bootstrap'){productionLoaded=new WeakSet();serverStorage=null;serverStorageState='unloaded';return;}if(change?.type==='sse'){if(app.context?.().view==='storage')loadStorageUsage({background:true});if(change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=hooks.task(change.taskId);if(changedTask)loadProduction(changedTask.id,true,true);}}});
       app.retryStorageUsage=()=>loadStorageUsage();
       app.reorderAttachment=reorderAttachment;app.openAttachment=openAttachment;app.previewAttachment=previewAttachment;app.downloadAttachment=download;app.setAttachmentTemporary=setTemporary;
       app.cleanupStorage=()=>{if(!hooks.me()?.admin||window.Recovery&&!Recovery.ensureOnline())return;if(transport()?.cleanupStorage){transport().cleanupStorage().then(report=>{serverStorage=null;return loadStorageUsage().then(()=>app.toast(report.temporaryFilesCleaned?`Removed ${report.temporaryFilesCleaned} temporary ${report.temporaryFilesCleaned===1?'file':'files'} (${size(report.bytesReclaimed)})`:'No temporary files are eligible for cleanup','info'));}).catch(error=>app.toast(errorMessage(error,'Storage cleanup could not be completed.'),'error'));return;}cleanup(true);hooks.refresh();};
-      app.delAttachment=(id,index)=>{const task=hooks.task(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;hooks.confirm({title:'Delete attachment?',text:`${displayText(file.name)} will be permanently deleted.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(hooks.task(id)!==task){app.toast('This task changed. Reopen it and try again.','error');return;}if(transport()){transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{task.attachments=task.attachments.filter(item=>item!==file);sources.delete(file.id);if(preview?.fileId===file.id)closePreview();hooks.refreshAttachments(id);app.toast('Attachment deleted');}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadProduction(id,true);app.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});return;}expire(task,file,'removed');hooks.refreshAttachments(id);app.toast('Attachment deleted');}});};
+      app.delAttachment=(id,index)=>{const task=hooks.task(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;hooks.confirm({title:'Delete attachment?',text:`${displayText(file.name)} will be permanently deleted.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){app.toast('This task is no longer available.','error');return;}if(transport()){transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)current.attachments=current.attachments.filter(item=>item.id!==file.id);sources.delete(file.id);if(preview?.fileId===file.id)closePreview();hooks.refreshAttachments(id);app.toast('Attachment deleted');}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadProduction(id,true);app.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});return;}expire(task,file,'removed');hooks.refreshAttachments(id);app.toast('Attachment deleted');}});};
       app.attachFiles=(id,input)=>{if(!hooks.can(id)){app.toast('You no longer have permission to upload attachments','error');return;}for(const file of [...input.files]){const job={id:'upload-'+(++next),taskId:id,file,owner:window.DATA.session?.userId,ephemeral:false,state:'queued',progress:0};jobs.push(job);start(job);}input.value='';};
       const previousAvatar=app.setAvatar.bind(app);
       app.setAvatar=async input=>{if(window.Recovery && !Recovery.ensureOnline())return;const file=input.files[0];if(!file)return;if(file.size>maxAvatar()){app.toast(`Avatar exceeds ${maxAvatar()/1024/1024} MB.`,'error');input.value='';return;}if(transport()?.uploadAvatar){try{const result=await transport().uploadAvatar(file);hooks.me().avatar=result.avatarUrl;hooks.refresh();app.toast('Avatar updated');}catch(error){app.toast(errorMessage(error,'Avatar could not be updated.'),'error');}finally{input.value='';}return;}

@@ -242,3 +242,26 @@ test('bootstrap keeps the server file limits',()=>{
   const data=createLegacyData(),limits={maxAttachmentBytes:123,maxAvatarBytes:456,maxAttachmentsPerTask:7};
   hydrateLegacyData(data,{limits});assert.deepEqual(data.limits,limits);
 });
+
+test('an administrator keeps loaded account pages through a project bootstrap until Users reloads them',()=>{
+  const data=createLegacyData(),admin={...bootstrap(),session:{...bootstrap().session,isAdmin:true}};
+  hydrateLegacyData(data,admin);
+  const accounts=Array.from({length:3},(_,index)=>({id:`account-${index}`,username:`account${index}`,name:`Account ${index}`,admin:false,active:true,revision:1}));
+  mergeAdminUsersPage(data,accounts,{nextCursor:'account2'});
+  hydrateLegacyData(data,admin);
+  assert.deepEqual(data.adminUsers.ids,['account-0','account-1','account-2']);assert.equal(data.adminUsers.nextCursor,'account2');
+  assert.equal(data.users.find(user=>user.id==='account-2')?.name,'Account 2');
+  hydrateLegacyData(data,{...admin,session:{...admin.session,isAdmin:false}});
+  assert.equal(data.adminUsers.loaded,false);assert.equal(data.users.some(user=>user.id==='account-2'),false,'a former admin keeps no directory');
+});
+
+test('an epic drawer keeps its loaded tasks through a Roadmap bootstrap, but Board cards stay the Board window',()=>{
+  const data=createLegacyData(),epicTask=(id)=>({...bootstrap().tasks[0],id,taskKey:id.toUpperCase(),status:'done'});
+  hydrateLegacyData(data,bootstrap());
+  mergeEpicTaskPage(data,'e1',[epicTask('epic-task-1'),epicTask('epic-task-2')],{nextCursor:'more',total:3});
+  hydrateLegacyData(data,{...bootstrap(),view:'roadmap',tasks:[]});
+  assert.deepEqual(data.epicPageInfo.e1.taskIds,['epic-task-1','epic-task-2']);assert.equal(data.epicPageInfo.e1.loaded,true);
+  assert.deepEqual(data.tasks.map(item=>item.internalId).sort(),['epic-task-1','epic-task-2']);
+  hydrateLegacyData(data,{...bootstrap(),view:'board',boardPages:{planning:{nextCursor:null,total:0},in_progress:{nextCursor:null,total:1},in_review:{nextCursor:null,total:0},done:{nextCursor:null,total:0}}});
+  assert.deepEqual(data.tasks.map(item=>item.internalId),['opaque-task']);
+});

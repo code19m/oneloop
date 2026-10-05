@@ -85,14 +85,13 @@ previews and unfinished uploads. The database doesn't count, and neither do
 Knowledge files, which oneloop keeps in the database.
 
 When usage reaches 80% of the limit, oneloop removes temporary attachments that
-nobody has opened for 24 hours, until usage is back at 70%. It never removes
-other files by itself. It refuses new uploads when the limit is reached, or when
-an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
-Uploads, and Knowledge syncs that download a new commit, reserve space from the
-same disk budget before they start. A reservation stays in place until
-publication or temporary-file cleanup finishes.
-When a delayed attachment deletion finishes, activity records the person and
-app that requested it.
+nobody has opened for 24 hours, until usage is back at 70%. It also removes
+them, at any usage, when an upload would leave less free disk space than
+`ONELOOP_DISK_MIN_FREE`. It never removes other files by itself.
+
+oneloop refuses an upload when the limit is reached, or when the upload would
+still leave less free disk space than `ONELOOP_DISK_MIN_FREE`. Space that
+running uploads and Knowledge downloads need counts as used.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of
@@ -152,9 +151,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Avatar | 5 MiB and at most 8192 px per side; stored as 256 × 256 px |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
-Text and Markdown previews require valid text throughout the file. A Markdown
-filename does not enable a text preview for binary content. Recognized images
-and PDFs can still preview.
+Text and Markdown previews need the whole file to be valid UTF-8 text.
 
 **Knowledge**
 
@@ -198,7 +195,7 @@ Some emoji count as two characters.
 | Full name | 80 characters |
 | Password | At least 5 characters, or more with the [password settings](#passwords); at most 16,384 UTF-8 bytes |
 | Sessions per account | 10; sign out of one to sign in somewhere new |
-| Session length | Ends after 7 days without use, and after 30 days at most; automatic image and HTML previews do not extend it |
+| Session length | Ends after 7 days without use, and after 30 days at most. Automatic background requests, such as live updates and image or HTML previews, don't extend it. |
 | Sensitive admin actions | Need a sign-in within the last 30 minutes |
 | Failed sign-ins | Within 15 minutes, delays start after 5 failures for one account/address pair, 20 failures from one address across accounts, or 15 failures for one account across addresses. Delays start at 30 seconds and double, up to 15 minutes for pair/address limits or 60 seconds for the account limit. |
 
@@ -228,7 +225,8 @@ Some emoji count as two characters.
 | --- | --- |
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
 | Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
-| Request body | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
+| Request body size | 256 KiB for normal requests; 1 MiB for MCP calls |
+| Request body speed | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
 | Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes. A client that stops reading is disconnected within 5 minutes. |
 | Busy database | A request waits up to 5 seconds, then gets "try again" |
 | Shutdown | Open requests get up to 30 seconds to finish |

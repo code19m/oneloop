@@ -20,6 +20,14 @@ Whole-app browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
 To change an action, start from `src/app/view-bridge.js`: it replaces many `App` methods in `views/app.js` with server-backed versions, so the method in `views/` may not be the one that runs.
 Inline handlers in `views/` templates only reach methods listed in `ALLOWED_APP_METHODS` (`src/app/view-events.js`); a new one needs an entry there and a test.
 
+The page's Content-Security-Policy enforces Trusted Types and refuses inline `<style>` elements:
+
+- Write HTML with `UIHTML` (`setHTML` in `views/app.js`), which goes through the app's `oneloop` policy. A plain string passed to `innerHTML`, `srcdoc` or `DOMParser` is refused.
+- Load scripts only from `src/`, `views/` and `vendor/`.
+- Style with the CSS files and `style` attributes, not `<style>` elements.
+
+Mermaid writes inline styles and HTML strings, so it lays out diagrams in `views/diagram-renderer.html`, a separate document with its own policy, and the page shows each result as an image.
+
 ## How it loads
 
 `theme.js` runs in the document head; `src/app/main.js` starts `boot.js`, which loads motion, SHA-256, activity, file views, uploads and collaboration in order, then `app.js`.

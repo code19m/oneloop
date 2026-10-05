@@ -23,18 +23,21 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
           w.DATA.epics[0].start = '2026-03-01'; w.DATA.epics[0].end = '2026-11-30'; w.DATA.milestones[0].date = '2026-03-31';
         },
       });
-      // Zoom re-renders after a pause; drive that pause with the mocked clock.
+      // Zoom applies once per frame; the pause that ends the gesture applies it at once, so drive it with the mocked clock.
       t.mock.timers.enable({ apis: ['setTimeout'] });
       for (let step = 0; step < 20; step++) d.getElementById('rmScroll').dispatchEvent(new w.WheelEvent('wheel', { ctrlKey: true, deltaY: -10000, clientX: 500, bubbles: true, cancelable: true }));
       t.mock.timers.tick(180);
       t.mock.timers.reset();
       const snapshot = [...d.querySelectorAll('.rm-month,[data-epic],[data-milestone]')].map(el => [el.className, el.getAttribute('style'), el.textContent]);
       if (reference) assert.deepEqual(snapshot, reference, zone + ' has identical high-zoom geometry'); else reference = snapshot;
-      const scroll = d.getElementById('rmScroll');
-      scroll.scrollLeft = (Date.UTC(2026, 10, 1) - Number(scroll.dataset.rangeStart)) / 86400000 * 42;
+      const scroll = d.getElementById('rmScroll'), november = (Date.UTC(2026, 10, 1) - Number(scroll.dataset.rangeStart)) / 86400000;
+      scroll.scrollLeft = november * 42;
       scroll.dispatchEvent(new w.Event('scroll'));
       await new Promise(resolve => w.requestAnimationFrame(resolve));
-      assert([...d.querySelectorAll('.rm-month')].some(el => el.textContent === 'Nov' && el.style.width === '1260px'));
+      // A month cell is its first day and its length in days, which CSS multiplies by --ppd: November is 30 × 42 = 1260 px.
+      const months = d.querySelector('.rm-month-grid'), ppd = Number(months.style.getPropertyValue('--ppd'));
+      assert.equal(ppd, 42);
+      assert([...months.querySelectorAll('.rm-month')].some(el => el.textContent === 'Nov' && Number(el.style.getPropertyValue('--d')) === november && Number(el.style.getPropertyValue('--n')) * ppd === 1260));
       w.App.openModal('epic'); assert.equal(d.querySelector('[name="start"]').value, '2026-06-15', 'Today follows server time');
       const input = d.querySelector('.date-text'); input.value = '2011-12-30'; w.App.dateBlur({ target: input }, input.closest('[data-date-key]').dataset.dateKey);
       const trigger = input.parentElement.querySelector('.date-trigger'); w.App.popDate({ currentTarget: trigger, preventDefault() {}, stopPropagation() {} }, input.closest('[data-date-key]').dataset.dateKey);

@@ -199,5 +199,15 @@ fn asset_response(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if key == "views/diagram-renderer.html" {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            super::security::diagram_renderer_policy(),
+        );
+        headers.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+    }
     response
 }

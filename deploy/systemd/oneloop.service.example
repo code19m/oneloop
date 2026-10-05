@@ -23,6 +23,8 @@ Environment=ONELOOP_LOG_LEVEL=info
 ExecStart=/usr/local/bin/oneloop serve
 Restart=on-failure
 RestartSec=5
+# Exit code 2 means invalid settings. A restart can't fix them, so stop.
+RestartPreventExitStatus=2
 LimitNOFILE=65536
 # oneloop gives open requests up to 30 seconds to finish after SIGTERM.
 TimeoutStopSec=35

@@ -279,3 +279,45 @@ test('a move rejected after the session changed does not roll back the new sessi
   t.requests[0].reject(Object.assign(new Error('Old session rejected'),{code:'validation_failed'}));await tick();await tick();
   assert.equal(task.state,'progress');
 });
+
+/** A Board whose Done column has `count` loaded cards, and more on the server when `more` is set. */
+function longDone(count, more) {
+  const t = withRuntime('board'), projectId = t.A.context().projectId;
+  const template = t.D.tasks.find(item => item.state === 'done' && item.projectId === projectId) || t.D.tasks.find(item => item.state === 'done');
+  t.D.tasks = t.D.tasks.filter(item => item.state !== 'done');
+  for (let i = 0; i < count; i++) t.D.tasks.push({ ...template, id: `DONE-${100 + i}`, internalId: `done-${i}`, title: `Done ${i}`, block: null, assignees: [] });
+  t.D.boardPageInfo = { projectId, filters: {}, pages: { done: { total: count + (more ? 20 : 0), nextCursor: more ? 'more' : null } } };
+  t.A.refresh();
+  const doneCards = () => [...t.d.querySelectorAll('[data-col="done"] .card')].map(card => card.dataset.task);
+  return { ...t, doneCards };
+}
+const chooseMenuItem = (t, label) => { const button = [...t.d.querySelectorAll('#overlay-root > .menu button')].find(item => item.textContent.trim() === label); t.A.menuAction(Number(button.getAttribute('onclick').match(/\d+/)[0])); };
+
+test('Move to a column that does not show its end puts the card at its top, in view and focused', () => {
+  const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
+  assert.equal(shown.length, 50);
+  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
+  t.A.taskMoveMenu({ currentTarget: move }, task.id); chooseMenuItem(t, 'Move to Done');
+  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['task.move', 'done', 0, undefined]]);
+  assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
+  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
+});
+
+test('Move to a column that shows its end puts the card last and draws it', () => {
+  for (const count of [3, 50]) {
+    const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
+    const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
+    t.A.taskMoveMenu({ currentTarget: move }, task.id); chooseMenuItem(t, 'Move to Done');
+    assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
+    assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
+    assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);
+  }
+});
+
+test('a card dropped below a long column follows its last shown card and stays drawn', () => {
+  const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
+  t.A._drag = { kind: 'task', id: task.id, offsetX: 0, offsetY: 0 }; t.A._dropBefore = null;
+  t.A.dropTask({ preventDefault() {}, clientX: 0, clientY: 0, dataTransfer: transfer('text/task', task.id) }, 'done');
+  assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === shown.at(-1)).internalId);
+  assert.deepEqual(t.doneCards(), [...shown, task.id]);
+});

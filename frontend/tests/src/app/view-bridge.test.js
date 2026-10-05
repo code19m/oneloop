@@ -28,6 +28,20 @@ test('an unloaded valid task hash is fetched before the shell decides it is miss
   }finally{if(previous===undefined)delete globalThis.location;else globalThis.location=previous;}
 });
 
+test('a live refresh of Profile, Users and Settings reads passively, and a visit does not',async()=>{
+  for(const view of ['profile','users','settings']){
+    const reads=[];
+    const answer=(name,body)=>async(options={})=>{reads.push([name,options.background]);return body;};
+    const api={sessions:answer('sessions',{sessions:[]}),connectedApps:answer('apps',{apps:[]}),users:answer('users',{users:[],nextCursor:null})};
+    const state=fixture({view,projectId:'p1',board:{}},{api});
+    await state.bridge.loadCurrentRoute({refresh:true,background:true});
+    const live=reads.splice(0);
+    await state.bridge.loadCurrentRoute();
+    assert.deepEqual(live,view==='profile'?[['sessions',true],['apps',true]]:[['users',true]],view);
+    assert.deepEqual(reads,view==='profile'?[['sessions',false],['apps',false]]:[['users',false]],view);
+  }
+});
+
 test('a save uses the editor focus revision even after live data advances',async()=>{
   let options,finished='';
   const gateway={execute:async(_operation,_payload,input)=>{options=input;return {entities:[],events:[]};}};
@@ -65,6 +79,41 @@ for(const [latest,fail] of [['Newest title',false],['Original title',false],['Fi
   assert.equal(state.data.tasks[0].title,fail?'First title':latest);
   if(fail){assert.deepEqual(state.saved,[]);assert.equal(state.toasts[0][1],'error');}
   else{assert(state.saved.length>0);assert.deepEqual(state.toasts,[]);}
+});
+
+test('a title cut at its length limit keeps whole characters',async()=>{
+  const payloads=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:async(_operation,payload)=>{payloads.push(payload);return {entities:[],events:[]};}}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:1,title:'Original'});
+  state.app.updTask('ONE-1','title','A'.repeat(139)+'😀');await new Promise(setImmediate);
+  assert.equal(payloads[0].title,'A'.repeat(139));
+});
+
+test('a task draft is dropped when someone else signs in after the session ended',async()=>{
+  const pending=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:()=>new Promise((_resolve,reject)=>pending.push(reject))}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3,title:'Saved title'});
+  state.app.updTask('ONE-1','title','Typed title');
+  assert.deepEqual(state.bridge.taskDraft('t1','title'),{value:'Typed title',unsaved:false});
+  const person=state.data.session;state.data.session=null;
+  pending[0](new ApiError('Authentication is required',{status:401,code:'unauthorized'}));await new Promise(setImmediate);
+  state.data.session={id:'s2',userId:'u2'};
+  assert.equal(state.bridge.taskDraft('t1','title'),null,'someone else never sees it');
+  state.data.session={...person,id:'s3'};
+  assert.equal(state.bridge.taskDraft('t1','title'),null,'it was dropped when someone else signed in');
+});
+
+test('a task draft survives the end of a session for the same person',async()=>{
+  const pending=[],sent=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1'},{gateway:{execute:(_operation,payload,options)=>{sent.push([payload.title,options.expectedRevision]);return new Promise((_resolve,reject)=>pending.push(reject));}}});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3,title:'Saved title'});
+  state.app.updTask('ONE-1','title','Typed title');
+  const person=state.data.session;state.data.session=null;
+  pending[0](new ApiError('Authentication is required',{status:401,code:'unauthorized'}));await new Promise(setImmediate);
+  state.data.session={...person,id:'s2'};
+  assert.deepEqual(state.bridge.taskDraft('t1','title'),{value:'Typed title',unsaved:true});
+  state.app.saveTaskDraft('ONE-1','title');
+  assert.deepEqual(sent,[['Typed title',3],['Typed title',3]],'Save sends it again from the revision it was typed on');
 });
 
 test('project autosave keeps the latest name while an earlier name is saving',async()=>{
@@ -373,4 +422,254 @@ test('admin revision conflict reloads through the affected page and retries with
     fields.name.value='Reviewed edit';state.app.saveUser({target:form,preventDefault(){}},'u2');await new Promise(resolve=>setTimeout(resolve,0));
     assert.deepEqual(revisions,[1,4]);assert.equal(state.closed,1);
   }finally{globalThis.FormData=OriginalFormData;}
+});
+
+test('opening the Pool reads both scopes side by side',async()=>{
+  const requested=[],pending=[];
+  const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:(_project,scope)=>{requested.push(scope);return new Promise(resolve=>pending.push(resolve));}}});
+  const opening=state.bridge.invoke('pool.open',{});
+  assert.deepEqual(requested,['personal','team'],'a slow scope does not hold up the other');
+  pending[0]({stale:true});pending[1]({stale:false});
+  assert.equal((await opening).stale,true);
+});
+
+test('a Users refresh reloads every page already shown',async()=>{
+  const cursors=[];const context={view:'users',projectId:'p1',board:{}};
+  const page=(from)=>({users:Array.from({length:50},(_,index)=>({id:`u${from+index}`,username:`user${String(from+index).padStart(3,'0')}`,displayName:`User ${from+index}`,isAdmin:false,isActive:true,revision:1})),nextCursor:from<100?`user${from+49}`:null});
+  const state=fixture(context,{api:{users:async({afterUsername})=>{cursors.push(afterUsername);return page(afterUsername?Number(afterUsername.slice(4))+1:0);}}});
+  await state.bridge.loadCurrentRoute();state.app.loadMoreUsers();await tick();
+  assert.equal(state.data.adminUsers.ids.length,100);
+  cursors.length=0;await state.bridge.loadCurrentRoute({refresh:true});
+  assert.deepEqual(cursors,[undefined,'user49']);assert.equal(state.data.adminUsers.ids.length,100);
+  cursors.length=0;await state.bridge.loadCurrentRoute();
+  assert.deepEqual(cursors,[undefined],'opening Users again starts from the first page');
+});
+
+test('Save in Edit user finds the account after a refresh replaced its row',async()=>{
+  const OriginalFormData=globalThis.FormData,fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],errors=[];
+  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
+  globalThis.FormData=class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}};
+  try{
+    const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{fieldError:(_form,name,message)=>errors.push([name,message])},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {displayName:input.displayName,isAdmin:false,isActive:true,revision:2};}}});
+    state.data.users.push({id:'u1',admin:true,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    state.app.saveUser({target:form,preventDefault(){}},'u2');
+    state.data.users.splice(1,1,{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    await tick();
+    assert.deepEqual(saved,[['u2','Renamed']]);assert.equal(state.closed,1);assert.equal(state.data.users[1].name,'Renamed');
+    state.app.saveUser({target:form,preventDefault(){}},'gone');
+    assert.deepEqual(errors,[['name','This user is no longer listed. Reload Users and try again.']]);
+  }finally{globalThis.FormData=OriginalFormData;}
+});
+
+/** A task page whose commands go through the real gateway and are answered one by one. */
+function taskPage(overrides={}){
+  let gateway;
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args),hasUncertain:(...args)=>gateway.hasUncertain(...args)},...overrides});
+  const item={id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,title:'Title',desc:'Description',state:'planning',assignees:[]};state.data.tasks.push(item);
+  const requests=[];
+  gateway=createCommandGateway({data:state.data,api:{command:command=>new Promise((resolve,reject)=>requests.push({command,resolve,reject}))}});
+  const accept=(index,fields={})=>requests[index].resolve({entities:[{entityType:'task',id:'t1',...fields,revision:requests[index].command.expectedRevision+1}],events:[{}]});
+  return {...state,item,requests,accept};
+}
+
+test('two task fields saved close together build on each other instead of conflicting',async()=>{
+  const state=taskPage();
+  state.app.updTask('ONE-1','title','New title');state.app.updTask('ONE-1','desc','New description');state.app.updTask('ONE-1','state','progress');
+  assert.equal(state.requests.length,1,'the next field waits for the first reply');
+  state.accept(0,{title:'New title'});await tick();
+  assert.equal(state.requests.length,2);assert.equal(state.requests[1].command.payload.description,'New description');assert.equal(state.requests[1].command.expectedRevision,2);
+  state.accept(1,{description:'New description'});await tick();
+  assert.equal(state.requests[2].command.operation,'task.move');assert.equal(state.requests[2].command.expectedRevision,3);
+  state.accept(2,{status:'in_progress'});await tick();await tick();
+  assert.deepEqual([state.item.title,state.item.desc,state.item.state],['New title','New description','progress']);
+  assert.deepEqual(state.saved,['ONE-1'],'Saved shows once, after the last field');assert.deepEqual(state.toasts,[]);
+});
+
+const changedElsewhere=()=>new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
+
+test('Keep my changes on one field leaves the next field to meet the other change',async()=>{
+  // Keep my changes saves the title again on the latest revision, 2.
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async({retry})=>({handled:true,saved:true,result:await retry(2)}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','title','My title');state.app.updTask('ONE-1','desc','My description');
+  // Someone else changed the description at revision 2.
+  state.requests[0].reject(changedElsewhere());await tick();
+  assert.equal(state.requests[1].command.expectedRevision,2);
+  state.accept(1,{title:'My title'});await tick();await tick();
+  assert.equal(state.requests[2].command.payload.description,'My description');
+  assert.equal(state.requests[2].command.expectedRevision,1,'the description was typed on revision 1, so it meets the change at 2');
+});
+
+test('a newer value of a field kept with Keep my changes saves on top of it',async()=>{
+  let keep;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:({retry})=>new Promise(resolve=>{keep=async()=>resolve({handled:true,saved:true,result:await retry(2)});}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','title','My title');
+  state.requests[0].reject(changedElsewhere());await tick();
+  // The person types more while the prompt shows the other title, then keeps theirs.
+  state.app.updTask('ONE-1','title','My longer title');
+  void keep();await tick();
+  state.accept(1,{title:'My title'});await tick();await tick();
+  assert.equal(state.requests[2].command.payload.title,'My longer title');
+  assert.equal(state.requests[2].command.expectedRevision,3,'it builds on the kept title instead of conflicting with it');
+});
+
+test('a conflict prompt that closes without a choice keeps the typed value as Not saved',async()=>{
+  const conflict=new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'}),drafted=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async()=>({handled:true,saved:false}),handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery,app:{refreshTaskDrafts:id=>drafted.push(id)}});
+  state.app.updTask('ONE-1','desc','My description');state.requests[0].reject(conflict);await tick();await tick();
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'My description',unsaved:true});
+  assert.deepEqual(drafted,['ONE-1']);assert.deepEqual(state.toasts,[],'the note on the field reports it');
+  state.app.updTask('ONE-1','state','done');state.requests[1].reject(conflict);await tick();await tick();
+  assert.deepEqual(state.toasts,[['Your change was not saved. Review the latest version and try again.','error']]);
+  state.app.saveTaskDraft('ONE-1','desc');
+  assert.equal(state.requests[2].command.payload.description,'My description');assert.equal(state.requests[2].command.expectedRevision,1,'Save keeps the revision the text was written against');
+});
+
+test('a Not saved field edited again still saves from the revision it was typed on',async()=>{
+  // The prompt closed without a choice after reading someone else's revision 2.
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',resolveConflict:async()=>{Object.assign(state.item,{revision:2,desc:'Their description'});return {handled:true,saved:false};},handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','desc','My description');state.requests[0].reject(changedElsewhere());await tick();await tick();
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'My description',unsaved:true});
+  // The field shows the draft, never their text. The person adds to it.
+  state.app.updTask('ONE-1','desc','My description, longer');await tick();
+  assert.equal(state.requests[1].command.expectedRevision,1,'it still meets their change');
+});
+
+test('text kept when edit rights ended saves from its revision after they come back',async()=>{
+  let remembered=1;
+  const recovery={revisionKey:()=>'task:t1',expectedRevision:(_key,latest)=>remembered??latest,handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.bridge.keepTaskDraft('ONE-1','title','Typed before rights ended');
+  // Someone else saved revision 2, and the page that remembered revision 1 is gone.
+  Object.assign(state.item,{revision:2,title:'Their title'});remembered=undefined;
+  state.app.updTask('ONE-1','title','Typed before rights ended, and more');await tick();
+  assert.equal(state.requests[0].command.expectedRevision,1);
+});
+
+/** Run `body` with a FormData that reads a fake form's `fields`. */
+async function withFormData(body){
+  const original=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}getAll(name){return [].concat(this.fields[name]??[]);}};
+  try{await body();}finally{globalThis.FormData=original;}
+}
+/** A dialog's form: its `fields`, and the `controls` it finds by selector. */
+const dialogForm=(fields,controls={})=>({fields,isConnected:true,closest:selector=>selector==='.modal'?{}:null,querySelector:selector=>controls[selector]??null});
+const epicDialog=()=>dialogForm({trackId:'r1',title:'Epic',desc:'My description',start:'2026-01-01',end:''});
+function epicPage(recovery,gateway,app={}){
+  const state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery,gateway,app});
+  state.data.tracks.push({id:'r1',projectId:'p1'});state.data.epics.push({id:'e1',projectId:'p1',trackId:'r1',title:'Epic',desc:'',start:'2026-01-01',end:null,revision:1});
+  return state;
+}
+
+test('Use latest in a dialog that saves several fields draws it again from the saved values',()=>withFormData(async()=>{
+  const redrawn=[],finished=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision:key=>finished.push(key),handleCommandFailure:async()=>{},
+    resolveConflict:async({target})=>{assert.equal(target.element,undefined,'no one field can show the saved values');target.acceptLatest({});return {handled:true,saved:false,choice:'latest'};}};
+  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  assert.deepEqual(redrawn,[true]);assert.deepEqual(finished,['epic:e1'],'the dialog now shows the latest revision');
+}));
+
+test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
+  const remembered=new Map([['epic:e1',1]]),sent=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
+    resolveConflict:async()=>{state.data.epics[0].revision=2;return {handled:true,saved:false};}};
+  const state=epicPage(recovery,{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}});
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
+  assert.deepEqual(sent,[1,1],'the dialog still shows the typed values, so it meets the other change again');
+}));
+
+test('a Pool promotion whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
+  const remembered=new Map([['pool:i1',1]]),sent=[];
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'pool:i1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
+    resolveConflict:async()=>{state.data.pool[0].revision=2;return {handled:true,saved:false};}};
+  const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1'}},{recovery,gateway:{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}}});
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
+  const promote=()=>state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),querySelectorAll:()=>[]}});
+  promote();await tick();await tick();promote();await tick();await tick();
+  assert.deepEqual(sent,[1,1],'the dialog still shows the typed text, so it meets the change to the item again');
+}));
+
+test('a block reason conflict shows the saved reason in the reason field',()=>withFormData(async()=>{
+  const control={value:'My reason'};let target;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
+  globalThis.Collab={prepareBlock:()=>({mentions:[]})};
+  try{
+    const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
+    const block={id:'b1',reason:'Their reason',revision:2};state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block});
+    state.app.saveBlock({preventDefault(){},target:dialogForm({reason:'My reason'},{'[name="reason"]':control})},'ONE-1','block');await tick();await tick();
+    assert.equal(target.element(),control);assert.equal(target.latestValue(block),'Their reason');assert.equal(target.acceptLatest,undefined);
+  }finally{delete globalThis.Collab;}
+}));
+
+test('a task field edited while offline stays as typed and saves when the connection returns',async()=>{
+  let online=false,reconnected;
+  const recovery={ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}};
+  const state=taskPage({recovery});
+  state.app.updTask('ONE-1','desc','Written on the train');await tick();
+  assert.equal(state.requests.length,0);
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Written on the train',unsaved:true});
+  online=true;reconnected();await tick();
+  assert.equal(state.requests[0].command.payload.description,'Written on the train');assert.equal(state.requests[0].command.expectedRevision,1);
+  state.accept(0,{description:'Written on the train'});await tick();await tick();
+  assert.equal(state.bridge.taskDraft('t1','desc'),null);assert.equal(state.item.desc,'Written on the train');
+});
+
+test('several fields edited offline save in order without conflicting with each other',async()=>{
+  let online=false,reconnected;
+  const state=taskPage({recovery:{ensureOnline:()=>online,whenOnline:listener=>{reconnected=listener;},handleCommandFailure:async()=>{}}});
+  state.app.updTask('ONE-1','title','Offline title');state.app.updTask('ONE-1','desc','Offline description');await tick();
+  online=true;reconnected();await tick();
+  state.accept(0,{title:'Offline title'});await tick();await tick();
+  assert.equal(state.requests[1].command.payload.description,'Offline description');assert.equal(state.requests[1].command.expectedRevision,2);
+});
+
+test('a block saved from the task page repaints before its counts read finishes',async()=>{
+  const originalFormData=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  const counted=deferred(),closed=[];
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[],events:[{}]})},reads:{counts:()=>counted.promise},app:{refreshAfterDialog(){state.paints.push('after-dialog');}}});
+  const item={id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block:{id:'b1',reason:'Waiting',revision:1}};state.data.tasks.push(item);
+  try{
+    state.app.saveBlock({preventDefault(){},target:{fields:{reason:''},isConnected:true,closest:()=>null}},'ONE-1','unblock');await tick();
+    assert.deepEqual(state.paints,['after-dialog'],'the page shows the change while counts load');
+    counted.resolve({stale:false});await tick();assert.deepEqual(state.paints,['after-dialog']);
+  }finally{globalThis.FormData=originalFormData;void closed;}
+});
+
+test('a new project opens after a re-render of its dialog but not after the dialog closed',async()=>{
+  const originalFormData=globalThis.FormData;globalThis.FormData=class {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}};
+  try{
+    for(const closed of [false,true]){
+      const selected=[],navigated=[],background=[],modal={dataset:{openGeneration:'7'}},rerendered={dataset:{openGeneration:'7'}};
+      const form={fields:{name:'Atlas',key:'ATL'},isConnected:false,closest:()=>modal,ownerDocument:{querySelector:selector=>selector==='.modal'&&!closed?rerendered:null}};
+      const state=fixture({view:'roadmap',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[{entityType:'project',id:'p9'}],events:[]})},app:{selectProject:id=>selected.push(id),nav:view=>navigated.push(view),refreshBackground:()=>background.push(true)}});
+      state.app.saveProjectNew({preventDefault(){},target:form});await tick();await tick();
+      assert.deepEqual([selected,navigated,background.length],closed?[[],[],1]:[['p9'],['roadmap'],0]);
+    }
+  }finally{globalThis.FormData=originalFormData;}
+});
+
+test('permission changes for two members save side by side',async()=>{
+  let gateway;const requests=[];
+  const state=fixture({view:'settings',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args)}});
+  gateway=createCommandGateway({data:state.data,api:{command:command=>new Promise(resolve=>requests.push({command,resolve}))}});
+  state.data.users.push({id:'u1',admin:true,active:true});
+  state.data.projects[0].members.push({userId:'alice',permissions:[],revision:1},{userId:'bob',permissions:[],revision:1});
+  state.app.setMemberPermission('alice','manage_board',true);state.app.setMemberPermission('bob','manage_board',true);await tick();
+  assert.deepEqual(requests.map(request=>request.command.payload.userId),['alice','bob']);
+  for(const request of requests)request.resolve({entities:[{entityType:'membership',projectId:'p1',userId:request.command.payload.userId,manageBoard:true,manageRoadmap:false,revision:2}],events:[{}]});
+  await tick();await tick();
+  assert.deepEqual(state.toasts,[['Access updated'],['Access updated']]);
+  assert.deepEqual(state.data.projects[0].members.map(member=>member.permissions),[['manage_board'],['manage_board']]);
+});
+
+test('a value typed while a failing save ran is the one kept as Not saved',async()=>{
+  const state=taskPage({recovery:{handleCommandFailure:async()=>{}}});
+  state.app.updTask('ONE-1','desc','First text');state.app.updTask('ONE-1','desc','Second text');
+  state.requests[0].reject(new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await tick();await tick();
+  assert.equal(state.requests.length,1,'the newer value waits for the connection');
+  assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Second text',unsaved:true});
 });

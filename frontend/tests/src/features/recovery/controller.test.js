@@ -34,7 +34,7 @@ test('conflict review can use latest without writing or retry mine at the latest
   const first=fixture({presentConflict:async()=> 'latest'});
   const error=new ApiError('record changed; latest revision is 4',{status:409,code:'conflict'});
   const accepted=await first.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
-  assert.deepEqual(accepted,{handled:true,saved:false,latest});assert.equal(retried,null);
+  assert.deepEqual(accepted,{handled:true,saved:false,latest,choice:'latest'});assert.equal(retried,null);
 
   const second=fixture({presentConflict:async({latestValue,myValue})=>{assert.equal(latestValue,'Latest');assert.equal(myValue,'Mine');return 'mine';}});
   const kept=await second.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;return {revision:5};},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
@@ -253,10 +253,11 @@ test('a promotion editor keeps the Pool source focus-time revision after a backg
 test('access reconciliation leaves a removed project and clears its route and overlays',()=>{
   for (const view of ['board','task','roadmap']) {
     for (const projects of [[],[{id:'other'}]]) {
-      const calls=[];
-      const app={nav:(view)=>calls.push(view),selectProject:(id)=>calls.push(id)};
-      assert.equal(leaveUnavailableProject({projects},app,{projectId:'removed',view}),true);
+      const calls=[],toasts=[];
+      const app={nav:(view)=>calls.push(view),selectProject:(id)=>calls.push(id),toast:(...args)=>toasts.push(args)};
+      assert.equal(leaveUnavailableProject({projects},app,{projectId:'removed',view},'Customer portal'),true);
       assert.deepEqual(calls,projects.length?['other','board']:['board']);
+      assert.deepEqual(toasts,[['You no longer have access to Customer portal.','info']],'the page says why it changed');
     }
   }
   assert.equal(leaveUnavailableProject({projects:[{id:'p1'}]},{nav:()=>assert.fail()}, {projectId:'p1',view:'task'}),false);
