@@ -122,10 +122,7 @@ impl DataLayout {
             self.root.join("oneloop.sqlite3-shm"),
         ] {
             if path.exists() {
-                OpenOptions::new()
-                    .write(true)
-                    .open(&path)
-                    .map_err(|error| writable_error(&path, error))?;
+                ensure_writable_without_opening(&path)?;
                 warn_public_permissions(&path)?;
             }
         }
@@ -478,20 +475,15 @@ fn return_connection(inner: &DbInner, connection: Connection) {
     }
 }
 
+/// Opens an existing database. Only SQLite may open the database file, -wal
+/// or -shm in a process that can hold connections: closing any other
+/// descriptor of them drops every POSIX lock the process holds there. An older
+/// SQLite client then believes no one uses the WAL and deletes it, so later
+/// writes are lost.
 pub(crate) fn open_connection(path: &Path) -> AppResult<Connection> {
-    // SQLite inherits the database mode for WAL/SHM; create privately first.
-    let file = private_file_options()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|error| writable_error(path, error))?;
-    drop(file);
     let connection = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     if connection.is_readonly(rusqlite::MAIN_DB)? {
         return Err(writable_error(path, "SQLite opened the database read-only"));
@@ -604,6 +596,36 @@ pub(crate) fn private_file_options() -> OpenOptions {
     options
 }
 
+/// Creates a missing database file with private permissions, which SQLite
+/// copies to the -wal and -shm files. An existing file is never opened here.
+pub(crate) fn create_database_file(path: &Path) -> AppResult<()> {
+    match private_file_options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => {
+            drop(file);
+            if let Some(parent) = path.parent() {
+                sync_directory(parent)?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(writable_error(path, error)),
+    }
+}
+
+/// Checks write access by path, without a descriptor (see `open_connection`).
+fn ensure_writable_without_opening(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    let result =
+        rustix::fs::access(path, rustix::fs::Access::WRITE_OK).map_err(std::io::Error::from);
+    #[cfg(not(unix))]
+    let result = OpenOptions::new().write(true).open(path).map(drop);
+    result.map_err(|error| writable_error(path, error))
+}
+
 fn writable_error(path: &Path, error: impl std::fmt::Display) -> AppError {
     AppError::PreconditionFailed(format!(
         "{} is not writable by this process; check owner/mode of the file, -wal, -shm and data directory: {error}",
@@ -663,3 +685,6 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
 }
 
 use rusqlite::OptionalExtension;
+
+#[cfg(test)]
+mod tests;

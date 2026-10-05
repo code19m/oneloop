@@ -69,6 +69,7 @@ pub fn migrate(
     let _instance_lock = layout.try_instance_exclusive_lock()?;
     let _lock = layout.open_exclusive_lock()?;
     let existed = layout.database().is_file();
+    super::create_database_file(&layout.database())?;
     let mut connection = open_connection(&layout.database())?;
     let previous_version = inspect_schema_version(&connection)?;
 
