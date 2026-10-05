@@ -39,23 +39,30 @@ if (args[2] === 'inspect') {
   fs.writeFileSync(process.env.TEST_REGISTRY, JSON.stringify(registry));
 } else process.exit(2);
 `, {mode: 0o700});
-    run((version, error = '') => spawnSync(process.execPath, [script, image, version], {
-      cwd, encoding: 'utf8', timeout: 10000,
-      env: {...process.env, PATH: `${cwd}:${process.env.PATH}`, TEST_REGISTRY: state, TEST_INSPECT_ERROR: error},
-    }), () => JSON.parse(readFileSync(state, 'utf8')));
+    const outputs = join(cwd, 'outputs');
+    run((version, error = '') => {
+      writeFileSync(outputs, '');
+      return spawnSync(process.execPath, [script, image, version], {
+        cwd, encoding: 'utf8', timeout: 10000,
+        env: {...process.env, PATH: `${cwd}:${process.env.PATH}`, TEST_REGISTRY: state, TEST_INSPECT_ERROR: error, GITHUB_OUTPUT: outputs},
+      });
+    }, () => JSON.parse(readFileSync(state, 'utf8')), () => readFileSync(outputs, 'utf8'));
   } finally { rmSync(cwd, {recursive: true, force: true}); }
 }
 
+// Each release with the latest and minor tags expected after it, published in this order.
+const releases = [
+  ['1.2.10', '1.2.10', '1.2.10'],
+  ['1.2.9', '1.2.10', '1.2.10'],
+  ['1.10.0', '1.10.0', '1.10.0'],
+  ['1.9.1', '1.10.0', '1.9.1'],
+  ['2.0.0', '2.0.0', '2.0.0'],
+  ['1.2.11', '2.0.0', '1.2.11'],
+];
+const published = () => Object.fromEntries(releases.map(([version]) => [`${image}:${version}`, manifest(version)]));
+
 test('out-of-order releases only advance latest and each minor series numerically', () => {
-  const releases = [
-    ['1.2.10', '1.2.10', '1.2.10'],
-    ['1.2.9', '1.2.10', '1.2.10'],
-    ['1.10.0', '1.10.0', '1.10.0'],
-    ['1.9.1', '1.10.0', '1.9.1'],
-    ['2.0.0', '2.0.0', '2.0.0'],
-    ['1.2.11', '2.0.0', '1.2.11'],
-  ];
-  const registry = Object.fromEntries(releases.map(([version]) => [`${image}:${version}`, manifest(version)]));
+  const registry = published();
   fixture(registry, (promote, state) => {
     for (const [version, latest, minorVersion] of releases) {
       const result = promote(version);
@@ -64,6 +71,15 @@ test('out-of-order releases only advance latest and each minor series numericall
       assert.deepEqual(current[`${image}:latest`], manifest(latest));
       assert.deepEqual(current[`${image}:${minor}`], manifest(minorVersion));
       for (const [tag, original] of Object.entries(registry)) assert.deepEqual(current[tag], original);
+    }
+  });
+});
+
+test('the latest output says whether latest names the release, also on a re-run', () => {
+  fixture(published(), (promote, state, outputs) => {
+    for (const [version, latest] of [...releases, ['2.0.0', '2.0.0'], ['1.2.11', '2.0.0']]) {
+      assert.equal(promote(version).status, 0);
+      assert.equal(outputs(), `latest=${latest === version}\n`, version);
     }
   });
 });

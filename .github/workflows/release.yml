@@ -121,6 +121,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      latest: ${{ steps.promote.outputs.latest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -156,6 +158,7 @@ jobs:
             case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $platform" >&2; exit 1 ;; esac
           done
       - name: Promote stable image tags
+        id: promote
         if: needs.metadata.outputs.prerelease == 'false'
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
@@ -178,10 +181,11 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.metadata.outputs.version }}
           PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+          LATEST: ${{ needs.manifest.outputs.latest }}
         run: |
           node scripts/release-metadata.mjs "$RELEASE_TAG"
-          args=()
-          if [ "$PRERELEASE" = true ]; then args+=(--prerelease --latest=false); fi
+          # GitHub's Latest release follows the image's latest tag, which only moves forward.
+          if [ "$PRERELEASE" = true ]; then args=(--prerelease --latest=false); else args=("--latest=$LATEST"); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "oneloop $VERSION" --notes-file target/release-notes.md "${args[@]}"
 

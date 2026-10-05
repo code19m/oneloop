@@ -192,10 +192,12 @@ The Release workflow then:
   `main` go live only when the version in `Cargo.toml` is released, so the site
   never names a version that people can't install yet.
 
-A release candidate gets only the `X.Y.Z-rc.N` image tag and never moves
-`latest`. A final release is tagged `X.Y.Z`, `X.Y` and `latest`. oneloop is not
-published to crates.io; people who don't use Docker install a tag from source
-with `cargo install --git`.
+A release candidate gets only the `X.Y.Z-rc.N` image tag. A final release gets
+the `X.Y.Z` tag. `X.Y` and `latest` only move forward: they move to the release
+unless they already name a newer version. For example, 0.1.1 released after
+0.2.0 moves `0.1` but leaves `latest` at 0.2.0. GitHub's Latest release follows
+`latest`. oneloop is not published to crates.io; people who don't use Docker
+install a tag from source with `cargo install --git`.
 
 Afterwards, check the image and the GitHub Release. Publishing is not atomic:
 if one step fails, look at what already went out before you retry. Retry with
