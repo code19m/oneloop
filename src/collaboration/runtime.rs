@@ -205,7 +205,15 @@ impl OutboxWorker {
                 }
                 Err(error) => {
                     tracing::error!(error = %error, "collaboration outbox delivery failed");
-                    sleep(error_pause).await;
+                    tokio::select! {
+                        _ = sleep(error_pause) => {},
+                        result = shutdown.changed() => {
+                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                        },
+                        result = runtime_shutdown.changed() => {
+                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
+                        }
+                    }
                     error_pause = (error_pause * 2).min(LONGEST_IDLE);
                 }
             }
