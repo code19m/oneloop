@@ -154,7 +154,8 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             sbom=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .SBOM \"$platform\") }}")
             provenance=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format "{{ json (index .Provenance \"$platform\") }}")
-            case "$sbom" in *'"SPDX"'*) ;; *) echo "No SBOM for $platform" >&2; exit 1 ;; esac
+            # The Rust crates come from the list that cargo-auditable embeds in the binary.
+            case "$sbom" in *'"pkg:cargo/rusqlite@'*) ;; *) echo "The SBOM for $platform is missing or lists no Rust crates" >&2; exit 1 ;; esac
             case "$provenance" in *'"SLSA"'*) ;; *) echo "No provenance for $platform" >&2; exit 1 ;; esac
           done
       - name: Promote stable image tags
