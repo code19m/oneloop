@@ -513,3 +513,16 @@ test('temporary sessions open no event stream until password completion',()=>{
   t.data.session.temporary=false;for(const listener of t.listeners)listener({type:'session'});assert.equal(streams,1);
   t.controller.dispose();
 });
+
+test('a second Save of an edited comment waits for the first reply and builds on its revision',async()=>{
+  const t=fixture(),pending=[];t.data.tasks[0].comments=[{id:'c1',who:'u1',text:'Old',revision:1,ts:20_000}];
+  t.transport.commands.execute=(_operation,payload,options)=>new Promise(resolve=>pending.push({payload,options,resolve}));
+  const reply=(index)=>pending[index].resolve({entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:pending[index].payload.content,mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:pending[index].options.expectedRevision+1}],events:[{id:`a${index}`}]});
+  const edit=(text,interactionId)=>t.controller.saveComment({task:t.data.tasks[0],mode:'edit',commentId:'c1',revision:1,text,mentions:[],interactionId});
+  const first=edit('First','i1'),second=edit('Second','i2'),third=edit('Third','i3');
+  assert.equal(pending.length,1,'later Saves wait for the first reply');
+  reply(0);while(pending.length<2)await tick();
+  assert.equal(pending[1].payload.content,'Third');assert.equal(pending[1].options.expectedRevision,2);
+  reply(1);assert.deepEqual(await Promise.all([first,second,third]),[true,true,true]);
+  assert.equal(pending.length,2);assert.equal(t.data.tasks[0].comments[0].text,'Third');
+});
