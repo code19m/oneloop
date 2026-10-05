@@ -97,6 +97,22 @@ test('a bootstrap without epic counts keeps the counts the Roadmap read last',()
   assert.deepEqual([fresh.epics[0].counted,fresh.epics[0].done,fresh.epics[0].total],[true,5,12]);
 });
 
+test('epics from command results keep or bring their counts, never the loading state',()=>{
+  const data=createLegacyData(),roadmap=bootstrap();
+  Object.assign(roadmap.epics[0],{taskTotal:12,taskDone:5,taskOpen:7,completedThisWeek:2,completedSinceStart:5,weeklyCompletions:[0,0,1,0,0,1,0]});
+  hydrateLegacyData(data,roadmap);
+  const epic=roadmap.epics[0];
+  // An update or a state change carries no counts; the epic keeps the last ones.
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:epic.id,projectId:epic.projectId,trackId:epic.trackId,title:'Renamed',startDate:epic.startDate,state:'active',position:0,revision:5}]});
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:epic.id,projectId:epic.projectId,state:'done',revision:6}]});
+  assert.deepEqual([data.epics[0].title,data.epics[0].counted,data.epics[0].done,data.epics[0].total],['Renamed',true,5,12]);
+  // A new epic comes with its empty counts.
+  reconcileCommandResult(data,{entities:[{entityType:'epic',id:'fresh',projectId:epic.projectId,trackId:epic.trackId,title:'Fresh',startDate:'2026-10-01',state:'planning',position:1,revision:1,
+    taskTotal:0,taskDone:0,taskOpen:0,completedThisWeek:0,completedSinceStart:0,weeklyCompletions:[0,0,0,0,0,0,0]}]});
+  const fresh=data.epics.find(item=>item.id==='fresh');
+  assert.deepEqual([fresh.counted,fresh.done,fresh.total],[true,0,0]);
+});
+
 test('a newest-first Done keeps live cards in completion order, newest first',()=>{
   const data=createLegacyData(),value=bootstrap();
   value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';

@@ -219,6 +219,44 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
 }
 
 #[tokio::test]
+async fn a_new_epic_comes_with_empty_task_counts() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateEpic,
+                json!({"projectId":"p1","trackId":"tr1","title":"Fresh","startDate":"2026-10-01"}),
+                "fresh-epic",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    // The Roadmap that created it can show 0/0 without reading counts.
+    let epic = &created.entities[0];
+    for field in [
+        "taskTotal",
+        "taskDone",
+        "taskOpen",
+        "completedThisWeek",
+        "completedSinceStart",
+    ] {
+        assert_eq!(epic[field], 0, "{field}");
+    }
+    assert_eq!(epic["weeklyCompletions"], json!([0, 0, 0, 0, 0, 0, 0]));
+    // The activity keeps a record of the epic, not of its counts.
+    let after = &created.events[0].after;
+    assert!(
+        after
+            .as_ref()
+            .is_some_and(|after| after.get("taskTotal").is_none()),
+        "{after:?}"
+    );
+}
+
+#[tokio::test]
 async fn hidden_and_missing_resources_have_identical_http_errors() {
     let f = fixture().await;
     let task = f
