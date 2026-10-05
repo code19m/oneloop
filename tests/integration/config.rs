@@ -103,15 +103,36 @@ fn maintenance_configuration_does_not_require_public_url() {
 
 #[cfg(unix)]
 #[test]
-fn data_dir_rejects_parent_component_after_a_broken_symbolic_link() {
-    let root = crate::support::scratch_dir();
-    let link = root.path().join("volume");
-    std::os::unix::fs::symlink(root.path().join("unmounted/volume"), &link).unwrap();
-    let error = DataConfig::from_os_iter([("ONELOOP_DATA_DIR", link.join("../data"))]).unwrap_err();
-    assert!(
-        error.to_string().contains("broken symbolic link"),
-        "{error}"
-    );
+fn unusable_data_folders_are_configuration_errors_naming_the_setting() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let scratch = crate::support::scratch_dir();
+    let root = scratch.path();
+    std::os::unix::fs::symlink(root.join("unmounted/volume"), root.join("broken")).unwrap();
+    std::os::unix::fs::symlink(root.join("loop"), root.join("loop")).unwrap();
+    fs::write(root.join("file"), "").unwrap();
+    fs::create_dir(root.join("locked")).unwrap();
+    fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    let mut cases = vec![
+        (root.join("broken/../data"), "broken symbolic link"),
+        (root.join("loop/../data"), "cannot resolve"),
+        (root.join("file"), "is not a folder"),
+        (root.join("file/data"), "cannot open"),
+    ];
+    // Root may open any folder, so this case applies only to other accounts.
+    if fs::read_dir(root.join("locked")).is_err() {
+        cases.push((root.join("locked/data"), "cannot open"));
+    }
+    for (path, reason) in cases {
+        let error = DataConfig::from_os_iter([("ONELOOP_DATA_DIR", path.clone())]).unwrap_err();
+        assert_eq!(error.exit_code(), 2, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("ONELOOP_DATA_DIR") && message.contains(reason),
+            "{}: {message}",
+            path.display()
+        );
+    }
+    fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 #[test]

@@ -77,8 +77,10 @@ Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 container, for example `docker compose exec oneloop oneloop backup create …`.
 
 - Results go to standard output; errors and logs go to standard error. The exit
-  code is `0` on success, `2` for a mistake in the command, the settings or the
-  input, and `1` for any other failure.
+  code is `0` on success, `2` for an invalid setting, argument or value, such as
+  an unknown `ONELOOP_` variable, a data directory that isn't a folder, or a
+  username with spaces, and `1` for anything else, such as a username that is
+  taken or a backup folder that already exists.
 - `serve` refuses to start if the database needs `db migrate`, or if another
   oneloop server uses the same data directory. `serve --check` never creates a
   database, opens a port or changes data. It also prints the versions of SQLite

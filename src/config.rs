@@ -277,17 +277,40 @@ fn parse_log_level(raw: &str) -> AppResult<Level> {
     }
 }
 
+/// The absolute data folder. A missing folder is fine, because `db migrate`
+/// and `backup restore` create it; anything else must be a folder.
 pub fn resolve_data_dir(raw: &str) -> AppResult<PathBuf> {
     if raw.trim().is_empty() {
         return Err(invalid_env(DATA_DIR_ENV, "path cannot be empty"));
     }
+    let cannot_resolve =
+        |reason: String| invalid_env(DATA_DIR_ENV, format!("cannot resolve {raw}: {reason}"));
     let path = Path::new(raw);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        env::current_dir()?.join(path)
+        env::current_dir()
+            .map_err(|error| cannot_resolve(error.to_string()))?
+            .join(path)
     };
-    normalize_path(&absolute)
+    let resolved = normalize_path(&absolute).map_err(|error| {
+        cannot_resolve(match error {
+            AppError::Validation { message, .. } | AppError::Io(message) => message,
+            error => error.to_string(),
+        })
+    })?;
+    match fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_dir() => Ok(resolved),
+        Ok(_) => Err(invalid_env(
+            DATA_DIR_ENV,
+            format!("{} is not a folder", resolved.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(resolved),
+        Err(error) => Err(invalid_env(
+            DATA_DIR_ENV,
+            format!("cannot open {}: {error}", resolved.display()),
+        )),
+    }
 }
 
 /// Removes `.` and `..` from an absolute path, so later checks and writes see
