@@ -372,6 +372,9 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
    costs what is near the view. That makes a lane a stacking context, so it
    sits above the milestone and today lines (z-index 1), as its bars did. */
 .lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+/* Safari skips a lane's contents for a moment when focus leaves it, so a click
+   on a button there landed on the lane. A lane under the pointer always renders. */
+.lane:hover { content-visibility: visible; }
 .lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
 .lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
 .lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
