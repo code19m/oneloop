@@ -89,8 +89,12 @@ test('a bootstrap without epic counts keeps the counts the Roadmap read last',()
   hydrateLegacyData(data,board);
   assert.equal(data.epics[0].title,'Renamed');
   assert.deepEqual([data.epics[0].done,data.epics[0].total,data.epics[0].open,data.epics[0].closedThisWeek,data.epics[0].weekly],[5,12,7,2,[0,0,1,0,0,1,0]]);
+  assert.equal(data.epics[0].counted,true);
+  // Without counts read before, the Roadmap waits for its own read.
   const fresh=createLegacyData();hydrateLegacyData(fresh,board);
-  assert.deepEqual([fresh.epics[0].done,fresh.epics[0].total],[0,0]);
+  assert.equal(fresh.epics[0].counted,false);
+  replaceRoadmap(fresh,{projectId:fresh.epics[0].projectId,epics:[roadmap.epics[0]]});
+  assert.deepEqual([fresh.epics[0].counted,fresh.epics[0].done,fresh.epics[0].total],[true,5,12]);
 });
 
 test('a newest-first Done keeps live cards in completion order, newest first',()=>{
