@@ -397,3 +397,55 @@ test('turning Reload after updates on applies to an update that is already waiti
   assert.equal(page.controller.autoReload,true);assert.equal(page.reloads,1);
   page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
 });
+
+/** Run `body` with a jsdom page as the document the conflict prompt uses. */
+async function onPage(html,body){
+  const dom=new JSDOM(html),previous=globalThis.document,previousEvent=globalThis.Event;globalThis.document=dom.window.document;globalThis.Event=dom.window.Event;
+  try{await body(dom.window.document);}finally{globalThis.document=previous;globalThis.Event=previousEvent;dom.window.close();}
+}
+const microtask=()=>new Promise(resolve=>setImmediate(resolve));
+const answer=(document,label)=>[...document.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label).click();
+
+test('a redraw moves an unanswered prompt beside the redrawn field, where Use latest fills it in',async()=>{
+  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
+  await onPage(`<div class="task-page">${section}</div>`,async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    const box=document.querySelector('[data-recovery-conflict]');
+    document.querySelector('.task-page').innerHTML=section;
+    await microtask();
+    const redrawn=document.getElementById('task-description');
+    assert.equal(box.parentElement,redrawn.parentElement,'beside the new field');
+    answer(document,'Use latest');
+    assert.equal(await pending,'latest');assert.equal(redrawn.value,'theirs');
+  });
+});
+
+test('a prompt closes without an answer when its redrawn field can no longer be edited',async()=>{
+  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="task-description">mine</textarea></section></div>',async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    document.querySelector('.task-page').innerHTML='<section class="tp-sec"><textarea id="task-description" readonly>mine</textarea></section>';
+    assert.equal(await pending,'cancelled');assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+  });
+});
+
+test('a newer prompt replaces one still waiting, which closes without an answer',async()=>{
+  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="a">a</textarea></section><section class="tp-sec"><textarea id="b">b</textarea></section></div>',async document=>{
+    const field=id=>document.getElementById(id);
+    const first=presentDomConflict({target:field('a'),locate:()=>field('a'),latestValue:'A',myValue:'a'});
+    const second=presentDomConflict({target:field('b'),locate:()=>field('b'),latestValue:'B',myValue:'b'});
+    assert.equal(await first,'cancelled');
+    assert.equal(document.querySelectorAll('[data-recovery-conflict]').length,1);
+    answer(document,'Keep my changes');assert.equal(await second,'mine');
+  });
+});
+
+test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async()=>{
+  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
+  await onPage(`<div class="task-page">${section}</div>`,async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    answer(document,'Keep my changes');assert.equal(await pending,'mine');
+    assert.match(document.querySelector('[data-recovery-conflict]').textContent,/Saving your changes/);
+    document.querySelector('.task-page').innerHTML=section;await microtask();
+    assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+  });
+});

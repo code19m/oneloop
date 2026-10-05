@@ -2209,6 +2209,8 @@
     rendering=true;
     try{
       renderContent();
+      // An unanswered conflict prompt goes back beside its redrawn field before focus is restored.
+      window.Recovery?.keepPrompts?.();
       const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
       migrateEvents?.();

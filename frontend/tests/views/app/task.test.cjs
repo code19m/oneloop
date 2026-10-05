@@ -187,3 +187,59 @@ test('text typed into a task field when edit rights end stays as Not saved, read
   t.A.saveTaskDraft(t.task.id, 'desc');
   assert.deepEqual(t.requests.map(request => [request.operation, request.payload.description, request.options.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
 });
+
+const conflict = t => new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' });
+const promptButton = (t, label) => [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === label);
+/** Run `body` with the page as the document that the view bridge finds fields in, as in a browser. */
+async function inPage(t, body) {
+  const previous = globalThis.document; globalThis.document = t.d;
+  try { await body(); } finally { globalThis.document = previous; }
+}
+/** Save `value` into a task field, as its blur does, and answer the save with a conflict. */
+async function conflictOn(t, field, value) {
+  field.focus(); field.value = value; field.blur(); t.A.updTask(t.task.id, field.id === 'task-description' ? 'desc' : 'title', value);
+  t.requests[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
+}
+
+test('a live redraw keeps the conflict prompt beside the redrawn field until the person answers it', async () => {
+  const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
+  await inPage(t, async () => {
+    await conflictOn(t, description, 'My description');
+    const prompt = t.d.querySelector('[data-recovery-conflict]'), keep = promptButton(t, 'Keep my changes');
+    keep.focus();
+    // A teammate's change arrives and the task page draws again.
+    t.A.refresh(); await settle();
+    assert.notEqual(t.d.getElementById('task-description'), description, 'the field was drawn again');
+    assert.equal(t.d.querySelector('.task-description [data-recovery-conflict]'), prompt, 'the prompt is beside the new field');
+    assert.equal(t.d.activeElement, keep, 'and keeps focus on its button');
+    assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null, 'no Not saved note while it waits');
+    keep.click();
+    await waitFor(() => t.requests.length === 2, 'Keep my changes saves again');
+    assert.equal(t.requests[1].payload.description, 'My description'); assert.equal(t.requests[1].options.expectedRevision, 2);
+  });
+});
+
+test('after a redraw, Use latest shows the latest value in the redrawn field', async () => {
+  const t = productionTaskPage({ title: 'Their title' });
+  await inPage(t, async () => {
+    await conflictOn(t, t.d.querySelector('.tp-title'), 'My title');
+    t.A.refresh(); await settle();
+    promptButton(t, 'Use latest').click();
+    await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'title'), 'the typed title is dropped');
+    assert.equal(t.d.querySelector('.tp-title').value, 'Their title');
+    assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
+  });
+});
+
+test('leaving the task page still closes the prompt, and the change waits there as Not saved', async () => {
+  const t = productionTaskPage({ desc: 'Their description' });
+  await inPage(t, async () => {
+    await conflictOn(t, t.d.getElementById('task-description'), 'My description');
+    t.A.nav('board'); await settle();
+    assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
+    t.A.openTask(t.task.id); await settle();
+    assert.equal(t.d.getElementById('task-description').value, 'My description');
+    assert.match(t.d.querySelector('.task-description [data-draft-note]').textContent, /Not saved/);
+  });
+});
