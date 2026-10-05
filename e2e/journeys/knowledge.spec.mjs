@@ -16,7 +16,7 @@ const handbook = {
   'docs/README.md': '# Handbook\n\nStart with [onboarding](guides/onboarding.md).\n\n![Logo](logo.png)\n\n## Setup\n\nInstall the tools.\n',
   'docs/guides/onboarding.md': '# Joining\n\n## Before you start\n\nAsk for access.\n\n## First day\n\nMeet the team and read the handbook.\n',
   'docs/logo.png': png,
-  'docs/examples/page.html': '<!doctype html><h1>Sandbox page</h1>',
+  'docs/examples/page.html': '<!doctype html><h1>Sandbox page</h1><img alt="Outside" src="https://outside.invalid/image.png"><script>document.querySelector("h1").textContent = "Script ran"</script>',
   'docs/examples/document.pdf': pdf,
   'docs/brand-kit.zip': Buffer.from('PK\u0005\u0006' + '\0'.repeat(18), 'latin1'),
   'src/main.rs': 'fn main() {}\n',
@@ -125,12 +125,19 @@ test('an administrator connects a private repository and reads, searches and ope
   await expect(page.getByRole('dialog', { name: 'Edit repository' }).getByText('Token saved')).toBeVisible();
 });
 
-test('synced HTML stays sandboxed, PDFs and images preview inline, and other files download only', async ({ page, instance, gitHost }) => {
+test('synced HTML stays sandboxed, PDFs and images preview inline, and other files download only', async ({ page, context, instance, gitHost, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/Content Security Policy|Content-Security-Policy|content security policy|violates.*policy|sandbox|Sandbox|Blocked script/i);
+  const outside = [];
+  context.on('request', request => { if (request.url().startsWith('https://outside.invalid')) outside.push(request); });
   const { projectId } = await connected(instance, gitHost);
   await openApp(page, instance, `knowledge/${projectId}/blob/examples/page.html`);
   const card = page.locator('.knowledge-preview');
-  await expect(card.locator('.html-preview')).toHaveAttribute('sandbox', 'allow-scripts');
+  await expect(card.locator('.html-preview')).toHaveAttribute('sandbox', '');
   await expect(page.frameLocator('.knowledge-preview .html-preview').getByRole('heading', { name: 'Sandbox page' })).toBeVisible();
+  await page.frames().find(frame => frame.url().includes('/knowledge/preview/html')).waitForLoadState('load');
+  // Chromium also reports loads that the preview's policy blocked.
+  for (const request of outside) await request.response();
+  expect(outside.filter(request => !/^csp$|BLOCKED_BY_CSP/.test(request.failure()?.errorText ?? '')), 'nothing loads from other sites').toEqual([]);
   await page.evaluate(id => { location.hash = `#/knowledge/${id}/blob/examples/document.pdf`; }, projectId);
   await expect(card.locator('.pdf-surface canvas')).toBeVisible({ timeout: 15_000 });
   await page.evaluate(id => { location.hash = `#/knowledge/${id}/blob/logo.png`; }, projectId);

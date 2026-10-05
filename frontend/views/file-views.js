@@ -1,4 +1,4 @@
-/* Attachment and Knowledge views. HTML runs only in an opaque-origin sandbox; originals stay unchanged. */
+/* Attachment and Knowledge views. HTML previews show in an opaque-origin sandbox without scripts; originals stay unchanged. */
 (() => {
   const remote=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password;}catch{return false;}};
   const embedded=value=>/^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(value||'');
@@ -278,29 +278,26 @@
     let content;
     const buildSrcdoc=()=>{
       if(content!==undefined)return content;
-      // Uploaded HTML keeps its own handlers for execution only inside the sandbox.
       const doc=document.implementation.createHTMLDocument('');doc.documentElement.innerHTML=text;
-      doc.querySelectorAll('iframe,frame,frameset,object,embed,base,meta[http-equiv],portal,fencedframe').forEach(el=>el.remove());
-      // Scripts and handlers intentionally run inside the frame, never in the app document.
-      const policy="default-src 'none'; script-src 'unsafe-inline' https:; connect-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline' https:; font-src data: https:; media-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'";
+      doc.querySelectorAll('iframe,frame,frameset,object,embed,base,link,meta[http-equiv],portal,fencedframe').forEach(el=>el.remove());
+      // As the server's preview policy: no scripts, and nothing from other
+      // sites; inline styles, and images and fonts embedded as data, only.
+      const policy="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
       const meta=document.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content=policy;doc.head.prepend(meta);
       const referrer=document.createElement('meta');referrer.name='referrer';referrer.content='no-referrer';doc.head.prepend(referrer);
       if(!doc.querySelector('meta[name=viewport]')){const viewport=document.createElement('meta');viewport.name='viewport';viewport.content='width=device-width, initial-scale=1';doc.head.prepend(viewport);}
       const charset=document.createElement('meta');charset.setAttribute('charset','utf-8');doc.head.prepend(charset);
       const defaults=document.createElement('style');defaults.textContent='html{color-scheme:light}body{margin:20px;font:16px/1.5 system-ui;background:#fff;color:#202020;overflow-wrap:anywhere}img{max-width:100%}';meta.after(defaults);
-      const escapeKey=document.createElement('script');escapeKey.textContent="document.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();parent.postMessage({type:'oneloop-preview-escape'},'*');}},true);";defaults.after(escapeKey);
       return content='<!doctype html>'+doc.documentElement.outerHTML;
     };
     const start=()=>{
-      const frame=document.createElement('iframe');frame.className='html-preview';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; payment 'none'");frame.title=file.name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'')+' preview';frame.tabIndex=0;
+      const frame=document.createElement('iframe');frame.className='html-preview';frame.setAttribute('sandbox','');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; fullscreen 'none'; payment 'none'");frame.title=file.name.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,'')+' preview';frame.tabIndex=0;
       if(file.htmlPreviewUrl){const url=new URL(file.htmlPreviewUrl,location.href);url.searchParams.set('reload',String(Date.now()));frame.src=url.href;}else{frame.setAttribute('credentialless','');frame.srcdoc=buildSrcdoc();}ui.view.replaceChildren(frame);
     };
     ui.onMode(rendered=>{restart.hidden=!rendered;if(rendered){if(!ui.view.firstChild)start();}else ui.view.replaceChildren();});
     restart.onclick=start;start();
   }
 
-  // The frame can request dismissal only. Never expose app data or commands over messages.
-  window.addEventListener('message',event=>{const frame=document.querySelector('.file-dialog .html-preview');if(frame&&event.source===frame.contentWindow&&event.data?.type==='oneloop-preview-escape')document.querySelector('[data-file-close]')?.click();});
   /** Plain text, with JSON indented when the whole file is present. */
   function text(host,file,value,truncated){
     host.replaceChildren();let shown=value;

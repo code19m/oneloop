@@ -680,11 +680,9 @@ async fn files_follow_the_attachment_safety_rules() {
         )
         .await;
     assert_eq!(preview.status(), StatusCode::OK);
-    assert!(
-        preview.headers()["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .starts_with("sandbox allow-scripts;")
+    assert_eq!(
+        preview.headers()["content-security-policy"],
+        crate::files::http::PREVIEW_POLICY
     );
 
     let script = fixture

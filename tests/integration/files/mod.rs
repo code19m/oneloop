@@ -1,5 +1,5 @@
 //! Attachments, avatars, previews, storage capacity and cleanup.
 
-mod http;
+pub(crate) mod http;
 mod sanitizer;
 mod service;

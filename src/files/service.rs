@@ -1147,6 +1147,8 @@ pub fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
             .split(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
             .next()
             .unwrap_or("");
+        // `link` also covers hints such as preconnect, which open connections
+        // to other sites that the preview's policy may not govern.
         let remove = matches!(
             name,
             "iframe"
@@ -1155,6 +1157,7 @@ pub fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
                 | "object"
                 | "embed"
                 | "base"
+                | "link"
                 | "portal"
                 | "fencedframe"
         ) || (name == "meta" && tag.contains("http-equiv"));

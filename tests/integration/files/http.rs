@@ -236,7 +236,7 @@ async fn multipart_upload_over_global_json_limit_and_range_download_are_real() {
 #[tokio::test]
 async fn html_preview_keeps_server_sandbox_and_rechecks_current_access() {
     let fixture = Fixture::new().await;
-    let html = br#"<!doctype html><base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><iframe src="https://evil.test"></iframe><script>document.body.dataset.ok='yes'</script><p>Kept</p>"#;
+    let html = br#"<!doctype html><base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><link rel="preconnect" href="https://evil.test"><iframe src="https://evil.test"></iframe><script>document.body.dataset.ok='yes'</script><p>Kept</p>"#;
     let (status, body) = fixture.upload("html-upload", "preview.html", html).await;
     assert_eq!(status, StatusCode::CREATED);
     let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
@@ -257,11 +257,9 @@ async fn html_preview_keeps_server_sandbox_and_rechecks_current_access() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response.headers()["content-security-policy"]
-                .to_str()
-                .unwrap()
-                .starts_with("sandbox allow-scripts;")
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            PREVIEW_POLICY
         );
     }
 
@@ -304,13 +302,13 @@ async fn html_preview_keeps_server_sandbox_and_rechecks_current_access() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let policy = response.headers()["content-security-policy"]
-        .to_str()
-        .unwrap();
-    assert!(policy.starts_with("sandbox allow-scripts;"));
-    assert!(!policy.contains("allow-same-origin"));
-    assert!(policy.contains("connect-src 'none'"));
-    assert!(policy.contains("form-action 'none'"));
+    // No scripts, and nothing from other sites: only inline styles and
+    // images and fonts embedded as data.
+    assert_eq!(
+        response.headers()["content-security-policy"],
+        PREVIEW_POLICY
+    );
+    assert_eq!(response.headers()["x-dns-prefetch-control"], "off");
     assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "SAMEORIGIN");
     assert_eq!(
         response.headers()[header::CONTENT_TYPE],
@@ -323,9 +321,13 @@ async fn html_preview_keeps_server_sandbox_and_rechecks_current_access() {
     assert!(!rendered.contains("<base"));
     assert!(!rendered.contains("http-equiv"));
     assert!(!rendered.contains("<iframe"));
-    assert!(rendered.contains("<script>"));
+    assert!(!rendered.contains("<link"));
     assert!(rendered.contains("<p>kept</p>"));
 }
+
+/// The policy of every attachment and Knowledge HTML preview.
+pub(crate) const PREVIEW_POLICY: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; \
+     img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 
 #[tokio::test]
 async fn originals_never_supply_executable_mime_types() {
