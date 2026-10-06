@@ -275,19 +275,26 @@ async fn events(
             }
         };
         // Dropping a body cancels even an authorization wait or blocked send.
-        tokio::select! {
+        let replaced = tokio::select! {
             biased;
-            _ = sender.closed() => {},
+            _ = sender.closed() => false,
             _ = async {
                 while !*shutdown.borrow_and_update() {
                     if shutdown.changed().await.is_err() { break; }
                 }
-            } => {},
-            // The person opened too many newer streams; the browser reconnects.
-            _ = stream.replaced() => {},
-            _ = pump => {},
-        }
+            } => false,
+            _ = stream.replaced() => true,
+            _ = pump => false,
+        };
         drop(stream);
+        if replaced {
+            // The person opened too many newer streams. The tab waits until it
+            // is used again before it reconnects, so tabs don't take turns.
+            let event = Event::default()
+                .event("replaced")
+                .data("{\"kind\":\"replaced\"}");
+            let _ = sender.try_send(Ok(event));
+        }
     });
     Ok((
         [

@@ -332,8 +332,9 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
         frame(&mut body).await;
         bodies.push(body);
     }
-    // The seventeenth closed the oldest.
+    // The seventeenth closed the oldest, which says why first.
     let mut oldest = bodies.remove(0);
+    assert!(frame(&mut oldest).await.contains("event: replaced"));
     assert!(
         timeout(Duration::from_secs(5), oldest.frame())
             .await
