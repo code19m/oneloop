@@ -36,6 +36,36 @@ test('Enter posts a comment and a reply closes its inline composer after sending
   await expect(page.locator('#cmtIn')).toBeVisible();
 });
 
+test('a comment whose answer is lost is saved once, also when the next one was typed meanwhile', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/ERR_FAILED .*\/api\/commands\b/);
+  const { task } = instance.projects[0];
+  let typed, first = true;
+  const nextTyped = new Promise(resolve => { typed = resolve; });
+  await page.route('**/api/commands', async route => {
+    if (!first || route.request().postDataJSON().operation !== 'discussion.comment.create') return route.continue();
+    first = false;
+    // The comment reaches the server, but its answer is lost once the next one is typed.
+    await route.fetch(); await nextTyped; await route.abort('failed');
+  });
+  await openApp(page, instance);
+  const composer = page.locator('#cmtIn');
+  await composer.fill('First comment');
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await composer.fill('Second comment');
+  typed();
+  await expect(page.locator('#toast-region')).toContainText('Connection restored');
+  await expect(composer).toHaveValue('Second comment');
+  await composer.press('Enter');
+  // The first comes back alone once the box is empty; sent again, the server knows it.
+  await expect(composer).toHaveValue('First comment');
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await expect(page.locator('article[data-comment]').filter({ hasText: 'First comment' })).toHaveCount(1);
+  const listed = await (await instance.api.get(`/api/discussion/tasks/${task.id}/comments?limit=50`)).json();
+  expect(listed.items.map(item => item.content).sort()).toEqual(['First comment', 'Second comment']);
+});
+
 test('an unsent comment asks before another page or a reload discards it', async ({ page, instance }) => {
   await openApp(page, instance);
   const composer = page.locator('#cmtIn');

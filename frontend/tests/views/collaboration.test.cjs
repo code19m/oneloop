@@ -403,8 +403,8 @@ function sendingComments(){
  return {...t,task,sends,
   /** The server saves send `index`, and the page hears of it. */
   save(index){const {input,resolve}=sends[index],comment={id:`saved-${index}`,who:t.D.session.userId,ts:Date.now(),text:input.text,mentions:input.mentions,parentId:null,revision:1};(task.comments??=[]).push(comment);facade.commentSaved(task.id,comment,{mode:input.mode,targetId:input.targetId,interactionId:input.interactionId,changed:true});resolve(true);},
-  /** Send `index` can't be saved. */
-  fail(index){const {input,resolve}=sends[index];input.unsent();resolve(false);},
+  /** Send `index` can't be saved, with `error`: by default a refusal. */
+  fail(index,error=new ApiError('Too many requests',{status:429,code:'rate_limited'})){const {input,resolve}=sends[index];input.unsent(error);resolve(false);},
  };
 }
 
@@ -435,6 +435,37 @@ test('a comment that can\'t be sent comes back ahead of what was typed since, an
  t.A.addComment('BIR-079');
  assert.equal(t.sends[2].input.text,'Only thought');
  assert.equal(t.sends[2].input.interactionId,t.sends[1].input.interactionId,'sending it again can\'t add it twice');
+});
+
+test('a comment whose result is unknown is never joined to new text; it comes back alone, so it is saved once',async()=>{
+ const t=sendingComments();
+ typeComment(t,'First comment');t.A.addComment('BIR-079');
+ typeComment(t,'Second comment');
+ t.fail(0,new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Second comment','the first may be saved already, so it stays out of this one');
+ assert.equal(t.w.Recovery.hasUnsavedInput(),true,'leaving oneloop would lose it');
+ t.A.addComment('BIR-079');assert.equal(t.sends[1].input.text,'Second comment');
+ t.save(1);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'First comment','it comes back alone once the box is empty');
+ t.A.addComment('BIR-079');
+ assert.equal(t.sends[2].input.text,'First comment');
+ assert.equal(t.sends[2].input.interactionId,t.sends[0].input.interactionId,'sent again with its interaction, so the server adds it once');
+});
+
+test('a comment that fails after its writer left the task page comes back when they return',async()=>{
+ const t=sendingComments();
+ typeComment(t,'Sent before leaving');t.A.addComment('BIR-079');
+ t.A.nav('board');t.fail(0);await settle();
+ t.A.openTask('BIR-079');await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Sent before leaving');
+});
+
+test('Enter on the box its comment just left says nothing',async()=>{
+ const t=sendingComments();
+ typeComment(t,'On its way');t.A.addComment('BIR-079');t.A.addComment('BIR-079');
+ assert.equal(t.sends.length,1);assert.equal(t.d.querySelector('.comment-feedback').textContent,'');
+ t.save(0);await settle();t.A.addComment('BIR-079');
+ assert.equal(t.d.querySelector('.comment-feedback').textContent,'Write a comment first.','with nothing on its way, an empty box is a mistake');
 });
 
 test('a deleted comment offers Undo, which brings its text back',async()=>{
