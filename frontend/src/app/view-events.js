@@ -11,7 +11,7 @@ const EVENT_ATTRIBUTES = Object.freeze([
 const ALLOWED_APP_METHODS = new Set([
   'addComment','addPoolItem','archiveNotification','attachFiles','blockReasonInput','boardSearchKey','cancelCommentMode','cancelPoolDescription','changePassword','cleanupStorage','clearBoardFilters','closeEpic',
   'closeOverlays','colLeave','colOver','commentInput','commentKey','commentMenu','confirmYes','copyTemporaryPassword','dateBlur','dateKey','dateTyping',
-  'delAttachment','delComment','delPool','deleteEpic','deleteMilestone','deleteProject','dismissOverlays','downloadAttachment','dragEnd','dropTask',
+  'delAttachment','delComment','delPool','deleteEpic','deleteMilestone','deleteProject','downloadAttachment','dragEnd','dropTask',
   'editPoolDescription','epicHover','epicKey','epicLeave','expandDescription','goToday','laneOver',
   'inboxBulk','inboxFilter','jumpToComment','loadMoreBoard','loadMoreEpicActivity','loadMoreEpicTasks','loadMorePool','loadMoreUsers','loadOlderActivity','login','logout','menuAction','milestoneClick','moreInbox',
   'milestoneHover','nav','openAttachment','openModal','openNotification','openPeek','openTask','poolDescriptionKey','poolKey','popDate',

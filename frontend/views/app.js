@@ -2040,7 +2040,8 @@
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
-    return `<div class="scrim" onclick="App.dismissOverlays()"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
+    // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
+    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
   }
 
   function renderMenu() {
@@ -3330,7 +3331,7 @@
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
     openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; roadmapSelection = id; renderOverlays(); },
-    /** Escape, or a click beside a dialog: a dialog with typed text asks before it closes. */
+    /** Escape: a dialog with typed text asks before it closes. */
     dismissOverlays() {
       const close = () => state.modal?.poolId ? App.returnToPool() : App.closeOverlays();
       const dialog = state.modal ? document.querySelector('#overlay-root .modal') : null;

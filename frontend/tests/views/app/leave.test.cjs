@@ -248,7 +248,7 @@ test('Sign out says that typed text will be lost, only when there is some', () =
   assert.equal(ask(t).querySelector('p').textContent, 'End your current browser session. Text you typed and have not saved will be lost.');
 });
 
-test('Escape or a click beside a dialog with typed text asks first; a clean dialog closes at once', () => {
+test('Escape on a dialog with typed text asks first; a clean dialog closes at once', () => {
   const t = bootApp({ route: 'roadmap' });
   const escape = () => t.d.activeElement.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   t.A.openModal('epic');
@@ -260,8 +260,7 @@ test('Escape or a click beside a dialog with typed text asks first; a clean dial
   assert.equal(ask(t).querySelector('p').textContent, 'Text you typed in this dialog will be lost.');
   t.d.querySelector('[data-confirm-cancel]').click();
   assert.equal(t.d.querySelector('.modal [name="title"]').value, 'Payment retries');
-  t.w.Function(t.d.querySelector('.modal-wrap').previousElementSibling.getAttribute('onclick'))();
-  assert(ask(t), 'a click beside the dialog asks too');
+  escape();
   t.d.querySelector('[data-confirm-accept]').click();
   assert.equal(t.d.querySelector('.modal'), null);
 });
