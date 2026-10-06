@@ -230,11 +230,11 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   function readerHtml(/** @type {string} */ projectId, /** @type {KnowledgeView} */ data) {
     if (data.state === 'unconnected') {
       return emptyHtml('A home for project knowledge', 'Connect a repository folder to bring your team’s guides, product rules and decisions into the project.',
-        isAdmin() ? '<button type="button" class="btn primary" onclick="App.openModal(\'knowledge\')">Connect repository</button>' : '<span class="knowledge-badge">Ask an admin to connect a repository</span>');
+        isAdmin() ? `<button type="button" class="btn primary" data-action="openModal" data-args='["knowledge"]'>Connect repository</button>` : '<span class="knowledge-badge">Ask an admin to connect a repository</span>');
     }
     if (!data.files.length && data.state === 'failed') {
       return emptyHtml('Knowledge couldn’t sync', isAdmin() ? esc(failureText(data.source?.errorCode)) : 'Ask an admin to check the repository connection.',
-        isAdmin() ? `<div class="knowledge-empty-actions">${retryButton(data)}<button type="button" class="btn" onclick="App.openModal('knowledge')">Manage connection</button></div>` : '', 'warn');
+        isAdmin() ? `<div class="knowledge-empty-actions">${retryButton(data)}<button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Manage connection</button></div>` : '', 'warn');
     }
     if (!data.files.length) {
       return emptyHtml(data.state === 'pending' ? 'Bringing your knowledge together' : 'This folder is empty', data.state === 'pending' ? 'Reading the selected folder and preparing files for search.' : 'Add files to the folder in Git. They appear here after the next sync.', '', 'git');
@@ -544,8 +544,8 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (entry) entry.unpainted = false;
     let row;
     if (!data) row = entry?.error ? `<p class="access-note" role="alert">${esc(errorText(entry.error, 'Knowledge base settings could not be loaded.'))} <button type="button" class="btn quiet" data-knowledge-action="reload">Retry</button></p>` : '<p class="access-note" role="status">Loading…</p>';
-    else if (!source) row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b>No repository connected</b><small>Show a folder from any Git repository as this project’s knowledge base.</small></span><button type="button" class="btn" onclick="App.openModal('knowledge')">Connect repository</button></div>`;
-    else row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b title="${esc(source.repository)}">${esc(source.repository)}</b><small class="knowledge-source-meta"><span class="mono">${esc(source.branch)} · ${esc(source.folder || '/')}</span>${statusHtml(source)}</small>${source.state === 'failed' ? `<small class="knowledge-source-error">${esc(failureText(source.errorCode))}</small>` : ''}</span><button type="button" class="btn" onclick="App.openModal('knowledge')">Manage connection</button></div>`;
+    else if (!source) row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b>No repository connected</b><small>Show a folder from any Git repository as this project’s knowledge base.</small></span><button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Connect repository</button></div>`;
+    else row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b title="${esc(source.repository)}">${esc(source.repository)}</b><small class="knowledge-source-meta"><span class="mono">${esc(source.branch)} · ${esc(source.folder || '/')}</span>${statusHtml(source)}</small>${source.state === 'failed' ? `<small class="knowledge-source-error">${esc(failureText(source.errorCode))}</small>` : ''}</span><button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Manage connection</button></div>`;
     return `<div class="section" id="knowledge-settings"><h2>Knowledge base</h2>${row}</div>`;
   }
 
@@ -563,7 +563,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
         <div class="field-row"><div class="field"><label for="knowledge-branch">Branch</label><input class="ctl" id="knowledge-branch" name="branch" required autocomplete="off" spellcheck="false" value="${esc(source?.branch ?? 'main')}"></div><div class="field"><label for="knowledge-folder">Folder<span class="optional-mark">Optional</span></label><input class="ctl" id="knowledge-folder" name="folder" autocomplete="off" spellcheck="false" value="${esc(connected ? source.folder : 'docs')}" placeholder="Repository root"></div></div>
         <div class="field" data-access="https"${ssh ? ' hidden' : ''}>${label('knowledge-token', 'Access token', saved ? '' : 'Private repositories only')}${token}</div>
         <div class="field" data-access="ssh"${ssh ? '' : ' hidden'}>${label('knowledge-key', 'Deploy key', 'Add to the repository, read-only')}<div class="knowledge-key"><input class="ctl" id="knowledge-key" readonly value="${esc(key)}" placeholder="Creating key…"><button type="button" class="btn" data-knowledge-action="copy-key">Copy</button></div></div>
-        <div class="modal-actions">${connected ? '<button type="button" class="btn danger knowledge-disconnect" data-knowledge-action="disconnect">Disconnect</button>' : ''}<button type="button" class="btn quiet" onclick="App.closeOverlays()">Cancel</button><button type="submit" class="btn primary">${connected ? 'Save' : 'Connect'}</button></div>
+        <div class="modal-actions">${connected ? '<button type="button" class="btn danger knowledge-disconnect" data-knowledge-action="disconnect">Disconnect</button>' : ''}<button type="button" class="btn quiet" data-action="closeOverlays">Cancel</button><button type="submit" class="btn primary">${connected ? 'Save' : 'Connect'}</button></div>
       </form>`;
   }
 

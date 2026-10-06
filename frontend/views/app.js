@@ -2055,7 +2055,7 @@
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
     // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
-    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
+    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title">${body}</div></div>`;
   }
 
   function renderMenu() {

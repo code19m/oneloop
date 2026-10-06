@@ -424,7 +424,7 @@ export function createRecoveryController({
 
   function connectionHtml(){
     const state=notice(); announceNotice(state);
-    return state?`<div class="connection-notice"><span>${state.text}</span><button class="btn quiet" onclick="Recovery.activateNotice()">${state.label}</button></div>`:'';
+    return state?`<div class="connection-notice"><span>${state.text}</span><button class="btn quiet" data-action="Recovery.activateNotice">${state.label}</button></div>`:'';
   }
 
   function updateNotice(){
@@ -646,7 +646,7 @@ export function createRecoveryController({
     }
     const variants={404:['Page not found','The page or item may have been removed.'],403:['Access denied','You don’t have permission to view this page.'],500:['Could not load this page','Something went wrong. Please try again.'],503:['Service unavailable','The server is temporarily unavailable.']};
     const [title,copy]=variants[code]??variants[500];
-    return `<section class="page-error"><span class="error-code">${escapeHtml(code)}</span><h2>${escapeHtml(title)}</h2><p>${escapeHtml(copy)}</p><div class="error-actions">${['500','503'].includes(code)?'<button class="btn primary" onclick="Recovery.retryLoad()">Retry</button>':''}<button class="btn quiet" onclick="App.nav('board')">Back to Board</button>${pageReference?'<button class="btn quiet" onclick="Recovery.copyReference()">Copy error reference</button>':''}</div></section>`;
+    return `<section class="page-error"><span class="error-code">${escapeHtml(code)}</span><h2>${escapeHtml(title)}</h2><p>${escapeHtml(copy)}</p><div class="error-actions">${['500','503'].includes(code)?'<button class="btn primary" data-action="Recovery.retryLoad">Retry</button>':''}<button class="btn quiet" data-action="nav" data-args='["board"]'>Back to Board</button>${pageReference?'<button class="btn quiet" data-action="Recovery.copyReference">Copy error reference</button>':''}</div></section>`;
   }
 
   const controller={

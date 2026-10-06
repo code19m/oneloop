@@ -143,7 +143,7 @@ test('a project without a source invites administrators to connect and members t
     await painted(t);
     assert.match(t.d.querySelector('.knowledge-empty h2').textContent, /A home for project knowledge/);
     const connect = t.d.querySelector('.knowledge-empty button');
-    if (admin) assert.equal(connect.getAttribute('onclick'), "App.openModal('knowledge')");
+    if (admin) assert.deepEqual([connect.dataset.action, JSON.parse(connect.dataset.args)], ['openModal', ['knowledge']]);
     else { assert.equal(connect, null); assert.match(t.d.querySelector('.knowledge-badge').textContent, /Ask an admin/); }
     assert.equal(t.d.querySelector('.knowledge-search'), null, 'no search without files');
   }
