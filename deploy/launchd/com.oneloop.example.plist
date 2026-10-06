@@ -46,9 +46,10 @@
   <true/>
   <key>Umask</key>
   <integer>63</integer>
-  <!-- The launcher (oneloop-launchd.sh) runs oneloop serve --check first. It
-       stops the job when the binary is missing, a setting is invalid or the
-       data folder has no database; other failures retry at most once a minute. -->
+  <!-- The launcher (oneloop-launchd.sh) checks the settings and the database
+       first. It stops the job when the binary is missing, a setting is invalid
+       or the data folder has no database; other failures retry at most once a
+       minute. -->
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>

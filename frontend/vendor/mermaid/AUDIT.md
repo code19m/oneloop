@@ -13,6 +13,8 @@ review, integrity checks and license review when rebuilding a vendor bundle.
 The security rebuild uses lodash-es 4.18.1 throughout, resolving the
 [template imports advisory](https://github.com/advisories/GHSA-r5fr-rjxr-66jc)
 and [array-path advisory](https://github.com/advisories/GHSA-f23m-r3pf-42rh).
+It also uses KaTeX 0.18.9, resolving the
+[trust advisory](https://github.com/advisories/GHSA-238p-pmpm-9mq7).
 The generated source map was checked for the resolved versions. The inventory
 and licenses match the rebuilt source lock; no advisory suppression is configured.
 See [rebuild instructions](REBUILD.md).

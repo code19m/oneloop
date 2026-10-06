@@ -1,7 +1,8 @@
 # Mermaid bundled dependency notices
 
 Mermaid 12.0.0 security rebuild, source commit
-98a0945418c76238f15df2afaddbba4272656c3b; DOMPurify overridden to 3.4.16 and lodash-es to 4.18.1.
+98a0945418c76238f15df2afaddbba4272656c3b; DOMPurify overridden to 3.4.16, lodash-es to 4.18.1
+and KaTeX to 0.18.9.
 This conservative inventory includes the source lock's production dependency
 closure, parser runtime dependencies and bundled lodash-es. Some listed packages
 are build/type helpers and may be eliminated from the final browser bundle.
@@ -2656,13 +2657,13 @@ Apache License
    limitations under the License.
 ```
 
-## commander@7.2.0
+## commander@15.0.0
 
 License: MIT
 
-Source: https://registry.npmjs.org/commander/-/commander-7.2.0.tgz
+Source: https://registry.npmjs.org/commander/-/commander-15.0.0.tgz
 
-Integrity: `sha512-QrWXB+ZQSVPmIWIhtEO9H+gwHaMGYiF5ChvoJ+K9ZGHG/sVsa6yiesAD1GC/x46sET00Xlwo1u49RVVVzvcSkw==`
+Integrity: `sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==`
 
 ### LICENSE
 
@@ -2691,13 +2692,13 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## commander@8.3.0
+## commander@7.2.0
 
 License: MIT
 
-Source: https://registry.npmjs.org/commander/-/commander-8.3.0.tgz
+Source: https://registry.npmjs.org/commander/-/commander-7.2.0.tgz
 
-Integrity: `sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==`
+Integrity: `sha512-QrWXB+ZQSVPmIWIhtEO9H+gwHaMGYiF5ChvoJ+K9ZGHG/sVsa6yiesAD1GC/x46sET00Xlwo1u49RVVVzvcSkw==`
 
 ### LICENSE
 
@@ -5535,13 +5536,13 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-## katex@0.16.47
+## katex@0.18.9
 
 License: MIT
 
-Source: https://registry.npmjs.org/katex/-/katex-0.16.47.tgz
+Source: https://registry.npmjs.org/katex/-/katex-0.18.9.tgz
 
-Integrity: `sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==`
+Integrity: `sha512-8ad9RyoKsb/g8/yLFE+KAlP+DhbCTRUNi/V9XGsxn0R+trJJltNwzcDNo0q/DEkOy5fQUQTAQyCXCYSE+OakTQ==`
 
 ### LICENSE
 
