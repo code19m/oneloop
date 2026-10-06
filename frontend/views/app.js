@@ -2309,6 +2309,9 @@
   }
   /** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
   const waitingPasswords=[];
+  // A temporary password is shown once. While it shows, or waits for another
+  // dialog to close, a reload or leaving oneloop would lose it for good.
+  window.Recovery?.trackUnsaved?.(()=>state.modal?.type==='temppw'||waitingPasswords.length>0);
   function showWaitingPassword(){
     while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
   }

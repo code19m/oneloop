@@ -237,8 +237,9 @@ default, follows your device's light or dark setting.
 
 When oneloop is upgraded, open tabs show **oneloop was updated**. With
 **Reload after updates** on, a tab reloads by itself once nothing you typed
-would be lost and the tab is hidden or you haven't used it for a minute. Both
-choices apply to this browser only.
+would be lost and the tab is hidden or you haven't used it for a minute. A
+temporary password that is still on screen counts as something that would be
+lost. Both choices apply to this browser only.
 
 On your **Profile**:
 

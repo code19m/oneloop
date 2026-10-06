@@ -161,6 +161,23 @@ test('opening a comment for editing counts only once its text changes', () => {
   assert.equal(pageWarns(t), true);
 });
 
+test('a temporary password counts as unsaved while it shows or waits, so neither a reload after an update nor leaving loses it', () => {
+  const t = bootApp({ route: 'users' });
+  const user = t.D.users.find(item => item.id !== t.D.session.userId);
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.showTemporaryPassword(user.id, 'shown-once-password');
+  assert.ok(t.d.getElementById('tmpPw'));
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true); assert.equal(leaveWarns(t), true);
+  assert.equal(pageWarns(t), false, 'another page of oneloop keeps it');
+  t.A.closeOverlays();
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.openModal('user', user.id);
+  assert.equal(t.A.showTemporaryPassword(user.id, 'waiting-password', { wait: true }), true, 'its own dialog gives way at once');
+  t.A.closeOverlays(); t.A.openModal('project');
+  assert.equal(t.A.showTemporaryPassword(user.id, 'waiting-password', { wait: true }), false);
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'a password waiting for another dialog counts too');
+});
+
 test('running saves, uploads and drafts count only when leaving oneloop', async () => {
   const t = withBridge(bootApp({ route: 'task/BIR-079' }));
   let finish;
