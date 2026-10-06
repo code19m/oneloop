@@ -133,6 +133,18 @@ test('a blocked card describes its block reason', () => {
   assert.match(d.getElementById(button.getAttribute('aria-describedby')).textContent, /Waiting for books/);
 });
 
+test('a click on a card opens its task, and one on its Move button opens only the menu', () => {
+  const t = bootApp({ actions: true });
+  const card = t.d.querySelector('.card[data-task]'), id = card.dataset.task;
+  card.querySelector('.card-move').click();
+  assert.equal(t.A.context().view, 'board');
+  assert(t.d.querySelector('#overlay-root > .menu').textContent.includes('Move to'));
+  assert.equal(t.d.activeElement, t.d.querySelector('#overlay-root > .menu button'));
+  t.A.closeOverlays();
+  card.querySelector('.card-title-button').click();
+  assert.deepEqual([t.A.context().view, t.A.context().taskId], ['task', id]);
+});
+
 test('accepting another Board page appends cards and leaves loaded cards and columns untouched', () => {
   const { w, d } = bootApp({ media: () => true });
   const task = w.DATA.tasks.find(item => item.state !== 'done');
@@ -168,7 +180,7 @@ test('compact deadlines show the year when it differs and expose the complete da
 });
 
 test('multi-select filters keep keyboard position through toggles and return focus on Escape', () => {
- const t=boot('board'),trigger=t.d.querySelector('[onclick*="fTrack"]');
+ const t=boot('board'),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
  t.A.popMulti({preventDefault(){},currentTarget:trigger},'fTrack');
  const key=value=>t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));
  key('ArrowDown');const value=t.d.activeElement.dataset.v;assert(value);
@@ -219,14 +231,14 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['task.move',['optimistic','status','taskId']]],'the server keeps the manual order');
   t.requests[0].resolve({});await tick();
   const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
-  t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move')},card.dataset.task);
+  t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move'),stopPropagation(){}},card.dataset.task);
   const labels=[...t.d.querySelectorAll('.menu button')].map(button=>button.textContent);
   assert(labels.includes('Move to Planning'));assert(!labels.includes('Move up')&&!labels.includes('Move down'));
   t.A.closeOverlays();
   t.A._drag={kind:'task',id:before[0],offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',before[0])},'done');
   assert.equal(t.calls.length,1,'reordering Done sends nothing');
-  assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('onclick'),'App.toggleDoneOrder()');
+  assert.equal(t.d.querySelector('[data-col="done"] .done-order').dataset.action,'toggleDoneOrder');
   t.A.toggleDoneOrder();
   assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'manual'}]));
 });
@@ -297,7 +309,7 @@ test('Move to a column that does not show its end puts the card at its top, in v
   const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
   assert.equal(shown.length, 50);
   const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-  t.A.taskMoveMenu({ currentTarget: move }, task.id); chooseMenuItem(t, 'Move to Done');
+  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
   assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['task.move', 'done', 0, undefined]]);
   assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
   assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
@@ -307,7 +319,7 @@ test('Move to a column that shows its end puts the card last and draws it', () =
   for (const count of [3, 50]) {
     const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
     const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-    t.A.taskMoveMenu({ currentTarget: move }, task.id); chooseMenuItem(t, 'Move to Done');
+    t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
     assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
     assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
     assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);

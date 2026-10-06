@@ -11,7 +11,7 @@ const key = (t, name, shiftKey = false) => t.d.dispatchEvent(new t.w.KeyboardEve
 
 test('the task dialog labels its fields, traps focus and returns it to its trigger', () => {
   const t=boot();
-  const trigger=t.d.querySelector('.topbar button[onclick="App.openModal(\'task\')"]');
+  const trigger=t.d.querySelector('.topbar button[data-action="openModal"][data-args=\'["task"]\']');
   assert(trigger);trigger.focus();t.A.openModal('task');
   let modal=t.d.querySelector('.modal');assert.equal(modal.getAttribute('role'),'dialog');assert.equal(modal.getAttribute('aria-modal'),'true');
   assert.equal(t.d.activeElement,modal.querySelector('input[name="title"]'));
@@ -25,7 +25,7 @@ test('the task dialog labels its fields, traps focus and returns it to its trigg
   const first=modal.querySelector('input[name="title"]');first.focus();key(t,'Tab',true);
   assert(modal.contains(t.d.activeElement));
   const last=modal.querySelector('.modal-actions button:last-child');last.focus();key(t,'Tab');assert(modal.contains(t.d.activeElement));
-  key(t,'Escape');assert.equal(t.d.querySelector('.modal'),null);assert.equal(t.d.activeElement.getAttribute('onclick'),trigger.getAttribute('onclick'));
+  key(t,'Escape');assert.equal(t.d.querySelector('.modal'),null);assert.deepEqual([t.d.activeElement.dataset.action,t.d.activeElement.dataset.args],[trigger.dataset.action,trigger.dataset.args]);
   assert.equal(t.d.querySelector('.main').inert,false);
 });
 
@@ -36,7 +36,7 @@ test('a confirmation over a dialog returns focus to the field, and closing witho
   t.d.querySelector('[data-confirm-cancel]').click();
   assert(!t.d.getElementById('app').inert);assert(t.d.querySelector('.main').inert);
   assert.equal(t.d.activeElement,title);
-  t.d.querySelector('.topbar button[onclick="App.openModal(\'task\')"]').remove();
+  t.d.querySelector('.topbar button[data-action="openModal"][data-args=\'["task"]\']').remove();
   key(t,'Escape');assert.equal(t.d.querySelector('.modal'),null);assert.notEqual(t.d.activeElement,t.d.body);
 });
 

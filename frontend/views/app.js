@@ -582,7 +582,7 @@
     MULTI[key] = def;
     const label = def.summary();
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
-      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : UIAction('popMulti', UIAction.event, key)}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   // Date values always use ISO. The editor owns separators; users enter digits.
@@ -1215,7 +1215,7 @@
   function renderBoard({column=null,excludeIds=null}={}) {
     const ts = boardTasks();
     const filtered = state.boardBlocked || state.boardQ || state.boardTracks.length || state.boardEpics.length || state.boardAssignees.length;
-    if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" onclick="App.clearBoardFilters()">Clear filters</button>` : canBoard() ? `<button class="btn primary" onclick="App.openModal('task')">${I.plus} Create task</button>` : ''}</div></div>`;
+    if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
     const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
       const list = ts.filter((t) => t.state === c.key);
       const serverPage = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[c.key] : null;
@@ -1224,8 +1224,8 @@
         const b = taskBits(t);
         const av = (t.assignees || []).filter(userById);
         const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
-        return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ondragstart="App.taskDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()"` : ''} onclick="App.openTask('${UIArg(t.id)}')">
-          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
+        return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
+          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
           <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
           <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
           <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
@@ -1235,10 +1235,10 @@
             <span class="avs">${avs}</span>
           </div></div>`;
       }).join('');
-      return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `ondragover="App.colOver(event)" ondragleave="App.colLeave(event)" ondrop="App.dropTask(event,'${UIArg(c.key)}')"` : ''}>
-        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" onclick="App.toggleDoneOrder()">Newest first</button>` : ''}</div>
+      return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
+        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
         </div>
-        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" onclick="App.loadMoreBoard('${UIArg(c.key)}')">Load more</button></div>` : ''}</div></section>`;
+        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
     }).join('');
     return `<div class="board">${cols}</div>`;
   }
@@ -1340,7 +1340,7 @@
         }
         const ghost = card.cloneNode(true);
         ghost.removeAttribute('data-task'); ghost.removeAttribute('data-reorderable');
-        ghost.removeAttribute('onclick'); ghost.removeAttribute('ondragstart'); ghost.removeAttribute('ondragend');
+        for (const name of ghost.getAttributeNames()) if (/^data-(?:action|args)\b/.test(name)) ghost.removeAttribute(name);
         ghost.style.cssText = `position:absolute;margin:0;left:${old.rect.left - viewport.left}px;top:${old.rect.top - viewport.top}px;width:${old.rect.width}px;height:${old.rect.height}px`;
         exitLayer.append(ghost);
         const layer = exitLayer;
@@ -2189,13 +2189,13 @@
       const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
       return `<h1>Board</h1>
       <div class="right board-filters">
-        <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" oninput="App.setBoardQ(this.value,event)" onkeydown="App.boardSearchKey(event)">
+        <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
         ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
         ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
         ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
-        <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" onclick="App.setBlockedFilter(this)">${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-        <button class="btn quiet" onclick="App.openModal('pool')">Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
-        ${canBoard() ? `<button class="btn primary" onclick="App.openModal('task')">${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
+        <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
+        <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+        ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }
     if (state.view === 'task') {
@@ -4034,6 +4034,7 @@
     loadMoreUsers(){const count=document.querySelectorAll('.user-row').length;state.usersLimit+=50;render();[...document.querySelectorAll('.user-row')].slice(count).forEach(el=>UIMotion.enter(el));},
     loadOlderActivity(id){state.activityLimits[id]=(state.activityLimits[id]||50)+50;const timeline=document.querySelector('.task-page .timeline'),task=taskById(id);if(timeline&&task){const scroll=document.querySelector('.task-page'),before=scroll.scrollHeight;setHTML(timeline,taskFeedHtml(task,canBoard()));scroll.scrollTop+=scroll.scrollHeight-before;fadeContent(timeline);}},
     taskMoveMenu(event,id){
+      event.stopPropagation(); // The card around the button would open the task.
       if(App._boardMovePending)return;
       if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
       const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){render();focusMovedTask(id);}}}}));

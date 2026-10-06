@@ -24,7 +24,7 @@ test('field saves show a quiet Saved status and block actions announce once', ()
  t.A.updTask(task.id,'state','progress');assert.equal(status(),'Saved');
  t.d.querySelector('.tp-title').dispatchEvent(new t.w.Event('input',{bubbles:true}));assert.equal(status(),'');
  t.A.updTask(task.id,'deadline','bad');assert.equal(status(),'');assert(t.d.querySelector('.date-error'));
- const button=t.d.querySelector('[onclick*="tpAssign"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
+ const button=t.d.querySelector('[data-action="popMulti"][data-args*=\'"tpAssign"\']');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
  block(t,'block','');assert.equal(t.notices.length,0);block(t,'block','Waiting');assert.equal(t.notices.at(-1).text,'Task blocked');
  const count=t.notices.length;block(t,'block','Waiting');assert.equal(t.notices.length,count);block(t,'block','Waiting for review');assert.equal(t.notices.at(-1).text,'Block reason updated');
  block(t,'completeBlocked','Ready');assert.equal(t.notices.at(-1).text,'Task unblocked and completed');assert.equal(task.state,'done');assert.equal(t.notices.length,count+2);
