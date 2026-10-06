@@ -404,3 +404,27 @@ fn output_to_a_reader_that_stopped_is_not_an_error() {
     }
     assert!(root.path().join("oneloop.sqlite3").is_file());
 }
+
+/// The password that `user add` and `user passwd` set must be replaced at the
+/// next sign-in, also by an admin who resets their own (troubleshooting.md).
+#[test]
+fn user_help_says_that_the_password_is_temporary() {
+    for (arguments, summary) in [
+        (["user", "--help"].as_slice(), "Set a temporary password"),
+        (
+            ["user", "add", "--help"].as_slice(),
+            "The password you set is temporary",
+        ),
+        (
+            ["user", "passwd", "--help"].as_slice(),
+            "new password at their next sign-in",
+        ),
+    ] {
+        ProcessCommand::cargo_bin("oneloop")
+            .unwrap()
+            .args(arguments)
+            .assert()
+            .success()
+            .stdout(contains(summary));
+    }
+}

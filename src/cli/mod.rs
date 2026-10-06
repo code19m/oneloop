@@ -63,8 +63,14 @@ pub struct UserArgs {
 #[derive(Debug, Subcommand)]
 pub enum UserCommand {
     /// Create a local account.
+    ///
+    /// The password you set is temporary: the person chooses a new one at
+    /// their first sign-in. Only the first admin of an empty instance keeps it.
     Add(UserAddArgs),
-    /// Reset a local account password and revoke its credentials.
+    /// Set a temporary password and sign the account out everywhere.
+    ///
+    /// This also disconnects the account's AI assistants. The person chooses a
+    /// new password at their next sign-in.
     Passwd(UserPasswordArgs),
 }
 

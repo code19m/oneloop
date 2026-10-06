@@ -60,7 +60,7 @@ usernames, IP addresses and file paths, so keep them private.
 | Large uploads fail with HTTP 413 | The proxy's limit for request bodies is too small. | Allow at least 27 MB (in nginx, `client_max_body_size 27m`). |
 | Uploads fail with "There is not enough storage for this file", and the **Storage** page shows **Storage full** or **Cleanup threshold reached** | The upload doesn't fit in the [storage limit](reference.md#storage). | Choose **Clean up now**, delete files, or raise `ONELOOP_STORAGE_LIMIT`. |
 | Uploads fail with "There is not enough storage for this file", and the **Storage** page shows **Within capacity** | The server's disk is nearly full: the upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`. | Free disk space on the server, or lower `ONELOOP_DISK_MIN_FREE`. |
-| An admin forgot their password | No other admin can reset it. | Run `oneloop user passwd <username>` on the server. |
+| An admin forgot their password | No other admin can reset it. | Run `oneloop user passwd <username>` on the server. Sign in with that temporary password, then choose a new one. |
 
 ## Knowledge sync
 
