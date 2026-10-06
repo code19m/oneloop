@@ -456,8 +456,10 @@ impl FileService {
                     finish_reorder_idempotency(tx, &actual_id, &input.attachment_id, &result, now)?;
                     return Ok(result);
                 }
+                // Every file of the task, deleted ones too, first moves to a
+                // negative position, so a new position never meets an old one.
                 tx.execute(
-                    "UPDATE task_attachments SET position=position+1000000 WHERE task_id=?1",
+                    "UPDATE task_attachments SET position=-position-1 WHERE task_id=?1",
                     [&task_id],
                 )?;
                 for (position, item) in current.iter().enumerate() {
@@ -469,6 +471,21 @@ impl FileService {
                     tx.execute(
                         "UPDATE task_attachments SET position=?1,updated_at=?2,revision=?3 WHERE id=?4",
                         params![position as i64, now, revision, item.id],
+                    )?;
+                }
+                // Deleted files follow in their order, so Undo puts one after
+                // the others. Their revisions stay, so Undo still applies.
+                let deleted = tx
+                    .prepare(
+                        "SELECT id FROM task_attachments WHERE task_id=?1 AND deleted_at IS NOT NULL
+                         ORDER BY position DESC",
+                    )?
+                    .query_map([&task_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (offset, id) in deleted.iter().enumerate() {
+                    tx.execute(
+                        "UPDATE task_attachments SET position=?1 WHERE id=?2",
+                        params![(current.len() + offset) as i64, id],
                     )?;
                 }
                 record_activity_tx(

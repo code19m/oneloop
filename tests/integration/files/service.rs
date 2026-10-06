@@ -2781,6 +2781,72 @@ async fn a_restored_attachment_keeps_its_place_unless_the_files_were_reordered()
 }
 
 #[tokio::test]
+async fn files_reorder_after_a_deletion_an_undo_and_an_upload() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    // Moves `name` just before `target`, as the browser does.
+    let place = async |name: &str, target: &str| {
+        let items = service
+            .list_attachments(&f.viewer, "task")
+            .await
+            .unwrap()
+            .items;
+        let find = |wanted: &str| items.iter().find(|item| item.name == wanted).unwrap();
+        let (moving, target) = (find(name), find(target));
+        service
+            .reorder(
+                &f.manager,
+                "task",
+                AttachmentReorder {
+                    attachment_id: moving.id.clone(),
+                    target_id: target.id.clone(),
+                    after: false,
+                    expected_revision: moving.revision,
+                    idempotency_key: format!("place-{name}-{}", moving.revision),
+                },
+            )
+            .await
+            .unwrap();
+        listed_names(&service, &f.viewer).await
+    };
+    let mut files = Vec::new();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"] {
+        files.push(upload(&service, &f.manager, name, name, name.as_bytes(), false).await);
+    }
+    let c = &files[2];
+    service
+        .delete_attachment(&f.manager, &c.id, c.revision, "delete-c")
+        .await
+        .unwrap();
+    assert_eq!(
+        place("a.txt", "e.txt").await,
+        ["b.txt", "d.txt", "a.txt", "e.txt"]
+    );
+    assert_eq!(
+        place("e.txt", "b.txt").await,
+        ["e.txt", "b.txt", "d.txt", "a.txt"]
+    );
+    // Undo puts the file last, and the files still move.
+    service
+        .restore_attachment(&f.manager, &c.id, restore("restore-c", c.revision + 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        listed_names(&service, &f.viewer).await,
+        ["e.txt", "b.txt", "d.txt", "a.txt", "c.txt"]
+    );
+    assert_eq!(
+        place("c.txt", "e.txt").await,
+        ["c.txt", "e.txt", "b.txt", "d.txt", "a.txt"]
+    );
+    upload(&service, &f.manager, "f.txt", "f.txt", b"f", false).await;
+    assert_eq!(
+        place("f.txt", "c.txt").await,
+        ["f.txt", "c.txt", "e.txt", "b.txt", "d.txt", "a.txt"]
+    );
+}
+
+#[tokio::test]
 async fn deleted_attachments_wait_out_the_undo_window_across_restarts() {
     let f = Fixture::new().await;
     let service = f.service(100 * 1024 * 1024);
