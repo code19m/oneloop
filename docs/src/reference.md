@@ -250,7 +250,7 @@ Some emoji count as two characters.
 | --- | --- |
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
 | Live updates | 16 connections per person, one for each browser tab that shows oneloop; another one closes the person's oldest, which reconnects |
-| Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
+| Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response; within 5 minutes from a [trusted proxy](production.md#trusted-proxy) |
 | Request body size | 256 KiB for normal requests; 1 MiB for MCP calls |
 | Request body speed | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
 | Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes. A client that stops reading is disconnected within 5 minutes. |

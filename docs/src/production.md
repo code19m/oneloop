@@ -79,6 +79,12 @@ never a network that visitors use. The proxy must replace `X-Forwarded-For`,
 not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
 `X-Forwarded-Proto`.
 
+Naming the proxy also keeps its idle connections to oneloop open
+[longer](reference.md#limits) than proxies such as Caddy, nginx and Tailscale
+keep them. Otherwise oneloop closes them first, and a request that the proxy
+sends on a connection just as oneloop closes it fails with 502. So Caddy needs
+no `keepalive` setting.
+
 ### Rules for any proxy
 
 - Serve oneloop at the root of its own host name. A path such as `/oneloop/`
