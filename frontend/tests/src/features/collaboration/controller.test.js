@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
 import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
+import {ApiError} from '../../../../src/data/api-client.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
 import {installCollaborationController,mapActivity,mapComment,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
 
@@ -549,6 +550,16 @@ test('a lost stream that finds someone else signed in ends this tab\'s session',
     t.sources[0].listeners.error();for(let turn=0;turn<5&&!t.expires;turn++)await tick();
     assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);
   }finally{t.restore();}
+});
+
+test('a new comment the server did not take tells the page, so its text comes back; a saved one does not',async()=>{
+  const t=fixture(),unsent=[],input=(text)=>({task:t.data.tasks[0],mode:'reply',targetId:'root',text,mentions:[],interactionId:text,unsent:error=>unsent.push([text,error.code])});
+  t.transport.commands.execute=async()=>{throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});};
+  assert.equal(await t.controller.saveComment(input('Lost')),false);
+  t.transport.commands.execute=async(_operation,payload)=>({entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'root',replyToId:'root',content:payload.content,mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1}],events:[{id:'a1'}]});
+  assert.equal(await t.controller.saveComment(input('Kept')),true);
+  assert.deepEqual(unsent,[['Lost','network_error']]);
+  assert.deepEqual(t.saved.map(([,comment,result])=>[comment.text,result.mode,result.targetId]),[['Kept','reply','root']]);
 });
 
 test('temporary sessions open no event stream until password completion',()=>{

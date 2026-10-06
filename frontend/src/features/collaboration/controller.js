@@ -213,7 +213,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
           });
           if(!resolved.saved)return false;response=resolved.result;notifyEditor=!resolved.stale;
         }catch(retryError){if(isCurrent())report(retryError,true);return false;}
-      }else{report(error,true);return false;}
+      }else{report(error,true);input.unsent?.(error);return false;}
     }
     if(response.stale)return false;
     try{
@@ -225,7 +225,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       // Typing after Save keeps the editor open; its next save builds on this one.
       if(editing&&currentSession()===expectedSession)facade?.commentAcknowledged?.(input,comment);
       await refreshActivity(task,true);
-      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
+      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,targetId:input.targetId??null,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
       return true;
     }catch(error){report(error,true);return false;}
   }

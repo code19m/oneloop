@@ -35,7 +35,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
-  const pendingPoolCaptures = new WeakSet();
+  // Pool items that could not be added, kept for their person until the
+  // capture field of their Pool is free.
+  /** @type {{userId:string,projectId:string,scope:string,title:string,description:string,key:string}[]} */
+  const unsentCaptures = [];
+  /** @type {{projectId:string,scope:string,title:string,description:string,key:string}|null} */
+  let returnedCapture = null;
   let projectGeneration = 0;
   let usersGeneration=0,profileGeneration=0,routeGeneration=0,profileNameGeneration=0,avatarGeneration=0;
   let usersController=null,profileController=null;
@@ -655,24 +660,48 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return fire(execute(operation,payload,revisionEntity,mode==='block'?'Task blocked':'Task unblocked',{form,closeForm:true}));
   };
 
+  // An item leaves the field as soon as it is sent, so what is typed next is a
+  // new item: never joined to this one, and sent on its own. An item that
+  // can't be added comes back once the field is free.
   app.poolKey=(event)=>{
     if(event.key!=='Enter'||event.shiftKey||event.isComposing||event.repeat)return;
     event.preventDefault();
     const input=event.target;
-    if(pendingPoolCaptures.has(input))return false;
     const enteredTitle=input.value,title=text(enteredTitle,140);
     if(!title){app.toast('Give the Pool item a title.','error');return false;}
     const notes=/** @type {HTMLTextAreaElement|null} */(document.getElementById('poolNewDesc'));
-    const description=notes?.value||'',scope=context().poolTab==='project'?'team':'personal';
-    pendingPoolCaptures.add(input);
-    return fire(execute('pool.create',{projectId:context().projectId,scope,title,description:text(description,2000)},null,'Pool item added',{
-      create:true,paint:false,interactionKey:'pool:create',poolScope:scope,
-      onAccepted:()=>{
-        if(input.isConnected!==false&&input.value===enteredTitle)input.value='';
-        if(notes?.isConnected&&notes.value===description)notes.value='';
-      },
-    }).finally(()=>pendingPoolCaptures.delete(input)));
+    const description=text(notes?.value||'',2000),scope=context().poolTab==='project'?'team':'personal',projectId=context().projectId,sent=sessionScope(),userId=data.session?.userId??'';
+    // An item sent again after an unknown result keeps its key, so it is added once.
+    const returned=returnedCapture;returnedCapture=null;
+    const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
+    input.value='';if(notes)notes.value='';
+    return fire(execute('pool.create',{projectId,scope,title,description},null,'Pool item added',{
+      create:true,paint:false,interactionKey:key,poolScope:scope,onAccepted:returnCaptures,
+    }).catch((error)=>{
+      if(sessionScope()===sent){unsentCaptures.push({userId,projectId,scope,title,description,key});returnCaptures();}
+      throw error;
+    }));
   };
+  /** Put the oldest item that wasn't added back in the capture field of its Pool, once the field is empty. */
+  function returnCaptures(){
+    const userId=data.session?.userId;
+    for(let index=unsentCaptures.length-1;index>=0;index--)if(unsentCaptures[index].userId!==userId)unsentCaptures.splice(index,1);
+    const input=/** @type {HTMLInputElement|null} */(globalThis.document?.getElementById?.('poolAdd'));
+    const notes=/** @type {HTMLTextAreaElement|null} */(globalThis.document?.getElementById?.('poolNewDesc'));
+    if(!input||input.hidden||input.value||notes?.value)return;
+    const scope=context().poolTab==='project'?'team':'personal',index=unsentCaptures.findIndex(item=>item.projectId===context().projectId&&item.scope===scope);
+    if(index<0)return;
+    const [item]=unsentCaptures.splice(index,1);
+    input.value=item.title;
+    if(notes&&item.description){
+      const focused=globalThis.document.activeElement;
+      if(!notes.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
+      notes.value=item.description;
+      if(focused instanceof HTMLElement&&focused.isConnected)focused.focus({preventScroll:true});
+    }
+    returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
+  }
+  recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>item.userId===data.session?.userId));
   app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:item.scope==='project'?'team':'personal',form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
   app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 
@@ -809,10 +838,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='board.more'){const result=await reads.moreBoard(payload.status);if(!result.stale)app.acceptMoreBoard(payload.status);return result;}
       if(action==='pool.open'){
         const projectId=context().projectId;
+        returnCaptures();
         const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
         return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
       }
-      if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
+      if(action==='pool.select'){returnCaptures();return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');}
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
         if(!await mayLeavePage())return {stale:true};

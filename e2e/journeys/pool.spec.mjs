@@ -26,7 +26,7 @@ async function boardTitles(instance, title) {
   return board.items.filter(item => item.title === title);
 }
 
-test('Pool capture submits once and keeps the next entry during its refresh', { tag: '@smoke' }, async ({ page, instance }) => {
+test('Pool capture sends each item once, and the next one while the first is still being added', { tag: '@smoke' }, async ({ page, instance }) => {
   await openPool(page, instance);
   await expect(page.locator('.pool-list')).toContainText('Seeded Pool item');
   const input = page.getByLabel('Add pool item', { exact: true });
@@ -35,16 +35,19 @@ test('Pool capture submits once and keeps the next entry during its refresh', { 
   try {
     await input.fill('One captured idea');
     await input.press('Enter');
-    await reads.started;
     await expect(input).toHaveValue('');
-    await input.fill('Next idea still being written');
+    await reads.started;
+    await input.fill('Next idea');
     await input.press('Enter');
-    expect(creates).toHaveLength(1);
+    await expect(input).toHaveValue('');
+    await expect.poll(() => creates.map(create => create.payload.title)).toEqual(['One captured idea', 'Next idea']);
     await reads.release();
     await expect(page.locator('.pool-list')).toContainText('One captured idea');
-    await expect(input).toHaveValue('Next idea still being written');
+    await expect(page.locator('.pool-list')).toContainText('Next idea');
     const response = await page.request.get(`${instance.url}/api/projects/${instance.projects[0].project.id}/pool?scope=personal`);
-    expect((await response.json()).items.filter(item => item.title === 'One captured idea')).toHaveLength(1);
+    const titles = (await response.json()).items.map(item => item.title);
+    expect(titles.filter(title => title === 'One captured idea')).toHaveLength(1);
+    expect(titles.filter(title => title === 'Next idea')).toHaveLength(1);
   } finally { await reads.release(); }
 });
 

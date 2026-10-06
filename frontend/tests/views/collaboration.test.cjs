@@ -392,6 +392,51 @@ test('the feed checks posting permission once and indexes people once', () => {
   actor.active = false; assert.equal(w.Collab.canComment(task), false);
 });
 
+/** The task page with production comments whose sends wait for the test. */
+function sendingComments(){
+ const sends=[];let facade;
+ const t=bootApp({route:'task/BIR-079',prepare(_D,w){
+  w.OneloopTransport={};
+  w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
+ }});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079');
+ return {...t,task,sends,
+  /** The server saves send `index`, and the page hears of it. */
+  save(index){const {input,resolve}=sends[index],comment={id:`saved-${index}`,who:t.D.session.userId,ts:Date.now(),text:input.text,mentions:input.mentions,parentId:null,revision:1};(task.comments??=[]).push(comment);facade.commentSaved(task.id,comment,{mode:input.mode,targetId:input.targetId,interactionId:input.interactionId,changed:true});resolve(true);},
+  /** Send `index` can't be saved. */
+  fail(index){const {input,resolve}=sends[index];input.unsent();resolve(false);},
+ };
+}
+
+test('text typed after Enter is a new comment, never joined to the one being sent or sent with it again',async()=>{
+ const t=sendingComments();
+ mention(t,'@rob','robin');typeComment(t,t.d.getElementById('cmtIn').value+'please check');
+ t.A.addComment('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value,'','the sent text left the box at once');
+ typeComment(t,'Also the screenshots.');t.A.addComment('BIR-079');
+ assert.deepEqual(t.sends.map(({input})=>input.text),['@robin please check','Also the screenshots.']);
+ assert.equal(t.sends[0].input.mentions.length,1);assert.equal(t.sends[1].input.mentions.length,0,'only the first comment mentions Robin');
+ assert.notEqual(t.sends[0].input.interactionId,t.sends[1].input.interactionId);
+ typeComment(t,'A third, still typing');
+ t.save(0);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'A third, still typing','a saved comment leaves what was typed since');
+ assert.ok([...t.d.querySelectorAll('.cmt-body')].some(body=>body.textContent.includes('please check')),'the list shows the saved comment');
+});
+
+test('a comment that can\'t be sent comes back ahead of what was typed since, and alone it keeps its interaction',async()=>{
+ const t=sendingComments();
+ typeComment(t,'First thought');t.A.addComment('BIR-079');
+ typeComment(t,'Second thought');t.fail(0);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'First thought\n\nSecond thought');
+ typeComment(t,'');typeComment(t,'Only thought');t.A.addComment('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value,'');
+ t.fail(1);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Only thought');
+ t.A.addComment('BIR-079');
+ assert.equal(t.sends[2].input.text,'Only thought');
+ assert.equal(t.sends[2].input.interactionId,t.sends[1].input.interactionId,'sending it again can\'t add it twice');
+});
+
 test('a deleted comment offers Undo, which brings its text back',async()=>{
  const requests=[];
  const t=productionComments({execute:async(operation,payload,options)=>{

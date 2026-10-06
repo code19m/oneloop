@@ -353,16 +353,45 @@ test('a failed obsolete task read cannot put the new Profile page into an error 
   }finally{if(previous===undefined)delete globalThis.location;else globalThis.location=previous;}
 });
 
-test('Pool capture cannot repeat an accepted create while its read is pending or erase the next entry',async()=>{
-  const previous=globalThis.document;globalThis.document={getElementById:()=>null};
-  const read=deferred();let writes=0;
-  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}},reads:{pool:()=>read.promise}});
-  const input={value:'First idea',isConnected:true};const event={key:'Enter',target:input,preventDefault(){}};
+/** A Pool's capture field and notes, found by their ids. */
+function poolCapture(){
+  const input={value:'',isConnected:true,hidden:false},notes={value:'',isConnected:true,closest:()=>({classList:{contains:()=>true}})};
+  return {input,notes,document:{getElementById:id=>({poolAdd:input,poolNewDesc:notes})[id]??null,activeElement:null}};
+}
+
+test('an item sent from the Pool leaves the field at once, and the next one is sent on its own',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const read=deferred(),commands=[];
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);return {entities:[],events:[]};}},reads:{pool:()=>read.promise}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
   try{
-    state.app.poolKey(event);await tick();assert.equal(input.value,'');
-    input.value='Next idea';state.app.poolKey(event);assert.equal(writes,1);
+    capture.input.value='First idea';capture.notes.value='Its notes';state.app.poolKey(event);
+    assert.deepEqual([capture.input.value,capture.notes.value],['',''],'the item left the field');
+    capture.input.value='Next idea';state.app.poolKey(event);
+    assert.equal(capture.input.value,'');
+    await tick();
+    assert.deepEqual(commands.map(([title])=>title),['First idea','Next idea']);
+    assert.notEqual(commands[0][1],commands[1][1],'two items, two keys');
     read.resolve({stale:false});await tick();
-    assert.equal(input.value,'Next idea');assert.deepEqual(state.paints,[]);
+    assert.equal(capture.input.value,'');assert.deepEqual(state.paints,[]);
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
+});
+
+test('a Pool item that can\'t be added comes back once the field is free, and is added once',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const commands=[];let fail=true;
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(_operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);if(fail&&payload.title==='First idea')throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});return {entities:[],events:[]};}}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
+  try{
+    capture.input.value='First idea';state.app.poolKey(event);
+    capture.input.value='Typed meanwhile';await tick();await tick();
+    assert.equal(capture.input.value,'Typed meanwhile','the item waits while the field is in use');
+    state.app.poolKey(event);await tick();await tick();
+    assert.equal(capture.input.value,'First idea','it comes back once the field is free');
+    fail=false;state.app.poolKey(event);await tick();
+    assert.deepEqual(commands.map(([title])=>title),['First idea','Typed meanwhile','First idea']);
+    assert.equal(commands[2][1],commands[0][1],'sent again with its key, so an unknown result can\'t add it twice');
+    assert.equal(capture.input.value,'');
   }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
 });
 

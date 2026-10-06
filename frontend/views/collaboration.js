@@ -250,7 +250,11 @@
  }
  function savedComment(task,c,mode,changed,submitted=null){
   capture();
-  if(submitted&&commentEditor?.interactionId!==submitted.interactionId){if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
+  // The person writes something else by now: their next edit, a new comment
+  // or a reply elsewhere. It stays as it is; the main box is outside the
+  // list, so the list can show this comment at once.
+  const elsewhere=submitted&&(mode==='edit'?commentEditor?.interactionId!==submitted.interactionId:!!commentEditor?.text||commentMode.mode!==mode||(commentMode.target??null)!==(submitted.targetId??null));
+  if(elsewhere){if(mode!=='edit'&&commentMode.mode==='comment')refreshComments(task);if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
   if(c.parentId)expanded.add(c.parentId);commentEditor=null;commentMode={mode:'comment',target:null};closeMentions();refreshComments(task,true);if(changed)app.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');const focus=mode==='comment'?document.getElementById('cmtIn'):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===c.id);if(focus&&mode!=='comment'){focus.classList.add('comment-save-focus');focus.addEventListener('blur',()=>focus.classList.remove('comment-save-focus'),{once:true});}focus?.focus({preventScroll:true});scrollWithinTask(mode==='comment'?focus?.closest('.collaboration-composer')||focus:focus);
  }
  function post(taskId){const task=hooks.task(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(window.Recovery&&!Recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
@@ -261,7 +265,14 @@
   const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
   const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
   if(broadcast&&Date.now()-(broadcasts[rateKey]||0)<60000){feedback('Please wait a minute before mentioning everyone again.');return false;}
-  if(production&&productionApi){const interaction=d.interactionId;sendingComments.add(interaction);Promise.resolve(productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;}
+  if(production&&productionApi){
+   // A new comment or reply leaves the box at once: what is typed next is a
+   // new one, never joined to this one or sent with it again. It comes back
+   // if it can't be sent. An edit stays until it is saved.
+   const interaction=d.interactionId,leaves=!existing,pending={userId:me()?.id,taskId:task.id,mode:cxt.mode,target:cxt.target,text,mentions:structured(selected),revision:d.revision,interactionId:interaction,leaves};
+   sendingComments.set(interaction,pending);if(leaves)emptyComposer(task);
+   Promise.resolve(productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction,unsent:()=>{if(leaves)returnUnsent(pending);}})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;
+  }
   const c=existing||{id:id('comment'),who:me().id,ts:Date.now(),parentId:target?(target.parentId||target.id):null,replyToId:target?.id||null,notifiedRecipients:[]};
   c.text=text;c.mentions=selected;if(existing){if(changed){c.editedAt=Date.now();hooks.log?.(task,'edited a comment',{field:'comment-content:'+c.id,before,after});}}else(task.comments ||= []).push(c);
   const recipients=new Map();if(broadcast){for(const uid of eligible)recipients.set(uid,'everyone');broadcasts[rateKey]=Date.now();c.broadcastSent=true;}if(target)recipients.set(target.who,'reply');for(const m of selected)if(changed&&m.id!=='everyone')recipients.set(m.id,'mention');
@@ -271,17 +282,53 @@
  // A comment being written when the session ended, kept for the same person's next sign-in.
  let resumedComment=null;
  // The texts being sent, by their interaction: typing more starts a new one.
- const sendingComments=new Set();
+ // A new comment or reply on its way `leaves` the box.
+ const sendingComments=new Map();
+ /** One draft from a comment that wasn't sent and the text typed after it. */
+ function joined(first,second){const shift=first.text.length+2;return {text:`${first.text}\n\n${second.text}`,mentions:[...structured(first.mentions),...structured(second.mentions).map(m=>({...m,start:m.start+shift,end:m.end+shift}))]};}
+ // Empty the box after its comment was sent, in the same mode, so what is
+ // typed next is a new comment.
+ function emptyComposer(task){
+  commentEditor=null;editor(task);
+  const input=document.getElementById('cmtIn');if(input)input.value='';
+  closeMentions();feedback('');notifyHint(task);
+ }
+ // Put a comment that could not be sent back in its writer's box, ahead of
+ // anything typed since. Alone in the box, it keeps its interaction, so
+ // sending it again can't add it twice.
+ function returnUnsent(pending){
+  sendingComments.delete(pending.interactionId);
+  const task=hooks?.task(pending.taskId),host=document.querySelector('[data-comment-task]');
+  if(!task||me()?.id!==pending.userId||mountedTaskId!==task.id||!canComment(task)||host?.dataset.commentTask!==task.id)return;
+  capture();
+  const input=document.getElementById('cmtIn');
+  if(commentEditor?.text){
+   const current=commentEditor,merged=joined(pending,current),shift=merged.text.length-current.text.length;
+   Object.assign(current,{text:merged.text,mentions:validTokens(merged.text,merged.mentions),interactionId:id('interaction')});
+   if(input){const focused=document.activeElement===input,start=input.selectionStart,end=input.selectionEnd;input.value=merged.text;if(focused)input.setSelectionRange(start+shift,end+shift);}
+   notifyHint(task);return;
+  }
+  const target=pending.target?task.comments?.find(c=>c.id===pending.target):null,keep=pending.mode==='comment'||!!target&&!target.deleted;
+  const mode=keep?{mode:pending.mode,target:pending.target}:{mode:'comment',target:null},moved=commentMode.mode!==mode.mode||commentMode.target!==mode.target;
+  commentMode=mode;commentEditor=null;
+  Object.assign(editor(task),{text:pending.text,mentions:validTokens(pending.text,pending.mentions),interactionId:pending.interactionId});
+  if(mode.mode==='reply')expanded.add(target.parentId||target.id);
+  if(moved)refreshComments(task,true);else if(input){input.value=pending.text;notifyHint(task);}
+ }
  /**
   * The comment text the person typed and hasn't sent; an edit counts once it
-  * differs from the saved comment. `sending` says the text is on its way.
+  * differs from the saved comment. A new comment on its way counts too, ahead
+  * of anything typed since. `sending` says the text is on its way.
   */
  function commentDraft(){
   capture();
   const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
-  if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
-  if(commentMode.mode==='edit'&&commentEditor.text===task.comments?.find(c=>c.id===commentMode.target)?.text)return null;
-  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision,sending:sendingComments.has(commentEditor.interactionId)};
+  if(!task||host.dataset.commentOwner!==me()?.id)return null;
+  const away=[...sendingComments.values()].find(item=>item.leaves&&item.taskId===task.id&&item.userId===me()?.id);
+  const typed=!!commentEditor?.text.trim()&&!(commentMode.mode==='edit'&&commentEditor.text===task.comments?.find(c=>c.id===commentMode.target)?.text);
+  if(!typed)return away?{userId:away.userId,taskId:task.id,mode:away.mode,target:away.target,text:away.text,mentions:structured(away.mentions),revision:away.revision,sending:true}:null;
+  const draft={userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision,sending:sendingComments.has(commentEditor.interactionId)};
+  return away?{...draft,...joined(away,draft),sending:false}:draft;
  }
  // Put a kept comment back once its task page shows; a reply or an edit waits for
  // its comment, and becomes a new comment when that comment is gone. Only the
