@@ -8,7 +8,8 @@ Before your team uses oneloop, set up three things:
 
 Give oneloop at least 512 MB of memory. It uses about 50 MiB when idle, and up
 to about 200 MiB more while it decodes an image for a thumbnail or an avatar,
-one image at a time.
+one image at a time. Knowledge search keeps up to 64 MiB of indexes, and
+needs up to about 100 MiB more while it builds one.
 
 ## HTTPS with a reverse proxy
 

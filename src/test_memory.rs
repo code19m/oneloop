@@ -90,3 +90,8 @@ pub(crate) fn peak_heap<T>(work: impl FnOnce() -> T) -> (T, usize) {
     let result = work();
     (result, watch.peak())
 }
+
+/// The heap memory this thread holds now.
+pub(crate) fn live_heap() -> usize {
+    LIVE.with(Cell::get)
+}

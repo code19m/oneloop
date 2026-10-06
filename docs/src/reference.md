@@ -188,7 +188,7 @@ thumbnail a moment after the upload.
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |
 | Search | 8 words and 200 characters. One search runs at a time; a search that waits 5 seconds gets "try again" |
-| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files and the first 5,000 sections of Markdown files |
+| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files and the first 5,000 sections of Markdown files; in path order, as much as fits in the project's 64 MiB search index |
 
 All query words must occur in the same file or folder path, Markdown section,
 or plain-text line. Matching ignores letter case. Files outside the searchable

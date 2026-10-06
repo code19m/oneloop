@@ -29,15 +29,19 @@ use super::{
     content::FileBody,
     git::{Git, Limits},
     markdown,
-    search::{Content, Index, Results},
+    search::{Content, INDEX_BYTES_MAX, Index, Results},
     secrets::{Purpose, SecretBox, generate_deploy_key},
     source::{self, GitUrl, Transport},
 };
 
 /// Text files larger than this are found by name only.
 const INDEXED_FILE_BYTES: i64 = 1024 * 1024;
-/// Memory for search indexes across projects; the newest always stays.
-const CATALOG_BYTES: usize = 128 * 1024 * 1024;
+/// Memory for search indexes across projects, as one project's index may
+/// use. The newest always stays.
+const CATALOG_BYTES: usize = INDEX_BYTES_MAX;
+/// Text read to build an index. An index holds each character at least twice,
+/// so more would not fit into it.
+const CATALOG_TEXT_BYTES: i64 = (INDEX_BYTES_MAX / 2) as i64;
 const OVERVIEW_FILES_MAX: usize = 200;
 const OVERVIEW_SECTIONS_MAX: usize = 12;
 const README_CHARS_MAX: usize = 20_000;
@@ -91,14 +95,6 @@ struct Catalog {
     /// The source generation and commit it was built from.
     key: String,
     index: Index,
-    outlines: HashMap<String, Outline>,
-}
-
-#[derive(Default)]
-struct Outline {
-    title: Option<String>,
-    /// Level-two headings.
-    sections: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -724,7 +720,7 @@ impl KnowledgeService {
         let outline = |path: &str| {
             catalog
                 .as_ref()
-                .and_then(|catalog| catalog.outlines.get(path))
+                .and_then(|catalog| catalog.index.outline(path))
         };
         let files = inside
             .iter()
@@ -912,24 +908,6 @@ impl KnowledgeService {
                     (path, kind, text)
                 })
                 .collect();
-            let mut outlines = HashMap::new();
-            for (path, kind, text) in &texts {
-                if let (Some(PreviewKind::Markdown), Some(text)) = (kind, text) {
-                    let sections = markdown::outline(text);
-                    outlines.insert(
-                        path.clone(),
-                        Outline {
-                            title: markdown::title(&sections),
-                            sections: sections
-                                .iter()
-                                .filter_map(|section| section.heading.as_ref())
-                                .filter(|heading| heading.level == 2)
-                                .map(|heading| heading.text.clone())
-                                .collect(),
-                        },
-                    );
-                }
-            }
             let index = Index::build(texts.iter().map(|(path, kind, text)| {
                 let content = match (kind, text) {
                     (Some(PreviewKind::Markdown), Some(text)) => Content::Markdown(text),
@@ -942,7 +920,6 @@ impl KnowledgeService {
                 project_id,
                 key,
                 index,
-                outlines,
             })
         })
         .await
@@ -983,20 +960,35 @@ impl KnowledgeService {
                     return Ok(Loaded::Missing);
                 }
                 let mut statement = connection.prepare(
-                    "SELECT path,preview_kind,
-                            CASE WHEN preview_kind IN ('markdown','text') AND media_type LIKE 'text/%' AND size<=?2 THEN content END,
-                            media_type
+                    "SELECT rowid,path,preview_kind,media_type,size,
+                            preview_kind IN ('markdown','text') AND media_type LIKE 'text/%' AND size<=?2
                      FROM knowledge_files WHERE project_id=?1 ORDER BY path",
                 )?;
-                let files = statement
+                let listed = statement
                     .query_map(params![project, INDEXED_FILE_BYTES], |row| {
                         Ok((
-                            row.get::<_, String>(0)?,
-                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref(), &row.get::<_, String>(3)?),
-                            row.get::<_, Option<Vec<u8>>>(2)?,
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?),
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, bool>(5)?,
                         ))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
+                // Text past what the index can hold is never read.
+                let mut content = connection
+                    .prepare_cached("SELECT content FROM knowledge_files WHERE rowid=?1")?;
+                let mut read = 0;
+                let mut files = Vec::with_capacity(listed.len());
+                for (rowid, path, kind, size, indexed) in listed {
+                    let text = if indexed && read + size <= CATALOG_TEXT_BYTES {
+                        read += size;
+                        Some(content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?)
+                    } else {
+                        None
+                    };
+                    files.push((path, kind, text));
+                }
                 Ok(Loaded::Files(key, files))
             })
             .await
