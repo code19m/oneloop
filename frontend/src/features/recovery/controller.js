@@ -667,8 +667,12 @@ export function createRecoveryController({
 
   const controller={
     get pageError(){return pageError;},get pageReference(){return pageReference;},get connection(){return visibleConnection();},get expired(){return expired;},scenario:'',
-    /** Whether typed text waits for the person's next sign-in. */
-    get keepsInput(){return !!resume;},
+    /**
+     * Whether typed text waits for the person's next sign-in: what an editor
+     * held when the session ended, or, while no one is signed in, anything
+     * else kept for them, such as a draft or a comment that wasn't saved.
+     */
+    get keepsInput(){return !!resume||!data?.session&&[...unsavedChecks].some((check)=>check());},
     resumeEditing,
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,

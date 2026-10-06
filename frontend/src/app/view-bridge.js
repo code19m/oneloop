@@ -760,7 +760,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }
     returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
   }
-  recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>item.userId===data.session?.userId));
+  recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>!data.session||item.userId===data.session.userId));
   app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:item.scope==='project'?'team':'personal',form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
   app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 

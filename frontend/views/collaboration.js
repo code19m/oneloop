@@ -398,8 +398,10 @@
     app.loadOlderActivity=(taskId)=>productionApi?.moreTask?.(taskId);
    }
    persist();
-   // Leaving oneloop would lose comments kept for an empty box.
-   if(production)window.Recovery?.trackUnsaved?.(()=>unsentComments.some(item=>item.userId===me()?.id));
+   // Leaving oneloop would lose comments kept for an empty box. While no one
+   // is signed in, that is any of them, and any comment still on its way when
+   // the session ended, which comes back if it isn't saved.
+   if(production)window.Recovery?.trackUnsaved?.(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
    Object.assign(app,{
     commentDraft,restoreCommentDraft(draft){resumedComment=draft;mount(false);},
     addComment:post,replyComment:(taskId,target)=>setMode(taskId,'reply',target),editComment:(taskId,target)=>setMode(taskId,'edit',target),

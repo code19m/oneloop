@@ -273,6 +273,24 @@ test('text typed when the session ends waits for the same person to sign in agai
  assert.equal(t.w.Recovery.keepsInput, false, 'it is put back once');
 });
 
+test('a comment still being sent when the session ends is kept for its writer, and closing the tab asks first', async () => {
+ let send;
+ const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
+  w.OneloopTransport = {};
+  w.OneloopCollaboration = { bind() { return { saveComment(input) { return new Promise(resolve => { send = { input, resolve }; }); } }; } };
+ } });
+ t.d.getElementById('cmtIn').value = 'Sent as the session ended'; t.A.addComment('BIR-079');
+ const session = endSession(t);
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in again to keep what you typed.');
+ assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'closing the tab asks first while it is on its way');
+ // The send meets the end of the session, so the comment waits.
+ send.input.unsent(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); send.resolve(false); await settle();
+ assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'and while it waits');
+ assert.equal(t.w.Recovery.keepsInput, true);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.getElementById('cmtIn').value, 'Sent as the session ended');
+});
+
 test('text typed when the session ends is dropped when someone else signs in', () => {
  const t = bootApp({ route: 'task/BIR-079' });
  t.d.getElementById('cmtIn').value = 'Private draft'; t.d.getElementById('cmtIn').focus();
