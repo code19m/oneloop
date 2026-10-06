@@ -64,6 +64,19 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
   assert(d.querySelector('.markdown-body img[src="https://example.invalid/image.png"]')); assert(!d.querySelector('[data-view-resources]')); close();
 });
 
+test('Markdown can\'t point a label or a control at the app\'s own elements', async () => {
+  const { w, d } = boot();
+  const control = d.createElement('input'); control.type = 'checkbox'; control.id = 'app-control'; d.body.append(control);
+  const clicks = []; control.addEventListener('click', () => clicks.push('app control'));
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'gadget.md' }, '<label for="app-control">Open the picker</label>\n\n<input type="checkbox" form="app-form" popovertarget="app-menu" commandfor="app-menu" command="show-popover">', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const body = host.querySelector('.markdown-body');
+  assert.equal(body.querySelector('[for],[form],[popovertarget],[commandfor],[command]'), null);
+  body.querySelector('label').click();
+  assert.deepEqual(clicks, [], 'the label reaches nothing outside the file');
+});
+
 test('HTML previews frame the server preview in a sandbox and restart it', async () => {
   const { d, file, open, close } = await taskWithFiles();
   file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
