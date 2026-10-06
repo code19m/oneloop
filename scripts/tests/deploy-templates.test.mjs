@@ -2,9 +2,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const unit = fileURLToPath(new URL('../../deploy/systemd/oneloop.service.example', import.meta.url));
+const plist = fileURLToPath(new URL('../../deploy/launchd/com.oneloop.example.plist', import.meta.url));
 
 /** The value of `key` in `[section]` of a systemd unit, or undefined. */
 function setting(text, section, key) {
@@ -37,3 +39,10 @@ test('the systemd unit stops restarting when every start fails', () => {
   assert.ok(burst * restart < interval, `${burst} restarts ${restart} s apart don't fit in ${interval} s`);
 });
 
+// plutil accepts some XML errors, such as "--" inside a comment, that strict
+// XML parsers refuse. Python's plistlib is one of the strict ones.
+test('the launchd plist is well-formed XML', t => {
+  const result = spawnSync('python3', ['-c', 'import plistlib, sys; plistlib.load(open(sys.argv[1], "rb"))', plist], {encoding: 'utf8', timeout: 10000});
+  if (result.error?.code === 'ENOENT') return t.skip('python3 is not installed');
+  assert.equal(result.status, 0, result.stderr);
+});
