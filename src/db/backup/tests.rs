@@ -421,6 +421,14 @@ fn restoring_again_removes_only_what_an_interrupted_restore_left() {
     assert!(mistyped.join(crate::db::RESTORE_MARKER).exists());
     assert!(error.contains("backup directory does not exist"), "{error}");
 
+    // A restore that ended right after it set its marker aside left only that.
+    let set_aside = root.path().join("set-aside");
+    fs::create_dir(&set_aside).unwrap();
+    let name = format!("{}.removed-{}", crate::db::RESTORE_MARKER, Uuid::now_v7());
+    plant(&set_aside.join(name), &owner("restore", exited_pid()));
+    restore_backup(&backup, &set_aside).unwrap();
+    drop(crate::db::Db::open(&set_aside).unwrap());
+
     // A marker from an older version has no record and stays refused.
     let older = root.path().join("older");
     fs::create_dir(&older).unwrap();

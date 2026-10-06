@@ -664,6 +664,7 @@ fn remove_claimed(path: &Path, lock: File) -> std::io::Result<()> {
 /// working folder and the names the marker lists as published, then the
 /// marker. Otherwise it changes nothing, and the target stays refused.
 fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
+    remove_set_aside_markers(target)?;
     let marker = target.join(super::RESTORE_MARKER);
     if !marker.try_exists()? {
         return Ok(());
@@ -742,8 +743,32 @@ fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
         return Ok(false);
     };
     drop(lock);
-    fs::remove_file(aside)?;
-    Ok(true)
+    match fs::remove_file(aside) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(true),
+    }
+}
+
+/// Removes markers that a restore set aside and couldn't remove, because it
+/// ended in between (see `set_aside_claimed_marker`). Nothing holds them.
+fn remove_set_aside_markers(target: &Path) -> std::io::Result<()> {
+    let prefix = format!("{}.removed-", super::RESTORE_MARKER);
+    for entry in fs::read_dir(target)? {
+        let entry = entry?;
+        let set_aside = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok());
+        if !set_aside || !entry.file_type()?.is_file() {
+            continue;
+        }
+        match fs::remove_file(entry.path()) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Renames a claimed restore marker to a name of its own, unless the path
