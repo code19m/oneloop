@@ -71,6 +71,17 @@ test('retention switches change one file, suppress reverted activity and keep fo
   assert.strictEqual(d.getElementById('cmtIn'), replyInput); assert.equal(replyInput.value, 'Unsent reply stays here'); assert.equal(d.activeElement, replyInput);
 });
 
+test('each click on an attachment row\'s Temporary switch changes it once', () => {
+  const t = bootApp({ route: 'task/BIR-079', actions: true });
+  const task = t.D.tasks.find(item => item.id === 'BIR-079');
+  (task.attachments ||= []).push({ id: 'notes', name: 'notes.txt', size: 5, url: 'blob:notes', ephemeral: false }); t.A.refresh();
+  const retention = () => t.d.querySelector('[data-attachment-id="notes"] .retention-switch');
+  for (const expected of [true, false, true]) {
+    retention().click();
+    assert.equal(task.attachments.find(file => file.id === 'notes').ephemeral, expected); assert.equal(retention().getAttribute('aria-checked'), String(expected));
+  }
+});
+
 test('Office and binary files are download-only and images drop old custom labels', async () => {
   const t = await withFiles();
   const { w, d, A, task } = t;
