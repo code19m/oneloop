@@ -155,8 +155,9 @@ test('no inline event handler is left in the app\'s markup', () => {
 test('every action in the app\'s markup answers an event that actions hear and names an existing method', () => {
   const actions = [], placeholders = [];
   for (const [file, source] of appSources()) {
-    for (const [, method] of source.matchAll(/UIAction\(\s*'([^']*)'/g)) actions.push([file, 'click', method]);
-    for (const [, type, method] of source.matchAll(/UIAction\.on\(\s*'([^']*)',\s*'([^']*)'/g)) actions.push([file, type, method]);
+    // A name may be written in any quotes.
+    for (const [, , method] of source.matchAll(/UIAction\(\s*(['"`])(.*?)\1/g)) actions.push([file, 'click', method]);
+    for (const [, , type, , method] of source.matchAll(/UIAction\.on\(\s*(['"`])(.*?)\1,\s*(['"`])(.*?)\3/g)) actions.push([file, type, method]);
     for (const [, type, method] of source.matchAll(/data-action(?:-([a-z]+))?=["']([^"'$]*)["']/g)) actions.push([file, type ?? 'click', method]);
     for (const [, name] of source.matchAll(/UIAction\.(\w+)/g)) if (!['on', 'event', 'element', 'value', 'checked'].includes(name)) placeholders.push(`${file}: UIAction.${name}`);
   }
@@ -165,6 +166,7 @@ test('every action in the app\'s markup answers an event that actions hear and n
   // The views as the app runs them, with the production actions.
   const t = bootApp({ route: 'board' });
   installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway: {}, auth: {}, recovery: {}, reloadBootstrap: async () => ({}) });
-  const exists = (method) => method.startsWith('Recovery.') ? typeof t.w.Recovery[method.slice('Recovery.'.length)] === 'function' : Object.hasOwn(t.A, method) && typeof t.A[method] === 'function';
+  // As the dispatcher does: an own method of App or Recovery, never an inherited one such as constructor.
+  const exists = (method) => { const [owner, name] = method.startsWith('Recovery.') ? [t.w.Recovery, method.slice('Recovery.'.length)] : [t.A, method]; return Object.hasOwn(owner, name) && typeof owner[name] === 'function'; };
   assert.deepEqual(actions.filter(([, type, method]) => !actionEvents.includes(type) || !exists(method)), []);
 });
