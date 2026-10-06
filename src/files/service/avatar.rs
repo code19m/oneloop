@@ -2,7 +2,13 @@
 use super::*;
 
 impl FileService {
-    pub async fn upload_avatar(&self, actor: &Actor, bytes: Vec<u8>) -> AppResult<String> {
+    pub async fn upload_avatar(
+        &self,
+        actor: &Actor,
+        slot: AvatarSlot,
+        bytes: Vec<u8>,
+    ) -> AppResult<String> {
+        let _slot = slot;
         actor.require_ready()?;
         if bytes.is_empty() || bytes.len() as u64 > MAX_AVATAR_BYTES {
             return Err(AppError::validation(

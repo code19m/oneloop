@@ -1367,7 +1367,11 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     service
-        .upload_avatar(&fixture.manager, png.clone())
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            png.clone(),
+        )
         .await
         .unwrap();
     let deletion_queue = |sql: &'static str| {
@@ -1382,7 +1386,10 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
     )
     .await
     .unwrap();
-    service.upload_avatar(&fixture.manager, png).await.unwrap();
+    service
+        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap();
     service.remove_avatar(&fixture.manager).await.unwrap();
     deletion_queue("DROP TRIGGER queue_fails").await.unwrap();
     // Nothing refers to the replaced files, so reconciliation deletes both.
@@ -1408,7 +1415,9 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
         .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     assert!(matches!(
-        service.upload_avatar(&fixture.manager, png).await,
+        service
+            .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+            .await,
         Err(AppError::Rule {
             kind: oneloop::error::RuleKind::StorageFull,
             ..
@@ -1453,7 +1462,10 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    let url = service.upload_avatar(&fixture.manager, png).await.unwrap();
+    let url = service
+        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap();
     assert!(url.starts_with("/api/users/manager/avatar?v="));
     let mut avatar = service
         .open_avatar(&fixture.manager, "manager")
@@ -1465,7 +1477,11 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     assert_eq!((decoded.width(), decoded.height()), (256, 256));
     assert!(
         service
-            .upload_avatar(&fixture.manager, b"not an image".to_vec())
+            .upload_avatar(
+                &fixture.manager,
+                service.avatar_slot().unwrap(),
+                b"not an image".to_vec()
+            )
             .await
             .is_err()
     );
@@ -1478,14 +1494,22 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
     // 27 megapixels of lossless WebP need over 200 MiB to decode, though the
     // file is a few bytes.
     let refused = service
-        .upload_avatar(&fixture.manager, super::flat_webp(6000, 4500))
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            super::flat_webp(6000, 4500),
+        )
         .await;
     assert!(
         matches!(&refused, Err(AppError::Validation { field, .. }) if field == "avatar"),
         "{refused:?}"
     );
     service
-        .upload_avatar(&fixture.manager, super::flat_webp(600, 450))
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            super::flat_webp(600, 450),
+        )
         .await
         .unwrap();
 }
@@ -1746,7 +1770,11 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    assert!(full.upload_avatar(&fixture.viewer, png).await.is_err());
+    assert!(
+        full.upload_avatar(&fixture.viewer, full.avatar_slot().unwrap(), png)
+            .await
+            .is_err()
+    );
     let listed = service
         .list_attachments(&fixture.manager, "task")
         .await
@@ -2217,7 +2245,10 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    let error = service.upload_avatar(&f.manager, png).await.unwrap_err();
+    let error = service
+        .upload_avatar(&f.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap_err();
     assert!(
         error.to_string().contains("original avatar commit failure"),
         "{error}"

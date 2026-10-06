@@ -63,6 +63,13 @@ pub struct FileService {
     storage_limit_bytes: u64,
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
+    avatar_uploads: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+/// A place for one avatar upload, kept from its first byte through its
+/// decode, while the upload keeps its image in memory.
+pub struct AvatarSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -255,7 +262,18 @@ impl FileService {
             storage_limit_bytes,
             disk,
             thumbnails: Default::default(),
+            avatar_uploads: std::sync::Arc::new(tokio::sync::Semaphore::new(AVATAR_UPLOADS)),
         }
+    }
+
+    /// A place for an avatar upload, taken before its bytes arrive. When all
+    /// are taken, the upload is told to retry at once.
+    pub fn avatar_slot(&self) -> AppResult<AvatarSlot> {
+        self.avatar_uploads
+            .clone()
+            .try_acquire_owned()
+            .map(|permit| AvatarSlot { _permit: permit })
+            .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))
     }
 
     pub fn store(&self) -> &FileStore {
@@ -1326,20 +1344,18 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
 /// One image decode at a time, for avatar uploads and the thumbnail worker
 /// together, so their memory never adds up.
 static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-/// Avatar uploads that may wait for a decode at once; each keeps its image in
-/// memory while it waits. More are told to retry.
-static AVATAR_WAITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// Avatar uploads under way at once; each keeps its image in memory until it
+/// is decoded. More are told to retry.
+const AVATAR_UPLOADS: usize = 4;
 /// How long an avatar upload waits for the decodes before it, thumbnails
 /// included. The slowest decode the limits allow takes about a second on a
 /// laptop, and a few seconds on a small server.
 const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
-    let busy = || AppError::Unavailable("avatar processing is busy; retry shortly".into());
-    let _waiting = AVATAR_WAITS.try_acquire().map_err(|_| busy())?;
     tokio::time::timeout(AVATAR_DECODE_WAIT, IMAGE_DECODE_PERMITS.acquire())
         .await
-        .map_err(|_| busy())?
+        .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?
         .map_err(|_| AppError::Unavailable("avatar worker is shutting down".into()))
 }
 

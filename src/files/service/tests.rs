@@ -20,13 +20,14 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
     };
     let upload = || {
         let (service, actor) = (service.clone(), actor.clone());
-        tokio::spawn(async move { service.upload_avatar(&actor, vec![1]).await })
+        let slot = service.avatar_slot().unwrap();
+        tokio::spawn(async move { service.upload_avatar(&actor, slot, vec![1]).await })
     };
     let waiting = (0..4).map(|_| upload()).collect::<Vec<_>>();
-    // Only a few wait; holding their images in memory, more are turned away.
-    tokio::task::yield_now().await;
+    // Only a few are under way; holding their images in memory, more are
+    // turned away.
     assert!(matches!(
-        upload().await.unwrap(),
+        service.avatar_slot(),
         Err(AppError::Unavailable(_))
     ));
     // Those that wait outlast a slow decode, then decode their own image.
@@ -42,8 +43,9 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
     }
     // A decode that doesn't end turns an upload away after a while.
     let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
+    let slot = service.avatar_slot().unwrap();
     assert!(matches!(
-        service.upload_avatar(&actor, vec![1]).await,
+        service.upload_avatar(&actor, slot, vec![1]).await,
         Err(AppError::Unavailable(_))
     ));
     drop(held);
