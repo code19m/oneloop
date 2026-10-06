@@ -113,6 +113,10 @@ pub struct TaskView {
     pub updated_at: i64,
     /// When the task last moved to Done; null for open tasks.
     pub completed_at: Option<i64>,
+    /// Orders tasks completed in the same second: a higher number moved to
+    /// Done later. Null for open tasks.
+    #[serde(default)]
+    pub completion_order: Option<i64>,
     pub revision: i64,
     pub assignee_ids: Vec<String>,
     pub active_block: Option<BlockView>,
