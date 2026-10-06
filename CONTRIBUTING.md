@@ -205,7 +205,6 @@ The Release workflow then:
   that people can install. Docs merged to `main` go live with the next release.
   To publish the site again, run the Docs workflow on `main` by hand.
 
-
 A release candidate gets only the `X.Y.Z-rc.N` image tag. A final release gets
 the `X.Y.Z` tag. `X.Y` and `latest` only move forward: they move to the release
 unless they already name a newer version. For example, 0.1.1 released after
@@ -215,8 +214,9 @@ install a tag from source with `cargo install --git`.
 
 Afterwards, check the image and the GitHub Release. Publishing is not atomic:
 if one step fails, look at what already went out before you retry. Retry with
-**Re-run failed jobs**, which reuses the images that were built. Tags must never
-move, so fix forward with a new version when needed.
+**Re-run failed jobs** within a day of the build, while the run still has the
+image digests; it reuses the images that were built. Tags must never move, so
+fix forward with a new version when needed.
 
 ### Dependencies
 
