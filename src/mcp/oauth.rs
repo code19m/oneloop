@@ -1846,9 +1846,11 @@ async fn authorize(
 }
 
 // SQL is kept outside calls so rustfmt can format the surrounding control flow.
-/// Expired and used requests are already gone when this runs.
+/// Expired and used requests are already gone when this runs. A new row's
+/// rowid is above every row there is, so rowids give the order of requests
+/// even when the clock steps back.
 const DROP_OLDEST_PENDING_REQUESTS_SQL: &str = "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND rowid NOT IN
-     (SELECT rowid FROM oauth_authorization_requests WHERE user_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT ?2)";
+     (SELECT rowid FROM oauth_authorization_requests WHERE user_id=?1 ORDER BY rowid DESC LIMIT ?2)";
 const SELECT_OAUTH_AUTHORIZATION_CODES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM oauth_authorization_codes WHERE code_hash=?1 AND \
                      client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5 AND ((used_at IS NULL AND expires_at>?6) OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))";
 const INSERT_MCP_GRANTS_SQL: &str = "INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)

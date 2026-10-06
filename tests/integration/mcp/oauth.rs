@@ -2552,7 +2552,7 @@ async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in
 
 #[tokio::test]
 async fn a_person_keeps_ten_waiting_authorization_requests_with_a_bounded_state() {
-    let (_dir, _db, app, session, _user) = fixture().await;
+    let (_dir, db, app, session, _user) = fixture().await;
     let client = register(&app).await;
     let path = authorization_path(&client, "http://127.0.0.1:49152/callback");
     let mut requests = Vec::new();
@@ -2561,7 +2561,20 @@ async fn a_person_keeps_ten_waiting_authorization_requests_with_a_bounded_state(
         assert_eq!(status, StatusCode::OK);
         requests.push(request_id(&html).to_owned());
     }
-    // The eleventh request replaced the oldest one.
+    // The clock stepped back: the requests so far seem to come from later.
+    db.run(|connection| {
+        connection.execute(
+            "UPDATE oauth_authorization_requests SET created_at=created_at+3600",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let (status, html) = consent_page(&app, &session, &path).await;
+    assert_eq!(status, StatusCode::OK);
+    requests.push(request_id(&html).to_owned());
+    // The two newest requests replaced the two oldest ones.
     let approve = |id: &str| {
         let fields = [
             ("request_id", id),
@@ -2570,10 +2583,12 @@ async fn a_person_keeps_ten_waiting_authorization_requests_with_a_bounded_state(
         ];
         app.clone().oneshot(consent_submit(&session, &fields))
     };
-    let oldest = approve(&requests[0]).await.unwrap();
-    assert_eq!(oldest.status(), StatusCode::PRECONDITION_FAILED);
-    let kept = approve(&requests[1]).await.unwrap();
-    assert_eq!(kept.status(), StatusCode::SEE_OTHER);
+    for oldest in &requests[..2] {
+        let response = approve(oldest).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+    let newest = approve(&requests[11]).await.unwrap();
+    assert_eq!(newest.status(), StatusCode::SEE_OTHER);
     // An app may ask oneloop to keep at most 4,096 bytes of state.
     for (bytes, status) in [(4096, StatusCode::OK), (4097, StatusCode::BAD_REQUEST)] {
         let state = path.replace("opaque-login-state", &"s".repeat(bytes));
