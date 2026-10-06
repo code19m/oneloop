@@ -750,10 +750,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const [item]=unsentCaptures.splice(index,1);
     input.value=item.title;
     if(notes&&item.description){
-      const focused=globalThis.document.activeElement;
+      // Opening the notes moves focus there; it goes back to where it was.
+      const focused=/** @type {HTMLElement|null} */(globalThis.document.activeElement);
       if(!notes.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
       notes.value=item.description;
-      if(focused instanceof HTMLElement&&focused.isConnected)focused.focus({preventScroll:true});
+      if(focused?.isConnected)focused.focus?.({preventScroll:true});
     }
     returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
   }

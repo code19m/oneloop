@@ -383,11 +383,11 @@ test('a Pool item that can\'t be added comes back once the field is free, and is
   const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(_operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);if(fail&&payload.title==='First idea')throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});return {entities:[],events:[]};}}});
   const event={key:'Enter',target:capture.input,preventDefault(){}};
   try{
-    capture.input.value='First idea';state.app.poolKey(event);
+    capture.input.value='First idea';capture.notes.value='Its notes';state.app.poolKey(event);
     capture.input.value='Typed meanwhile';await tick();await tick();
     assert.equal(capture.input.value,'Typed meanwhile','the item waits while the field is in use');
     state.app.poolKey(event);await tick();await tick();
-    assert.equal(capture.input.value,'First idea','it comes back once the field is free');
+    assert.deepEqual([capture.input.value,capture.notes.value],['First idea','Its notes'],'it comes back once the field is free');
     fail=false;state.app.poolKey(event);await tick();
     assert.deepEqual(commands.map(([title])=>title),['First idea','Typed meanwhile','First idea']);
     assert.equal(commands[2][1],commands[0][1],'sent again with its key, so an unknown result can\'t add it twice');
