@@ -237,6 +237,7 @@ Some emoji count as two characters.
 | --- | --- |
 | Connection | Ends after 30 days without use, and after 90 days at most |
 | App registrations | 10 per hour from one address; 300 per hour in total |
+| Connection requests | 10 waiting for approval per person; another one ends the oldest. An app's `state` value may be up to 4,096 bytes |
 | File tickets | Work once and expire after 5 minutes |
 | Items per page | 50 (100 for comments, activity and the Inbox) |
 | Retry keys | Remembered for 24 hours |

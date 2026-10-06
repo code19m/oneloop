@@ -38,6 +38,11 @@ pub(super) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
 pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 pub(super) const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
 const AUTHORIZATION_REQUEST_SECONDS: i64 = 10 * 60;
+/// Authorization requests one person may have waiting for consent; a new one
+/// replaces the oldest.
+const MAX_PENDING_REQUESTS_PER_PERSON: i64 = 10;
+/// The `state` an app may ask oneloop to keep and return, in bytes.
+const MAX_STATE_BYTES: usize = 4096;
 const AUTHORIZATION_CODE_SECONDS: i64 = 5 * 60;
 const MAX_CLIENTS_PER_CALLER_HOUR: i64 = 10;
 const MAX_CLIENTS_GLOBAL_HOUR: i64 = 300;
@@ -385,6 +390,7 @@ async fn authorize_inner(
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![stored_id,user_id,client_id,redirect_uri,state_value,resource,requested_scopes,challenge,now,now+AUTHORIZATION_REQUEST_SECONDS],
         )?;
+        connection.execute(DROP_OLDEST_PENDING_REQUESTS_SQL, params![user_id, MAX_PENDING_REQUESTS_PER_PERSON])?;
         Ok(())
     }).await?;
     let client_name = client_name(&state, &query.client_id).await?;
@@ -1254,6 +1260,16 @@ async fn validate_authorization_query(
         ));
     }
     validate_challenge(&query.code_challenge)?;
+    if query
+        .state
+        .as_ref()
+        .is_some_and(|value| value.len() > MAX_STATE_BYTES)
+    {
+        return Err(AppError::validation(
+            "state",
+            format!("must be at most {MAX_STATE_BYTES} bytes"),
+        ));
+    }
     if query.resource != resource_url(state) {
         return Err(AppError::validation(
             "resource",
@@ -1830,6 +1846,9 @@ async fn authorize(
 }
 
 // SQL is kept outside calls so rustfmt can format the surrounding control flow.
+/// Expired and used requests are already gone when this runs.
+const DROP_OLDEST_PENDING_REQUESTS_SQL: &str = "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND rowid NOT IN
+     (SELECT rowid FROM oauth_authorization_requests WHERE user_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT ?2)";
 const SELECT_OAUTH_AUTHORIZATION_CODES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM oauth_authorization_codes WHERE code_hash=?1 AND \
                      client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5 AND ((used_at IS NULL AND expires_at>?6) OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))";
 const INSERT_MCP_GRANTS_SQL: &str = "INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)
