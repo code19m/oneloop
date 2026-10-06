@@ -130,7 +130,7 @@ files. Comments can't have files.
 
 Click a file to preview it. oneloop shows images, PDFs, Markdown (with tables,
 math and Mermaid diagrams), HTML pages, text and code. You can download any
-file.
+file. Diagrams show math in their labels as plain text, such as `$$x^2$$`.
 
 HTML previews show the page without running its scripts or loading anything
 from other sites, such as images, styles and fonts. Styles, images and fonts

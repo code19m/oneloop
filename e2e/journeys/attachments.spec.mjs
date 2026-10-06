@@ -144,7 +144,7 @@ test('HTML previews run no scripts and load nothing from other sites, framed or 
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
   await openApp(page, instance);
-  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-oneloop-onclick="App.logout()">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nflowchart LR\n A-->B\n```';
+  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-oneloop-onclick="App.logout()">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nsequenceDiagram\n A->>B: $$x^2$$\n```';
   await attach(page, 'gadget.md', 'text/markdown', markdown);
   await page.locator('.attachment-title').filter({ hasText: 'gadget.md' }).click();
   const body = page.locator('.markdown-body');
@@ -155,6 +155,8 @@ test('Markdown strips app actions and SVG navigation while keeping math, diagram
   const diagram = body.locator('.markdown-diagram img');
   await expect(diagram).toBeVisible();
   await expect.poll(() => diagram.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+  // The sanitizer removes the HTML that Mermaid draws math with, so the label shows its text.
+  expect(decodeURIComponent(await diagram.getAttribute('src'))).toContain('x^2');
   await expect(body.getByRole('link', { name: 'External' })).toHaveAttribute('target', '_blank');
   const url = page.url(), writes = [];
   page.on('request', r => { if (r.method() === 'POST') writes.push(r.url()); });
