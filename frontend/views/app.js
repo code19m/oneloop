@@ -914,7 +914,7 @@
     const prog = (!counted || ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
-    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
+    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" ${UIAction('openPeek', e.id)} ${UIAction.on('mouseenter', 'epicHover', UIAction.event, e.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'epicHover', UIAction.event, e.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'epicKey', UIAction.event, e.id)}>
       <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
       <div class="m">${meta}</div>${prog}</div>`;
   }
@@ -1000,12 +1000,12 @@
         ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
         : 'no epics yet';
       const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
+      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `${UIAction.on('dragover', 'laneOver', UIAction.event)} ${UIAction.on('drop', 'trackDrop', UIAction.event, t.id)}` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
           <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
-            <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" onkeydown="App.trackReorderKey(event,'${UIArg(t.id)}')" data-reorderable="true" ondragstart="App.trackDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()" title="Drag to reorder or use arrow keys">${I.grip}</button>
-            <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
+            <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" ${UIAction.on('keydown', 'trackReorderKey', UIAction.event, t.id)} data-reorderable="true" ${UIAction.on('dragstart', 'trackDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')} title="Drag to reorder or use arrow keys">${I.grip}</button>
+            <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
           </div>` : ''}
         </div>
         <div class="lane-body">${bars}</div>
@@ -1019,7 +1019,7 @@
       const { m, past, name, dateLabel, width, at } = goal, row = layout.goalRows[i];
       msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + dayX(at, ppd)}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
       msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${dayX(at, ppd)}px;top:${12 + row * GOAL_ROW + 54}px;bottom:-1px"></div>`;
-      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
+      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" ${UIAction('milestoneClick', UIAction.event, m.id)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, m.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, m.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
         ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${dateLabel}</span></span></button>`;
     });
     const todayX = dayX(model.today, ppd);
@@ -1032,7 +1032,7 @@
     return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+model.start)}">
       <div class="rm-canvas" style="width:${RAIL + dayX(model.span, ppd)}px">
         <div class="rm-axis" style="height:${axisHeight}px">
-          <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" onclick="App.openModal('track')">${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
+          <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" ${UIAction('openModal', 'track')}>${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
           <div class="rm-axis-labels"><span class="rm-calendar-axis" style="${calendar}"></span>${msLabels}${todayPill}</div>
         </div>
         <span class="rm-calendar-lines" style="${calendarLines}"></span>${msHtml}${todayHtml}${lanes}
@@ -1436,7 +1436,7 @@
     return `<textarea class="ctl description-editor" name="desc" data-description-editor maxlength="${limit}" ${placeholder?`placeholder="${esc(placeholder)}"`:''} oninput="App.sizeDescriptionEditors()">${esc(value||'')}</textarea>`;
   }
   function descriptionReadHtml(value,key) {
-    return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" onclick="App.toggleDescription(this)" hidden>Show more</button></section>`;
+    return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" ${UIAction('toggleDescription', UIAction.element)} hidden>Show more</button></section>`;
   }
   function sizeTaskTitle() {
     const input = document.querySelector('.tp-title');
@@ -1795,12 +1795,12 @@
           <div style="position:relative;height:6px;background:rgb(var(--tone-rgb) / 0.07);border-radius:3px;overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></div></div>
           <div class="mono" style="font-size:var(--text-xs);color:var(--ink-faint);margin-top:8px">${e.done} of ${e.total} tasks complete · ${pct}%</div></div>` : '';
 
-    return `<div class="scrim" onclick="App.closeOverlays()"></div>
+    return `<div class="scrim" ${UIAction('closeOverlays')}></div>
     <aside class="peek" role="dialog" aria-modal="true" aria-labelledby="peek-title">
       <div class="peek-head">
         <div style="display:flex;align-items:center;justify-content:space-between">
           <span class="mono" style="font-size:var(--text-xs);letter-spacing:0.1em;color:var(--ink-ghost)">${esc(t ? t.name : '')}</span>
-          <button type="button" class="btn icon" aria-label="Close epic" onclick="App.closeOverlays()">${I.close}</button>
+          <button type="button" class="btn icon" aria-label="Close epic" ${UIAction('closeOverlays')}>${I.close}</button>
         </div>
         <h2 id="peek-title" style="font-size:17px;font-weight:600;letter-spacing:-0.01em">${esc(e.title)}</h2>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1814,18 +1814,18 @@
       <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px">
         <div style="display:flex;align-items:baseline;gap:7px"><span style="font-size:var(--text-body);font-weight:600;color:var(--ink)">Tasks</span><span class="mono" data-epic-task-total style="font-size:var(--text-xs);color:var(--ink-ghost)">${page?.loaded?page.tasksTotal:eTasks.length}</span></div>
       </div>
-      <div class="peek-rows">${rows}${page?.tasksCursor?`<button class="btn quiet" onclick="App.loadMoreEpicTasks('${UIArg(e.id)}')">Load more tasks</button>`:''}
+      <div class="peek-rows">${rows}${page?.tasksCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicTasks', e.id)}>Load more tasks</button>`:''}
         <div style="padding:14px 0 6px;font-size:var(--text-body);font-weight:600;color:var(--ink)">Activity</div>
         ${actFeed(e.activity, page?.loaded?Number.MAX_SAFE_INTEGER:8)}
-        ${page?.activityCursor?`<button class="btn quiet" onclick="App.loadMoreEpicActivity('${UIArg(e.id)}')">Load older activity</button>`:''}
+        ${page?.activityCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicActivity', e.id)}>Load older activity</button>`:''}
       </div>
       </div>
       <div class="peek-actions">
         ${canRoadmap() ? `${e.state === 'done'
-          ? `<button class="btn" onclick="App.reopenEpic('${UIArg(e.id)}')">Reopen</button>`
-          : `<button class="btn" onclick="App.closeEpic('${UIArg(e.id)}')">Mark as done</button>`}
-        <button class="btn" onclick="App.openModal('epic','${UIArg(e.id)}')">Edit epic</button>
-        <button class="btn danger" style="margin-left:auto" onclick="App.deleteEpic('${UIArg(e.id)}')">Delete</button>` : '<span class="access-note" style="margin:0">Read only</span>'}
+          ? `<button class="btn" ${UIAction('reopenEpic', e.id)}>Reopen</button>`
+          : `<button class="btn" ${UIAction('closeEpic', e.id)}>Mark as done</button>`}
+        <button class="btn" ${UIAction('openModal', 'epic', e.id)}>Edit epic</button>
+        <button class="btn danger" style="margin-left:auto" ${UIAction('deleteEpic', e.id)}>Delete</button>` : '<span class="access-note" style="margin:0">Read only</span>'}
       </div>
     </aside>`;
   }
@@ -2163,9 +2163,9 @@
       return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
       <div class="right">
         ${roadmapScaleHtml()}
-        <button class="btn quiet" onclick="App.goToday()">Today</button>
-        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
-        <button class="btn primary" onclick="App.openModal('epic')">${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
+        <button class="btn quiet" ${UIAction('goToday')}>Today</button>
+        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
+        <button class="btn primary" ${UIAction('openModal', 'epic')}>${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }
     if (state.view === 'board') {
@@ -2491,7 +2491,7 @@
   let pressedScale = null;
   function roadmapScaleHtml() {
     pressedScale = roadmapScale()?.key ?? null;
-    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" onclick="App.setRoadmapScale('${UIArg(scale.key)}')">${scale.label}</button>`).join('')}</div>`;
+    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" ${UIAction('setRoadmapScale', scale.key)}>${scale.label}</button>`).join('')}</div>`;
   }
   function syncRoadmapScale() {
     const current = roadmapScale()?.key ?? null;

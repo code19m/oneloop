@@ -174,6 +174,16 @@ test('epics show a loading state, not 0/0, until their task counts arrive', () =
   assert.equal(meta('e6').textContent.trim(), '21/34');
 });
 
+test('an epic bar shows its tooltip on keyboard focus and opens its drawer on Enter', () => {
+  const t = bootApp({ route: 'roadmap', actions: true });
+  const bar = t.d.querySelector('[data-epic]');
+  bar.focus();
+  assert.equal(t.d.getElementById('epic-tooltip')?.getAttribute('role'), 'tooltip');
+  assert.equal(bar.getAttribute('aria-describedby'), 'epic-tooltip');
+  bar.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.equal(t.A.context().peek, bar.dataset.epic);
+});
+
 test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
   const { d, A } = bootApp({ route: 'roadmap' });
   const sc = d.getElementById('rmScroll'), rail = parseFloat(d.querySelector('.lane-head').style.width), shell = d.querySelector('.sidebar'), pill = d.querySelector('.today-pill');
