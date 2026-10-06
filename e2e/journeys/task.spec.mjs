@@ -325,3 +325,33 @@ test('Undo brings a deleted task back to the Board', async ({ page, instance, al
   await page.reload();
   await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
 });
+
+test('Undo answers Ctrl+Z after a deletion, and a busy server leaves a way to try again', async ({ page, instance, allowedConsoleErrors }) => {
+  // A live read of the open task page can still be on its way when it is deleted.
+  allowedConsoleErrors.push(/404 .*\/api\/tasks\//, /503/);
+  const key = instance.projects[0].task.taskKey, restores = [];
+  await page.route('**/api/commands', async route => {
+    const command = route.request().postDataJSON();
+    if (command.operation !== 'task.restore') return route.continue();
+    restores.push(command.idempotencyKey);
+    if (restores.length > 1) return route.continue();
+    return route.fulfill({ status: 503, headers: { 'Retry-After': '1' }, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The server is busy' } }) });
+  });
+  await openApp(page, instance);
+  await page.getByRole('button', { name: 'Task actions' }).click();
+  await page.locator('#action-menu').getByText('Delete task').click();
+  await page.locator('[data-confirm-accept]').press('Enter');
+  const deleted = page.locator('#toast-region .toast').filter({ hasText: `${key} deleted` });
+  await expect(deleted.getByRole('button', { name: 'Undo' })).toHaveAttribute('aria-keyshortcuts', /\+Z$/);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
+  await page.keyboard.press('ControlOrMeta+z');
+  const failed = page.locator('#toast-region .toast[data-kind="error"]').filter({ hasText: 'Try the same action again' });
+  await expect(failed.getByRole('button', { name: 'Undo' })).toBeVisible();
+  // A busy server counts as no connection until oneloop reaches it again.
+  await expect(page.locator('#toast-region')).toContainText('Connection restored');
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect(page.locator('#toast-region')).toContainText(`${key} restored`);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
+  expect(restores).toHaveLength(2);
+  expect(restores[1]).toBe(restores[0]);
+});

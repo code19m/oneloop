@@ -9,6 +9,7 @@ import {
   commandIsUnchanged,
   formFieldName,
   isServerNoChange,
+  retryableFailure,
   validDate,
 } from './action-feedback.js';
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
@@ -160,15 +161,20 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return live?.querySelector?.(`[name="${formFieldName(field)}"]`)??null;
   }
 
+  /** What a failed save says. */
+  function failureMessage(error){
+    return error instanceof ApiError && error.uncertain
+      ? 'The save result is unknown. Try the same action again to reconcile it safely.'
+      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
+      ? 'This item changed elsewhere. Review the latest version before saving again.'
+      : actionErrorFeedback(error).message;
+  }
+
   function report(error, options = {}) {
     if(error?.oneloopReported||error?.code==='reauth_cancelled'||error?.status===401)return;
     const feedback=actionErrorFeedback(error);
     if(feedback.silent)return;
-    const message = error instanceof ApiError && error.uncertain
-      ? 'The save result is unknown. Try the same action again to reconcile it safely.'
-      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
-      ? 'This item changed elsewhere. Review the latest version before saving again.'
-      : feedback.message;
+    const message = failureMessage(error);
     if(presentFormError(options.form,error,app,{message}))return;
     const field=feedback.field&&formFieldName(feedback.field);
     if(field&&options.form&&typeof options.form.querySelector==='function'&&options.form.querySelector(`[name="${field}"]`)){
@@ -636,10 +642,16 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }));
   };
   app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
-  // Undo restores the task at the revision its deletion left.
+  // Undo restores the task at the revision its deletion left. A restore that
+  // fails in a way worth trying again offers Undo again; a retry after an
+  // unknown result keeps the restore's key, so it applies once.
   function undoTaskDeletion(item,result){
     const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
-    app.toast(`${item.id} deleted`,'success',Number.isSafeInteger(revision)?{action:{label:'Undo',run:()=>fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision}))}}:{});
+    if(!Number.isSafeInteger(revision)){app.toast(`${item.id} deleted`,'success');return;}
+    app.offerUndo(`${item.id} deleted`,(again)=>{
+      if(recovery?.connection==='offline'){again('Reconnect before making this change.');return;}
+      fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision,handleError:(error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
+    });
   }
   app.moveTaskOrder = (id,anchor,before) => {
     const item=task(id),target=task(anchor);if(!item||!target||app._boardMovePending)return false;

@@ -253,6 +253,39 @@ test('leaving the task page still closes the prompt, and the change waits there 
   });
 });
 
+test('Ctrl+Z runs the newest Undo while its message shows, and leaves typing in a text field alone', async () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  const runs = [];
+  t.A.offerUndo('First deleted', () => runs.push('first'));
+  t.A.offerUndo('Second deleted', () => runs.push('second'));
+  const press = (target, init = { ctrlKey: true }) => { const event = new t.w.KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ...init }); target.dispatchEvent(event); return event.defaultPrevented; };
+  assert.equal(press(t.d.getElementById('cmtIn')), false, 'in a text field the key undoes typing');
+  assert.equal(press(t.d.body, { ctrlKey: true, shiftKey: true }), false);
+  assert.deepEqual(runs, []);
+  assert.equal(press(t.d.body), true); assert.deepEqual(runs, ['second']);
+  assert.equal(press(t.d.body, { metaKey: true }), true); assert.deepEqual(runs, ['second', 'first']);
+  assert.equal(press(t.d.body), false, 'no Undo is left');
+  assert.equal(t.d.querySelector('.toast-action'), null);
+  t.A.offerUndo('Third deleted', () => {});
+  assert.equal(t.d.querySelector('.toast-action').getAttribute('aria-keyshortcuts'), 'Control+Z');
+  await waitFor(() => t.d.querySelector('[data-announce="polite"]').textContent === 'Third deleted. Press Control+Z to undo.', 'the message says how to undo');
+});
+
+test('an Undo that fails in a way worth trying again offers Undo again, while the server can still restore', () => {
+  const t = bootApp({ route: 'board' });
+  let tries = 0;
+  t.A.offerUndo('WEB-1 deleted', again => { tries++; again('The service is temporarily unavailable. Try again in 1 second.'); });
+  t.d.querySelector('#toast-region .toast-action').click();
+  const failed = () => [...t.d.querySelectorAll('#toast-region .toast[data-toast-id]')].at(-1);
+  assert.equal(failed().dataset.kind, 'error'); assert.match(failed().textContent, /temporarily unavailable/);
+  failed().querySelector('.toast-action').click();
+  assert.equal(tries, 2, 'the person tried again');
+  // Five minutes after the deletion the server can't restore it, so a failure is only reported.
+  const now = t.w.Date.now; t.w.Date.now = () => now() + 5 * 60_000;
+  failed().querySelector('.toast-action').click();
+  assert.equal(tries, 3); assert.equal(failed().querySelector('.toast-action'), null);
+});
+
 test('a message with an action runs it once and closes, and never merges with another', () => {
   const t = bootApp({ route: 'board' });
   const runs = [];
@@ -261,7 +294,7 @@ test('a message with an action runs it once and closes, and never merges with an
   const toasts = [...t.d.querySelectorAll('#toast-region .toast')];
   assert.equal(toasts.length, 2, 'each deletion keeps its own Undo');
   const undo = toasts[0].querySelector('.toast-action');
-  assert.equal(undo.textContent, 'Undo');
+  assert.equal(undo.firstChild.textContent, 'Undo'); assert.equal(undo.querySelector('kbd').getAttribute('aria-hidden'), 'true');
   undo.click(); undo.click();
   assert.deepEqual(runs, ['first']);
   assert.equal(t.d.querySelectorAll('#toast-region .toast[data-toast-id]').length, 1);

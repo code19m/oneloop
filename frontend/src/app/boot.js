@@ -12,7 +12,7 @@ import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
 import { installViewActions } from './view-actions.js';
 import { createRuntimeHooks } from './runtime-hooks.js';
-import { actionErrorFeedback } from './action-feedback.js';
+import { actionErrorFeedback, retryableFailure } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
 import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
@@ -52,6 +52,7 @@ const reportError = (error, form = null) => {
 globalThis.OneloopErrorMessage=(error,fallback='The request could not be completed.')=>{
   const feedback=actionErrorFeedback(error);return feedback.silent?'':feedback.message||fallback;
 };
+globalThis.OneloopRetryable=retryableFailure;
 const bootstrap = createBootstrapController({ api, data, onReady: (projection) => runtimeHooks?.publish({ type:'bootstrap', projection }), onError: (error) => {
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;

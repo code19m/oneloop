@@ -233,6 +233,16 @@ export function actionErrorFeedback(error) {
   return {silent:false,field:null,message:`The request could not be completed.${reference ? ` Reference: ${reference}.` : ''}`};
 }
 
+/**
+ * Whether the same action may work when tried again: there was no
+ * connection, the server was busy, or its result isn't known.
+ * @param {unknown} error
+ */
+export function retryableFailure(error) {
+  const value = /** @type {any} */ (error);
+  return !!value && (value.uncertain === true || ['offline', 'network_error', 'timeout', 'rate_limited', 'unavailable'].includes(value.code) || [429, 502, 503, 504].includes(value.status));
+}
+
 /** @param {unknown} error */
 export function isServerNoChange(error) {
   return actionErrorFeedback(error).silent;

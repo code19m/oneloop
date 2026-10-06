@@ -562,6 +562,17 @@ test('a new comment the server did not take tells the page, so its text comes ba
   assert.deepEqual(t.saved.map(([,comment,result])=>[comment.text,result.mode,result.targetId]),[['Kept','reply','root']]);
 });
 
+test('a comment Undo that meets a busy server asks to try again; one the server refuses for good is only reported',async()=>{
+  const t=fixture(),again=[],toasts=[];t.app.toast=(...args)=>toasts.push(args);
+  const comment={id:'c1',revision:2};
+  t.transport.commands.execute=async()=>{throw new ApiError('Busy',{status:503,code:'unavailable',retryAfter:'1',uncertain:true});};
+  assert.equal(await t.controller.restoreComment({task:t.data.tasks[0],comment,again:message=>again.push(message)}),false);
+  assert.equal(again.length,1);assert.match(again[0],/temporarily unavailable/);assert.deepEqual(toasts,[]);
+  t.transport.commands.execute=async()=>{throw new ApiError('comment can no longer be restored',{status:412,code:'precondition_failed'});};
+  await t.controller.restoreComment({task:t.data.tasks[0],comment,again:message=>again.push(message)});
+  assert.equal(again.length,1);assert.equal(toasts.length,1);
+});
+
 test('temporary sessions open no event stream until password completion',()=>{
   let streams=0;
   const t=fixture({data:{session:{id:'s1',userId:'u1',temporary:true}},eventSourceFactory:()=>{streams++;return {addEventListener(){},close(){}};}});

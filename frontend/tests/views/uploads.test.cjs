@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM, bootApp, source, waitFor } = require('../support/dom.cjs');
+const { ApiError } = require('../../src/data/api-client.js');
+const { retryableFailure } = require('../../src/app/action-feedback.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
 
@@ -469,6 +471,31 @@ test('image files show their thumbnail, or the original when there is none', asy
   } });
   await waitFor(() => t.d.querySelectorAll('.attachment-thumbnail img').length === 2, 'both images render');
   assert.deepEqual([...t.d.querySelectorAll('.attachment-thumbnail img')].map(img => img.getAttribute('src')), ['/thumbnail/photo', '/content/spinner']);
+});
+
+test('a file Undo that meets a busy server offers Undo again, with the same key', async () => {
+  const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 3, contentUrl: '/content', downloadUrl: '/download' };
+  let listed = [file];
+  const restores = [];
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.OneloopRetryable = retryableFailure;
+    w.OneloopTransport = { api: {
+      attachments: async () => ({ items: listed }),
+      deleteAttachment: async () => { listed = []; return {}; },
+      restoreAttachment: async (id, input) => { restores.push(input.idempotencyKey); if (restores.length === 1) throw new ApiError('Busy', { status: 503, code: 'unavailable', uncertain: true }); listed = [{ ...file, revision: 5 }]; return listed[0]; },
+      uploadAttachment() {},
+    }, subscribe: () => () => {} };
+  } });
+  const notices = []; t.A.toast = (text, kind, options) => notices.push({ text, kind, options });
+  await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
+  t.A.delAttachment('BIR-079', 0); t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => notices.some(notice => notice.text === 'Attachment deleted'), 'the delete completes');
+  notices.find(notice => notice.text === 'Attachment deleted').options.action.run();
+  await waitFor(() => notices.at(-1).kind === 'error', 'the restore fails');
+  assert.equal(notices.at(-1).options.action.label, 'Undo');
+  notices.at(-1).options.action.run();
+  await waitFor(() => notices.some(notice => notice.text === 'Attachment restored'), 'the second try restores it');
+  assert.equal(restores.length, 2); assert.equal(restores[1], restores[0]);
 });
 
 test('a deleted file offers Undo, which restores it at the revision its deletion left', async () => {

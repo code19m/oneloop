@@ -369,7 +369,7 @@
       Object.assign(commentEditor,{text:comment.text,mentions:structured(comment.mentions),revision:comment.revision,interactionId:id('interaction')});
       input.value=comment.text;closeMentions();feedback('');notifyHint(submitted.task);
      },
-     commentDeleted(taskId,commentId){const task=hooks.task(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);app.toast('Comment deleted','success',comment?{action:{label:'Undo',run:()=>productionApi?.restoreComment?.({task,comment})}}:{});},
+     commentDeleted(taskId,commentId){const task=hooks.task(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);if(comment)app.offerUndo('Comment deleted',again=>productionApi?.restoreComment?.({task,comment,again}));else app.toast('Comment deleted');},
      commentRestored(taskId){const task=hooks.task(taskId);if(task){refreshComments(task);app.toast('Comment restored');}},
      canonicalTask(){const active=document.activeElement,editing=commentMode.mode!=='comment'||!!commentEditor?.text||!!blockEditor||active?.matches?.('input,textarea,select,[contenteditable="true"]')||document.querySelector('.modal,.pop');if(hooks.refreshBackground)hooks.refreshBackground();else if(!editing)hooks.refresh();},
      target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},

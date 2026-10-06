@@ -7,7 +7,7 @@ import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
-  const app={context:()=>context,openPeek(){},openModal(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},...overrides.app};
+  const app={context:()=>context,openPeek(){},openModal(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
@@ -742,6 +742,46 @@ test('a value typed while a failing save ran is the one kept as Not saved',async
   state.requests[0].reject(new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await tick();await tick();
   assert.equal(state.requests.length,1,'the newer value waits for the connection');
   assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Second text',unsaved:true});
+});
+
+/** A task page whose deletion succeeds and whose restores answer as `restore` says. */
+function deletedTask(restore,recovery={}){
+  const commands=[];let gateway;
+  const api={command:async(command)=>{commands.push(command);if(command.operation==='task.restore')return restore(commands.filter(item=>item.operation==='task.restore').length);return {entities:[{entityType:'task',id:'t1',projectId:'p1',deleted:true,revision:4}],events:[]};}};
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args)},app:{confirm(options){options.confirm();}},recovery:{handleCommandFailure:async()=>{},...recovery}});
+  gateway=createCommandGateway({api,data:state.data});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3});
+  const restores=()=>commands.filter(item=>item.operation==='task.restore');
+  const until=async(check)=>{for(let turn=0;turn<30&&!check();turn++)await new Promise(setImmediate);assert.ok(check());};
+  return {state,restores,until};
+}
+
+test('a task Undo that meets a busy server offers Undo again, which restores the task with the same key',async()=>{
+  const {state,restores,until}=deletedTask((tries)=>{if(tries===1)throw new ApiError('Busy',{status:503,code:'unavailable',uncertain:true});return {entities:[],events:[]};});
+  state.app.deleteTask('ONE-1');
+  await until(()=>state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  state.toasts.at(-1)[2].action.run();
+  await until(()=>state.toasts.at(-1)[1]==='error');
+  const [message,,options]=state.toasts.at(-1);
+  assert.match(message,/unknown/);assert.equal(options.action.label,'Undo');
+  options.action.run();
+  await until(()=>state.toasts.some(([text])=>text==='ONE-1 restored'));
+  assert.equal(restores().length,2);assert.equal(restores()[1].idempotencyKey,restores()[0].idempotencyKey,'an unknown result is reconciled, never applied twice');
+});
+
+test('a task Undo the server can no longer apply is only reported, and one without a connection waits for it',async()=>{
+  const final=deletedTask(()=>{throw new ApiError('task can no longer be restored',{status:412,code:'precondition_failed'});});
+  final.state.app.deleteTask('ONE-1');
+  await final.until(()=>final.state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  final.state.toasts.at(-1)[2].action.run();
+  await final.until(()=>final.state.toasts.at(-1)[1]==='error');
+  assert.equal(final.state.toasts.at(-1)[2],undefined,'nothing to try again');
+  const offline=deletedTask(()=>({entities:[],events:[]}),{connection:'offline'});
+  offline.state.app.deleteTask('ONE-1');
+  await offline.until(()=>offline.state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  offline.state.toasts.at(-1)[2].action.run();
+  assert.deepEqual(offline.state.toasts.at(-1).slice(0,2),['Reconnect before making this change.','error']);
+  assert.equal(offline.state.toasts.at(-1)[2].action.label,'Undo');assert.equal(offline.restores().length,0);
 });
 
 test('a deleted task offers Undo, which restores it at the revision its deletion left',async()=>{

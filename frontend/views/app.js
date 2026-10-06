@@ -363,14 +363,16 @@
       const close = document.createElement('button'); close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Dismiss notification'); setHTML(close,I.close);
       close.addEventListener('click', () => dismissToast(toast.id));
       el.append(icon, message);
+      const undo = toast.action?.label === 'Undo';
       if (toast.action) {
         // The action runs once, and the message goes with it.
         const action = document.createElement('button'); action.type = 'button'; action.className = 'btn toast-action'; action.textContent = toast.action.label;
+        if (undo) { action.setAttribute('aria-keyshortcuts', UNDO_KEY.aria); const key = document.createElement('kbd'); key.className = 'toast-key'; key.setAttribute('aria-hidden', 'true'); key.textContent = UNDO_KEY.label; action.append(key); }
         action.addEventListener('click', () => { const run = toast.action.run; dismissToast(toast.id); run(); }, { once: true });
         el.append(action);
       }
       el.append(close); stack.append(el); toast.el = el; added.add(toast.id); visible++;
-      announce(toast.text, toast.kind === 'error' ? 'assertive' : 'polite');
+      announce(undo ? `${/[.!?]$/.test(toast.text) ? toast.text : `${toast.text}.`} Press ${UNDO_KEY.spoken} to undo.` : toast.text, toast.kind === 'error' ? 'assertive' : 'polite');
       startToastTimer(toast);
     }
     const waiting = toastQueue.filter(toast => !toast.el).length;
@@ -383,19 +385,51 @@
       }
     });
   }
-  /** `action` adds a button, such as Undo, that runs `action.run` once. */
-  function pushToast(text, kind = 'success', { action = null } = {}) {
+  /**
+   * `action` adds a button, such as Undo, that runs `action.run` once. With
+   * `until`, a time, the message stays until then.
+   */
+  function pushToast(text, kind = 'success', { action = null, until = null } = {}) {
     const message = cleanStr(text, 500);
     if (!message) return null;
     if (!['success','error','info'].includes(kind)) kind = 'info';
     action = typeof action?.run === 'function' ? { label: cleanStr(action.label, 40) || 'Undo', run: action.run } : null;
-    const lifetime = Math.max(action ? 10000 : kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
+    const lifetime = Number.isFinite(until) ? Math.max(0, until - Date.now()) : Math.max(action ? 10000 : kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
     // Each action belongs to its own change, so those messages never merge.
     const existing = !action && toastQueue.find(toast => !toast.action && toast.kind === kind && toast.text === message);
     if (existing) { existing.remaining = lifetime; startToastTimer(existing); return existing.id; }
     const toast = { id: String(++toastSequence), text: message, kind, action, remaining: lifetime, timer:null, el:null, restoreFocus:document.activeElement };
     toastQueue.push(toast); showQueuedToasts(); return toast.id;
   }
+  // The server keeps a deleted item for five minutes, when it can still be restored.
+  const UNDO_WINDOW_MS = 5 * 60_000;
+  /**
+   * Offer Undo for a deletion the server just accepted. `restore(again)`
+   * brings the item back. When that fails in a way worth trying again, such
+   * as no connection, a busy server or an unknown result, it calls
+   * `again(message)`: the message then offers Undo again, and stays for as
+   * long as the server can still restore the item.
+   */
+  function offerUndo(text, restore, { until = Date.now() + UNDO_WINDOW_MS, kind = 'success' } = {}) {
+    const again = (failure) => {
+      if (Date.now() >= until) App.toast(failure, 'error');
+      else offerUndo(failure, restore, { until, kind: 'error' });
+    };
+    return App.toast(text, kind, { action: { label: 'Undo', run: () => restore(again) }, until: kind === 'error' ? until : null });
+  }
+  // Undo also answers Ctrl+Z, or Command+Z on Apple devices, while its message
+  // shows, so the keyboard reaches it without moving focus. In a text field
+  // the key undoes typing, as always.
+  const UNDO_KEY = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgentData?.platform || navigator.platform || '')
+    ? { label: '⌘Z', aria: 'Meta+Z', spoken: 'Command+Z' } : { label: 'Ctrl+Z', aria: 'Control+Z', spoken: 'Control+Z' };
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'z') return;
+    if (event.target?.closest?.('input,textarea,select,[contenteditable="true"],.confirmation-layer') || pendingConfirmation) return;
+    const toast = toastQueue.findLast(item => item.el && item.action?.label === 'Undo');
+    if (!toast) return;
+    event.preventDefault();
+    toast.el.querySelector('.toast-action')?.click();
+  });
   function dismissToast(id) {
     const index = toastQueue.findIndex(toast => toast.id === String(id));
     if (index < 0) return;
@@ -3367,6 +3401,7 @@
       if(type==='pool'&&bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.open',{}).catch(bootWindow.OneloopRuntime.report);
     },
     toast: pushToast,
+    offerUndo,
     announce,
     dismissToast,
 

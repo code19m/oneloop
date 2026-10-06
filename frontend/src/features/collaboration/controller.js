@@ -6,7 +6,7 @@ import {refreshPageWindow} from '../../data/page-window.js';
 import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
 import {mapInboxItem} from '../../data/inbox-mapper.js';
-import {actionErrorFeedback} from '../../app/action-feedback.js';
+import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
 
@@ -275,7 +275,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
     const promise=performDeleteComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;
   }
 
-  // Undo of a deletion: the comment comes back at the revision the deletion left.
+  // Undo of a deletion: the comment comes back at the revision the deletion
+  // left. A failure worth trying again goes to `again`, which offers Undo
+  // again; the retry keeps the interaction, so it applies once.
   async function performRestoreComment(input){
     const expectedTask=app?.context?.().taskId;
     try{
@@ -285,7 +287,10 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const task=currentTask(input.task.internalId);if(!task||!entity)return false;
       const mapped=mapComment(entity),index=task.comments.findIndex((item)=>item.id===mapped.id);if(index>=0)task.comments.splice(index,1,mapped);
       await refreshActivity(task,true);if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentRestored?.(task.id,mapped.id);return true;
-    }catch(error){report(error,false);return false;}
+    }catch(error){
+      if(input.again&&retryableFailure(error)){input.again(actionErrorFeedback(error).message||'The comment could not be restored.');return false;}
+      report(error,false);return false;
+    }
   }
   function restoreComment(input){
     const key=`restore:${input.comment.id}`;if(interactions.has(key))return interactions.get(key);
