@@ -379,3 +379,28 @@ fn metadata_documents_need_trusted_certificate_authorities_to_start() {
     // Off, the setting needs nothing.
     command("false", &empty).assert().success();
 }
+
+/// Scripts such as `oneloop serve --check | grep -q valid` stop reading after
+/// the first match. The command has done its work by then.
+#[cfg(unix)]
+#[test]
+fn output_to_a_reader_that_stopped_is_not_an_error() {
+    let root = scratch_dir();
+    for arguments in [["db", "migrate"], ["serve", "--check"]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        // With no reader left, every write to standard output fails.
+        drop(reader);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_oneloop"))
+            .env_clear()
+            .env("ONELOOP_PUBLIC_URL", "http://127.0.0.1:18730")
+            .env("ONELOOP_DATA_DIR", root.path())
+            .args(arguments)
+            .stdout(writer)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{arguments:?}: {stderr}");
+        assert_eq!(stderr, "", "{arguments:?}");
+    }
+    assert!(root.path().join("oneloop.sqlite3").is_file());
+}

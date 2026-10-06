@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IsTerminal, Read},
+    io::{self, IsTerminal, Read, Write},
     path::PathBuf,
     sync::LazyLock,
 };
@@ -156,20 +156,23 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
         let database = config.data_dir.join("oneloop.sqlite3");
         if database.is_file() {
             Db::check(&config.data_dir).map_err(|error| startup_error(error, &config.data_dir))?;
-            println!(
+            print_line(format_args!(
                 "configuration and schema are valid (schema {}, data {})",
                 crate::db::CURRENT_SCHEMA_VERSION,
                 config.data_dir.display()
-            );
+            ))?;
         } else {
             // The launchd launcher stops the job when it sees "database is not initialized".
-            println!(
+            print_line(format_args!(
                 "configuration is valid; database is not initialized (data {})",
                 config.data_dir.display()
-            );
+            ))?;
         }
-        println!("SQLite {}", rusqlite::version());
-        println!("IANA timezone database {}", config.timezone.database());
+        print_line(format_args!("SQLite {}", rusqlite::version()))?;
+        print_line(format_args!(
+            "IANA timezone database {}",
+            config.timezone.database()
+        ))?;
         return Ok(());
     }
 
@@ -276,8 +279,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                     }
                     error => error,
                 })?;
-            println!("created user {}", created.username);
-            Ok(())
+            print_line(format_args!("created user {}", created.username))
         }
         UserCommand::Passwd(arguments) => {
             let password = read_password(arguments.password_stdin, true)?;
@@ -286,8 +288,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                 reset_password_with_policy(transaction, &username, &password, unix_now()?, &policy)
             })
             .await?;
-            println!("password reset; existing credentials revoked");
-            Ok(())
+            print_line(format_args!("password reset; existing credentials revoked"))
         }
     }
 }
@@ -300,19 +301,17 @@ async fn backup(arguments: BackupArgs) -> AppResult<()> {
             let created = tokio::task::spawn_blocking(move || create_backup(data_dir, destination))
                 .await
                 .map_err(|error| AppError::internal(format!("backup worker failed: {error}")))??;
-            println!("backup created at {}", created.display());
-            Ok(())
+            print_line(format_args!("backup created at {}", created.display()))
         }
         BackupCommand::Restore { backup } => {
             let data_dir = config.data_dir;
             let restored = tokio::task::spawn_blocking(move || restore_backup(backup, data_dir))
                 .await
                 .map_err(|error| AppError::internal(format!("restore worker failed: {error}")))??;
-            println!(
+            print_line(format_args!(
                 "backup restored to {}; all restored credentials were revoked",
                 restored.display()
-            );
-            Ok(())
+            ))
         }
     }
 }
@@ -329,23 +328,23 @@ async fn database(arguments: DatabaseArgs) -> AppResult<()> {
                 })??;
             let data_dir = config.data_dir.display();
             if outcome.applied.is_empty() {
-                println!(
+                print_line(format_args!(
                     "database in {data_dir} is current (schema {})",
                     outcome.current_version
-                );
+                ))?;
             } else if outcome.previous_version == 0 {
-                println!(
+                print_line(format_args!(
                     "created a new database in {data_dir} (schema {})",
                     outcome.current_version
-                );
+                ))?;
             } else {
-                println!(
+                print_line(format_args!(
                     "database in {data_dir} migrated from {} to {}",
                     outcome.previous_version, outcome.current_version
-                );
+                ))?;
             }
             if let Some(path) = outcome.backup_path {
-                println!("pre-upgrade backup: {}", path.display());
+                print_line(format_args!("pre-upgrade backup: {}", path.display()))?;
             }
             Ok(())
         }
@@ -391,6 +390,15 @@ fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
         }
     }
     Ok(first)
+}
+
+/// Prints one line of command output. A reader that stops reading early, such
+/// as `grep -q`, is not an error: the command has already done its work.
+fn print_line(line: std::fmt::Arguments<'_>) -> AppResult<()> {
+    match writeln!(io::stdout().lock(), "{line}") {
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.into()),
+        _ => Ok(()),
+    }
 }
 
 fn init_tracing(level: tracing::Level) {
