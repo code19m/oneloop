@@ -202,10 +202,9 @@ test('another page asks first: Cancel keeps the text and Discard moves on', () =
 async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before || ask(t), 'Back changed the page'); await settle(); }
 
 test('Back saves a field that saves itself before the page changes, and does not ask', async () => {
-  const t = withBridge(bootApp({ route: 'board' }));
+  const t = withBridge(bootApp({ route: 'board', actions: true }));
   t.A.openTask('BIR-079'); await settle();
   const description = t.d.getElementById('task-description');
-  description.addEventListener('blur', () => handle(description, 'blur'));
   type(description, 'Typed before Back');
   await back(t);
   assert.equal(ask(t), null);

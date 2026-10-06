@@ -150,6 +150,15 @@ test('an unsaved description stays on the page through refreshes and offers Save
   assert.equal(t.requests.length, 0);
 });
 
+test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
+  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };
+  title.focus(); title.value = 'Renamed with Enter';
+  assert.equal(enter({ isComposing: true }).defaultPrevented, false); assert.equal(t.d.activeElement, title);
+  assert.equal(enter().defaultPrevented, true);
+  assert.notEqual(t.d.activeElement, title); assert.equal(task.title, 'Renamed with Enter');
+});
+
 test('a pasted line break cleans the title without splitting an emoji at its length limit', () => {
   const t = taskPage(), title = t.d.querySelector('.tp-title');
   title.focus(); title.value = ''; title.setSelectionRange(0, 0);

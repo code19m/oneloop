@@ -574,7 +574,7 @@
     const cur = def.options.find((o) => o.v === def.value);
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
       ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   const MULTI = {};
@@ -742,8 +742,8 @@
     const placeholder = def.disabled ? 'Not set' : def.placeholder || (label === 'Date' ? 'Select date' : 'Set ' + label.toLowerCase());
     return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${UIEscape(key)}">
       <input type="hidden" name="${def.name}" value="${esc(def.value || '')}">
-      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
-      <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : `onclick="App.popDate(event,'${UIArg(key)}')"`}>${def.icon || I.cal}</button></div>
+      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `${UIAction.on('input', 'dateTyping', key)} ${UIAction.on('blur', 'dateBlur', UIAction.event, key)} ${UIAction.on('keydown', 'dateKey', UIAction.event, key)}`}>
+      <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : UIAction('popDate', UIAction.event, key)}>${def.icon || I.cal}</button></div>
     </div>`;
   }
   function calHtml(view, selected, focusDate, def) {
@@ -1575,7 +1575,7 @@
   // ---------- task page ----------
   function taskActivityHtml(task){
     const feed=taskFeedHtml(task,canBoard()),state=collaboration?.taskFeedState?.(task.id);
-    const retry=`<button class="btn quiet" onclick="App.retryTaskActivity('${UIArg(task.id)}')">Retry</button>`;
+    const retry=`<button class="btn quiet" ${UIAction('retryTaskActivity', task.id)}>Retry</button>`;
     if(!feed)return state?.error?`<div class="access-note" role="alert">Could not load activity. ${retry}</div>`:state?.loaded===false?'<div class="access-note" role="status">Loading activity…</div>':'<div class="access-note">No activity yet</div>';
     return state?.error?`<div class="access-note" role="alert">Could not refresh activity. ${retry}</div>${feed}`:feed;
   }
@@ -1608,10 +1608,10 @@
     // one timeline: activity lines and comment blocks, oldest first
     const items = [...Activity.visible(t.activity).map((a) => ({ k: 'act', ...a })), ...(t.comments || []).map((c, i) => ({ k: 'cmt', i, ...c }))].sort((a, b) => a.ts - b.ts);
     const limit = state.activityLimits[t.id] || 50;
-    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" onclick="App.loadOlderActivity('${UIArg(t.id)}')">Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
+    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity', t.id)}>Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
       ? `<div class="tl-act">${avatarHtml(it.who, 16)}<span><b>${esc((userById(it.who) || { name: it.who }).name)}</b> ${esc(it.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><span class="act-time">· ${ago(it.ts)}</span></div>`
       : `<div class="tl-cmt"><div class="cmt-head">${avatarHtml(it.who, 20)}<b>${esc((userById(it.who) || { name: it.who }).name)}</b><span class="act-time" title="${new Date(it.ts).toISOString()}">${ago(it.ts)}</span>
-          ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" onclick="App.delComment('${UIArg(t.id)}',${it.i})">${I.close}</button>` : ''}</div>
+          ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" ${UIAction('delComment', t.id, it.i)}>${I.close}</button>` : ''}</div>
           <div class="cmt-body">${esc(it.text)}</div></div>`).join('');
 
   }
@@ -1620,7 +1620,7 @@
   function taskDraftNote(t, field) {
     if (!taskDraft(t, field)?.unsaved) return '';
     if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
-    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>`;
+    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
   }
   // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
   const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
@@ -1635,10 +1635,10 @@
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
-      ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave ${UIAction.on('input', 'sizeTaskTitle')} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'title', UIAction.value) : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
+      ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" ${UIAction('openModal', 'unblock', t.id)}>Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" ${UIAction('openModal', 'block', t.id)}>Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
-        <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
+        <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>
         <dl class="task-properties">
           <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
@@ -1649,10 +1649,10 @@
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
-          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value) : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
+          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
-          ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
+          ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" ${UIAction.on('change', 'attachFiles', t.id, UIAction.element)}>` : ''}
           ${atts}<div class="upload-list"></div></div>
         <div class="tp-sec task-activity"><h2>Activity</h2>
           <div class="timeline">${feed}</div>
@@ -2201,10 +2201,10 @@
     if (state.view === 'task') {
       const t = taskById(state.taskId);
       if (!t) return '<h1>Board</h1>';
-      return `<button class="btn icon" onclick="App.nav('board')" title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
+      return `<button class="btn icon" ${UIAction('nav', 'board')} title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
       <h1 style="display:flex;align-items:center;gap:8px"><span class="mono">${esc(t.id)}</span></h1>
       <span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}<span class="task-save-status" role="status" aria-live="polite">${taskSaveFeedback?.id===t.id?taskSaveFeedback.saving?'Saving…':'Saved':''}</span>
-      ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" onclick="App.taskActions(event,'${UIArg(t.id)}')">${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
+      ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" ${UIAction('taskActions', UIAction.event, t.id)}>${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
     }
     if (state.view === 'storage') return '<h1>Storage</h1><span class="meta">All projects</span>';
     if (state.view === 'inbox') return '<h1>Inbox</h1>';
@@ -3028,6 +3028,8 @@
     sizeDescription,
     sizeDescriptionEditors,
     sizeTaskTitle,
+    /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
+    leaveField(event, field) { event.preventDefault(); field.blur(); },
     expandDescription() {
       const section = document.querySelector('.task-description');
       if (section) expandedDescriptions.add(section.dataset.descriptionKey);
