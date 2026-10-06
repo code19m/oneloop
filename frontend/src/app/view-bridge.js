@@ -9,10 +9,12 @@ import {
   commandIsUnchanged,
   formFieldName,
   isServerNoChange,
+  retryableFailure,
   validDate,
 } from './action-feedback.js';
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
+import { leaveAdminPage } from '../features/recovery/controller.js';
 
 /** The server's username order: SQLite's binary collation, not the browser's locale. */
 const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
@@ -35,7 +37,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
   let promotionSource=null;
-  const pendingPoolCaptures = new WeakSet();
+  // Pool items that could not be added, kept for their person until the
+  // capture field of their Pool is free.
+  /** @type {{userId:string,projectId:string,scope:string,title:string,description:string,key:string}[]} */
+  const unsentCaptures = [];
+  /** @type {{projectId:string,scope:string,title:string,description:string,key:string}|null} */
+  let returnedCapture = null;
+  // Pool items on their way, so a second Enter on the field one just left says nothing.
+  let capturesSending = 0;
   let projectGeneration = 0;
   let usersGeneration=0,profileGeneration=0,routeGeneration=0,profileNameGeneration=0,avatarGeneration=0;
   let usersController=null,profileController=null;
@@ -45,6 +54,27 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const openPeek=app.openPeek.bind(app);
   const moveTaskOrder=app.moveTaskOrder.bind(app);
   const nav=app.nav.bind(app);
+  const openModal=app.openModal.bind(app);
+
+  // The values an edit dialog showed when it opened. A save sends only the
+  // fields the person changed, so Keep my changes never puts back a value
+  // that someone else saved in a field this person left alone.
+  /** @type {{type:string,id:string,values:Record<string,unknown>}|null} */
+  let dialogBase=null;
+  /** @type {Record<string,(item:any)=>Record<string,unknown>>} */
+  const DIALOG_VALUES={
+    epic:(item)=>({trackId:item.trackId,title:text(item.title,120),description:text(item.desc,2000),startDate:item.start,endDate:item.end||null}),
+    milestone:(item)=>({title:text(item.name,60),description:text(item.desc,500),milestoneDate:item.date}),
+  };
+  function noteDialog(type,id){const item=type==='epic'?epic(id):type==='milestone'?milestone(id):null;dialogBase=item?{type,id,values:DIALOG_VALUES[type](item)}:null;}
+  /** After Use latest draws the dialog again, it shows the saved values. */
+  function rebaseDialog(){if(dialogBase)noteDialog(dialogBase.type,dialogBase.id);}
+  /** The fields of `values` that differ from what the dialog showed when it opened; all of them when that is unknown. */
+  function changedFields(type,id,values){
+    const base=dialogBase?.type===type&&dialogBase.id===id?dialogBase.values:null;
+    return base?Object.fromEntries(Object.entries(values).filter(([key,value])=>(value??null)!==(base[key]??null))):values;
+  }
+  app.openModal=(type,id,...rest)=>{noteDialog(type,id);return openModal(type,id,...rest);};
 
   function fieldError(form,name,message){
     if(form&&typeof form.querySelector==='function'&&form.querySelector(`[name="${name}"]`)){
@@ -134,15 +164,20 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return live?.querySelector?.(`[name="${formFieldName(field)}"]`)??null;
   }
 
+  /** What a failed save says. */
+  function failureMessage(error){
+    return error instanceof ApiError && error.uncertain
+      ? 'The save result is unknown. Try the same action again to reconcile it safely.'
+      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
+      ? 'This item changed elsewhere. Review the latest version before saving again.'
+      : actionErrorFeedback(error).message;
+  }
+
   function report(error, options = {}) {
     if(error?.oneloopReported||error?.code==='reauth_cancelled'||error?.status===401)return;
     const feedback=actionErrorFeedback(error);
     if(feedback.silent)return;
-    const message = error instanceof ApiError && error.uncertain
-      ? 'The save result is unknown. Try the same action again to reconcile it safely.'
-      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
-      ? 'This item changed elsewhere. Review the latest version before saving again.'
-      : feedback.message;
+    const message = failureMessage(error);
     if(presentFormError(options.form,error,app,{message}))return;
     const field=feedback.field&&formFieldName(feedback.field);
     if(field&&options.form&&typeof options.form.querySelector==='function'&&options.form.querySelector(`[name="${field}"]`)){
@@ -152,6 +187,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   const reportFor=(scope,options={},current=()=>true)=>(error)=>{if(sessionScope()===scope&&current())report(error,options);};
+  const stillAdmin=()=>!!data.users.find((user)=>user.id===data.session?.userId)?.admin;
+  /** An admin action found the person is no longer an admin: leave the admin page or dialog and say so. */
+  function adminGone(){
+    if(!leaveAdminPage(data,app,context()))app.toast('You no longer have admin access.','error');
+    const error=new ApiError('You no longer have admin access.',{status:403,code:'forbidden'});
+    /** @type {any} */(error).oneloopReported=true;return error;
+  }
 
   // A task field save repaints in the background, so it never replaces the
   // field being edited. Other changes paint at once, or, under a dialog opened
@@ -359,6 +401,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         // text below). Until then, it stays on the revision it was opened at,
         // so saving it again still meets the other change.
         const dialog=!options.coalesce&&!!options.form?.closest?.('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
+        // A picker keeps its value in a hidden input, which can't show the
+        // saved value by itself; the whole dialog is drawn again instead.
+        const control=showsLatest&&field?dialogControl(options.form,field):null,inPlace=!!control&&control.type!=='hidden';
         try{
           /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
@@ -367,9 +412,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             latestEntity:()=>latestEntity(operation,payload,entity),
             retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
             target:{
-              element:options.conflictElement??(showsLatest&&field?()=>dialogControl(options.form,field):undefined),
+              element:options.conflictElement??(inPlace?()=>dialogControl(options.form,field):undefined),
               latestValue:(item)=>conflictValue(operation,payload,item),
-              ...(showsLatest&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
+              ...(showsLatest&&!inPlace?{acceptLatest:()=>{rebaseDialog();app.redrawDialog?.();}}:{}),
             },
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
@@ -474,6 +519,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   };
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
+    // The server takes avatars up to this size, so a larger image isn't sent.
+    const limit=data.limits?.maxAvatarBytes??5*1024*1024,tooLarge=`Use an image of at most ${Math.round(limit/1024/1024*10)/10} MiB.`;
+    if(file.size>limit){input.value='';app.toast(tooLarge,'error');return;}
     const scope=sessionScope(),generation=++avatarGeneration;
     if(avatarQueueScope!==scope){avatarQueueScope=scope;avatarQueue=Promise.resolve();}
     const request=avatarQueue.catch(()=>{}).then(async()=>{
@@ -482,7 +530,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
       me.avatar=response.avatarUrl;if(context().view==='profile'){app.refresh();app.toast('Avatar updated');}return response;
     });
-    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+    const reportAvatar=reportFor(scope,{},()=>generation===avatarGeneration);
+    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch((error)=>{
+      if(error?.status===413||error?.code==='request_too_large'){if(sessionScope()===scope&&generation===avatarGeneration)app.toast(tooLarge,'error');return;}
+      reportAvatar(error);
+    }).finally(()=>{input.value='';}));
   };
   app.removeAvatar=()=>{
     const me=data.users.find((item)=>item.id===data.session?.userId);if(!me)return false;
@@ -528,7 +580,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const expectedRevision=item.revision;
       // A refresh may replace the cached row, so look the account up by id.
       const save=()=>{
-        if(sessionScope()!==scope||!data.users.some(user=>user.id===id)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
+        if(sessionScope()!==scope)return Promise.resolve();
+        if(!stillAdmin())return Promise.reject(adminGone());
+        if(!data.users.some(user=>user.id===id)){fieldError(form,'name','This user is no longer listed. Reload Users and try again.');return Promise.resolve();}
         return api.updateUser(id,{displayName,isAdmin,isActive,expectedRevision}).then((user)=>{
         const latest=data.users.find(entry=>entry.id===id);
         if(sessionScope()!==scope||!latest)return;
@@ -590,7 +644,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const project=data.projects.find((entry)=>entry.id===payload.projectId),eligible=new Set((project?.members??[]).map((member)=>member.userId));
     if(payload.assigneeIds.some((id)=>!eligible.has(id)||data.users.find((user)=>user.id===id)?.active===false))return fieldError(form,'assignees','Choose active project members. A selected person is no longer available.');
     const operation=source?'pool.promote':'task.create';
-    const body=source?{poolItemId:source.id,epicId:payload.epicId,title:payload.title,description:payload.description,deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
+    // Text the person left as the Pool item had it follows the item, so Keep
+    // my changes never puts back a title or description changed meanwhile.
+    const ownTitle=payload.title!==text(modal?.title,140),ownDescription=payload.description!==text(modal?.desc,4000);
+    const body=source?{poolItemId:source.id,epicId:payload.epicId,...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
     pendingTaskForms.add(form);
     const buttons=Array.from(form.querySelectorAll?.('button[type="submit"],input[type="submit"]')??[]);
     const disabled=buttons.map(button=>button.disabled);
@@ -604,10 +661,16 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }));
   };
   app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
-  // Undo restores the task at the revision its deletion left.
+  // Undo restores the task at the revision its deletion left. A restore that
+  // fails in a way worth trying again offers Undo again; a retry after an
+  // unknown result keeps the restore's key, so it applies once.
   function undoTaskDeletion(item,result){
     const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
-    app.toast(`${item.id} deleted`,'success',Number.isSafeInteger(revision)?{action:{label:'Undo',run:()=>fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision}))}}:{});
+    if(!Number.isSafeInteger(revision)){app.toast(`${item.id} deleted`,'success');return;}
+    app.offerUndo(`${item.id} deleted`,(again)=>{
+      if(recovery?.connection==='offline'){again('Reconnect before making this change.');return;}
+      fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision,handleError:(error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
+    });
   }
   app.moveTaskOrder = (id,anchor,before) => {
     const item=task(id),target=task(anchor);if(!item||!target||app._boardMovePending)return false;
@@ -628,7 +691,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(!validDate(base.startDate))return fieldError(form,'start','Enter a valid start date in YYYY-MM-DD format.');
     if(!validOptionalDate(form,'end',base.endDate))return false;
     if(base.endDate&&base.endDate<base.startDate)return fieldError(form,'end','End date cannot be before the start date.');
-    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...base}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
+    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changedFields('epic',item.id,base)}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
   };
   app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
   app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
@@ -639,7 +702,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   app.saveTrack=(event,id)=>{const form=event.target,values=formValues(event),item=id?track(id):null,name=text(values.get('name'),60);if(!name)return fieldError(form,'name','Give the track a name.');return fire(execute(item?'track.update':'track.create',item?{trackId:item.id,name}:{projectId:context().projectId,name,description:''},item,item?'Track renamed':'Track created',{create:!item,form,closeForm:true}));};
   app.deleteTrack=(id)=>{const item=track(id);if(!item)return;app.confirm({title:'Delete track?',text:`“${item.name}” will be removed.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
-  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...base}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
+  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
   app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
 
   app.saveBlock=(event,id,mode)=>{
@@ -655,24 +718,49 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return fire(execute(operation,payload,revisionEntity,mode==='block'?'Task blocked':'Task unblocked',{form,closeForm:true}));
   };
 
+  // An item leaves the field as soon as it is sent, so what is typed next is a
+  // new item: never joined to this one, and sent on its own. An item that
+  // can't be added comes back once the field is free.
   app.poolKey=(event)=>{
     if(event.key!=='Enter'||event.shiftKey||event.isComposing||event.repeat)return;
     event.preventDefault();
     const input=event.target;
-    if(pendingPoolCaptures.has(input))return false;
     const enteredTitle=input.value,title=text(enteredTitle,140);
-    if(!title){app.toast('Give the Pool item a title.','error');return false;}
+    if(!title){if(!capturesSending)app.toast('Give the Pool item a title.','error');return false;}
     const notes=/** @type {HTMLTextAreaElement|null} */(document.getElementById('poolNewDesc'));
-    const description=notes?.value||'',scope=context().poolTab==='project'?'team':'personal';
-    pendingPoolCaptures.add(input);
-    return fire(execute('pool.create',{projectId:context().projectId,scope,title,description:text(description,2000)},null,'Pool item added',{
-      create:true,paint:false,interactionKey:'pool:create',poolScope:scope,
-      onAccepted:()=>{
-        if(input.isConnected!==false&&input.value===enteredTitle)input.value='';
-        if(notes?.isConnected&&notes.value===description)notes.value='';
-      },
-    }).finally(()=>pendingPoolCaptures.delete(input)));
+    const description=text(notes?.value||'',2000),scope=context().poolTab==='project'?'team':'personal',projectId=context().projectId,sent=sessionScope(),userId=data.session?.userId??'';
+    // An item sent again after an unknown result keeps its key, so it is added once.
+    const returned=returnedCapture;returnedCapture=null;
+    const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
+    input.value='';if(notes)notes.value='';capturesSending++;
+    return fire(execute('pool.create',{projectId,scope,title,description},null,'Pool item added',{
+      create:true,paint:false,interactionKey:key,poolScope:scope,onAccepted:returnCaptures,
+    }).catch((error)=>{
+      if(sessionScope()===sent){unsentCaptures.push({userId,projectId,scope,title,description,key});returnCaptures();}
+      throw error;
+    }).finally(()=>{capturesSending--;}));
   };
+  /** Put the oldest item that wasn't added back in the capture field of its Pool, once the field is empty. */
+  function returnCaptures(){
+    const userId=data.session?.userId;
+    for(let index=unsentCaptures.length-1;index>=0;index--)if(unsentCaptures[index].userId!==userId)unsentCaptures.splice(index,1);
+    const input=/** @type {HTMLInputElement|null} */(globalThis.document?.getElementById?.('poolAdd'));
+    const notes=/** @type {HTMLTextAreaElement|null} */(globalThis.document?.getElementById?.('poolNewDesc'));
+    if(!input||input.hidden||input.value||notes?.value)return;
+    const scope=context().poolTab==='project'?'team':'personal',index=unsentCaptures.findIndex(item=>item.projectId===context().projectId&&item.scope===scope);
+    if(index<0)return;
+    const [item]=unsentCaptures.splice(index,1);
+    input.value=item.title;
+    if(notes&&item.description){
+      // Opening the notes moves focus there; it goes back to where it was.
+      const focused=/** @type {HTMLElement|null} */(globalThis.document.activeElement);
+      if(!notes.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
+      notes.value=item.description;
+      if(focused?.isConnected)focused.focus?.({preventScroll:true});
+    }
+    returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
+  }
+  recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>!data.session||item.userId===data.session.userId));
   app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:item.scope==='project'?'team':'personal',form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
   app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 
@@ -691,7 +779,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     // Keep the displayed permission authoritative until the confirmation is accepted.
     if(!enabled&&input)input.checked=true;
     const apply=()=>{
-      if(sessionScope()!==scope||context().projectId!==project.id||!data.users.find(user=>user.id===data.session?.userId)?.admin)return false;
+      if(sessionScope()!==scope||context().projectId!==project.id)return false;
+      if(!stillAdmin()){adminGone();return false;}
       const latest=project.members.find(item=>item.userId===userId);if(!latest)return false;
       const current=new Set(latest.permissions);enabled?current.add(permission):current.delete(permission);
       // A change that fails shows the saved permission again.
@@ -809,10 +898,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='board.more'){const result=await reads.moreBoard(payload.status);if(!result.stale)app.acceptMoreBoard(payload.status);return result;}
       if(action==='pool.open'){
         const projectId=context().projectId;
+        returnCaptures();
         const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
         return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
       }
-      if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
+      if(action==='pool.select'){returnCaptures();return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');}
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
         if(!await mayLeavePage())return {stale:true};

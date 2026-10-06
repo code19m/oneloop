@@ -1081,6 +1081,69 @@ async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
 }
 
 #[tokio::test]
+async fn newest_first_lists_tasks_completed_in_one_second_by_completion() {
+    let f = fixture().await;
+    let mut ids = Vec::new();
+    for number in 1..=4 {
+        let created = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":format!("Quick {number}")}),
+                    &format!("quick-create-{number}"),
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        ids.push(created.entities[0]["id"].as_str().unwrap().to_owned());
+    }
+    // ONE-004, ONE-001, ONE-003 and ONE-002 move to Done in that order...
+    for index in [3, 0, 2, 1] {
+        f.service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::MoveTask,
+                    json!({"taskId":ids[index],"status":"done"}),
+                    &format!("quick-done-{index}"),
+                    Some(1),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    // ...within one second, as quick keyboard moves or an assistant's batch do.
+    f.db.run(|connection| {
+        connection.execute("UPDATE tasks SET completed_at=1000 WHERE status='done'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let expected = [1, 2, 0, 3].map(|index| ids[index].clone());
+    // The unfiltered read uses the index; a search reads the filtered matches.
+    for search in [None, Some("quick")] {
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = f
+                .service
+                .board_page(&f.member, newest_done_query(cursor, search))
+                .await
+                .unwrap();
+            seen.extend(page.items.into_iter().map(|task| task.id));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(seen, expected, "{search:?}");
+    }
+}
+
+#[tokio::test]
 async fn done_order_cursors_and_parameters_belong_to_their_order() {
     let f = fixture().await;
     seed_done_column(&f).await;

@@ -7,7 +7,7 @@ import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
-  const app={context:()=>context,openPeek(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},...overrides.app};
+  const app={context:()=>context,openPeek(){},openModal(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
@@ -353,16 +353,59 @@ test('a failed obsolete task read cannot put the new Profile page into an error 
   }finally{if(previous===undefined)delete globalThis.location;else globalThis.location=previous;}
 });
 
-test('Pool capture cannot repeat an accepted create while its read is pending or erase the next entry',async()=>{
-  const previous=globalThis.document;globalThis.document={getElementById:()=>null};
-  const read=deferred();let writes=0;
-  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}},reads:{pool:()=>read.promise}});
-  const input={value:'First idea',isConnected:true};const event={key:'Enter',target:input,preventDefault(){}};
+/** A Pool's capture field and notes, found by their ids. */
+function poolCapture(){
+  const input={value:'',isConnected:true,hidden:false},notes={value:'',isConnected:true,closest:()=>({classList:{contains:()=>true}})};
+  return {input,notes,document:{getElementById:id=>({poolAdd:input,poolNewDesc:notes})[id]??null,activeElement:null}};
+}
+
+test('an item sent from the Pool leaves the field at once, and the next one is sent on its own',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const read=deferred(),commands=[];
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);return {entities:[],events:[]};}},reads:{pool:()=>read.promise}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
   try{
-    state.app.poolKey(event);await tick();assert.equal(input.value,'');
-    input.value='Next idea';state.app.poolKey(event);assert.equal(writes,1);
+    capture.input.value='First idea';capture.notes.value='Its notes';state.app.poolKey(event);
+    assert.deepEqual([capture.input.value,capture.notes.value],['',''],'the item left the field');
+    capture.input.value='Next idea';state.app.poolKey(event);
+    assert.equal(capture.input.value,'');
+    await tick();
+    assert.deepEqual(commands.map(([title])=>title),['First idea','Next idea']);
+    assert.notEqual(commands[0][1],commands[1][1],'two items, two keys');
     read.resolve({stale:false});await tick();
-    assert.equal(input.value,'Next idea');assert.deepEqual(state.paints,[]);
+    assert.equal(capture.input.value,'');assert.deepEqual(state.paints,[]);
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
+});
+
+test('Enter on the empty Pool field says nothing while the item that left it is on its way',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const sent=deferred();
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:()=>sent.promise}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
+  try{
+    capture.input.value='Only idea';state.app.poolKey(event);state.app.poolKey(event);
+    assert.deepEqual(state.toasts,[]);
+    sent.resolve({entities:[],events:[]});await tick();await tick();
+    state.app.poolKey(event);
+    assert.deepEqual(state.toasts.at(-1),['Give the Pool item a title.','error']);
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
+});
+
+test('a Pool item that can\'t be added comes back once the field is free, and is added once',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const commands=[];let fail=true;
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(_operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);if(fail&&payload.title==='First idea')throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});return {entities:[],events:[]};}}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
+  try{
+    capture.input.value='First idea';capture.notes.value='Its notes';state.app.poolKey(event);
+    capture.input.value='Typed meanwhile';await tick();await tick();
+    assert.equal(capture.input.value,'Typed meanwhile','the item waits while the field is in use');
+    state.app.poolKey(event);await tick();await tick();
+    assert.deepEqual([capture.input.value,capture.notes.value],['First idea','Its notes'],'it comes back once the field is free');
+    fail=false;state.app.poolKey(event);await tick();
+    assert.deepEqual(commands.map(([title])=>title),['First idea','Typed meanwhile','First idea']);
+    assert.equal(commands[2][1],commands[0][1],'sent again with its key, so an unknown result can\'t add it twice');
+    assert.equal(capture.input.value,'');
   }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
 });
 
@@ -459,6 +502,32 @@ test('Save in Edit user finds the account after a refresh replaced its row',asyn
     state.app.saveUser({target:form,preventDefault(){}},'gone');
     assert.deepEqual(errors,[['name','This user is no longer listed. Reload Users and try again.']]);
   }finally{globalThis.FormData=OriginalFormData;}
+});
+
+test('Save in Edit user after the admin role is gone says so and leaves Users, instead of doing nothing',async()=>{
+  const OriginalFormData=globalThis.FormData,fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],navigated=[];
+  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
+  globalThis.FormData=class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}};
+  try{
+    const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{nav:(view)=>navigated.push(view)},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {};}}});
+    state.data.users.push({id:'u1',admin:false,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    state.app.saveUser({target:form,preventDefault(){}},'u2');await tick();
+    assert.deepEqual(saved,[],'nothing is sent');
+    assert.equal(state.closed,1);assert.deepEqual(navigated,['board']);
+    assert.deepEqual(state.toasts,[['You no longer have admin access.','info']]);
+  }finally{globalThis.FormData=OriginalFormData;}
+});
+
+test('an avatar larger than the server takes is refused before it is sent, and a refusal by size says the limit',async()=>{
+  const sent=[];let answer;
+  const state=fixture({view:'profile',projectId:'p1',board:{}},{api:{uploadAvatar:async(file)=>{sent.push(file.size);throw answer;}}});
+  state.data.users.push({id:'u1',name:'Me',admin:false,active:true});state.data.limits={maxAvatarBytes:5*1024*1024};
+  const input=(size)=>({files:[{size}],value:'picked'});
+  const big=input(6*1024*1024);state.app.setAvatar(big);await tick();
+  assert.deepEqual(sent,[]);assert.equal(big.value,'','the same image can be picked again');
+  answer=new ApiError('The request exceeds the size limit',{status:413,code:'request_too_large'});state.app.setAvatar(input(4*1024*1024));await tick();await tick();
+  answer=new ApiError('invalid avatar: must be a PNG, JPEG or WebP image',{status:400,code:'validation_failed',details:{field:'avatar',message:'must be a PNG, JPEG or WebP image'}});state.app.setAvatar(input(1024));await tick();await tick();
+  assert.deepEqual(state.toasts,[['Use an image of at most 5 MiB.','error'],['Use an image of at most 5 MiB.','error'],['The avatar must be a PNG, JPEG or WebP image.','error']]);
 });
 
 /** A task page whose commands go through the real gateway and are answered one by one. */
@@ -572,6 +641,47 @@ test('Use latest in a dialog that saves several fields draws it again from the s
   assert.deepEqual(redrawn,[true]);assert.deepEqual(finished,['epic:e1'],'the dialog now shows the latest revision');
 }));
 
+/** A conflict prompt answered with Keep my changes, which saves again at the latest revision. */
+const keepMine=()=>({isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'record',expectedRevision:(_key,latest)=>latest,finishRevision(){},handleCommandFailure:async()=>{},
+  resolveConflict:async({retry})=>({handled:true,saved:true,result:await retry(2)})});
+/** A gateway whose first save meets someone else's change. */
+const conflictOnce=(sent)=>({execute:async(_operation,payload,options)=>{sent.push(payload);if(sent.length===1)throw changedElsewhere();return {entities:[],events:[]};}});
+
+test('Keep my changes in Edit epic saves only the fields the person changed, so a teammate\'s new dates stay',()=>withFormData(async()=>{
+  const sent=[],state=epicPage(keepMine(),conflictOnce(sent));
+  state.app.openModal('epic','e1');
+  // A teammate moves the epic while the dialog is open; it still shows the old dates.
+  Object.assign(state.data.epics[0],{start:'2026-02-01',end:'2026-03-01',revision:2});
+  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Renamed epic',desc:'',start:'2026-01-01',end:''})},'e1');await tick();await tick();
+  assert.deepEqual(sent,[{epicId:'e1',title:'Renamed epic'},{epicId:'e1',title:'Renamed epic'}]);
+}));
+
+test('Keep my changes in Edit milestone saves only the fields the person changed, so a teammate\'s new date stays',()=>withFormData(async()=>{
+  const sent=[],state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery:keepMine(),gateway:conflictOnce(sent)});
+  state.data.milestones.push({id:'m1',projectId:'p1',name:'Launch',desc:'Ship it',date:'2026-11-10',revision:1});
+  state.app.openModal('milestone','m1');
+  Object.assign(state.data.milestones[0],{date:'2026-12-24',revision:2});
+  state.app.saveMilestone({preventDefault(){},target:dialogForm({name:'Public launch',desc:'Ship it',date:'2026-11-10'})},'m1');await tick();await tick();
+  assert.deepEqual(sent,[{milestoneId:'m1',title:'Public launch'},{milestoneId:'m1',title:'Public launch'}]);
+}));
+
+test('a Pool promotion sends the item\'s title and description only when the person changed them',()=>withFormData(async()=>{
+  const sent=[],state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1',title:'Idea',desc:'Notes'}},{recovery:keepMine(),gateway:conflictOnce(sent)});
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
+  state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'}),querySelectorAll:()=>[]}});await tick();await tick();
+  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId'],['assigneeIds','deadline','description','epicId','poolItemId']]);
+}));
+
+test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',()=>withFormData(async()=>{
+  let target;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
+  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}});
+  state.app.openModal('epic','e1');
+  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Epic',desc:'',start:'2026-01-05',end:''},{'[name="start"]':{type:'hidden',value:'2026-01-05'}})},'e1');await tick();await tick();
+  assert.equal(target.element,undefined);assert.equal(typeof target.acceptLatest,'function');
+  assert.equal(target.latestValue({start:'2026-02-01'}),'2026-02-01','the prompt still names the saved date');
+}));
+
 test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
   const remembered=new Map([['epic:e1',1]]),sent=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
@@ -672,6 +782,46 @@ test('a value typed while a failing save ran is the one kept as Not saved',async
   state.requests[0].reject(new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await tick();await tick();
   assert.equal(state.requests.length,1,'the newer value waits for the connection');
   assert.deepEqual(state.bridge.taskDraft('t1','desc'),{value:'Second text',unsaved:true});
+});
+
+/** A task page whose deletion succeeds and whose restores answer as `restore` says. */
+function deletedTask(restore,recovery={}){
+  const commands=[];let gateway;
+  const api={command:async(command)=>{commands.push(command);if(command.operation==='task.restore')return restore(commands.filter(item=>item.operation==='task.restore').length);return {entities:[{entityType:'task',id:'t1',projectId:'p1',deleted:true,revision:4}],events:[]};}};
+  const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:(...args)=>gateway.execute(...args)},app:{confirm(options){options.confirm();}},recovery:{handleCommandFailure:async()=>{},...recovery}});
+  gateway=createCommandGateway({api,data:state.data});
+  state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',revision:3});
+  const restores=()=>commands.filter(item=>item.operation==='task.restore');
+  const until=async(check)=>{for(let turn=0;turn<30&&!check();turn++)await new Promise(setImmediate);assert.ok(check());};
+  return {state,restores,until};
+}
+
+test('a task Undo that meets a busy server offers Undo again, which restores the task with the same key',async()=>{
+  const {state,restores,until}=deletedTask((tries)=>{if(tries===1)throw new ApiError('Busy',{status:503,code:'unavailable',uncertain:true});return {entities:[],events:[]};});
+  state.app.deleteTask('ONE-1');
+  await until(()=>state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  state.toasts.at(-1)[2].action.run();
+  await until(()=>state.toasts.at(-1)[1]==='error');
+  const [message,,options]=state.toasts.at(-1);
+  assert.match(message,/unknown/);assert.equal(options.action.label,'Undo');
+  options.action.run();
+  await until(()=>state.toasts.some(([text])=>text==='ONE-1 restored'));
+  assert.equal(restores().length,2);assert.equal(restores()[1].idempotencyKey,restores()[0].idempotencyKey,'an unknown result is reconciled, never applied twice');
+});
+
+test('a task Undo the server can no longer apply is only reported, and one without a connection waits for it',async()=>{
+  const final=deletedTask(()=>{throw new ApiError('task can no longer be restored',{status:412,code:'precondition_failed'});});
+  final.state.app.deleteTask('ONE-1');
+  await final.until(()=>final.state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  final.state.toasts.at(-1)[2].action.run();
+  await final.until(()=>final.state.toasts.at(-1)[1]==='error');
+  assert.equal(final.state.toasts.at(-1)[2],undefined,'nothing to try again');
+  const offline=deletedTask(()=>({entities:[],events:[]}),{connection:'offline'});
+  offline.state.app.deleteTask('ONE-1');
+  await offline.until(()=>offline.state.toasts.some(([text])=>text==='ONE-1 deleted'));
+  offline.state.toasts.at(-1)[2].action.run();
+  assert.deepEqual(offline.state.toasts.at(-1).slice(0,2),['Reconnect before making this change.','error']);
+  assert.equal(offline.state.toasts.at(-1)[2].action.label,'Undo');assert.equal(offline.restores().length,0);
 });
 
 test('a deleted task offers Undo, which restores it at the revision its deletion left',async()=>{

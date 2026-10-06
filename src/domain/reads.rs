@@ -720,7 +720,11 @@ fn board_page_with_total(
         Some(raw) if newest => {
             let cursor: CompletedCursor = decode_cursor(raw)?;
             check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
-            Some(PageStart::Completed(cursor.completed_at, cursor.id))
+            Some(PageStart::Completed {
+                at: cursor.completed_at,
+                order: cursor.completion_order,
+                id: cursor.id,
+            })
         }
         Some(raw) => {
             let cursor: BoardCursor = decode_cursor(raw)?;
@@ -809,18 +813,33 @@ fn board_page_with_total(
             let n = values.len() - 1;
             format!("(t.position>?{n} OR (t.position=?{n} AND t.id>?{}))", n + 1)
         }
-        Some(PageStart::Completed(Some(completed), id)) => {
+        Some(PageStart::Completed {
+            at: Some(completed),
+            order,
+            id,
+        }) => {
             values.push((*completed).into());
+            values.push((*order).into());
+            values.push(id.clone().into());
+            let n = values.len() - 2;
+            format!(
+                "((t.completed_at,t.completion_order,t.id)<(?{n},?{},?{}) OR t.completed_at IS NULL)",
+                n + 1,
+                n + 2
+            )
+        }
+        Some(PageStart::Completed {
+            at: None,
+            order,
+            id,
+        }) => {
+            values.push((*order).into());
             values.push(id.clone().into());
             let n = values.len() - 1;
             format!(
-                "(t.completed_at<?{n} OR (t.completed_at=?{n} AND t.id<?{}) OR t.completed_at IS NULL)",
+                "(t.completed_at IS NULL AND (t.completion_order,t.id)<(?{n},?{}))",
                 n + 1
             )
-        }
-        Some(PageStart::Completed(None, id)) => {
-            values.push(id.clone().into());
-            format!("(t.completed_at IS NULL AND t.id<?{})", values.len())
         }
         None => String::new(),
     };
@@ -830,7 +849,7 @@ fn board_page_with_total(
         // Precomputed unfiltered totals retain the bounded index-only page path.
         let ids = if newest {
             let start = match &start {
-                Some(PageStart::Completed(completed, id)) => Some((*completed, id.as_str())),
+                Some(PageStart::Completed { at, order, id }) => Some((*at, *order, id.as_str())),
                 _ => None,
             };
             newest_done_ids(connection, &q.project_id, start, limit + 1)?
@@ -860,17 +879,17 @@ fn board_page_with_total(
         };
         let (order, page_order) = if newest {
             (
-                "t.completed_at DESC,t.id DESC",
-                "page.completed_at DESC,page.id DESC",
+                "t.completed_at DESC,t.completion_order DESC,t.id DESC",
+                "page.completed_at DESC,page.completion_order DESC,page.id DESC",
             )
         } else {
             ("t.position,t.id", "page.position,page.id")
         };
         let sql = format!(
             "WITH matches AS MATERIALIZED (
-            SELECT t.id,t.position,t.completed_at FROM tasks t WHERE {predicate}
+            SELECT t.id,t.position,t.completed_at,t.completion_order FROM tasks t WHERE {predicate}
         ), page AS (
-            SELECT t.id,t.position,t.completed_at FROM matches t{after}
+            SELECT t.id,t.position,t.completed_at,t.completion_order FROM matches t{after}
             ORDER BY {order} LIMIT ?{limit_parameter}
         ) SELECT page.id, totals.total FROM (SELECT COUNT(*) AS total FROM matches) totals
           LEFT JOIN page ON true ORDER BY {page_order}"
@@ -897,6 +916,7 @@ fn board_page_with_total(
                     generation,
                     scope,
                     completed_at: t.completed_at,
+                    completion_order: t.completion_order.unwrap_or(0),
                     id: t.id.clone(),
                 })
             } else {
@@ -969,7 +989,7 @@ fn task_views(
     let encoded =
         serde_json::to_string(ids).map_err(|error| AppError::internal(error.to_string()))?;
     let mut statement=connection.prepare_cached("SELECT id,project_id,epic_id,task_number,task_key,title,CASE WHEN ?2 THEN description \
-                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at FROM tasks WHERE id \
+                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order FROM tasks WHERE id \
                      IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
     let mut tasks = statement
         .query_map(params![encoded, details], |r| {
@@ -992,6 +1012,9 @@ fn task_views(
                 } else {
                     None
                 },
+                completion_order: (r.get::<_, String>(7)? == "done")
+                    .then(|| r.get(14))
+                    .transpose()?,
                 revision: r.get(12)?,
                 assignee_ids: Vec::new(),
                 active_block: None,
@@ -1086,21 +1109,27 @@ struct CompletedCursor {
     generation: i64,
     scope: String,
     completed_at: Option<i64>,
+    completion_order: i64,
     id: String,
 }
 
 /// The card a Board page continues after.
 enum PageStart {
     Position(i64, String),
-    Completed(Option<i64>, String),
+    Completed {
+        at: Option<i64>,
+        order: i64,
+        id: String,
+    },
 }
 
 /// One newest-first Done page of a project, read in order from the partial
-/// index. `start` is the completion time and ID of the card to continue after.
+/// index. `start` is the completion time, completion order and ID of the card
+/// to continue after.
 fn newest_done_ids(
     connection: &rusqlite::Connection,
     project_id: &str,
-    start: Option<(Option<i64>, &str)>,
+    start: Option<(Option<i64>, i64, &str)>,
     take: usize,
 ) -> AppResult<Vec<String>> {
     let read = |sql: &str, values: &[&dyn rusqlite::ToSql]| -> AppResult<Vec<String>> {
@@ -1111,21 +1140,22 @@ fn newest_done_ids(
     };
     let (mut ids, undated_after) = match start {
         None => return read(NEWEST_DONE_SQL, params![project_id, take as i64]),
-        Some((Some(completed), id)) => (
+        Some((Some(completed), order, id)) => (
             read(
                 NEWEST_DONE_AFTER_SQL,
-                params![project_id, completed, id, take as i64],
+                params![project_id, completed, order, id, take as i64],
             )?,
             None,
         ),
-        Some((None, id)) => (Vec::new(), Some(id)),
+        Some((None, order, id)) => (Vec::new(), Some((order, id))),
     };
     // The row comparison skips tasks without a completion time; they follow.
     if ids.len() < take {
         let rest = (take - ids.len()) as i64;
+        let (order, id) = undated_after.unzip();
         ids.extend(read(
             UNDATED_DONE_SQL,
-            params![project_id, undated_after, rest],
+            params![project_id, id, order, rest],
         )?);
     }
     Ok(ids)
@@ -1133,13 +1163,15 @@ fn newest_done_ids(
 
 const NEWEST_DONE_SQL: &str =
     "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    ORDER BY completed_at DESC,id DESC LIMIT ?2";
+    ORDER BY completed_at DESC,completion_order DESC,id DESC LIMIT ?2";
 const NEWEST_DONE_AFTER_SQL: &str =
     "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    AND (completed_at,id)<(?2,?3) ORDER BY completed_at DESC,id DESC LIMIT ?4";
+    AND (completed_at,completion_order,id)<(?2,?3,?4)
+    ORDER BY completed_at DESC,completion_order DESC,id DESC LIMIT ?5";
 const UNDATED_DONE_SQL: &str =
     "SELECT id FROM tasks WHERE project_id=?1 AND status='done' AND deleted_at IS NULL
-    AND completed_at IS NULL AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3";
+    AND completed_at IS NULL AND (?2 IS NULL OR (completion_order,id)<(?3,?2))
+    ORDER BY completion_order DESC,id DESC LIMIT ?4";
 
 fn task_page_generation(connection: &rusqlite::Connection, project_id: &str) -> AppResult<i64> {
     Ok(connection.query_row(

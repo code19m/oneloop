@@ -1,7 +1,7 @@
 // @ts-check
 
 import { ApiError } from '../data/api-client.js';
-import { leaveUnavailableProject } from '../features/recovery/controller.js';
+import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
 
 /**
  * The bootstrap view for the current address: the task, the Board, the
@@ -92,7 +92,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         loaded=await bootstrap.load({view:'board',background:!!scope.background});
       }
       if(loaded?.stale||!app)return loaded;
-      if(leaveUnavailableProject(data,app,previous,previousName))return loaded;
+      if(leaveUnavailableProject(data,app,previous,previousName)||leaveAdminPage(data,app,previous))return loaded;
       if(destinationError){
         // A caller that opens something from another page reports it there instead.
         if(scope.routeErrors===false)return {...loaded,unavailable:true};

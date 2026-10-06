@@ -11,7 +11,9 @@ upstream oneloop_app {
     # that oneloop doesn't listen on.
     server 127.0.0.1:8080;
     keepalive 16;
-    # oneloop closes idle connections after 15 seconds; nginx must let go first.
+    # Let go of idle connections before oneloop does, even if
+    # ONELOOP_TRUSTED_PROXIES doesn't name nginx: then oneloop closes them
+    # after 15 seconds.
     keepalive_timeout 10s;
 }
 

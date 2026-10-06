@@ -1,8 +1,8 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
-    // A thumbnail decode holds the only permit, so an avatar upload waits.
+    // A thumbnail decode holds the only permit, so avatar uploads wait.
     let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
     let root = tempfile::tempdir().unwrap();
     crate::db::migrate(root.path(), None).unwrap();
@@ -18,8 +18,34 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
             session_id: "test".into(),
         },
     };
+    let upload = || {
+        let (service, actor) = (service.clone(), actor.clone());
+        let slot = service.avatar_slot().unwrap();
+        tokio::spawn(async move { service.upload_avatar(&actor, slot, vec![1]).await })
+    };
+    let waiting = (0..4).map(|_| upload()).collect::<Vec<_>>();
+    // Only a few are under way; holding their images in memory, more are
+    // turned away.
     assert!(matches!(
-        service.upload_avatar(&actor, vec![1]).await,
+        service.avatar_slot(),
+        Err(AppError::Unavailable(_))
+    ));
+    // Those that wait outlast a slow decode, then decode their own image.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert!(waiting.iter().all(|upload| !upload.is_finished()));
+    drop(held);
+    for upload in waiting {
+        let result = upload.await.unwrap();
+        assert!(
+            matches!(result, Err(AppError::Validation { .. })),
+            "{result:?}"
+        );
+    }
+    // A decode that doesn't end turns an upload away after a while.
+    let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
+    let slot = service.avatar_slot().unwrap();
+    assert!(matches!(
+        service.upload_avatar(&actor, slot, vec![1]).await,
         Err(AppError::Unavailable(_))
     ));
     drop(held);
@@ -46,6 +72,50 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
     release_tx.send(()).unwrap();
     done_rx.await.unwrap();
     assert_eq!(IMAGE_DECODE_PERMITS.available_permits(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_gets_the_data_lock_while_reconciliation_scans_for_orphans() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    crate::db::migrate(root.path(), None).unwrap();
+    let db = Db::open(root.path()).unwrap();
+    let service = FileService::new(db.clone(), 1_000_000, 0);
+    let stored = async |name: &[u8]| {
+        let key = service.store.new_storage_key().unwrap();
+        let path = service.store.prepare_file_parent(&key).await.unwrap();
+        std::fs::write(&path, name).unwrap();
+        (key, path)
+    };
+    // A stale pending upload goes early in the pass, so its file shows how far
+    // the pass got. An orphan then waits for the gate, which this test holds.
+    let (stale, stale_path) = stored(b"stale").await;
+    db.transaction(move |tx| {
+        tx.execute("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+            VALUES('stale',?1,?2,5,'text/plain','pending',1)", params![stale, "0".repeat(64)])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let (_, orphan_path) = stored(b"orphan").await;
+    let gate = service.acquire_file_maintenance_gate().await.unwrap();
+    let reconcile = tokio::spawn({
+        let service = service.clone();
+        async move { service.reconcile().await }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stale_path.exists() && std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    // A backup that starts now gets the data lock while the scan waits.
+    let layout = db.layout().clone();
+    let command = tokio::task::spawn_blocking(move || layout.open_exclusive_lock())
+        .await
+        .unwrap();
+    assert!(command.is_ok(), "{:?}", command.err());
+    drop(command);
+    drop(gate);
+    reconcile.await.unwrap().unwrap();
+    assert!(!orphan_path.exists());
 }
 
 #[tokio::test]

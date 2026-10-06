@@ -8,7 +8,8 @@ Before your team uses oneloop, set up three things:
 
 Give oneloop at least 512 MB of memory. It uses about 50 MiB when idle, and up
 to about 200 MiB more while it decodes an image for a thumbnail or an avatar,
-one image at a time.
+one image at a time. Knowledge search keeps up to 64 MiB of indexes, and
+needs up to about 100 MiB more while it builds one.
 
 ## HTTPS with a reverse proxy
 
@@ -51,7 +52,7 @@ on each device.
 ### nginx
 
 This example is also in the repository as
-[`deploy/nginx/oneloop.conf.example`](https://github.com/code19m/oneloop/blob/main/deploy/nginx/oneloop.conf.example):
+[`deploy/nginx/oneloop.conf.example`](https://github.com/code19m/oneloop/blob/v0.1.0-rc.2/deploy/nginx/oneloop.conf.example):
 
 ```nginx
 {{#include ../../deploy/nginx/oneloop.conf.example}}
@@ -79,6 +80,12 @@ Separate several addresses or CIDR ranges with commas. List only real proxies,
 never a network that visitors use. The proxy must replace `X-Forwarded-For`,
 not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
 `X-Forwarded-Proto`.
+
+Naming the proxy also keeps its idle connections to oneloop open
+[longer](reference.md#limits) than proxies such as Caddy, nginx and Tailscale
+keep them. Otherwise oneloop closes them first, and a request that the proxy
+sends on a connection just as oneloop closes it fails with 502. So Caddy needs
+no `keepalive` setting.
 
 ### Rules for any proxy
 
@@ -124,7 +131,7 @@ With `docker run`, use `--restart unless-stopped --stop-timeout 35`.
    ```
 
 2. Save the
-   [unit file](https://github.com/code19m/oneloop/blob/main/deploy/systemd/oneloop.service.example)
+   [unit file](https://github.com/code19m/oneloop/blob/v0.1.0-rc.2/deploy/systemd/oneloop.service.example)
    as `/etc/systemd/system/oneloop.service`. Set your `ONELOOP_PUBLIC_URL` and
    any other [settings](reference.md#configuration) in it. The unit keeps data
    in `/var/lib/oneloop/data` and uses systemd's sandbox options.
@@ -173,7 +180,7 @@ Create the job and log folders:
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs
 ```
 
-The [deploy/launchd](https://github.com/code19m/oneloop/tree/main/deploy/launchd)
+The [deploy/launchd](https://github.com/code19m/oneloop/tree/v0.1.0-rc.2/deploy/launchd)
 folder has three files to download:
 
 - `com.oneloop.example.plist` is the job. Replace every `REPLACE_ME`, set your

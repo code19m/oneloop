@@ -38,7 +38,8 @@ impl FileService {
 
     pub async fn reconcile(&self) -> AppResult<FileRuntimeReport> {
         self.store.ensure_directories().await?;
-        let _lease = self.db.acquire_data_lease().await?;
+        self.remove_abandoned_backup_pins().await;
+        let lease = self.db.acquire_data_lease().await?;
         let mut report = FileRuntimeReport::default();
         let now = unix_now()?;
         let expired = self.db.run(move |connection| {
@@ -97,6 +98,11 @@ impl FileService {
         }
         self.schedule_deleted_parent_files().await?;
         report.deletion_jobs_completed += self.process_deletion_jobs().await?;
+        // The rest removes only files that no backup copies: orphans,
+        // thumbnails and staging files, each checked again under the gate. So
+        // the scans of a large folder don't hold the lease, and a command that
+        // waits for the data lock isn't held up by them.
+        drop(lease);
         let referenced: HashSet<String> = self
             .db
             .run(|connection| {
@@ -161,6 +167,26 @@ impl FileService {
             }
         }
         Ok(report)
+    }
+
+    /// A backup that was stopped leaves links to the files it copied, which
+    /// keep deleted files on disk. They go at startup and in every
+    /// reconciliation once no backup runs; a failure is only reported.
+    async fn remove_abandoned_backup_pins(&self) {
+        let layout = self.store.layout().clone();
+        let removed =
+            tokio::task::spawn_blocking(move || crate::db::remove_abandoned_backup_pins(&layout))
+                .await;
+        match removed {
+            Ok(Ok(true)) => tracing::warn!("removed the file links an interrupted backup left"),
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot remove the file links an interrupted backup left; will retry");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "backup link cleanup failed; will retry");
+            }
+        }
     }
 
     pub(super) async fn remove_if_unreferenced(&self, path: &Path) -> AppResult<bool> {
@@ -336,6 +362,8 @@ impl FileService {
         target: Option<u64>,
         deficit: u64,
     ) -> AppResult<FileRuntimeReport> {
+        // The data lease comes before any gate, as on every other file path.
+        let _lease = self.db.acquire_data_lease().await?;
         // A per-directory cross-process gate also covers separately constructed services.
         let path = self.store.layout().root().join(".oneloop-cleanup.lock");
         let gate =
@@ -360,7 +388,6 @@ impl FileService {
             return Ok(FileRuntimeReport::default());
         };
         let mut report = FileRuntimeReport::default();
-        let _lease = self.db.acquire_data_lease().await?;
         let usage = self.capacity_usage().await?.total();
         let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
         let previews = regular_files(self.store.previews()).await?;

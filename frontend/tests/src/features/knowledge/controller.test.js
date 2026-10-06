@@ -78,6 +78,11 @@ for(const kind of ['markdown','text'])test(`a live Knowledge ${kind} refresh mar
   assert.equal(new Headers(refreshed.options.headers).get('X-Oneloop-Background'),'1');
 });
 
+test('a Knowledge file read names the person the page shows',async()=>{
+  const t=fixture({view:{...handbook(),files:[{path:'README.md',kind:'text',size:40,version:'first'}]}});await painted(t);
+  assert.equal(new Headers(t.state.textRequests[0].options.headers).get('X-Oneloop-User'),'u1');
+});
+
 test('reconnect refreshes visible Knowledge and invalidates other projects until their next visit',async()=>{
   const t=fixture();
   t.state.context.projectId='p2';t.controller.route('knowledge','p2');await painted(t);
@@ -143,7 +148,7 @@ test('a project without a source invites administrators to connect and members t
     await painted(t);
     assert.match(t.d.querySelector('.knowledge-empty h2').textContent, /A home for project knowledge/);
     const connect = t.d.querySelector('.knowledge-empty button');
-    if (admin) assert.equal(connect.getAttribute('onclick'), "App.openModal('knowledge')");
+    if (admin) assert.deepEqual([connect.dataset.action, JSON.parse(connect.dataset.args)], ['openModal', ['knowledge']]);
     else { assert.equal(connect, null); assert.match(t.d.querySelector('.knowledge-badge').textContent, /Ask an admin/); }
     assert.equal(t.d.querySelector('.knowledge-search'), null, 'no search without files');
   }

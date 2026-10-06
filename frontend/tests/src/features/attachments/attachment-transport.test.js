@@ -140,3 +140,16 @@ test('an upload counts as unsaved work until it settles',async()=>{
     xhr.onload();await upload;
   }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
 });
+
+test('an upload names the person the page shows', async () => {
+  const xhr = new MockXhr();
+  const previous = globalThis.OneloopRecovery;
+  globalThis.OneloopRecovery = { requestContext: () => ({ sessionGeneration: 1, userId: 'u1' }), observeResponse() {}, trackWrite() {} };
+  try {
+    const installed = installAttachmentTransport(runtime(), { xhrFactory: () => xhr, formDataFactory: () => new MockFormData() });
+    await installed.api.uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'named-upload' });
+    assert.equal(xhr.headers['X-Oneloop-User'], 'u1');
+  } finally {
+    if (previous === undefined) delete globalThis.OneloopRecovery; else globalThis.OneloopRecovery = previous;
+  }
+});

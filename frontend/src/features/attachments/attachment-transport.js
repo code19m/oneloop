@@ -75,6 +75,8 @@ export function installAttachmentTransport(
       xhr.setRequestHeader('Accept', 'application/json');
       xhr.setRequestHeader('Idempotency-Key', idempotencyKey);
       xhr.setRequestHeader('X-File-Size', String(file.size));
+      // The person this page shows, as the API client names them.
+      if (typeof requestContext?.userId === 'string' && requestContext.userId) xhr.setRequestHeader('X-Oneloop-User', requestContext.userId);
       xhr.upload.onprogress = (event) => {
         if (!event.lengthComputable || !event.total) return;
         onProgress?.(Math.min(99, Math.max(0, Math.round(event.loaded / event.total * 100))));

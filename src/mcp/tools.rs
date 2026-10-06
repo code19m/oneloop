@@ -975,7 +975,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_knowledge_file",
-        description = "Read one knowledge base file's text, or one Markdown section with its subsections, up to 100,000 characters. Markdown files also list their headings. Images, PDFs and other binary files return metadata only.",
+        description = "Read one knowledge base file's text, or one Markdown section with its subsections, up to 100,000 characters. Markdown files also list their headings; headings and sections come from the first 1 MiB of a file. Images, PDFs and other binary files return metadata only.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -1592,7 +1592,8 @@ async fn create_transfer(
     let token = random_token()?;
     let hash = crate::auth::token::hash(&token);
     let now = now()?;
-    let task = input.task_id;
+    // The caller may name the task by its key; the ticket keeps its ID.
+    let task = task.id;
     let name = input.file_name;
     let size = input.size_bytes;
     let content_length = size;

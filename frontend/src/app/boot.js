@@ -10,9 +10,9 @@ import { createLegacyData } from '../data/projection-store.js';
 import { createAuthController } from '../auth/auth-controller.js';
 import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
-import { installViewEventOwner } from './view-events.js';
+import { installViewActions } from './view-actions.js';
 import { createRuntimeHooks } from './runtime-hooks.js';
-import { actionErrorFeedback } from './action-feedback.js';
+import { actionErrorFeedback, retryableFailure } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
 import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
@@ -20,10 +20,14 @@ import { installCollaborationController } from '../features/collaboration/contro
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
-import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
 import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
+// The views' one HTML sink, UIHTML, writes through the oneloop policy.
+globalThis.OneloopSetHTML = setTrustedHTML;
+// First, so actions run before the document's other listeners, as inline handlers did.
+installViewActions(document);
 
 const data = createLegacyData();
 globalThis.DATA = data;
@@ -48,11 +52,12 @@ const reportError = (error, form = null) => {
 globalThis.OneloopErrorMessage=(error,fallback='The request could not be completed.')=>{
   const feedback=actionErrorFeedback(error);return feedback.silent?'':feedback.message||fallback;
 };
+globalThis.OneloopRetryable=retryableFailure;
 const bootstrap = createBootstrapController({ api, data, onReady: (projection) => runtimeHooks?.publish({ type:'bootstrap', projection }), onError: (error) => {
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
-} });
+}, onForeign:(userId)=>recovery?.ownsAnswer(userId) });
 const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.userId??''}:${data.session?.id??''}`,onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
@@ -92,7 +97,6 @@ recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>a
 globalThis.OneloopRecovery=recovery;
 globalThis.Recovery=recovery;
 
-installViewEventOwner(document.documentElement);
 installTooltips(document);
 
 runtimeHooks.subscribe(change=>{

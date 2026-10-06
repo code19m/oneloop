@@ -31,7 +31,7 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
   });
 
   const anchorOf = (/** @type {EventTarget|null} */ target) => /** @type {HTMLElement|null} */ (target instanceof win.Element ? target.closest('[data-tip]') : null);
-  const CONTROL = 'button,a[href],input,select,textarea,summary,label,[role="button"],[onclick],[data-oneloop-onclick]';
+  const CONTROL = 'button,a[href],input,select,textarea,summary,label,[role="button"],[data-action]';
 
   /** Whether some text in the element is cut off, or not shown at all. @param {HTMLElement} element */
   function cutOff(element) {

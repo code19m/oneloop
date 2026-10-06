@@ -42,7 +42,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     );
     fs::create_dir(root.path().join("before")).unwrap();
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
-    assert_eq!(upgrade.applied, vec![3, 4, 5]);
+    assert_eq!(upgrade.applied, vec![3, 4, 5, 6]);
     let upgraded = Connection::open(live.join("oneloop.sqlite3")).unwrap();
     let done_order_index: bool = upgraded
         .query_row(
@@ -173,7 +173,7 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
     assert_eq!(
         (upgrade.previous_version, upgrade.applied.clone()),
-        (3, vec![4, 5])
+        (3, vec![4, 5, 6])
     );
     assert_eq!(
         validate_backup(upgrade.backup_path.unwrap())
@@ -253,6 +253,75 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
         matches!(&restore_emptied, Err(AppError::PreconditionFailed(message)) if message.contains("text is gone")),
         "{restore_emptied:?}"
     );
+}
+
+#[tokio::test]
+async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first() {
+    use oneloop::domain::{
+        BoardQuery, CommandEnvelope, DomainOperation, DomainService, DoneOrder, TaskStatus,
+    };
+    let root = support::scratch_dir();
+    let live = root.path().join("live");
+    fs::create_dir(&live).unwrap();
+    let connection = support::schema_three_database(&live);
+    let now = support::now();
+    connection.execute_batch(&format!("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('u','owner','Owner','hash',1,1,1);
+        INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('s','u','h',{now},{now},{now},{expiry},{expiry});
+        INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+        INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at) VALUES('p','u',1,1,1);
+        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
+        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('e','p','tr','Epic','2026-01-01',0,1,1);
+        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES
+            ('a','p','e',1,'PRJ-001','A','done',0,1,1,100),('b','p','e',2,'PRJ-002','B','done',1,1,1,100),
+            ('c','p','e',3,'PRJ-003','C','done',2,1,1,50),('open','p','e',4,'PRJ-004','Open','planning',0,1,1,NULL);", expiry = now + 3600)).unwrap();
+    drop(connection);
+    fs::create_dir(root.path().join("before")).unwrap();
+    migrate(&live, Some(root.path().join("before"))).unwrap();
+
+    let db = Db::open(&live).unwrap();
+    let service = DomainService::new(db.clone(), support::utc());
+    let owner = support::browser_actor("u", "Owner", "s", now);
+    let newest = async || {
+        let query = BoardQuery {
+            project_id: "p".into(),
+            status: TaskStatus::Done,
+            cursor: None,
+            limit: Some(50),
+            search: None,
+            track_ids: vec![],
+            epic_ids: vec![],
+            assignee_ids: vec![],
+            no_assignee: false,
+            blocked: false,
+            done_order: DoneOrder::Completed,
+        };
+        let page = service.board_page(&owner, query).await.unwrap();
+        page.items
+            .into_iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>()
+    };
+    // Before the upgrade, a tie fell back to the ID; it still does.
+    assert_eq!(newest().await, ["b", "a", "c"]);
+    service
+        .execute(
+            &owner,
+            CommandEnvelope {
+                operation: DomainOperation::MoveTask,
+                payload: serde_json::json!({"taskId":"open","status":"done"}),
+                idempotency_key: "finish-open".into(),
+                expected_revision: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    db.run(|c| {
+        c.execute("UPDATE tasks SET completed_at=100 WHERE id='open'", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(newest().await, ["open", "b", "a", "c"]);
 }
 
 #[tokio::test]

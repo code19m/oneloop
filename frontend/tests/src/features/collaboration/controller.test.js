@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
 import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
+import {ApiError} from '../../../../src/data/api-client.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
 import {installCollaborationController,mapActivity,mapComment,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
 
@@ -405,6 +406,31 @@ test('hidden tabs release SSE slots and resume without a stale bootstrap cursor'
   visibility.dispatchEvent(new Event('visibilitychange'));assert.equal(streams.length,2);
 });
 
+test('a tab whose stream a newer tab took reconnects only when it is used or shown again',()=>{
+  const visibility=new EventTarget();visibility.visibilityState='visible';
+  const streams=[];
+  const t=fixture({visibility,eventSourceFactory:url=>{
+    const stream={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};
+    streams.push(stream);return stream;
+  }});
+  try{
+    assert.equal(streams.length,1);
+    streams[0].listeners.replaced({data:'{"kind":"replaced"}'});
+    assert.equal(streams[0].closed,true);
+    assert.equal(streams.length,1,'no reconnect on its own');
+    visibility.dispatchEvent(new Event('pointerdown'));
+    assert.equal(streams.length,2);
+    visibility.dispatchEvent(new Event('keydown'));
+    assert.equal(streams.length,2,'one reconnect for one use');
+    streams[1].listeners.replaced({data:'{"kind":"replaced"}'});
+    visibility.visibilityState='hidden';visibility.dispatchEvent(new Event('visibilitychange'));
+    visibility.visibilityState='visible';visibility.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(streams.length,3);
+    visibility.dispatchEvent(new Event('pointerdown'));
+    assert.equal(streams.length,3,'a shown tab is connected already');
+  }finally{t.controller.dispose();}
+});
+
 test('discussion hints skip unrelated views but refresh the visible Inbox across project context',async()=>{
   useMockedClock();
   for(const view of ['board','roadmap','profile','users','settings','storage','inbox']){
@@ -505,6 +531,71 @@ test('SSE open plus reconcile performs one reload after reconnect',async()=>{
     sources[1].listeners.open();sources[1].listeners.reconcile({data:'{}'});
     await delay(100);assert.equal(reloads,1);assert.equal(t.apiCalls.filter(call=>call[0]==='inbox').length,1);
   }finally{t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}
+});
+
+/** A page with streams that record their listeners, and the real recovery controller. */
+function streamingPage(overrides={}){
+  const sources=[],timers=[];let expires=0;
+  const t=fixture({...overrides,eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};sources.push(source);return source;}});
+  const previous=globalThis.OneloopRecovery;
+  const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{invalidate(){}},getApp:()=>t.app,getAuth:()=>({expire(){expires++;}}),reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
+  globalThis.OneloopRecovery=recovery;
+  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}};
+}
+
+test('a hidden tab whose stream comes back for someone who signed in elsewhere ends its session and reads nothing for them',async()=>{
+  useMockedClock();
+  const visibility=new EventTarget();visibility.visibilityState='hidden';
+  const t=streamingPage({visibility});
+  try{
+    visibility.visibilityState='visible';visibility.dispatchEvent(new Event('visibilitychange'));
+    t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',userId:'u2'})});
+    await delay(90);
+    assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);assert.equal(t.sources[0].closed,true);
+    assert.deepEqual(t.apiCalls,[],'nothing is read for the other person');
+  }finally{t.restore();}
+});
+
+test('a stream for the person the tab shows goes on, and so does one from a server that names no one',async()=>{
+  useMockedClock();
+  for(const named of [{userId:'u1'},{}]){
+    let reloads=0;
+    const t=streamingPage({app:{context:()=>({view:'board',projectId:'p1'})},transport:{reload:async()=>{reloads++;return {stale:false};}}});
+    try{
+      t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',...named})});
+      await delay(90);
+      assert.equal(t.expires,0);assert.equal(reloads,1);
+    }finally{t.restore();}
+  }
+});
+
+test('a lost stream that finds someone else signed in ends this tab\'s session',async()=>{
+  const t=streamingPage({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+  try{
+    t.sources[0].listeners.error();for(let turn=0;turn<5&&!t.expires;turn++)await tick();
+    assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);
+  }finally{t.restore();}
+});
+
+test('a new comment the server did not take tells the page, so its text comes back; a saved one does not',async()=>{
+  const t=fixture(),unsent=[],input=(text)=>({task:t.data.tasks[0],mode:'reply',targetId:'root',text,mentions:[],interactionId:text,unsent:error=>unsent.push([text,error.code])});
+  t.transport.commands.execute=async()=>{throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});};
+  assert.equal(await t.controller.saveComment(input('Lost')),false);
+  t.transport.commands.execute=async(_operation,payload)=>({entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'root',replyToId:'root',content:payload.content,mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1}],events:[{id:'a1'}]});
+  assert.equal(await t.controller.saveComment(input('Kept')),true);
+  assert.deepEqual(unsent,[['Lost','network_error']]);
+  assert.deepEqual(t.saved.map(([,comment,result])=>[comment.text,result.mode,result.targetId]),[['Kept','reply','root']]);
+});
+
+test('a comment Undo that meets a busy server asks to try again; one the server refuses for good is only reported',async()=>{
+  const t=fixture(),again=[],toasts=[];t.app.toast=(...args)=>toasts.push(args);
+  const comment={id:'c1',revision:2};
+  t.transport.commands.execute=async()=>{throw new ApiError('Busy',{status:503,code:'unavailable',retryAfter:'1',uncertain:true});};
+  assert.equal(await t.controller.restoreComment({task:t.data.tasks[0],comment,again:message=>again.push(message)}),false);
+  assert.equal(again.length,1);assert.match(again[0],/temporarily unavailable/);assert.deepEqual(toasts,[]);
+  t.transport.commands.execute=async()=>{throw new ApiError('comment can no longer be restored',{status:412,code:'precondition_failed'});};
+  await t.controller.restoreComment({task:t.data.tasks[0],comment,again:message=>again.push(message)});
+  assert.equal(again.length,1);assert.equal(toasts.length,1);
 });
 
 test('temporary sessions open no event stream until password completion',()=>{

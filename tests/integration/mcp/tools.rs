@@ -104,6 +104,55 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
 }
 
 #[tokio::test]
+async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &[
+            "project_read",
+            "board_manage",
+            "roadmap_manage",
+            "attachments",
+        ],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "keyed").await;
+    let id = task.clone();
+    let key: String = db
+        .run(
+            move |c| Ok(c.query_row("SELECT task_key FROM tasks WHERE id=?1", [id], |r| r.get(0))?),
+        )
+        .await
+        .unwrap();
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId": key, "fileName": "notes.txt", "sizeBytes": 5, "idempotencyKey": "by-key"}),
+        )
+        .await,
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from("notes"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["value"]["taskId"], task);
+}
+
+#[tokio::test]
 async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() {
     let (_dir, db, app, session, _user) = fixture().await;
     let member_id = db
@@ -1711,6 +1760,64 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
         .await,
         "not_found",
     );
+}
+
+#[tokio::test]
+async fn knowledge_file_reads_take_headings_and_sections_from_the_first_mebibyte() {
+    const MIB: usize = 1024 * 1024;
+    let (_dir, db, app, session, _user) = fixture().await;
+    let filler = |bytes: usize| "Words that fill the page.\n".repeat(bytes / 26);
+    // The Edge section crosses the end of the first mebibyte; Late is beyond it.
+    let mut guide = format!("# Guide\n\n## Early\n\n{}", filler(MIB - 40_000));
+    guide.push_str(&format!("## Edge\n\n{}", filler(60_000)));
+    guide.push_str(&format!("## Late\n\n{}", filler(MIB)));
+    let line = "word ".repeat(2 * MIB);
+    db.run(move |connection| {
+        connection.execute_batch(
+            "INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at,generation)
+             VALUES('project-1','https://git.example.test/team/docs.git','main','docs','ready',
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,1,1,'g1');",
+        )?;
+        for (path, kind, content) in [("guide.md", "markdown", guide), ("line.txt", "text", line)] {
+            connection.execute(
+                "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                 VALUES('project-1',?1,?2,'text/plain',?3,?4,50,?5)",
+                rusqlite::params![path, content.len() as i64, kind, format!("checksum-{path}"), content.into_bytes()],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = register(&app).await;
+    let (code, verifier) =
+        authorize_with(&app, &session, &client, &["project_read"], &["project-1"]).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let mut mcp =
+        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut read = async |path: &str, section: Option<&str>| {
+        let mut input = json!({"projectId": "project-1", "path": path});
+        if let Some(section) = section {
+            input["section"] = json!(section);
+        }
+        mcp.call("read_knowledge_file", input).await
+    };
+
+    let whole = tool_value(&read("guide.md", None).await);
+    assert_eq!(whole["title"], "Guide");
+    assert_eq!(whole["headings"], json!(["# Guide", "## Early", "## Edge"]));
+    assert_eq!(whole["truncated"], true);
+    assert!(whole["content"].as_str().unwrap().chars().count() <= 100_000);
+    // The section ends where reading stopped, so it says that more follows.
+    let edge = tool_value(&read("guide.md", Some("edge")).await);
+    let content = edge["content"].as_str().unwrap();
+    assert!(content.starts_with("## Edge\n\nWords"));
+    assert!(content.len() < 40_000, "{}", content.len());
+    assert_eq!(edge["truncated"], true);
+    assert_tool_error(&read("guide.md", Some("late")).await, "not_found");
+    let line = tool_value(&read("line.txt", None).await);
+    assert_eq!(line["content"].as_str().unwrap().len(), 100_000);
+    assert_eq!(line["truncated"], true);
 }
 
 #[tokio::test]

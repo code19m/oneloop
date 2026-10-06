@@ -20,6 +20,8 @@ pub mod mcp;
 pub mod retention;
 pub mod runtime;
 pub mod state;
+#[cfg(test)]
+mod test_memory;
 mod text;
 pub mod timezone;
 

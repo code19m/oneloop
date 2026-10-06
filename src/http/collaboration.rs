@@ -163,6 +163,14 @@ async fn events(
     ApiQuery(query): ApiQuery<EventQuery>,
     headers: HeaderMap,
 ) -> AppResult<impl IntoResponse> {
+    // A page of another site, even one on a sibling subdomain, may not open
+    // streams with the person's cookie: each one would close one of theirs.
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|site| !matches!(site.as_bytes(), b"same-origin" | b"none"))
+    {
+        return Err(AppError::Forbidden);
+    }
     // Authentication middleware has already revalidated the session. The
     // initial reconciliation event makes Last-Event-ID a hint rather than a
     // promise of replay; authoritative reads repair missed messages.
@@ -190,6 +198,8 @@ async fn events(
     } else {
         false
     };
+    // One person's streams can't take more than a few connections.
+    let stream = runtime.open_stream(&user_id);
     let mut shutdown = runtime.shutdown_receiver();
     let (sender, receiver) = mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
@@ -199,9 +209,11 @@ async fn events(
             } else {
                 "reconcile"
             };
+            // An event stream can't name its person in a header, so its first
+            // event says whose it is: a page showing someone else ends there.
             let initial = Event::default()
                 .event(kind)
-                .data(json!({"kind":kind,"after":resume}).to_string());
+                .data(json!({"kind":kind,"after":resume,"userId":user_id}).to_string());
             if sender.send(Ok(initial)).await.is_err() {
                 return;
             }
@@ -265,15 +277,25 @@ async fn events(
             }
         };
         // Dropping a body cancels even an authorization wait or blocked send.
-        tokio::select! {
+        let replaced = tokio::select! {
             biased;
-            _ = sender.closed() => {},
+            _ = sender.closed() => false,
             _ = async {
                 while !*shutdown.borrow_and_update() {
                     if shutdown.changed().await.is_err() { break; }
                 }
-            } => {},
-            _ = pump => {},
+            } => false,
+            _ = stream.replaced() => true,
+            _ = pump => false,
+        };
+        drop(stream);
+        if replaced {
+            // The person opened too many newer streams. The tab waits until it
+            // is used again before it reconnects, so tabs don't take turns.
+            let event = Event::default()
+                .event("replaced")
+                .data("{\"kind\":\"replaced\"}");
+            let _ = sender.try_send(Ok(event));
         }
     });
     Ok((

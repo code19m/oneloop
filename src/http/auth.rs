@@ -118,6 +118,18 @@ pub async fn authenticate_headers(
     headers: &HeaderMap,
     meaningful: bool,
 ) -> AppResult<Actor> {
+    let actor = authenticate_cookie(state, headers, meaningful).await?;
+    if names_another_person(headers, &actor) {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(actor)
+}
+
+async fn authenticate_cookie(
+    state: &AppState,
+    headers: &HeaderMap,
+    meaningful: bool,
+) -> AppResult<Actor> {
     let token = session_token(headers, &state.config.public_url).ok_or(AppError::Unauthorized)?;
     let meaningful = meaningful
         && headers
@@ -125,6 +137,15 @@ pub async fn authenticate_headers(
             .and_then(|value| value.to_str().ok())
             != Some("1");
     state.auth.authenticate_session(&token, meaningful).await
+}
+
+/// The web client names the person its page shows. Tabs share the session
+/// cookie, so after someone else signs in, a page still showing the person
+/// before them must not read or write as the new person: its session ended.
+fn names_another_person(headers: &HeaderMap, actor: &Actor) -> bool {
+    headers
+        .get("x-oneloop-user")
+        .is_some_and(|user| user.as_bytes() != actor.user_id.as_bytes())
 }
 
 #[derive(Deserialize)]
@@ -206,7 +227,10 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<
         &headers,
         &state.config.public_url,
     )?;
-    match authenticate_headers(&state, &headers, false).await {
+    match authenticate_cookie(&state, &headers, false).await {
+        // A page still showing someone who signed out signs out only itself:
+        // the cookie and the session belong to whoever signed in after them.
+        Ok(actor) if names_another_person(&headers, &actor) => return Err(AppError::Unauthorized),
         Ok(actor) => state.auth.logout(&actor).await?,
         Err(AppError::Unauthorized) => {}
         Err(error) => return Err(error),

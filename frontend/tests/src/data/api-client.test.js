@@ -98,6 +98,14 @@ test('file upload sends reservation metadata without JSON encoding the bytes', a
   assert.equal(captured.options.headers['Content-Type'],undefined);
 });
 
+test('every request names the person the page shows, so the server never answers for whoever signed in after them',async()=>{
+  const calls=[];let person='u1';
+  const api=createApiClient({getRequestContext:()=>({sessionGeneration:1,userId:person}),fetchImpl:async(_url,options)=>{calls.push(options.headers);return Response.json({});}});
+  await api.bootstrap();await api.command(prepareCommand('task.update',{taskId:'t1'}));await api.uploadAvatar(new Blob(['x']));
+  person=null;await api.login({username:'u',password:'p'});
+  assert.deepEqual(calls.map(headers=>headers['X-Oneloop-User']),['u1','u1','u1',undefined]);
+});
+
 test('automatic reconciliation is explicitly passive while interactive reads remain meaningful',async()=>{
   const calls=[];const api=createApiClient({fetchImpl:async(_url,options)=>{calls.push(options);return Response.json({});}});
   await api.bootstrap({background:true});await api.board('p1',{status:'planning'},{background:true});await api.bootstrap();

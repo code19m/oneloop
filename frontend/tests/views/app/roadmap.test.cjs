@@ -174,6 +174,16 @@ test('epics show a loading state, not 0/0, until their task counts arrive', () =
   assert.equal(meta('e6').textContent.trim(), '21/34');
 });
 
+test('an epic bar shows its tooltip on keyboard focus and opens its drawer on Enter', () => {
+  const t = bootApp({ route: 'roadmap', actions: true });
+  const bar = t.d.querySelector('[data-epic]');
+  bar.focus();
+  assert.equal(t.d.getElementById('epic-tooltip')?.getAttribute('role'), 'tooltip');
+  assert.equal(bar.getAttribute('aria-describedby'), 'epic-tooltip');
+  bar.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.equal(t.A.context().peek, bar.dataset.epic);
+});
+
 test('Today scrolls the mounted Roadmap instead of rebuilding the page', () => {
   const { d, A } = bootApp({ route: 'roadmap' });
   const sc = d.getElementById('rmScroll'), rail = parseFloat(d.querySelector('.lane-head').style.width), shell = d.querySelector('.sidebar'), pill = d.querySelector('.today-pill');
@@ -390,4 +400,17 @@ test('a scale change eases over a few frames, and a wheel zoom takes over where 
   frame(1120); frame(1400);
   assert(Math.abs(perDay() / (second / 1.15) - 1) < 0.02, 'the wheel zooms out from where the scale change was');
   assert.deepEqual(scales(r.d), pressed(null));
+});
+
+test('the epic drawer names every status as the Roadmap does, and an ongoing epic shows both facts', () => {
+  const t = boot();
+  const epic = t.D.epics.find(item => t.D.tracks.find(track => track.id === item.trackId)?.projectId === t.A.context().projectId);
+  const shown = [];
+  for (const end of ['2026-12-31', null]) for (const state of ['planning', 'active', 'done']) {
+    Object.assign(epic, { state, end });
+    t.A.openPeek(epic.id);
+    shown.push(t.d.querySelector('.peek .chip').textContent);
+    t.A.closeOverlays();
+  }
+  assert.deepEqual(shown, ['Planning', 'In progress', 'Done', 'Ongoing · Planning', 'Ongoing · In progress', 'Ongoing · Done']);
 });

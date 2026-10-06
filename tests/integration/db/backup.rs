@@ -44,6 +44,32 @@ async fn database_calls_stay_responsive_while_backup_holds_the_file_lock() {
 }
 
 #[tokio::test]
+async fn file_maintenance_removes_the_links_an_interrupted_backup_left() {
+    let (root, db) = support::database();
+    let files = oneloop::files::FileService::new(db, u64::MAX, 0);
+    // A backup links each file it copies; one that was stopped leaves them.
+    let original = root.path().join("files/deleted-meanwhile");
+    fs::write(&original, b"bytes that must not outlive their file").unwrap();
+    let pins = root.path().join(".oneloop-backup-pins");
+    fs::create_dir(&pins).unwrap();
+    fs::hard_link(&original, pins.join("deleted-meanwhile")).unwrap();
+    // A running backup keeps its links.
+    let running = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.path().join(".oneloop-backup.lock"))
+        .unwrap();
+    running.lock().unwrap();
+    files.reconcile().await.unwrap();
+    assert!(pins.join("deleted-meanwhile").exists());
+    drop(running);
+    files.reconcile().await.unwrap();
+    assert!(!pins.exists());
+}
+
+#[tokio::test]
 async fn backup_is_complete_validated_atomic_and_restore_revokes_credentials() {
     let support::TestInstance {
         root: live,

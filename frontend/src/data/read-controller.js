@@ -152,7 +152,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
             (!common.epicIds.length||common.epicIds.includes(view.epicId))&&
             (!(common.assigneeIds.length||common.noAssignee)||view.assigneeIds.some(id=>common.assigneeIds.includes(id))||common.noAssignee&&!view.assigneeIds.length)&&
             (!common.blocked||!!view.activeBlock);
-          if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
+          if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
         const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked};

@@ -424,7 +424,7 @@ export function createRecoveryController({
 
   function connectionHtml(){
     const state=notice(); announceNotice(state);
-    return state?`<div class="connection-notice"><span>${state.text}</span><button class="btn quiet" onclick="Recovery.activateNotice()">${state.label}</button></div>`:'';
+    return state?`<div class="connection-notice"><span>${state.text}</span><button class="btn quiet" data-action="Recovery.activateNotice">${state.label}</button></div>`:'';
   }
 
   function updateNotice(){
@@ -512,11 +512,12 @@ export function createRecoveryController({
     const attempt=++reconnectGeneration;
     const context=requestContext();
     try{
-      await api.request('/api/auth/me',{background:true});
+      const answer=await api.request('/api/auth/me',{background:true});
       if(disposed||attempt!==reconnectGeneration||!currentSession(context)||!online())return;
       // The shared response observer may already have restored the connection.
       if(!currentConnection(context))return;
-      reconnectAttempt=0;setConnectivity(true);await reconcile();
+      reconnectAttempt=0;setConnectivity(true);
+      if(ownsAnswer(answer?.user?.id))await reconcile();
     }catch(error){
       if(disposed||attempt!==reconnectGeneration||!currentSession(context))return;
       if(error instanceof ApiError&&error.status===401){sessionExpired();return;}
@@ -530,6 +531,21 @@ export function createRecoveryController({
     clearTimer(reconnectTimer);
     const delay=Math.min(1000*(2**reconnectAttempt),30_000)*(0.9+random()*0.2);reconnectAttempt++;
     reconnectTimer=setTimer(()=>reconnect(false),delay);
+  }
+
+  /**
+   * The server answered for `userId`, the person the browser's session cookie
+   * names. Tabs share that cookie, so it changes when someone signs in in
+   * another tab. Whether the answer is for the person this tab shows: when it
+   * names someone else, this person's session has ended here, as after a 401,
+   * and nothing of the new person's comes into the tab. A tab where no one is
+   * signed in owns no answer.
+   * @param {unknown} userId
+   */
+  function ownsAnswer(userId){
+    if(!data?.session)return false;
+    if(typeof userId!=='string'||!userId||userId===data.session.userId)return true;
+    sessionExpired();return false;
   }
 
   function sessionExpired() {
@@ -646,15 +662,19 @@ export function createRecoveryController({
     }
     const variants={404:['Page not found','The page or item may have been removed.'],403:['Access denied','You don’t have permission to view this page.'],500:['Could not load this page','Something went wrong. Please try again.'],503:['Service unavailable','The server is temporarily unavailable.']};
     const [title,copy]=variants[code]??variants[500];
-    return `<section class="page-error"><span class="error-code">${escapeHtml(code)}</span><h2>${escapeHtml(title)}</h2><p>${escapeHtml(copy)}</p><div class="error-actions">${['500','503'].includes(code)?'<button class="btn primary" onclick="Recovery.retryLoad()">Retry</button>':''}<button class="btn quiet" onclick="App.nav('board')">Back to Board</button>${pageReference?'<button class="btn quiet" onclick="Recovery.copyReference()">Copy error reference</button>':''}</div></section>`;
+    return `<section class="page-error"><span class="error-code">${escapeHtml(code)}</span><h2>${escapeHtml(title)}</h2><p>${escapeHtml(copy)}</p><div class="error-actions">${['500','503'].includes(code)?'<button class="btn primary" data-action="Recovery.retryLoad">Retry</button>':''}<button class="btn quiet" data-action="nav" data-args='["board"]'>Back to Board</button>${pageReference?'<button class="btn quiet" data-action="Recovery.copyReference">Copy error reference</button>':''}</div></section>`;
   }
 
   const controller={
     get pageError(){return pageError;},get pageReference(){return pageReference;},get connection(){return visibleConnection();},get expired(){return expired;},scenario:'',
-    /** Whether typed text waits for the person's next sign-in. */
-    get keepsInput(){return !!resume;},
+    /**
+     * Whether typed text waits for the person's next sign-in: what an editor
+     * held when the session ended, or, while no one is signed in, anything
+     * else kept for them, such as a draft or a comment that wasn't saved.
+     */
+    get keepsInput(){return !!resume||!data?.session&&[...unsavedChecks].some((check)=>check());},
     resumeEditing,
-    requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,
+    requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,
     captureEditor:()=>documentObject?captureOpenEditor(documentObject):null,
     keepPrompts:keepConflictPrompts,
@@ -707,6 +727,23 @@ export function createRecoveryController({
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
+}
+
+/**
+ * Leave an admin page or dialog after an authoritative refresh shows that the
+ * person is no longer an admin, and say why. Nothing typed there can be saved
+ * any more, so this never asks first.
+ * @param {any} data @param {any} app @param {any} previous the page and dialog shown before the refresh
+ */
+export function leaveAdminPage(data, app, previous) {
+  const person = data.users?.find((user) => user.id === data.session?.userId);
+  if (!person || person.admin) return false;
+  const page = ['users','storage','settings'].includes(previous?.view), dialog = ['user','project','knowledge','temppw'].includes(previous?.modal?.type);
+  if (!page && !dialog) return false;
+  if (dialog) app.closeOverlays?.();
+  if (page) app.nav('board', { discard: true });
+  app.toast?.('You no longer have admin access.', 'info');
+  return true;
 }
 
 /** Leave an inaccessible project after an authoritative metadata refresh, and say why.

@@ -466,6 +466,9 @@ async fn upload_avatar(
     mut multipart: Multipart,
 ) -> AppResult<Json<serde_json::Value>> {
     require_canonical_origin(&axum::http::Method::PUT, &headers, &state.config.public_url)?;
+    // The image stays in memory until it is decoded, so only a few uploads may
+    // read theirs at once.
+    let slot = state.files.avatar_slot()?;
     let deadline = UploadDeadline::new();
     let mut bytes = None;
     while let Some(mut field) = deadline
@@ -496,6 +499,7 @@ async fn upload_avatar(
         .files
         .upload_avatar(
             &actor,
+            slot,
             bytes.ok_or_else(|| AppError::validation("avatar", "file field is required"))?,
         )
         .await?;

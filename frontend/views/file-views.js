@@ -127,6 +127,12 @@
   const isSpace=c=>/^\p{White_Space}$/u.test(c),isPunctuation=c=>/^[\p{P}\p{S}]$/u.test(c);
   const trimSpace=value=>value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu,''),trimEndSpace=value=>value.replace(/\p{White_Space}+$/u,'');
   const slug=text=>text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\p{White_Space}-]/gu,'').replace(/\p{White_Space}/gu,'-');
+  /** The start of a heading's source, as the server reads it: the characters that fit in 1 KiB of UTF-8. */
+  function headingSource(text){
+    let bytes=0,end=0;
+    for(const c of text){const code=c.codePointAt(0)??0,size=code<0x80?1:code<0x800?2:code<0x10000?3:4;if(bytes+size>1024)break;bytes+=size;end+=c.length;}
+    return text.slice(0,end);
+  }
   const ENTITIES={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
   /** A character reference at `start`, and its length. */
   function entity(chars,start){
@@ -182,7 +188,7 @@
     const rest=trimmed.slice(level);if(level<1||level>6||(rest&&!/^[ \t]/.test(rest)))return null;
     let text=trimSpace(rest);const withoutClosing=text.replace(/#+$/,'');
     if(withoutClosing.length!==text.length&&(!withoutClosing||/[ \t]$/.test(withoutClosing)))text=trimEndSpace(withoutClosing);
-    return {level,text:inlineText(text)};
+    return {level,text:inlineText(headingSource(text))};
   }
   function setextLevel(line,nextLine){
     const text=indent(line);if(text===null||!trimSpace(text)||/^[#>\-*+|`~<]/.test(text)||(/^[0-9]/.test(text)&&text.includes('. ')))return 0;
@@ -197,7 +203,7 @@
       if(fence){if(closesFence(line,fence))fence=null;index++;continue;}
       const opened=opensFence(line);if(opened){fence=opened;index++;continue;}
       const atx=atxHeading(line),setext=atx||index+1>=lines.length?0:setextLevel(line,lines[index+1]);
-      const heading=atx||(setext?{level:setext,text:inlineText(trimSpace(line))}:null);
+      const heading=atx||(setext?{level:setext,text:inlineText(headingSource(trimSpace(line)))}:null);
       if(heading)headings.push({...heading,line:index});
       index+=setext?2:1;
     }
@@ -271,8 +277,8 @@
     const render=()=>{
       if(!text.trim()){UIHTML(ui.view,'<p class="preview-unavailable">This file is empty.</p>');return;}
       const scroll=ui.view.scrollTop;
-      const fragment=DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover'],SANITIZE_NAMED_PROPS:true});
-      fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(attr.name.startsWith('data-oneloop-'))el.removeAttribute(attr.name);}));
+      const fragment=DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover','for','popovertarget','popovertargetaction','commandfor','command'],SANITIZE_NAMED_PROPS:true});
+      fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(/^data-(?:action|args)\b/.test(attr.name))el.removeAttribute(attr.name);}));
       // Keep renderer classes, never application chrome supplied by an upload.
       fragment.querySelectorAll('[class]').forEach(el=>{
         const classes=[...el.classList].filter(name=>/^(?:language-[\w-]+|hljs[\w-]*|markdown-alert[\w-]*|task-list-[\w-]+|footnotes|sr-only|octicon[\w-]*)$/.test(name));
@@ -285,6 +291,11 @@
       fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){let name=href.slice(1);try{name=decodeURIComponent(name);}catch{}link.setAttribute('href','#md-'+name);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}});
       fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'',local=context.resolveImage?.(src);if(typeof local==='string'&&local.startsWith('/api/')){img.setAttribute('src',local);img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
       fragment.querySelectorAll('pre code').forEach(code=>{const lang=[...code.classList].find(c=>c.startsWith('language-'))?.slice(9);if(window.hljs&&lang&&hljs.getLanguage(lang)){try{UIHTML(code,hljs.highlight(code.textContent,{language:lang,ignoreIllegals:true}).value);code.classList.add('hljs');}catch{}}});
+      // Each block takes its direction, and so its alignment, from its own
+      // first letter, as descriptions and comments do. A list or table takes
+      // one direction for all of its items, which sets the side its bullets
+      // and columns start from. A direction the file sets stays.
+      fragment.querySelectorAll('p,h1,h2,h3,h4,h5,h6,summary,ul,ol,dl,table').forEach(el=>{if(!el.hasAttribute('dir')&&!el.parentElement?.closest('ul,ol,dl,table'))el.setAttribute('dir','auto');});
       const article=document.createElement('article');article.className='markdown-body';article.append(fragment);ui.view.replaceChildren(article);ui.view.scrollTop=scroll;
       article.querySelectorAll('[data-md-math]').forEach(el=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!window.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
       renderDiagrams(article,context);

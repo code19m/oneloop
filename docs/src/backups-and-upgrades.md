@@ -9,6 +9,9 @@ oneloop, with the settings from its unit file, for example:
 sudo -u oneloop env $(systemctl show oneloop -p Environment --value) /usr/local/bin/oneloop backup create …
 ```
 
+This splits the unit's settings at spaces, so write every value without
+spaces, such as `ONELOOP_TRUSTED_PROXIES=10.0.0.1,10.0.0.2`.
+
 ## Back up
 
 A backup is a complete, verified copy of the database, all uploaded files and
@@ -44,6 +47,10 @@ process no longer runs. Otherwise oneloop prints the folder's path. Delete it
 yourself once you are sure that no backup is running. oneloop tells computers
 apart by their host name, so don't share a backup folder between computers
 that have the same host name.
+
+While it copies the files, a backup also keeps links to them in the hidden
+folder `.oneloop-backup-pins` inside the data directory. If the backup stops
+halfway, the server removes that folder within a minute.
 
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:
@@ -159,7 +166,8 @@ you choose, and it changes nothing if the backup fails.
    file. `db migrate` saves its backup in the backup folder from
    [Back up](#back-up):
    ```sh
-   oneloop db migrate --backup-dir /var/backups/oneloop
+   sudo -u oneloop env $(systemctl show oneloop -p Environment --value) \
+     /usr/local/bin/oneloop db migrate --backup-dir /var/backups/oneloop
    sudo -u oneloop env $(systemctl show oneloop -p Environment --value) \
      /usr/local/bin/oneloop serve --check
    ```
@@ -177,8 +185,8 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database in <data folder> migrated from 2 to 5` and the
-folder of its backup, or `database in <data folder> is current (schema 5)` if
+`db migrate` prints `database in <data folder> migrated from 2 to 6` and the
+folder of its backup, or `database in <data folder> is current (schema 6)` if
 there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
@@ -201,7 +209,7 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database in <data folder> migrated from 16 to 5`.
+It prints something like `database in <data folder> migrated from 16 to 6`.
 Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back

@@ -587,7 +587,10 @@ async fn avatars_revalidate_versioned_and_unversioned_urls_and_reject_lost_acces
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    let url = service.upload_avatar(&manager, png).await.unwrap();
+    let url = service
+        .upload_avatar(&manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap();
     for url in [
         url.clone(),
         url.split('?').next().unwrap().to_owned(),
@@ -705,6 +708,35 @@ async fn upload_declarations_are_checked_without_reading_the_body() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+}
+
+#[tokio::test]
+async fn an_avatar_upload_is_refused_before_its_body_when_all_slots_are_taken() {
+    let f = Fixture::new().await;
+    let _taken: Vec<_> = (0..4).map(|_| f.files.avatar_slot().unwrap()).collect();
+    // The body never arrives, so the answer can't wait for it.
+    let body = Body::from_stream(tokio_stream::pending::<Result<Vec<u8>, std::io::Error>>());
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.app.clone().oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/auth/avatar")
+                .header(header::ORIGIN, "https://tasks.example.test")
+                .header(header::COOKIE, &f.manager_cookie)
+                .header(
+                    header::CONTENT_TYPE,
+                    "multipart/form-data; boundary=oneloop-test-boundary",
+                )
+                .body(body)
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("an answer before the body")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
 }
 
 #[tokio::test]

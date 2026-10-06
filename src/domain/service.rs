@@ -858,8 +858,10 @@ const SELECT_MILESTONES_SQL: &str = "SELECT project_id,title,description,milesto
 const INSERT_TASKS_SQL: &str = "INSERT INTO tasks (id,project_id,epic_id,task_number,task_key,title,description,status,\
                      position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,\
                      'planning',?8,?9,?10,?11,?11)";
-const UPDATE_TASKS_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,updated_at=?4,revision=revision+1 \
-                     WHERE id=?5 AND revision=?6";
+const UPDATE_TASKS_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
+                     completion_order=CASE WHEN status=?1 THEN completion_order WHEN ?1='done' THEN (SELECT \
+                     COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,updated_at=?4,\
+                     revision=revision+1 WHERE id=?5 AND revision=?6";
 
 const SELECT_USERS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
                      u.id=?1 AND u.is_active=1 AND m.project_id=?2)";

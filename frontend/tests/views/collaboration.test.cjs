@@ -357,8 +357,8 @@ test('comment/reply edit consolidation, reverts, unchanged saves, content finger
 });
 
 test('Enter submits block/edit/unblock/completion, mentions select first, Shift/IME/repeat guards and failed-submit input preservation', () => {
- const t=boot(),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
- const open=mode=>{t.A.openModal(mode,task.id);const form=t.d.querySelector('form[data-block-action]');form.onsubmit=ev=>t.A.saveBlock(ev,task.id,mode);input=form.querySelector('textarea');return form;};
+ const t=bootApp({route:'task/BIR-079',actions:true}),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
+ const open=mode=>{t.A.openModal(mode,task.id);const form=t.d.querySelector('form[data-block-action]');input=form.querySelector('textarea');return form;};
  const key=(options={})=>{const ev={currentTarget:input,key:'Enter',defaultPrevented:false,preventDefault(){this.defaultPrevented=true;},stopPropagation(){},...options};t.A.commentKey(ev);return ev;};
  open('block');key();assert(!task.block);assert(t.d.querySelector('.ferr'));
  typeBlock(t,'Waiting');assert(!key({shiftKey:true}).defaultPrevented);assert(!key({isComposing:true}).defaultPrevented);assert(!key({keyCode:229}).defaultPrevented);assert(key({repeat:true}).defaultPrevented);assert(!task.block);
@@ -390,6 +390,82 @@ test('the feed checks posting permission once and indexes people once', () => {
   project.members.splice(project.members.indexOf(membership), 1); assert.equal(w.Collab.canComment(task), false);
   project.members.push(membership); assert.equal(w.Collab.canComment(task), true);
   actor.active = false; assert.equal(w.Collab.canComment(task), false);
+});
+
+/** The task page with production comments whose sends wait for the test. */
+function sendingComments(){
+ const sends=[];let facade;
+ const t=bootApp({route:'task/BIR-079',prepare(_D,w){
+  w.OneloopTransport={};
+  w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
+ }});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079');
+ return {...t,task,sends,
+  /** The server saves send `index`, and the page hears of it. */
+  save(index){const {input,resolve}=sends[index],comment={id:`saved-${index}`,who:t.D.session.userId,ts:Date.now(),text:input.text,mentions:input.mentions,parentId:null,revision:1};(task.comments??=[]).push(comment);facade.commentSaved(task.id,comment,{mode:input.mode,targetId:input.targetId,interactionId:input.interactionId,changed:true});resolve(true);},
+  /** Send `index` can't be saved, with `error`: by default a refusal. */
+  fail(index,error=new ApiError('Too many requests',{status:429,code:'rate_limited'})){const {input,resolve}=sends[index];input.unsent(error);resolve(false);},
+ };
+}
+
+test('text typed after Enter is a new comment, never joined to the one being sent or sent with it again',async()=>{
+ const t=sendingComments();
+ mention(t,'@rob','robin');typeComment(t,t.d.getElementById('cmtIn').value+'please check');
+ t.A.addComment('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value,'','the sent text left the box at once');
+ typeComment(t,'Also the screenshots.');t.A.addComment('BIR-079');
+ assert.deepEqual(t.sends.map(({input})=>input.text),['@robin please check','Also the screenshots.']);
+ assert.equal(t.sends[0].input.mentions.length,1);assert.equal(t.sends[1].input.mentions.length,0,'only the first comment mentions Robin');
+ assert.notEqual(t.sends[0].input.interactionId,t.sends[1].input.interactionId);
+ typeComment(t,'A third, still typing');
+ t.save(0);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'A third, still typing','a saved comment leaves what was typed since');
+ assert.ok([...t.d.querySelectorAll('.cmt-body')].some(body=>body.textContent.includes('please check')),'the list shows the saved comment');
+});
+
+test('a comment that can\'t be sent comes back ahead of what was typed since, and alone it keeps its interaction',async()=>{
+ const t=sendingComments();
+ typeComment(t,'First thought');t.A.addComment('BIR-079');
+ typeComment(t,'Second thought');t.fail(0);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'First thought\n\nSecond thought');
+ typeComment(t,'');typeComment(t,'Only thought');t.A.addComment('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value,'');
+ t.fail(1);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Only thought');
+ t.A.addComment('BIR-079');
+ assert.equal(t.sends[2].input.text,'Only thought');
+ assert.equal(t.sends[2].input.interactionId,t.sends[1].input.interactionId,'sending it again can\'t add it twice');
+});
+
+test('a comment whose result is unknown is never joined to new text; it comes back alone, so it is saved once',async()=>{
+ const t=sendingComments();
+ typeComment(t,'First comment');t.A.addComment('BIR-079');
+ typeComment(t,'Second comment');
+ t.fail(0,new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true}));await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Second comment','the first may be saved already, so it stays out of this one');
+ assert.equal(t.w.Recovery.hasUnsavedInput(),true,'leaving oneloop would lose it');
+ t.A.addComment('BIR-079');assert.equal(t.sends[1].input.text,'Second comment');
+ t.save(1);await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'First comment','it comes back alone once the box is empty');
+ t.A.addComment('BIR-079');
+ assert.equal(t.sends[2].input.text,'First comment');
+ assert.equal(t.sends[2].input.interactionId,t.sends[0].input.interactionId,'sent again with its interaction, so the server adds it once');
+});
+
+test('a comment that fails after its writer left the task page comes back when they return',async()=>{
+ const t=sendingComments();
+ typeComment(t,'Sent before leaving');t.A.addComment('BIR-079');
+ t.A.nav('board');t.fail(0);await settle();
+ t.A.openTask('BIR-079');await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Sent before leaving');
+});
+
+test('Enter on the box its comment just left says nothing',async()=>{
+ const t=sendingComments();
+ typeComment(t,'On its way');t.A.addComment('BIR-079');t.A.addComment('BIR-079');
+ assert.equal(t.sends.length,1);assert.equal(t.d.querySelector('.comment-feedback').textContent,'');
+ t.save(0);await settle();t.A.addComment('BIR-079');
+ assert.equal(t.d.querySelector('.comment-feedback').textContent,'Write a comment first.','with nothing on its way, an empty box is a mistake');
 });
 
 test('a deleted comment offers Undo, which brings its text back',async()=>{
