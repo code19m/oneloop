@@ -354,6 +354,34 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
 }
 
 #[tokio::test]
+async fn pages_of_other_sites_cannot_open_streams() {
+    let (_root, _db, _alice, app, _runtime) = app().await;
+    for (site, status) in [
+        ("same-origin", StatusCode::OK),
+        ("none", StatusCode::OK),
+        ("same-site", StatusCode::FORBIDDEN),
+        ("cross-site", StatusCode::FORBIDDEN),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events")
+                    .header(
+                        "cookie",
+                        "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
+                    )
+                    .header("sec-fetch-site", site)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{site}");
+    }
+}
+
+#[tokio::test]
 async fn membership_removal_reconciles_and_session_revocation_closes_stream() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();

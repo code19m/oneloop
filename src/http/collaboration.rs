@@ -163,6 +163,14 @@ async fn events(
     ApiQuery(query): ApiQuery<EventQuery>,
     headers: HeaderMap,
 ) -> AppResult<impl IntoResponse> {
+    // A page of another site, even one on a sibling subdomain, may not open
+    // streams with the person's cookie: each one would close one of theirs.
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|site| !matches!(site.as_bytes(), b"same-origin" | b"none"))
+    {
+        return Err(AppError::Forbidden);
+    }
     // Authentication middleware has already revalidated the session. The
     // initial reconciliation event makes Last-Event-ID a hint rather than a
     // promise of replay; authoritative reads repair missed messages.
