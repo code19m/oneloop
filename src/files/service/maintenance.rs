@@ -39,7 +39,7 @@ impl FileService {
     pub async fn reconcile(&self) -> AppResult<FileRuntimeReport> {
         self.store.ensure_directories().await?;
         self.remove_abandoned_backup_pins().await;
-        let _lease = self.db.acquire_data_lease().await?;
+        let lease = self.db.acquire_data_lease().await?;
         let mut report = FileRuntimeReport::default();
         let now = unix_now()?;
         let expired = self.db.run(move |connection| {
@@ -98,6 +98,11 @@ impl FileService {
         }
         self.schedule_deleted_parent_files().await?;
         report.deletion_jobs_completed += self.process_deletion_jobs().await?;
+        // The rest removes only files that no backup copies: orphans,
+        // thumbnails and staging files, each checked again under the gate. So
+        // the scans of a large folder don't hold the lease, and a command that
+        // waits for the data lock isn't held up by them.
+        drop(lease);
         let referenced: HashSet<String> = self
             .db
             .run(|connection| {
