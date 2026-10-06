@@ -13,8 +13,9 @@ one image at a time.
 ## HTTPS with a reverse proxy
 
 oneloop serves plain HTTP and leaves certificates to the proxy. It accepts an
-`http://` address only for `localhost`, because passwords and sign-in cookies
-must never cross a network unencrypted.
+`http://` address only for the server itself (see
+[`ONELOOP_PUBLIC_URL`](reference.md#configuration)), because passwords and
+sign-in cookies must never cross a network unencrypted.
 
 1. Point a DNS name, such as `tasks.example.com`, to your server.
 2. Set these variables for oneloop, then restart it:
