@@ -24,6 +24,8 @@ use crate::{
 };
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024 * 1024;
+/// Inside the data directory: links to the files a running backup copies.
+const PINS: &str = ".oneloop-backup-pins";
 
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
@@ -253,7 +255,7 @@ fn create_backup_inner(
 
     // Only one backup uses this area at a time. Reclaim pins left by an interrupted
     // process before starting; pins are links, never the live original directory.
-    let pins = BackupPins::new(layout.root().join(".oneloop-backup-pins"))?;
+    let pins = BackupPins::new(layout.root().join(PINS))?;
     let mut partial_created = false;
     let result = (|| {
         fs::create_dir(&partial)?;
@@ -785,6 +787,21 @@ fn snapshot_database(source: &Connection, destination: &Path) -> AppResult<()> {
     // lock, before publication. Do not duplicate that expensive scan here.
     drop(target);
     sync_file(destination)
+}
+
+/// Removes the links that an interrupted backup left in the data directory,
+/// unless a backup runs now. They would keep deleted files on disk until the
+/// next backup. Returns whether there were any.
+pub(crate) fn remove_abandoned_backup_pins(layout: &DataLayout) -> AppResult<bool> {
+    let pins = layout.root().join(PINS);
+    if !pins.try_exists()? {
+        return Ok(false);
+    }
+    let Some(_backup) = layout.try_backup_lock()? else {
+        return Ok(false);
+    };
+    fs::remove_dir_all(&pins)?;
+    Ok(true)
 }
 
 struct BackupPins(PathBuf);

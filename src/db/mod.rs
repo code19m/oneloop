@@ -15,6 +15,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::error::{AppError, AppResult};
 
+pub(crate) use backup::remove_abandoned_backup_pins;
 pub use backup::{BackupManifest, create_backup, restore_backup, validate_backup};
 pub use migration::{CURRENT_SCHEMA_VERSION, MigrationOutcome, migrate};
 
@@ -22,6 +23,7 @@ pub(crate) const RESTORE_MARKER: &str = ".oneloop-restore-incomplete";
 
 const DATABASE_FILE: &str = "oneloop.sqlite3";
 const DATA_LOCK_FILE: &str = ".oneloop-data.lock";
+const BACKUP_LOCK_FILE: &str = ".oneloop-backup.lock";
 const INSTANCE_LOCK_FILE: &str = ".oneloop-instance.lock";
 const DEFAULT_POOL_SIZE: usize = 8;
 const MAX_PENDING_OPERATIONS: usize = 256;
@@ -92,10 +94,21 @@ impl DataLayout {
     }
 
     pub(crate) fn backup_lock(&self) -> AppResult<File> {
-        let path = self.root.join(".oneloop-backup.lock");
+        let path = self.root.join(BACKUP_LOCK_FILE);
         let file = open_lock_file(&path)?;
         wait_for_exclusive_lock(&file, &path)?;
         Ok(file)
+    }
+
+    /// The backup lock, unless a backup holds it now.
+    pub(crate) fn try_backup_lock(&self) -> AppResult<Option<File>> {
+        let path = self.root.join(BACKUP_LOCK_FILE);
+        let file = open_lock_file(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(lock_failed_error(&path, error)),
+        }
     }
 
     pub fn try_server_lock(&self) -> AppResult<File> {

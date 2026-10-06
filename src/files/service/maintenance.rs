@@ -38,6 +38,7 @@ impl FileService {
 
     pub async fn reconcile(&self) -> AppResult<FileRuntimeReport> {
         self.store.ensure_directories().await?;
+        self.remove_abandoned_backup_pins().await;
         let _lease = self.db.acquire_data_lease().await?;
         let mut report = FileRuntimeReport::default();
         let now = unix_now()?;
@@ -161,6 +162,26 @@ impl FileService {
             }
         }
         Ok(report)
+    }
+
+    /// A backup that was stopped leaves links to the files it copied, which
+    /// keep deleted files on disk. They go at startup and in every
+    /// reconciliation once no backup runs; a failure is only reported.
+    async fn remove_abandoned_backup_pins(&self) {
+        let layout = self.store.layout().clone();
+        let removed =
+            tokio::task::spawn_blocking(move || crate::db::remove_abandoned_backup_pins(&layout))
+                .await;
+        match removed {
+            Ok(Ok(true)) => tracing::warn!("removed the file links an interrupted backup left"),
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot remove the file links an interrupted backup left; will retry");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "backup link cleanup failed; will retry");
+            }
+        }
     }
 
     pub(super) async fn remove_if_unreferenced(&self, path: &Path) -> AppResult<bool> {

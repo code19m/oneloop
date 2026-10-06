@@ -42,6 +42,10 @@ yourself once you are sure that no backup is running. oneloop tells computers
 apart by their host name, so don't share a backup folder between computers
 that have the same host name.
 
+While it copies the files, a backup also keeps links to them in the hidden
+folder `.oneloop-backup-pins` inside the data directory. If the backup stops
+halfway, the server removes that folder within a minute.
+
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:
 
