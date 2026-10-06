@@ -11,11 +11,22 @@ function leaveWarns(t) { const event = new t.w.Event('beforeunload', { cancelabl
 /** Whether moving to another page of oneloop would ask first. */
 const pageWarns = t => t.w.Recovery.hasUnsavedInput({ leaving: false });
 const type = (element, value) => { element.focus(); element.value = value; };
-/** The production page changes: the view bridge with the real recovery controller. */
-function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gateway = {} } = {}) {
-  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
-  return { ...t, bridge };
+/**
+ * What the app runs: the view bridge with the real recovery controller. The
+ * gateway records each command and leaves it running, unless a test gives its
+ * own. The bridge watches the document it runs in, as in a browser.
+ */
+function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gateway } = {}) {
+  const commands = [];
+  gateway ??= { execute: (operation, payload) => new Promise(() => { commands.push({ operation, payload }); }), hasPending: () => false };
+  const previous = globalThis.document; globalThis.document = t.d;
+  try {
+    const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
+    return { ...t, bridge, commands };
+  } finally { globalThis.document = previous; }
 }
+/** Run the inline handler for `type` that a browser runs; jsdom runs none. */
+const handle = (element, type) => element.ownerDocument.defaultView.Function(element.getAttribute(`on${type}`)).call(element);
 const ask = t => t.d.querySelector('.confirmation-layer [role="alertdialog"]');
 
 test('an unsent comment makes leaving warn, and a clean page leaves quietly', () => {
@@ -40,17 +51,18 @@ test('a dialog counts what was typed into it until it closes', () => {
   assert.equal(leaveWarns(t), false);
 });
 
-test('search boxes and fields that saved when they lost focus never count', () => {
+test('search boxes and fields that saved when they lost focus never count', async () => {
   const board = bootApp({ route: 'board' });
   type(board.d.querySelector('[data-board-search]'), 'payment');
   assert.equal(leaveWarns(board), false, 'the Board search');
-  const settings = bootApp({ route: 'settings' });
+  const settings = withBridge(bootApp({ route: 'settings' }));
   type(settings.d.getElementById('member-search'), 'robin');
   assert.equal(leaveWarns(settings), false, 'the member search');
   const name = settings.d.querySelector('.project-fields [name="name"]');
   type(name, 'Renamed project');
   assert.equal(leaveWarns(settings), true, 'a name still being typed');
-  name.blur();
+  name.blur(); handle(name, 'blur'); await settle();
+  assert.deepEqual(settings.commands.map(command => command.operation), ['project.update']);
   assert.equal(name.value, 'Renamed project');
   assert.equal(leaveWarns(settings), false, 'the name saved when it lost focus');
   name.focus();
@@ -68,23 +80,27 @@ test('an untouched New user or Edit user dialog leaves quietly; a ticked checkbo
   }
 });
 
-test('a permission checkbox saves when it changes, so it never counts, also while it has focus', () => {
-  const t = bootApp({ route: 'settings' });
-  const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]');
-  box.focus();
+test('a permission checkbox saves when it changes, so it never counts, also while it has focus', async () => {
+  const t = withBridge(bootApp({ route: 'settings' }));
+  const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]:not(:checked)');
+  box.focus(); box.click(); handle(box, 'change'); await settle();
+  assert.deepEqual(t.commands.map(command => command.operation), ['membership.update']);
   assert.equal(t.d.activeElement, box);
   assert.equal(leaveWarns(t), false);
 });
 
-test('a deadline saved with Enter stops counting, though it keeps focus', () => {
-  const t = bootApp({ route: 'task/BIR-079' });
+test('a deadline saved with Enter stops counting, though it keeps focus', async () => {
+  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
   const deadline = t.d.getElementById('tpDl-input');
   type(deadline, '2026-12-24');
   assert.equal(pageWarns(t), true, 'typed and not saved yet');
   t.A.dateKey({ key: 'Enter', target: deadline, preventDefault() {}, stopPropagation() {} }, 'tpDl');
-  assert.equal(t.D.tasks.find(task => task.id === 'BIR-079').deadline, '2026-12-24');
+  await settle();
+  assert.deepEqual(t.commands.map(command => [command.operation, command.payload.deadline]), [['task.update', '2026-12-24']]);
   assert.equal(t.d.activeElement, deadline);
   assert.equal(leaveWarns(t), false);
+  deadline.blur(); t.A.dateBlur({ target: deadline }, 'tpDl'); await settle();
+  assert.equal(t.commands.length, 1, 'leaving the field does not save the same date again');
 });
 
 test('a comment that is being sent does not count, and counts again if the send fails', async () => {
@@ -151,20 +167,19 @@ test('another page asks first: Cancel keeps the text and Discard moves on', () =
 async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before || ask(t), 'Back changed the page'); await settle(); }
 
 test('Back saves a field that saves itself before the page changes, and does not ask', async () => {
-  const t = bootApp({ route: 'board' });
+  const t = withBridge(bootApp({ route: 'board' }));
   t.A.openTask('BIR-079'); await settle();
   const description = t.d.getElementById('task-description');
-  // jsdom runs no inline handlers; a browser runs this one when the field loses focus.
-  description.addEventListener('blur', () => t.w.Function(description.getAttribute('onblur')).call(description));
+  description.addEventListener('blur', () => handle(description, 'blur'));
   type(description, 'Typed before Back');
   await back(t);
   assert.equal(ask(t), null);
   assert.equal(t.A.context().view, 'board');
-  assert.equal(t.D.tasks.find(task => task.id === 'BIR-079').desc, 'Typed before Back');
+  assert.deepEqual(t.commands.map(command => [command.operation, command.payload.description]), [['task.update', 'Typed before Back']]);
 });
 
 test('Back with typed text puts the address back and asks; Discard then goes without asking again', async () => {
-  const t = bootApp({ route: 'roadmap' });
+  const t = withBridge(bootApp({ route: 'roadmap' }));
   t.A.nav('board'); await settle();
   t.A.openTask('BIR-079'); await settle();
   type(t.d.getElementById('cmtIn'), 'Half a thought');
@@ -181,10 +196,7 @@ test('Back with typed text puts the address back and asks; Discard then goes wit
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {
-  const page = bootApp({ route: 'task/BIR-079' });
-  // The bridge watches link clicks on the document it runs in, as in a browser.
-  const previous = globalThis.document; globalThis.document = page.d;
-  let t; try { t = withBridge(page); } finally { globalThis.document = previous; }
+  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   const link = t.d.createElement('a'); link.href = '#/board'; link.textContent = 'Board'; t.d.querySelector('.task-page').append(link);
   link.click();
