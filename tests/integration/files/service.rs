@@ -1212,6 +1212,43 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     retry.finish().await.unwrap();
 }
 
+#[tokio::test]
+async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let begin =
+        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let deleted = async |at: Option<i64>| {
+        fixture
+            .db
+            .run(move |connection| {
+                connection.execute("UPDATE tasks SET deleted_at=?1 WHERE id='task'", [at])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    };
+    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+        panic!("new upload must not replay")
+    };
+    pending.write_chunk(b"la").await.unwrap();
+    // A teammate deletes the task while the rest of the bytes arrive.
+    deleted(Some(now())).await;
+    pending.write_chunk(b"te").await.unwrap();
+    let finished = pending.finish().await;
+    assert!(
+        matches!(finished, Err(AppError::NotFound { resource: "task" })),
+        "{finished:?}"
+    );
+    // After Undo, the same retry key uploads the file.
+    deleted(None).await;
+    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+        panic!("a failed upload must not replay")
+    };
+    retry.write_chunk(b"late").await.unwrap();
+    retry.finish().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
