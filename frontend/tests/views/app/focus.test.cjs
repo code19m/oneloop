@@ -175,7 +175,7 @@ test('a track menu opened from the keyboard sits at its button', () => {
 });
 
 test('backing out of a dialog opened from a menu returns focus to the menu button', () => {
-  const choose=(t,label)=>{const button=[...t.d.querySelectorAll('#overlay-root > .menu button')].find(item=>item.textContent.trim()===label);t.A.menuAction(Number(button.getAttribute('onclick').match(/\d+/)[0]));};
+  const choose=(t,label)=>{const button=[...t.d.querySelectorAll('#overlay-root > .menu button')].find(item=>item.textContent.trim()===label);t.A.menuAction(JSON.parse(button.dataset.args)[0]);};
   const trackMenu=(t,button)=>t.A.trackMenu({currentTarget:button,clientX:0,clientY:0,stopPropagation(){}},button.closest('.lane').dataset.track);
   const flows=[
     ['roadmap',t=>t.d.querySelector('.lane[data-track] .kebab'),trackMenu,'Rename track'],

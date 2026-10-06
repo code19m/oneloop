@@ -291,7 +291,7 @@ function longDone(count, more) {
   const doneCards = () => [...t.d.querySelectorAll('[data-col="done"] .card')].map(card => card.dataset.task);
   return { ...t, doneCards };
 }
-const chooseMenuItem = (t, label) => { const button = [...t.d.querySelectorAll('#overlay-root > .menu button')].find(item => item.textContent.trim() === label); t.A.menuAction(Number(button.getAttribute('onclick').match(/\d+/)[0])); };
+const chooseMenuItem = (t, label) => { const button = [...t.d.querySelectorAll('#overlay-root > .menu button')].find(item => item.textContent.trim() === label); t.A.menuAction(JSON.parse(button.dataset.args)[0]); };
 
 test('Move to a column that does not show its end puts the card at its top, in view and focused', () => {
   const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
