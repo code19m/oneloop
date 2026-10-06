@@ -144,9 +144,16 @@ With `docker run`, use `--restart unless-stopped --stop-timeout 35`.
    ```
 
 Logs go to the journal; read them with `journalctl -u oneloop -f`. If oneloop
-fails, systemd restarts it after five seconds. Invalid settings (exit code 2)
-stop the service instead, because a restart can't fix them. Fix the unit file,
-then run `sudo systemctl daemon-reload` and `sudo systemctl restart oneloop`.
+fails, systemd restarts it after five seconds, and stops trying after 10 starts
+in 10 minutes, for example when the database is missing or needs `db migrate`.
+Invalid settings (exit code 2) stop the service at once, because a restart
+can't fix them. Fix the cause, then start oneloop again:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl reset-failed oneloop
+sudo systemctl restart oneloop
+```
 
 ### launchd (macOS)
 
