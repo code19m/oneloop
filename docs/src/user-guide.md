@@ -24,9 +24,12 @@ still comment. See [Permissions](admin-guide.md#permissions).
 The Roadmap shows epics and milestones on a timeline, with one row for each
 track. It is the first page you see after you sign in.
 
-- Scroll to move through time. To zoom, hold Ctrl (Cmd on macOS) while you
-  scroll, or pinch on a touchpad or touch screen. **Today** takes you back to
-  today.
+- Scroll to move through time. **Weeks**, **Months** and **Quarters** set the
+  scale, and so do the keys W, M and Q. A new scale keeps the epic you last
+  opened, or today, in view. To zoom freely, hold Ctrl (Cmd on macOS) while you
+  scroll, or pinch on a touchpad or touch screen. On a narrow screen, the scale
+  buttons make room for the others; pinch or use the keys instead. **Today**
+  takes you back to today.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
@@ -69,7 +72,7 @@ a review.
 
 - **+ Task** creates a task. It needs a title and an epic that isn't Done.
 - Drag a card to change its status or its place in the column. On a touch
-  screen, drag it by its **⋯** button. The **⋯** menu can also move it, which
+  screen, drag it by its **⋮** button. The **⋮** menu can also move it, which
   works well with a keyboard.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
@@ -102,7 +105,11 @@ Click a card to open the task. Your changes save automatically.
   **Keep my changes**.
 - A title or description you change while offline stays on the page, marked
   **Not saved**, and saves when the connection returns.
-- To delete a task, use the **⋯** menu at the top of the page.
+- oneloop asks before you go to another page, also with the browser's **Back**
+  and **Forward** buttons, while text you typed, such as a comment, isn't sent
+  or saved yet. Most browsers also ask before you reload or close the tab. A
+  dialog with text you typed asks before **Escape** closes it.
+- To delete a task, use the **⋮** menu at the top of the page.
 
 ### Blocking
 
@@ -123,7 +130,7 @@ files. Comments can't have files.
 
 Click a file to preview it. oneloop shows images, PDFs, Markdown (with tables,
 math and Mermaid diagrams), HTML pages, text and code. You can download any
-file.
+file. Diagrams show math in their labels as plain text, such as `$$x^2$$`.
 
 HTML previews show the page without running its scripts or loading anything
 from other sites, such as images, styles and fonts. Styles, images and fonts
@@ -211,14 +218,22 @@ files don't notify anyone.
 Click an item to open the task at the right place; this also marks the item
 read. **Archive** puts an item away. You can filter by project or show only
 unread items. **Mark all as read** and **Archive all** affect every item matching
-the current filters, including later pages. There is no bulk undo, but you can
-restore individual items from **Archived** and use **Mark unread**. See
+the current filters, including later pages. While a project or **Unread** filter
+is on, they read **Mark filtered as read** and **Archive filtered**. There is no
+bulk undo, but you can restore individual items from **Archived** and use
+**Mark unread**. See
 [retention limits](reference.md#limits) for how long archived items remain.
 
 ## Your account
 
 Click your name at the bottom of the sidebar. The menu has **Profile**,
-**Sign out**, and a switch between the light and dark theme.
+**Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
+default, follows your device's light or dark setting.
+
+When oneloop is upgraded, open tabs show **oneloop was updated**. With
+**Reload after updates** on, a tab reloads by itself once nothing you typed
+would be lost and the tab is hidden or you haven't used it for a minute. Both
+choices apply to this browser only.
 
 On your **Profile**:
 

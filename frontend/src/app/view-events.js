@@ -18,10 +18,10 @@ const ALLOWED_APP_METHODS = new Set([
   'popMulti','popSelect','projectMenu','promotePool','removeAvatar','removeMember','reopenEpic',
   'replyComment','resetPassword','retryInbox','retryPool','retryTaskActivity','retryStorageUsage','retryProfileAccess','retryUsers','revokeAppAccess','revokeOtherSessions','revokeSession','roadmapTipKey','saveBlock',
   'saveEpic','saveMilestone','savePoolDescription','saveProjectNew','saveTask','saveTaskDraft','saveTrack','saveUser',
-  'setAttachmentTemporary','setAvatar','setBlockedFilter','setMemberPermission','setNotificationRead','setPassword','setPoolTab','setTheme',
+  'setAttachmentTemporary','setAvatar','setBlockedFilter','setMemberPermission','setNotificationRead','setPassword','setPoolTab','setRoadmapScale','setTheme',
   'setBoardQ','sizeDescription','sizeDescriptionEditors','sizeTaskTitle','taskActions','taskDragStart',
   'taskMoveMenu','toggleCommentText','toggleDescription','toggleDoneOrder','togglePoolDescription','toggleSidebar','trackDragStart','trackDrop',
-  'toggleReplies','trackReorderKey','trackMenu','toast','updMe','updTask','updateProjectField','userMenu',
+  'toggleAutoReload','toggleReplies','trackReorderKey','trackMenu','toast','updMe','updTask','updateProjectField','userMenu',
 ]);
 const ALLOWED_RECOVERY_METHODS = new Set(['activateNotice','copyReference','reconnect','retryLoad','retryRefresh','reloadClient']);
 

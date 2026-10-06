@@ -6,6 +6,12 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The Mermaid bundle now includes KaTeX 0.18.9 instead of 0.16.47, which fixes
+  a low-severity KaTeX advisory
+  ([GHSA-238p-pmpm-9mq7](https://github.com/advisories/GHSA-238p-pmpm-9mq7)).
+
 ## [0.1.0-rc.2] - 2026-10-04
 
 The second release candidate. It adds a read-only knowledge base to each

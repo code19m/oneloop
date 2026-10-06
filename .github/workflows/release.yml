@@ -199,7 +199,9 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Deploy the documentation for this release
+      # The Docs workflow publishes the newest release, which is this one unless
+      # a higher version is out already.
+      - name: Publish the documentation of the newest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main

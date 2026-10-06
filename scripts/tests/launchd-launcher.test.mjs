@@ -36,7 +36,8 @@ test('launcher stops the job when a restart cannot help', () => {
     const result = launch(options);
     assert.equal(result.status, 0, `${name}: ${result.stderr}`);
     assert.match(result.stderr, message, name);
-    assert.match(result.stderr, /bootstrap the job again/, name);
+    // launchctl bootstrap fails while the stopped job is still loaded.
+    assert.match(result.stderr, /unload the job with launchctl bootout and load it again with launchctl bootstrap/, name);
     assert.deepEqual(result.invoked, invoked, name);
   }
 });

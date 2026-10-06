@@ -58,6 +58,8 @@ export function createCommandGateway({ api, data, getScope = () => '', onChange 
     },
     hasUncertain: (interactionKey) => uncertain.has(scopedKey(String(getScope() ?? ''),interactionKey)),
     isPending: (interactionKey) => inFlight.has(scopedKey(String(getScope() ?? ''),interactionKey)),
+    /** Whether any command is still on its way to the server. */
+    hasPending: () => inFlight.size > 0,
     discard: (interactionKey) => uncertain.delete(scopedKey(String(getScope() ?? ''),interactionKey)),
     invalidate() { uncertain.clear(); },
   });

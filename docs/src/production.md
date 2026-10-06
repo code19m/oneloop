@@ -13,8 +13,9 @@ one image at a time.
 ## HTTPS with a reverse proxy
 
 oneloop serves plain HTTP and leaves certificates to the proxy. It accepts an
-`http://` address only for `localhost`, because passwords and sign-in cookies
-must never cross a network unencrypted.
+`http://` address only for the server itself (see
+[`ONELOOP_PUBLIC_URL`](reference.md#configuration)), because passwords and
+sign-in cookies must never cross a network unencrypted.
 
 1. Point a DNS name, such as `tasks.example.com`, to your server.
 2. Set these variables for oneloop, then restart it:
@@ -150,9 +151,16 @@ With `docker run`, use `--restart unless-stopped --stop-timeout 35`.
    ```
 
 Logs go to the journal; read them with `journalctl -u oneloop -f`. If oneloop
-fails, systemd restarts it after five seconds. Invalid settings (exit code 2)
-stop the service instead, because a restart can't fix them. Fix the unit file,
-then run `sudo systemctl daemon-reload` and `sudo systemctl restart oneloop`.
+fails, systemd restarts it after five seconds, and stops trying after 10 starts
+in 10 minutes, for example when the database is missing or needs `db migrate`.
+Invalid settings (exit code 2) stop the service at once, because a restart
+can't fix them. Fix the cause, then start oneloop again:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl reset-failed oneloop
+sudo systemctl restart oneloop
+```
 
 ### launchd (macOS)
 

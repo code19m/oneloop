@@ -12,7 +12,6 @@ const script = fileURLToPath(new URL('../release-exists.mjs', import.meta.url));
 function fixture(run) {
   const cwd = mkdtempSync(join(tmpdir(), 'release-exists-'));
   try {
-    writeFileSync(join(cwd, 'Cargo.toml'), '[package]\nname = "oneloop"\nversion = "1.2.3-rc.1"\n');
     // Answer like gh: a known tag succeeds, an unknown one fails with gh's message.
     writeFileSync(join(cwd, 'gh'), `#!${process.execPath}
 const fs = require('node:fs');
@@ -31,14 +30,14 @@ console.log(JSON.stringify({tagName: args[2]}));
   } finally { rmSync(cwd, {recursive: true, force: true}); }
 }
 
-test('published and missing releases are told apart, by default for Cargo.toml version', () => {
+test('published and missing releases are told apart', () => {
   fixture((exists, calls) => {
-    for (const [args, expected] of [[['v1.2.2'], 'true\n'], [['v1.2.3'], 'false\n'], [[], 'false\n']]) {
+    for (const [args, expected] of [[['v1.2.2'], 'true\n'], [['v1.2.3'], 'false\n']]) {
       const result = exists(args);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout, expected);
     }
-    assert.equal(calls(), 'release view v1.2.2 --json tagName\nrelease view v1.2.3 --json tagName\nrelease view v1.2.3-rc.1 --json tagName\n');
+    assert.equal(calls(), 'release view v1.2.2 --json tagName\nrelease view v1.2.3 --json tagName\n');
   });
 });
 
@@ -48,6 +47,7 @@ test('gh failures and bad tags stop the script instead of answering', () => {
       [['v1.2.2'], 'HTTP 401: Bad credentials (https://api.github.com/repos/example/oneloop/releases/tags/v1.2.2)', /Bad credentials/],
       [['v1.2.3'], 'error connecting to api.github.com', /error connecting/],
       [['main'], '', /Expected vX\.Y\.Z/],
+      [[], '', /Expected vX\.Y\.Z/],
     ]) {
       const result = exists(args, error);
       assert.notEqual(result.status, 0);

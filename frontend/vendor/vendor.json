@@ -410,15 +410,15 @@
       },
       "derived": {
         "mermaid.min.js": {
-          "sha256": "ff2944c72867afbd2048b72cc87f5c58fa66eeeb8bc5ca24b10a2077a6b87984",
+          "sha256": "424994cafb13de86c186fa48354720061f610e3812b9f6ba6231b302a8375957",
           "recipe": "mermaid/REBUILD.md"
         },
         "notice-inventory.json": {
-          "sha256": "f7a651295293f9c10aa6cac3279417e6351f9bce2e4cdab5b217564890a10bc7",
+          "sha256": "bbde138d3035db0e4c848be2779327cc1439978afe5b9d9dba8c87106666ee99",
           "recipe": "mermaid/REBUILD.md#dependency-notices"
         },
         "THIRD_PARTY_NOTICES.md": {
-          "sha256": "1949fd7de77978e83148fb7473ce91f0c23ae7c2c870a6df38fa0028d4b44bb9",
+          "sha256": "fde97180aab134be924ace5095139b6703b5cff27ac764d7494fecbed5e484fe",
           "recipe": "mermaid/REBUILD.md#dependency-notices"
         }
       }

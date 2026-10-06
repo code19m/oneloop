@@ -19,8 +19,9 @@ import { installAttachmentTransport } from '../features/attachments/attachment-t
 import { installCollaborationController } from '../features/collaboration/controller.js';
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
-import { createProjectionReload, routeScope as scopeOfRoute } from './projection-reload.js';
+import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
 import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
 
@@ -56,6 +57,7 @@ const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
+const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 runtimeHooks = installAttachmentTransport(runtimeHooks);
@@ -66,17 +68,11 @@ installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 const auth = createAuthController({
   api, data,
   refresh: () => app?.refresh(),
-  loadBootstrap: async () => {
-    const scope=routeScope();
-    try{return await bootstrap.load(scope);}
-    catch(error){
-      if(scope.taskId&&error instanceof ApiError&&[403,404].includes(error.status))return bootstrap.load({view:'metadata'});
-      throw error;
-    }
-  },
+  loadBootstrap: () => signInLoad.load(),
   reportError,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
   onSessionChange:(session)=>{
+    if(!session)signInLoad.sessionEnded();
     runtimeHooks?.publish({type:'auth',session});
     recovery?.sessionChanged(session);
     if(session&&!session.temporary&&pendingAuthorization){const target=pendingAuthorization;pendingAuthorization=null;location.replace(target);return;}
@@ -84,20 +80,21 @@ const auth = createAuthController({
   },
 });
 
-recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection});
-globalThis.OneloopRecovery=recovery;
-globalThis.Recovery=recovery;
-
-installViewEventOwner(document.documentElement);
-
 const buildMonitor=createBuildMonitor({
   fetchBuild:async()=>{
     const response=await fetch('/healthz',{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json'},signal:AbortSignal.timeout(5000)});
     return response.ok?response.json():null;
   },
   onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version,build:value.revision});},
-  onUpdate:()=>recovery.buildChanged(),
+  onUpdate:(value)=>recovery?.buildChanged(value),
 });
+recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
+globalThis.OneloopRecovery=recovery;
+globalThis.Recovery=recovery;
+
+installViewEventOwner(document.documentElement);
+installTooltips(document);
+
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
     ||change.type==='command'&&change.result?.entities?.some((/** @type {{entityType?:string}} */ entity)=>['project','membership','track','epic','milestone','task','taskBlock','poolItem'].includes(entity.entityType));

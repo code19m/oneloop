@@ -3,6 +3,7 @@ import test from 'node:test';
 import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
 import {createRecoveryController,isRevisionConflict,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
+import {createBuildMonitor} from '../../../../src/app/build-info.js';
 const {JSDOM}=createRequire(import.meta.url)('../../../support/dom.cjs');
 
 function fixture(overrides={}){
@@ -324,4 +325,171 @@ test('removing an unresolved editor cancels its prompt without retaining a draft
   const dom=new JSDOM('<div class="task-page"><textarea>mine</textarea></div>');const previous=globalThis.document;globalThis.document=dom.window.document;
   try{const pending=presentDomConflict({target:document.querySelector('textarea'),latestValue:'latest',myValue:'mine'});document.body.replaceChildren();assert.equal(await pending,'cancelled');}
   finally{globalThis.document=previous;dom.window.close();}
+});
+
+/**
+ * A page that learns about an update, with storage, visibility and a clock
+ * the test controls. `stores` is the tab's storage, which a reload keeps.
+ * The page checks the server's version the way the app does, with the build
+ * monitor; `server` is the version the server answers with.
+ */
+function updatable({autoReload=true,hidden=false,stores={local:new Map(),session:new Map()}}={}){
+  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0;
+  const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
+  if(autoReload)stores.local.set('oneloop.autoReload','on');
+  const documentObject={visibilityState:hidden?'hidden':'visible',activeElement:null,querySelectorAll:()=>[],addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);}};
+  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener:(type,listener)=>{(listeners[`window:${type}`]??=[]).push(listener);}};
+  const app={context:()=>({view:'board',projectId:'p1'}),refresh(){}};
+  let server=oldVersion;
+  const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
+  const controller=createRecoveryController({data:{session:{id:'s1',userId:'u1'}},api:{counts:async()=>({})},gateway:{hasPending:()=>saving,invalidate(){}},getApp:()=>app,
+    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject,
+    checkBuild:()=>monitor.check()});
+  controller.bind(app,{});
+  const fire=type=>{for(const listener of listeners[type]??[])listener({});};
+  return {controller,stores,documentObject,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
+    /** Another tab of this browser changes the stored setting. */
+    otherTab(value){if(value)stores.local.set('oneloop.autoReload',value);else stores.local.delete('oneloop.autoReload');for(const listener of listeners['window:storage']??[])listener({key:'oneloop.autoReload',newValue:value});},
+    /** The tab hides, or shows again. */
+    show(visible){documentObject.visibilityState=visible?'visible':'hidden';fire('visibilitychange');},
+    /** Move the clock on, run the timers that are due, and let the checks they start finish. */
+    async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await microtask();}};
+}
+const newVersion={version:'0.2.0',revision:'b2'},oldVersion={version:'0.1.0',revision:'a1'};
+
+test('with Reload after updates off, an update only shows the notice',()=>{
+  const page=updatable({autoReload:false,hidden:true});
+  page.controller.buildChanged(newVersion);page.fire('visibilitychange');page.advance(10*60_000);
+  assert.equal(page.reloads,0);assert.match(page.controller.connectionHtml(),/oneloop was updated/);
+});
+
+test('a hidden tab asks the server for its version every minute and reloads once no save is running',async()=>{
+  const page=updatable();await page.monitor.check();
+  page.show(false);page.saving=true;
+  await page.advance(60_000);
+  assert.equal(page.checks,2);assert.equal(page.reloads,0,'nothing changed yet');
+  page.server=newVersion;
+  await page.advance(59_000);assert.equal(page.checks,2);
+  await page.advance(1_000);
+  assert.equal(page.checks,3);assert.equal(page.reloads,0,'a save is still running');
+  page.saving=false;page.controller.interactionPending('task.update:t1:title',false);
+  assert.equal(page.reloads,1);
+});
+
+test('with Reload after updates off, a hidden tab never asks the server',async()=>{
+  const page=updatable({autoReload:false});await page.monitor.check();
+  page.show(false);page.server=newVersion;
+  await page.advance(10*60_000);
+  assert.equal(page.checks,1);assert.equal(page.reloads,0);
+});
+
+test('a hidden tab starts asking the server once another tab turns Reload after updates on',async()=>{
+  const page=updatable({autoReload:false});await page.monitor.check();
+  page.show(false);page.server=newVersion;
+  await page.advance(60_000);assert.equal(page.checks,1);
+  page.otherTab('on');
+  await page.advance(60_000);
+  assert.equal(page.checks,2);assert.equal(page.reloads,1);
+});
+
+test('a tab that shows again counts as activity, so the person who comes back is not reloaded at once',async()=>{
+  const page=updatable();await page.monitor.check();
+  page.show(false);await page.advance(30_000);
+  page.server=newVersion;
+  // They come back before the next check; the live connection opens and checks.
+  page.show(true);await page.monitor.check();
+  assert.equal(page.reloads,0,'not in front of the person');
+  await page.advance(59_000);assert.equal(page.reloads,0);
+  await page.advance(60_000);
+  assert.equal(page.reloads,1,'a minute without activity');
+});
+
+test('a tab that is shown reloads only after a minute without activity',()=>{
+  const page=updatable();
+  page.controller.buildChanged(newVersion);
+  page.advance(30_000);page.fire('keydown');page.advance(30_000);
+  assert.equal(page.reloads,0,'the person typed half a minute ago');
+  page.advance(60_000);
+  assert.equal(page.reloads,1);
+});
+
+test('unsaved input keeps an updated tab from reloading until it is gone',()=>{
+  const page=updatable({hidden:true});let draft=true;
+  page.controller.trackUnsaved(()=>draft);
+  page.controller.buildChanged(newVersion);page.advance(5*60_000);
+  assert.equal(page.reloads,0);
+  draft=false;page.advance(30_000);
+  assert.equal(page.reloads,1);
+});
+
+test('a tab reloads by itself once for each version, so servers that disagree cannot make it loop',()=>{
+  const first=updatable({hidden:true});
+  first.controller.buildChanged(newVersion);first.controller.buildChanged(newVersion);first.fire('visibilitychange');
+  assert.equal(first.reloads,1,'once per page');
+  // The reloaded page met a server that still runs the old version, then the new one again.
+  const second=updatable({hidden:true,stores:first.stores});second.controller.buildChanged(oldVersion);
+  assert.equal(second.reloads,1);
+  const third=updatable({hidden:true,stores:first.stores});third.controller.buildChanged(newVersion);third.advance(10*60_000);
+  assert.equal(third.reloads,0);assert.match(third.controller.connectionHtml(),/Reload/);
+});
+
+test('turning Reload after updates on applies to an update that is already waiting',()=>{
+  const page=updatable({autoReload:false,hidden:true});
+  page.controller.buildChanged(newVersion);
+  assert.equal(page.controller.autoReload,false);
+  page.controller.setAutoReload(true);
+  assert.equal(page.controller.autoReload,true);assert.equal(page.reloads,1);
+  page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
+});
+
+/** Run `body` with a jsdom page as the document the conflict prompt uses. */
+async function onPage(html,body){
+  const dom=new JSDOM(html),previous=globalThis.document,previousEvent=globalThis.Event;globalThis.document=dom.window.document;globalThis.Event=dom.window.Event;
+  try{await body(dom.window.document);}finally{globalThis.document=previous;globalThis.Event=previousEvent;dom.window.close();}
+}
+const microtask=()=>new Promise(resolve=>setImmediate(resolve));
+const answer=(document,label)=>[...document.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label).click();
+
+test('a redraw moves an unanswered prompt beside the redrawn field, where Use latest fills it in',async()=>{
+  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
+  await onPage(`<div class="task-page">${section}</div>`,async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    const box=document.querySelector('[data-recovery-conflict]');
+    document.querySelector('.task-page').innerHTML=section;
+    await microtask();
+    const redrawn=document.getElementById('task-description');
+    assert.equal(box.parentElement,redrawn.parentElement,'beside the new field');
+    answer(document,'Use latest');
+    assert.equal(await pending,'latest');assert.equal(redrawn.value,'theirs');
+  });
+});
+
+test('a prompt closes without an answer when its redrawn field can no longer be edited',async()=>{
+  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="task-description">mine</textarea></section></div>',async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    document.querySelector('.task-page').innerHTML='<section class="tp-sec"><textarea id="task-description" readonly>mine</textarea></section>';
+    assert.equal(await pending,'cancelled');assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+  });
+});
+
+test('a newer prompt replaces one still waiting, which closes without an answer',async()=>{
+  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="a">a</textarea></section><section class="tp-sec"><textarea id="b">b</textarea></section></div>',async document=>{
+    const field=id=>document.getElementById(id);
+    const first=presentDomConflict({target:field('a'),locate:()=>field('a'),latestValue:'A',myValue:'a'});
+    const second=presentDomConflict({target:field('b'),locate:()=>field('b'),latestValue:'B',myValue:'b'});
+    assert.equal(await first,'cancelled');
+    assert.equal(document.querySelectorAll('[data-recovery-conflict]').length,1);
+    answer(document,'Keep my changes');assert.equal(await second,'mine');
+  });
+});
+
+test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async()=>{
+  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
+  await onPage(`<div class="task-page">${section}</div>`,async document=>{
+    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+    answer(document,'Keep my changes');assert.equal(await pending,'mine');
+    assert.match(document.querySelector('[data-recovery-conflict]').textContent,/Saving your changes/);
+    document.querySelector('.task-page').innerHTML=section;await microtask();
+    assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+  });
 });
