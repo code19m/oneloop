@@ -354,6 +354,36 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
 }
 
 #[tokio::test]
+async fn a_request_that_fails_closes_none_of_the_persons_streams() {
+    let (_root, db, alice, app, runtime) = app().await;
+    let mut bodies = Vec::new();
+    for _ in 0..16 {
+        let mut body = events(&app, "/api/events").await.into_body();
+        frame(&mut body).await;
+        bodies.push(body);
+    }
+    // The snapshot check of a seventeenth stream fails.
+    let rename = async |from: &'static str, to: &'static str| {
+        db.run(move |connection| {
+            connection.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to}"))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    };
+    rename("security_events", "security_events_away").await;
+    let failed = events(&app, "/api/events?cursor=snapshot").await;
+    rename("security_events_away", "security_events").await;
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    receivers(&runtime, 16).await;
+    hint(&db, &alice).await;
+    runtime.worker().run_once().await.unwrap();
+    for body in &mut bodies {
+        assert!(frame(body).await.contains("event: hint"));
+    }
+}
+
+#[tokio::test]
 async fn pages_of_other_sites_cannot_open_streams() {
     let (_root, _db, _alice, app, _runtime) = app().await;
     for (site, status) in [
