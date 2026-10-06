@@ -82,9 +82,9 @@ the upgrade notes before you upgrade.
 - oneloop asks before you go to another page, also with **Back** and
   **Forward**, or close a dialog while text you typed isn't sent or saved yet.
   Most browsers also ask before a reload or before closing the tab.
-- If your session ends while you type, sign in again in the same tab to get
-  your text back and the project you had open. Nobody else who signs in there
-  sees the text.
+- If your session ends while you type, or while a comment is still being sent,
+  sign in again in the same tab to keep your text and get back to the project
+  you had open. Nobody else who signs in there sees the text.
 - A task title or description that can't be saved, for example while you are
   offline, stays on the page marked **Not saved** and saves by itself when the
   connection returns.
