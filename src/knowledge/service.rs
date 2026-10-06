@@ -4,7 +4,7 @@
 //! credential.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Not,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -88,6 +88,39 @@ pub(super) struct Inner {
     readers: Arc<tokio::sync::Semaphore>,
     /// Searches run one at a time.
     searches: Arc<tokio::sync::Semaphore>,
+    /// People with a search that runs or waits. Each has one at most, so no
+    /// one can fill the queue.
+    searchers: Mutex<HashSet<String>>,
+}
+
+/// A person's search while it runs or waits.
+struct Searching<'a> {
+    inner: &'a Inner,
+    user_id: &'a str,
+}
+
+impl<'a> Searching<'a> {
+    /// A person who already has a search is told to try again at once.
+    fn start(inner: &'a Inner, user_id: &'a str) -> AppResult<Self> {
+        let mut searchers = inner.searchers.lock().expect("searchers lock");
+        if !searchers.insert(user_id.to_owned()) {
+            return Err(AppError::Unavailable(
+                "your previous knowledge search is still running; try again shortly".into(),
+            ));
+        }
+        Ok(Self { inner, user_id })
+    }
+}
+
+impl Drop for Searching<'_> {
+    // A search ends when its request does, even one that is cancelled.
+    fn drop(&mut self) {
+        self.inner
+            .searchers
+            .lock()
+            .expect("searchers lock")
+            .remove(self.user_id);
+    }
 }
 
 /// What search and MCP need from one synced commit, built on first use.
@@ -371,6 +404,7 @@ impl KnowledgeService {
                 builds: tokio::sync::Mutex::new(()),
                 readers: Arc::new(tokio::sync::Semaphore::new(1)),
                 searches: Arc::new(tokio::sync::Semaphore::new(1)),
+                searchers: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -647,6 +681,7 @@ impl KnowledgeService {
 
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
         actor.require_ready()?;
+        let _searching = Searching::start(&self.inner, &actor.user_id)?;
         let Some(catalog) = self.catalog(actor, project_id).await? else {
             return Ok(Results::default());
         };
@@ -1650,6 +1685,77 @@ mod tests {
         assert_eq!((results.file_count, results.hit_count), (0, 1800));
         assert_eq!(results.documents.len(), 50);
         assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
+    }
+
+    #[tokio::test]
+    async fn each_person_has_one_search_and_a_search_waits_at_most_five_seconds() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nShared words.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice", "bob"]).await;
+        let (alice, bob) = (&people[0], &people[1]);
+        // The first search builds the index.
+        service.search(alice, "p", "shared").await.unwrap();
+        tokio::time::pause();
+        let search = |actor: &Actor| {
+            let (service, actor) = (service.clone(), actor.clone());
+            tokio::spawn(async move { service.search(&actor, "p", "shared").await })
+        };
+        let searching = |actor: &Actor| {
+            let searchers = service.inner.searchers.lock().unwrap();
+            searchers.contains(&actor.user_id)
+        };
+        // A long search holds the one slot, and Alice's search waits for it.
+        let held = service
+            .inner
+            .searches
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let first = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        // Her next one is told at once to try again; Bob's waits its turn.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.search(alice, "p", "shared"),
+        )
+        .await
+        .expect("a second search of one person doesn't wait");
+        assert!(
+            matches!(second, Err(AppError::Unavailable(_))),
+            "{second:?}"
+        );
+        let other = search(bob);
+        drop(held);
+        first.await.unwrap().unwrap();
+        other.await.unwrap().unwrap();
+        // A search whose request ends lets its person search again at once.
+        let held = service
+            .inner
+            .searches
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let cancelled = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        assert!(!searching(alice));
+        // A search that waits too long is told to try again.
+        let waiting = search(bob);
+        tokio::time::sleep(QUEUE_WAIT + std::time::Duration::from_secs(1)).await;
+        let waited = waiting.await.unwrap();
+        assert!(
+            matches!(waited, Err(AppError::Unavailable(_))),
+            "{waited:?}"
+        );
+        assert!(!searching(bob));
+        drop(held);
+        service.search(bob, "p", "shared").await.unwrap();
     }
 
     #[tokio::test]
