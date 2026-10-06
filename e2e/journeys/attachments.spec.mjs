@@ -168,6 +168,26 @@ test('Markdown strips app actions and SVG navigation while keeping math, diagram
   expect(writes).toEqual([]);
 });
 
+test('Markdown in Arabic reads right to left, with its list on the right', async ({ page, instance }) => {
+  await openApp(page, instance);
+  await attach(page, 'دليل.md', 'text/markdown', '# دليل الفريق\n\nهذه فقرة عربية تنتهي بنقطة.\n\n- البند الأول\n- البند الثاني\n\nAn English paragraph.');
+  await page.locator('.attachment-title').filter({ hasText: 'دليل.md' }).click();
+  const body = page.locator('.markdown-body');
+  // Where a text sits in its box: right-aligned when it reads right to left.
+  const side = locator => locator.evaluate(element => {
+    const range = document.createRange(), box = element.getBoundingClientRect();
+    range.selectNodeContents(element);
+    const line = range.getClientRects()[0];
+    return Math.round(box.right - line.right) < Math.round(line.left - box.left) ? 'right' : 'left';
+  });
+  await expect(body.locator('p').first()).toHaveText('هذه فقرة عربية تنتهي بنقطة.');
+  expect(await side(body.locator('p').first())).toBe('right');
+  expect(await side(body.locator('li').first())).toBe('right');
+  expect(await side(body.locator('p').last())).toBe('left');
+  const list = await body.locator('ul').evaluate(element => { const style = getComputedStyle(element); return [style.direction, parseFloat(style.paddingRight) > 0, parseFloat(style.paddingLeft)]; });
+  expect(list).toEqual(['rtl', true, 0]);
+});
+
 test('Markdown keeps renderer formatting and cannot borrow dialog classes', async ({ page, instance }) => {
   await openApp(page, instance);
   await attach(page, 'hostile.md', 'text/markdown', '<div data-action="nav" data-args="[&quot;users&quot;]" class="confirmation-layer scrim modal-wrap peek">Fake dialog</div>\n\n> [!NOTE]\n> Safe note\n\n```js\nconst value = 1;\n```');

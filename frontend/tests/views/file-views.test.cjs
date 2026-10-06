@@ -149,6 +149,18 @@ test('in-page links reach headings in any script', async () => {
   assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
 });
 
+test('each Markdown block takes its direction from its own text, as Knowledge pages and attachment previews show it', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'دليل.md' }, '# دليل الفريق\n\nهذه فقرة عربية.\n\n- البند الأول\n- البند الثاني\n\n> اقتباس\n\n| العمود | Column |\n| - | - |\n| ١ | 1 |\n\n<p dir="ltr">Kept as written.</p>\n\n```js\nconst code = 1;\n```', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const body = host.querySelector('.markdown-body');
+  for (const selector of ['h1', 'p', 'ul', 'blockquote p', 'table']) assert.equal(body.querySelector(selector).getAttribute('dir'), 'auto', selector);
+  for (const selector of ['li', 'td']) assert.equal(body.querySelector(selector).hasAttribute('dir'), false, `${selector} takes its list's or table's direction`);
+  assert.equal([...body.querySelectorAll('p')].at(-1).getAttribute('dir'), 'ltr', 'a direction the file sets stays');
+  assert.equal(body.querySelector('pre').hasAttribute('dir'), false, 'code stays as it is');
+});
+
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);

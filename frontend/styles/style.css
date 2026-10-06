@@ -1433,6 +1433,9 @@ a.attachment-name:hover { text-decoration:underline; }
     #poolNewDesc, .pool-description-editor textarea, .pool-description-preview) {
   unicode-bidi: plaintext;
 }
+/* Rendered Markdown gives each block dir="auto" for the same rule; a
+   right-to-left list indents on the right. */
+:root[data-theme] .markdown-body :is(ul, ol):dir(rtl) { padding-left: 0; padding-right: 2em; }
 /* Semantic headings retain the established compact layout. */
 .col-head h2 { margin:0;font:inherit; }
 .lane-head h2.name { margin:0; }
