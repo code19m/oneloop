@@ -1592,7 +1592,8 @@ async fn create_transfer(
     let token = random_token()?;
     let hash = crate::auth::token::hash(&token);
     let now = now()?;
-    let task = input.task_id;
+    // The caller may name the task by its key; the ticket keeps its ID.
+    let task = task.id;
     let name = input.file_name;
     let size = input.size_bytes;
     let content_length = size;

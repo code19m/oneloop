@@ -104,6 +104,55 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
 }
 
 #[tokio::test]
+async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &[
+            "project_read",
+            "board_manage",
+            "roadmap_manage",
+            "attachments",
+        ],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "keyed").await;
+    let id = task.clone();
+    let key: String = db
+        .run(
+            move |c| Ok(c.query_row("SELECT task_key FROM tasks WHERE id=?1", [id], |r| r.get(0))?),
+        )
+        .await
+        .unwrap();
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId": key, "fileName": "notes.txt", "sizeBytes": 5, "idempotencyKey": "by-key"}),
+        )
+        .await,
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from("notes"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["value"]["taskId"], task);
+}
+
+#[tokio::test]
 async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() {
     let (_dir, db, app, session, _user) = fixture().await;
     let member_id = db
