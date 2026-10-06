@@ -2081,10 +2081,13 @@
   // Full SPA renders replace the opener as well as the dialog. Remember its
   // identifying attributes so dismissing a dialog can focus its new counterpart.
   const overlayReturn = { modal:null, peek:null };
+  // What a click on the element runs, which its redrawn copy runs too.
+  const legacyClick = () => bootWindow.OneloopEventAttribute?.('onclick') || 'onclick';
+  const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('data-action')} ${el.getAttribute('data-args') ?? ''}` : el.getAttribute(legacyClick());
   function rememberOpener(element) {
     const el = element?.closest?.('button,a[href],[role="button"],input,textarea') || element;
     if (!el || el === document.body) return null;
-    return { element:el, id:el.id, action:el.getAttribute(bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
+    return { element:el, id:el.id, action:clickAction(el), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
       epic:el.dataset.epic, milestone:el.dataset.milestone, text:el.textContent.trim(),
       selection: typeof el.selectionStart === 'number' ? [el.selectionStart,el.selectionEnd,el.selectionDirection] : null,
       scope:el.closest('.topbar') ? '.topbar' : el.closest('.sidebar') ? '.sidebar' : el.closest('.peek') ? '.peek' : el.closest('.modal') ? '.modal' : '#app' };
@@ -2096,7 +2099,7 @@
     if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
     if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
     // A scrim and a close button can share an action; prefer the same kind of control in the same place.
-    if (!target && record?.action) { const attribute = bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'; target = [...app.querySelectorAll(`${record.scope} [${attribute}]`), ...app.querySelectorAll(`[${attribute}]`)].find(el => el.tagName === record.tag && el.getAttribute(attribute) === record.action); }
+    if (!target && record?.action) { const attribute = legacyClick(); target = [...app.querySelectorAll(`${record.scope} [data-action],${record.scope} [${attribute}]`), ...app.querySelectorAll(`[data-action],[${attribute}]`)].find(el => el.tagName === record.tag && clickAction(el) === record.action); }
     if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
     if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
     if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);

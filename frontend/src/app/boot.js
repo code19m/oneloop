@@ -11,6 +11,7 @@ import { createAuthController } from '../auth/auth-controller.js';
 import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
 import { installViewEventOwner } from './view-events.js';
+import { installViewActions } from './view-actions.js';
 import { createRuntimeHooks } from './runtime-hooks.js';
 import { actionErrorFeedback } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
@@ -24,6 +25,8 @@ import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
 import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
+// First, so actions run before the document's other listeners, as inline handlers did.
+installViewActions(document);
 
 const data = createLegacyData();
 globalThis.DATA = data;
