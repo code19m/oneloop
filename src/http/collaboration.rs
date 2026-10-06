@@ -209,9 +209,11 @@ async fn events(
             } else {
                 "reconcile"
             };
+            // An event stream can't name its person in a header, so its first
+            // event says whose it is: a page showing someone else ends there.
             let initial = Event::default()
                 .event(kind)
-                .data(json!({"kind":kind,"after":resume}).to_string());
+                .data(json!({"kind":kind,"after":resume,"userId":user_id}).to_string());
             if sender.send(Ok(initial)).await.is_err() {
                 return;
             }

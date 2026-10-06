@@ -97,6 +97,19 @@ test('a refresh that removes the shown project names it when leaving',async()=>{
   assert.deepEqual(toasts,[['You no longer have access to Two.','info']]);
 });
 
+test('a refresh that shows the admin role is gone leaves an admin page or dialog and says why',async()=>{
+  for(const [view,modal] of [['users',null],['storage',null],['settings',null],['roadmap',{type:'user',id:'u2'}]]){
+    const context={view,projectId:'p1',modal},toasts=[],calls=[];
+    const data=createLegacyData();hydrateLegacyData(data,projection('p1'));
+    const app={context:()=>({...context}),toast:(...args)=>toasts.push(args),nav:(next,options)=>{calls.push(['nav',next,options?.discard]);context.view=next;},closeOverlays:()=>{calls.push(['close']);context.modal=null;},updateDocumentTitle(){},refreshRoadmap(){},refreshCounts(){}};
+    const bootstrap={idle:async()=>{},load:async()=>{hydrateLegacyData(data,{...projection('p1'),session:{userId:'u1',isAdmin:false},users:[{id:'u1',name:'Owner',isAdmin:false,isActive:true}]});return {stale:false};}};
+    const reload=createProjectionReload({data,bootstrap,reads:{idle:async()=>{}},getApp:()=>app,getBridge:()=>({loadCurrentRoute:async()=>assert.fail('the admin page is not read again')}),getRecovery:()=>({refreshSucceeded(){}}),location:{hash:`#/${view}`}});
+    await reload({background:true});
+    assert.deepEqual(calls,modal?[['close']]:[['nav','board',true]],view);
+    assert.deepEqual(toasts,[['You no longer have admin access.','info']],view);
+  }
+});
+
 test('the route decides the bootstrap view',()=>{
   assert.deepEqual(routeScope('#/task/ONE-1',null),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board',{context:()=>({board:{search:'x'}})}),{view:'metadata'});

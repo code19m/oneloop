@@ -9,6 +9,9 @@ oneloop, with the settings from its unit file, for example:
 sudo -u oneloop env $(systemctl show oneloop -p Environment --value) /usr/local/bin/oneloop backup create …
 ```
 
+This splits the unit's settings at spaces, so write every value without
+spaces, such as `ONELOOP_TRUSTED_PROXIES=10.0.0.1,10.0.0.2`.
+
 ## Back up
 
 A backup is a complete, verified copy of the database, all uploaded files and
@@ -163,7 +166,8 @@ you choose, and it changes nothing if the backup fails.
    file. `db migrate` saves its backup in the backup folder from
    [Back up](#back-up):
    ```sh
-   oneloop db migrate --backup-dir /var/backups/oneloop
+   sudo -u oneloop env $(systemctl show oneloop -p Environment --value) \
+     /usr/local/bin/oneloop db migrate --backup-dir /var/backups/oneloop
    sudo -u oneloop env $(systemctl show oneloop -p Environment --value) \
      /usr/local/bin/oneloop serve --check
    ```

@@ -186,6 +186,15 @@ async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shu
 }
 
 #[tokio::test]
+async fn an_event_stream_names_the_person_it_is_for() {
+    let (_root, _db, _alice, app, _runtime) = app().await;
+    let mut body = events(&app, "/api/events").await.into_body();
+    let first = frame(&mut body).await;
+    assert!(first.contains("event: reconcile"), "{first}");
+    assert!(first.contains(r#""userId":"alice""#), "{first}");
+}
+
+#[tokio::test]
 async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();

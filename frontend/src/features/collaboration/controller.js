@@ -6,7 +6,7 @@ import {refreshPageWindow} from '../../data/page-window.js';
 import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
 import {mapInboxItem} from '../../data/inbox-mapper.js';
-import {actionErrorFeedback} from '../../app/action-feedback.js';
+import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
 
@@ -213,7 +213,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
           });
           if(!resolved.saved)return false;response=resolved.result;notifyEditor=!resolved.stale;
         }catch(retryError){if(isCurrent())report(retryError,true);return false;}
-      }else{report(error,true);return false;}
+      }else{report(error,true);input.unsent?.(error);return false;}
     }
     if(response.stale)return false;
     try{
@@ -225,7 +225,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       // Typing after Save keeps the editor open; its next save builds on this one.
       if(editing&&currentSession()===expectedSession)facade?.commentAcknowledged?.(input,comment);
       await refreshActivity(task,true);
-      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
+      if(notifyEditor&&(!editing||isCurrent())&&app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentSaved?.(task.id,comment,{mode:input.mode,targetId:input.targetId??null,interactionId:input.interactionId,changed:(response.result.events??[]).length>0});
       return true;
     }catch(error){report(error,true);return false;}
   }
@@ -275,7 +275,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
     const promise=performDeleteComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;
   }
 
-  // Undo of a deletion: the comment comes back at the revision the deletion left.
+  // Undo of a deletion: the comment comes back at the revision the deletion
+  // left. A failure worth trying again goes to `again`, which offers Undo
+  // again; the retry keeps the interaction, so it applies once.
   async function performRestoreComment(input){
     const expectedTask=app?.context?.().taskId;
     try{
@@ -285,7 +287,10 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const task=currentTask(input.task.internalId);if(!task||!entity)return false;
       const mapped=mapComment(entity),index=task.comments.findIndex((item)=>item.id===mapped.id);if(index>=0)task.comments.splice(index,1,mapped);
       await refreshActivity(task,true);if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentRestored?.(task.id,mapped.id);return true;
-    }catch(error){report(error,false);return false;}
+    }catch(error){
+      if(input.again&&retryableFailure(error)){input.again(actionErrorFeedback(error).message||'The comment could not be restored.');return false;}
+      report(error,false);return false;
+    }
   }
   function restoreComment(input){
     const key=`restore:${input.comment.id}`;if(interactions.has(key))return interactions.get(key);
@@ -458,7 +463,11 @@ export function installCollaborationController({ transport, eventSourceFactory =
       source=eventSourceFactory('/api/events'+(initial&&data.syncCursor?`?cursor=${encodeURIComponent(data.syncCursor)}`:''));
       const activeSource=source;
       source.addEventListener?.('open',()=>{if(source!==activeSource)return;transport.publish?.({type:'live-open'});globalThis.OneloopRecovery?.liveConnected?.();});
-      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
+      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}
+        // The first event names the person the stream is for: the one the
+        // browser's cookie names now. Someone else's stream ends this tab's session.
+        if(Object.hasOwn(payload,'userId')&&globalThis.OneloopRecovery?.ownsAnswer?.(payload.userId)===false){source?.close?.();source=null;return;}
+        const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
       source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();});
       source.addEventListener?.('error',()=>{
@@ -467,7 +476,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
         globalThis.OneloopRecovery?.liveDisconnected?.(()=>startEvents());
         if(sessionCheck)return;
         const expectedSession=currentSession();
-        const check=transport.api.request('/api/auth/me',{background:true}).catch((error)=>{
+        const check=transport.api.request('/api/auth/me',{background:true}).then((answer)=>{
+          if(expectedSession===currentSession())globalThis.OneloopRecovery?.ownsAnswer?.(answer?.user?.id);
+        },(error)=>{
           if(expectedSession===currentSession()&&error?.status===401&&!globalThis.OneloopRecovery?.sessionExpired?.())globalThis.location?.reload?.();
         }).finally(()=>{if(sessionCheck===check)sessionCheck=null;});
         sessionCheck=check;

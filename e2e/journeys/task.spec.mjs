@@ -36,6 +36,36 @@ test('Enter posts a comment and a reply closes its inline composer after sending
   await expect(page.locator('#cmtIn')).toBeVisible();
 });
 
+test('a comment whose answer is lost is saved once, also when the next one was typed meanwhile', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/ERR_FAILED .*\/api\/commands\b/);
+  const { task } = instance.projects[0];
+  let typed, first = true;
+  const nextTyped = new Promise(resolve => { typed = resolve; });
+  await page.route('**/api/commands', async route => {
+    if (!first || route.request().postDataJSON().operation !== 'discussion.comment.create') return route.continue();
+    first = false;
+    // The comment reaches the server, but its answer is lost once the next one is typed.
+    await route.fetch(); await nextTyped; await route.abort('failed');
+  });
+  await openApp(page, instance);
+  const composer = page.locator('#cmtIn');
+  await composer.fill('First comment');
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await composer.fill('Second comment');
+  typed();
+  await expect(page.locator('#toast-region')).toContainText('Connection restored');
+  await expect(composer).toHaveValue('Second comment');
+  await composer.press('Enter');
+  // The first comes back alone once the box is empty; sent again, the server knows it.
+  await expect(composer).toHaveValue('First comment');
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await expect(page.locator('article[data-comment]').filter({ hasText: 'First comment' })).toHaveCount(1);
+  const listed = await (await instance.api.get(`/api/discussion/tasks/${task.id}/comments?limit=50`)).json();
+  expect(listed.items.map(item => item.content).sort()).toEqual(['First comment', 'Second comment']);
+});
+
 test('an unsent comment asks before another page or a reload discards it', async ({ page, instance }) => {
   await openApp(page, instance);
   const composer = page.locator('#cmtIn');
@@ -324,4 +354,44 @@ test('Undo brings a deleted task back to the Board', async ({ page, instance, al
   await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
   await page.reload();
   await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
+});
+
+test('Undo answers Ctrl+Z after a deletion, and a busy server leaves a way to try again', async ({ page, instance, allowedConsoleErrors }) => {
+  // A live read of the open task page can still be on its way when it is deleted.
+  allowedConsoleErrors.push(/404 .*\/api\/tasks\//, /503/);
+  const key = instance.projects[0].task.taskKey, restores = [];
+  await page.route('**/api/commands', async route => {
+    const command = route.request().postDataJSON();
+    if (command.operation !== 'task.restore') return route.continue();
+    restores.push(command.idempotencyKey);
+    if (restores.length > 1) return route.continue();
+    return route.fulfill({ status: 503, headers: { 'Retry-After': '1' }, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The server is busy' } }) });
+  });
+  await openApp(page, instance);
+  await page.getByRole('button', { name: 'Task actions' }).click();
+  await page.locator('#action-menu').getByText('Delete task').click();
+  await page.locator('[data-confirm-accept]').press('Enter');
+  const deleted = page.locator('#toast-region .toast').filter({ hasText: `${key} deleted` });
+  await expect(deleted.getByRole('button', { name: 'Undo' })).toHaveAttribute('aria-keyshortcuts', /\+Z$/);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
+  // With a dialog open, the key belongs to the dialog.
+  await page.getByRole('button', { name: 'Task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New task' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect(dialog).toBeVisible();
+  expect(restores).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
+  await page.keyboard.press('ControlOrMeta+z');
+  const failed = page.locator('#toast-region .toast[data-kind="error"]').filter({ hasText: 'Try the same action again' });
+  await expect(failed.getByRole('button', { name: 'Undo' })).toBeVisible();
+  // A busy server counts as no connection until oneloop reaches it again.
+  await expect(page.locator('#toast-region')).toContainText('Connection restored');
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect(page.locator('#toast-region')).toContainText(`${key} restored`);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toBeVisible();
+  expect(restores).toHaveLength(2);
+  expect(restores[1]).toBe(restores[0]);
 });

@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
+const { installViewActions } = require('../../src/app/view-actions.js');
 
 const frontend = path.resolve(__dirname, '../..');
 const fixtures = path.join(__dirname, 'fixtures');
@@ -80,13 +81,14 @@ const appScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activ
  * @param {(query: string) => boolean} [options.media] matchMedia answers; reduced motion by default
  * @param {Record<string,string>} [options.stored] local storage entries set before boot
  * @param {string[]} [options.scripts] scripts to load, as `source` names
+ * @param {boolean} [options.actions] run `data-action` attributes, as the app does; jsdom runs no handlers by itself
  * @param {(window: any) => void} [options.setup] runs before any script
  * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
  * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
  */
 function bootApp({
   route = 'board', url, scenario = '', fixture, html = '<meta name="theme-color"><div id="app"></div>',
-  media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, setup, prepare, beforeScript,
+  media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false, setup, prepare, beforeScript,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/${scenario ? `?scenario=${scenario}` : ''}#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
@@ -95,6 +97,8 @@ function bootApp({
   w.URL.createObjectURL = () => 'blob:test';
   w.URL.revokeObjectURL = () => {};
   for (const [key, value] of Object.entries(stored)) w.localStorage.setItem(key, value);
+  // Before any script, so actions run first on the document, as in the app.
+  if (actions) installViewActions(w.document);
   setup?.(w);
   for (const name of scripts) {
     beforeScript?.(name, w);

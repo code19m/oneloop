@@ -143,11 +143,16 @@ itself.
 ### Undo a deletion
 
 After you delete a task, a file or a comment, the message that confirms it has
-an **Undo** button while it is shown. Undo puts the item back where it was, or
-at the end of its list if another item took that place, with its comments and
-files. People who left the project meanwhile are no longer assigned to a
-restored task, unless it is done. The history keeps the deletion, the undo and
-these changes.
+an **Undo** button while it is shown. Ctrl+Z (Cmd+Z on macOS) does the same
+while focus is not in a text field and no dialog is open. The message stays
+while the pointer or focus is on it. Undo puts the item back where it was, or at the end of its
+list if another item took that place, with its comments and files. People who
+left the project meanwhile are no longer assigned to a restored task, unless it
+is done. The history keeps the deletion, the undo and these changes.
+
+If Undo fails because the connection dropped or the server was busy, the
+message that says so offers **Undo** again until the item can no longer be
+restored.
 
 Deleted files and comment text stay on the server for
 [5 minutes](reference.md#limits), so that Undo can work. Within about a minute
@@ -232,8 +237,9 @@ default, follows your device's light or dark setting.
 
 When oneloop is upgraded, open tabs show **oneloop was updated**. With
 **Reload after updates** on, a tab reloads by itself once nothing you typed
-would be lost and the tab is hidden or you haven't used it for a minute. Both
-choices apply to this browser only.
+would be lost and the tab is hidden or you haven't used it for a minute. A
+temporary password that is still on screen counts as something that would be
+lost. Both choices apply to this browser only.
 
 On your **Profile**:
 
@@ -251,7 +257,9 @@ Sessions end by themselves after a while; see
 
 If your session ends while you type, sign in again in the same tab and your
 text comes back. The tab keeps it only in memory, and drops it if someone else
-signs in there.
+signs in there. Tabs of one browser share a session, so when you sign out and
+someone else signs in, your other open tabs show that your session ended
+instead of their work.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

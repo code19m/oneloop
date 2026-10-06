@@ -155,6 +155,22 @@ test('a success preceding a newer API failure cannot restore writes even while b
   assert.equal(state.controller.connection,'live');
 });
 
+test('a reconnect that finds someone else signed in ends this person\'s session and reads nothing of theirs',async()=>{
+  const state=fixture({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+  state.controller.observeResponse({ok:false,error:new ApiError('Network',{code:'network_error'})});
+  await state.controller.reconnect();
+  assert.equal(state.expires,1);assert.equal(state.controller.expired,true);assert.equal(state.reloads,0);
+});
+
+test('a reconnect reads again only for the person the tab shows',async()=>{
+  const same=fixture({api:{request:async()=>({user:{id:'u1'},sessionId:'s2'})}});
+  await same.controller.reconnect();
+  assert.equal(same.expires,0);assert.equal(same.reloads,1,'the same person keeps working, on their new session');
+  const signedOut=fixture({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});signedOut.data.session=null;
+  await signedOut.controller.reconnect();
+  assert.equal(signedOut.expires,0);assert.equal(signedOut.reloads,0,'another person\'s sign-in loads nothing into a signed-out tab');
+});
+
 test('reconnect keeps service errors unavailable and retries reads until a successful response',async()=>{
   const timers=[];let attempts=0;
   const state=fixture({api:{request:async()=>{attempts++;if(attempts<3)throw new ApiError('Unavailable',{status:503});return {}; }},setTimer:(callback,delay)=>{timers.push({callback,delay});return timers.length;}});

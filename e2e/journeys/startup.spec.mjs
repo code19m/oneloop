@@ -61,6 +61,34 @@ test('signing in again in the same tab keeps the project you chose', async ({ pa
   await expect(page.getByRole('dialog', { name: 'New task' }).getByRole('textbox', { name: 'Title' })).toBeVisible();
 });
 
+test('a hidden tab ends its session when someone else signs in from another tab, and keeps what was typed for its person', async ({ page, context, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/status of 401/);
+  // A background tab tells the page only through document.visibilityState.
+  await context.addInitScript(() => {
+    let state = 'visible';
+    Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => state });
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => state === 'hidden' });
+    window.showTab = visible => { state = visible ? 'visible' : 'hidden'; document.dispatchEvent(new Event('visibilitychange')); };
+  });
+  await openApp(page, instance, `task/${instance.projects[0].task.taskKey}`);
+  await page.locator('#cmtIn').fill('Typed by the owner');
+  await page.evaluate(() => window.showTab(false));
+  // In another tab of this browser, the owner signs out and the writer signs in.
+  expect((await context.request.post(`${instance.url}/api/auth/logout`, { headers: { Origin: instance.url } })).ok()).toBeTruthy();
+  await context.addCookies((await instance.writer.storageState()).cookies);
+  const writes = [];
+  page.on('request', request => { if (request.method() !== 'GET') writes.push(request.url()); });
+  await page.evaluate(() => window.showTab(true));
+  await expect(page.locator('.auth-notice')).toHaveText('Your session ended. Sign in again to keep what you typed.');
+  await expect(page.getByText('Smoke Writer')).toHaveCount(0);
+  await expect(page.locator('#cmtIn')).toHaveCount(0);
+  expect(await page.evaluate(() => window.DATA.session)).toBeNull();
+  expect(writes).toEqual([]);
+  // The owner signs in again here and gets their text back.
+  await signIn(page, instance);
+  await expect(page.locator('#cmtIn')).toHaveValue('Typed by the owner');
+});
+
 test('a module loading failure offers a startup retry', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/api-client\.js/, /Loading failed for the module/);
   await page.route('**/src/data/api-client.js', route => route.abort());

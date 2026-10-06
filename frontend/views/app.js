@@ -6,10 +6,9 @@
 (() => {
   const D = window.DATA;
   const collaboration=window.Collab;
-  const migrateEvents=window.OneloopMigrateEvents;
   const setHTML=UIHTML;
   const UIMotion=/** @type {Window & {UIMotion:{enter:(el:Element|null)=>void,fade:(el:Element|null)=>void,height:(el:Element|null,before:number)=>void,reduced:()=>boolean,rows:(host:Element,selector:string,key:string)=>Map<string,DOMRect>,reflow:(host:Element,selector:string,key:string,before:Map<string,DOMRect>)=>void,animate:(el:Element,frames:Keyframe[],duration?:number)=>Animation|null}}} */(/** @type {unknown} */(window)).UIMotion;
-  /** @type {Window & {ONELOOP_DEFER_BOOT_RENDER?:boolean,OneloopEventAttribute?:(name:string)=>string,OneloopRuntime?:{now?:()=>number,report:(error:unknown)=>void,invoke:(action:string,payload:object)=>Promise<unknown>}}} */
+  /** @type {Window & {ONELOOP_DEFER_BOOT_RENDER?:boolean,OneloopRuntime?:{now?:()=>number,report:(error:unknown)=>void,invoke:(action:string,payload:object)=>Promise<unknown>}}} */
   const bootWindow=window;
   const DAY = 86400000;
   const NO_ASSIGNEE = '__unassigned__';
@@ -364,14 +363,16 @@
       const close = document.createElement('button'); close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Dismiss notification'); setHTML(close,I.close);
       close.addEventListener('click', () => dismissToast(toast.id));
       el.append(icon, message);
+      const undo = toast.action?.label === 'Undo';
       if (toast.action) {
         // The action runs once, and the message goes with it.
         const action = document.createElement('button'); action.type = 'button'; action.className = 'btn toast-action'; action.textContent = toast.action.label;
+        if (undo) { action.setAttribute('aria-keyshortcuts', UNDO_KEY.aria); const key = document.createElement('kbd'); key.className = 'toast-key'; key.setAttribute('aria-hidden', 'true'); key.textContent = UNDO_KEY.label; action.append(key); }
         action.addEventListener('click', () => { const run = toast.action.run; dismissToast(toast.id); run(); }, { once: true });
         el.append(action);
       }
       el.append(close); stack.append(el); toast.el = el; added.add(toast.id); visible++;
-      announce(toast.text, toast.kind === 'error' ? 'assertive' : 'polite');
+      announce(undo ? `${/[.!?]$/.test(toast.text) ? toast.text : `${toast.text}.`} Press ${UNDO_KEY.spoken} to undo.` : toast.text, toast.kind === 'error' ? 'assertive' : 'polite');
       startToastTimer(toast);
     }
     const waiting = toastQueue.filter(toast => !toast.el).length;
@@ -384,19 +385,54 @@
       }
     });
   }
-  /** `action` adds a button, such as Undo, that runs `action.run` once. */
-  function pushToast(text, kind = 'success', { action = null } = {}) {
+  /**
+   * `action` adds a button, such as Undo, that runs `action.run` once. With
+   * `until`, a time, the message stays until then.
+   */
+  function pushToast(text, kind = 'success', { action = null, until = null } = {}) {
     const message = cleanStr(text, 500);
     if (!message) return null;
     if (!['success','error','info'].includes(kind)) kind = 'info';
     action = typeof action?.run === 'function' ? { label: cleanStr(action.label, 40) || 'Undo', run: action.run } : null;
-    const lifetime = Math.max(action ? 10000 : kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
+    const lifetime = Number.isFinite(until) ? Math.max(0, until - Date.now()) : Math.max(action ? 10000 : kind === 'error' ? 8000 : 4000, Math.min(message.length * 40, 12000));
     // Each action belongs to its own change, so those messages never merge.
     const existing = !action && toastQueue.find(toast => !toast.action && toast.kind === kind && toast.text === message);
     if (existing) { existing.remaining = lifetime; startToastTimer(existing); return existing.id; }
     const toast = { id: String(++toastSequence), text: message, kind, action, remaining: lifetime, timer:null, el:null, restoreFocus:document.activeElement };
     toastQueue.push(toast); showQueuedToasts(); return toast.id;
   }
+  // The server keeps a deleted item for five minutes, when it can still be restored.
+  const UNDO_WINDOW_MS = 5 * 60_000;
+  /**
+   * Offer Undo for a deletion the server just accepted. `restore(again)`
+   * brings the item back. When that fails in a way worth trying again, such
+   * as no connection, a busy server or an unknown result, it calls
+   * `again(message)`: the message then offers Undo again, and stays for as
+   * long as the server can still restore the item.
+   */
+  function offerUndo(text, restore, { until = Date.now() + UNDO_WINDOW_MS, kind = 'success' } = {}) {
+    const again = (failure) => {
+      if (Date.now() >= until) App.toast(failure, 'error');
+      else offerUndo(failure, restore, { until, kind: 'error' });
+    };
+    return App.toast(text, kind, { action: { label: 'Undo', run: () => restore(again) }, until: kind === 'error' ? until : null });
+  }
+  // Undo also answers Ctrl+Z, or Command+Z on Apple devices, while its message
+  // shows, so the keyboard reaches it without moving focus. In a text field
+  // the key undoes typing, as always, and with a dialog, drawer or menu open
+  // it does nothing. On a layout without Latin letters, the key in the Z
+  // place counts too; on others that place can hold another letter, such as
+  // the Y of a German keyboard, so only the letter counts.
+  const UNDO_KEY = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgentData?.platform || navigator.platform || '')
+    ? { label: '⌘Z', aria: 'Meta+Z', spoken: 'Command+Z' } : { label: 'Ctrl+Z', aria: 'Control+Z', spoken: 'Control+Z' };
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || (String(event.key).toLowerCase() !== 'z' && (/^[a-z]$/i.test(event.key) || event.code !== 'KeyZ'))) return;
+    if (event.target?.closest?.('input,textarea,select,[contenteditable="true"],.confirmation-layer,.modal,[role="dialog"]') || state.modal || state.peek || state.menu || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay')) return;
+    const toast = toastQueue.findLast(item => item.el && item.action?.label === 'Undo');
+    if (!toast) return;
+    event.preventDefault();
+    toast.el.querySelector('.toast-action')?.click();
+  });
   function dismissToast(id) {
     const index = toastQueue.findIndex(toast => toast.id === String(id));
     if (index < 0) return;
@@ -574,7 +610,7 @@
     const cur = def.options.find((o) => o.v === def.value);
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
       ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   const MULTI = {};
@@ -582,7 +618,7 @@
     MULTI[key] = def;
     const label = def.summary();
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
-      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : UIAction('popMulti', UIAction.event, key)}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   // Date values always use ISO. The editor owns separators; users enter digits.
@@ -742,8 +778,8 @@
     const placeholder = def.disabled ? 'Not set' : def.placeholder || (label === 'Date' ? 'Select date' : 'Set ' + label.toLowerCase());
     return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${UIEscape(key)}">
       <input type="hidden" name="${def.name}" value="${esc(def.value || '')}">
-      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
-      <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : `onclick="App.popDate(event,'${UIArg(key)}')"`}>${def.icon || I.cal}</button></div>
+      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `${UIAction.on('input', 'dateTyping', key)} ${UIAction.on('blur', 'dateBlur', UIAction.event, key)} ${UIAction.on('keydown', 'dateKey', UIAction.event, key)}`}>
+      <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : UIAction('popDate', UIAction.event, key)}>${def.icon || I.cal}</button></div>
     </div>`;
   }
   function calHtml(view, selected, focusDate, def) {
@@ -914,7 +950,7 @@
     const prog = (!counted || ongoing || e.total === 0) ? '' :
       `<div class="prog"><i style="width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></i></div>`;
 
-    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" onclick="App.openPeek('${UIArg(e.id)}')" onmouseenter="App.epicHover(event,'${UIArg(e.id)}')" onmouseleave="App.epicLeave()" onfocus="App.epicHover(event,'${UIArg(e.id)}',true)" onblur="App.epicLeave()" onkeydown="App.epicKey(event,'${UIArg(e.id)}')">
+    return `<div class="${cls}" data-epic="${UIEscape(e.id)}" role="button" tabindex="0" aria-label="${esc(e.title)}" style="left:${barLeft(item, ppd)};top:${top};${ongoing ? '' : `width:${barWidth(item, ppd)}`}" ${UIAction('openPeek', e.id)} ${UIAction.on('mouseenter', 'epicHover', UIAction.event, e.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'epicHover', UIAction.event, e.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'epicKey', UIAction.event, e.id)}>
       <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
       <div class="m">${meta}</div>${prog}</div>`;
   }
@@ -939,10 +975,12 @@
     el.addEventListener('mouseenter', () => clearTimeout(EPIC_TIP.hideTimer));
     el.addEventListener('mouseleave', () => App.epicLeave());
   }
+  // The words the product uses for an epic's status.
+  const epicStatus = (epic) => ({ planning: 'Planning', active: 'In progress', done: 'Done' })[epic.state] || epic.state;
   function showEpicTip(anchor, id) {
     const epic = epicById(id);
     if (!epic||!canReadProject(trackById(epic.trackId)?.projectId)) return;
-    const status = { planning: 'Planning', active: 'In progress', done: 'Done' }[epic.state] || epic.state;
+    const status = epicStatus(epic);
     mountRoadmapTip(anchor, 'epic-tooltip', `<div class="epic-tip-title">${esc(epic.title)}</div>
       <div class="epic-tip-track">${esc(trackById(epic.trackId)?.name || '')}</div>
       <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.counted === false ? countsLoading : `${epic.done} / ${epic.total} done`}</dd></div>
@@ -1000,12 +1038,12 @@
         ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
         : 'no epics yet';
       const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
+      lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `${UIAction.on('dragover', 'laneOver', UIAction.event)} ${UIAction.on('drop', 'trackDrop', UIAction.event, t.id)}` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
           <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
-            <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" onkeydown="App.trackReorderKey(event,'${UIArg(t.id)}')" data-reorderable="true" ondragstart="App.trackDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()" title="Drag to reorder or use arrow keys">${I.grip}</button>
-            <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
+            <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" ${UIAction.on('keydown', 'trackReorderKey', UIAction.event, t.id)} data-reorderable="true" ${UIAction.on('dragstart', 'trackDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')} title="Drag to reorder or use arrow keys">${I.grip}</button>
+            <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
           </div>` : ''}
         </div>
         <div class="lane-body">${bars}</div>
@@ -1019,7 +1057,7 @@
       const { m, past, name, dateLabel, width, at } = goal, row = layout.goalRows[i];
       msHtml += `<div class="ms-line${past ? ' past' : ''}" aria-hidden="true" style="left:${RAIL + dayX(at, ppd)}px;top:${axisHeight}px;bottom:${MONTH_ROW}px"></div>`;
       msLabels += `<div class="ms-line goal-connector${past ? ' past' : ''}" aria-hidden="true" style="left:${dayX(at, ppd)}px;top:${12 + row * GOAL_ROW + 54}px;bottom:-1px"></div>`;
-      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" onclick="App.milestoneClick(event,'${UIArg(m.id)}')" onmouseenter="App.milestoneHover(event,'${UIArg(m.id)}')" onmouseleave="App.epicLeave()" onfocus="App.milestoneHover(event,'${UIArg(m.id)}',true)" onblur="App.epicLeave()" onkeydown="App.roadmapTipKey(event)">
+      msLabels += `<button type="button" class="ms-label${past ? ' past' : ''}" data-milestone="${UIEscape(m.id)}" style="left:${goalCenter(goal, ppd, timeline)};top:${12 + row * GOAL_ROW}px;width:${width}px" ${UIAction('milestoneClick', UIAction.event, m.id)} ${UIAction.on('mouseenter', 'milestoneHover', UIAction.event, m.id)} ${UIAction.on('mouseleave', 'epicLeave')} ${UIAction.on('focus', 'milestoneHover', UIAction.event, m.id, true)} ${UIAction.on('blur', 'epicLeave')} ${UIAction.on('keydown', 'roadmapTipKey', UIAction.event)}>
         ${I.diamond}<span class="txt"><span class="goal-name">${esc(name)}</span><span class="goal-date">${dateLabel}</span></span></button>`;
     });
     const todayX = dayX(model.today, ppd);
@@ -1032,7 +1070,7 @@
     return `<div class="rm-scroll" id="rmScroll" data-bar-height="${UIEscape(barHeight)}" data-range-start="${UIEscape(+model.start)}">
       <div class="rm-canvas" style="width:${RAIL + dayX(model.span, ppd)}px">
         <div class="rm-axis" style="height:${axisHeight}px">
-          <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" onclick="App.openModal('track')">${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
+          <div class="rail-cell rm-track-head" style="width:${RAIL}px">${canRoadmap() ? `<button class="btn quiet" type="button" ${UIAction('openModal', 'track')}>${I.plus}<span>Track</span></button>` : '<span class="rm-track-title">Tracks</span>'}</div>
           <div class="rm-axis-labels"><span class="rm-calendar-axis" style="${calendar}"></span>${msLabels}${todayPill}</div>
         </div>
         <span class="rm-calendar-lines" style="${calendarLines}"></span>${msHtml}${todayHtml}${lanes}
@@ -1215,7 +1253,7 @@
   function renderBoard({column=null,excludeIds=null}={}) {
     const ts = boardTasks();
     const filtered = state.boardBlocked || state.boardQ || state.boardTracks.length || state.boardEpics.length || state.boardAssignees.length;
-    if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" onclick="App.clearBoardFilters()">Clear filters</button>` : canBoard() ? `<button class="btn primary" onclick="App.openModal('task')">${I.plus} Create task</button>` : ''}</div></div>`;
+    if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
     const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
       const list = ts.filter((t) => t.state === c.key);
       const serverPage = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[c.key] : null;
@@ -1224,8 +1262,8 @@
         const b = taskBits(t);
         const av = (t.assignees || []).filter(userById);
         const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
-        return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ondragstart="App.taskDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()"` : ''} onclick="App.openTask('${UIArg(t.id)}')">
-          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
+        return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
+          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
           <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
           <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
           <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
@@ -1235,10 +1273,10 @@
             <span class="avs">${avs}</span>
           </div></div>`;
       }).join('');
-      return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `ondragover="App.colOver(event)" ondragleave="App.colLeave(event)" ondrop="App.dropTask(event,'${UIArg(c.key)}')"` : ''}>
-        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" onclick="App.toggleDoneOrder()">Newest first</button>` : ''}</div>
+      return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
+        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
         </div>
-        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" onclick="App.loadMoreBoard('${UIArg(c.key)}')">Load more</button></div>` : ''}</div></section>`;
+        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
     }).join('');
     return `<div class="board">${cols}</div>`;
   }
@@ -1340,7 +1378,7 @@
         }
         const ghost = card.cloneNode(true);
         ghost.removeAttribute('data-task'); ghost.removeAttribute('data-reorderable');
-        ghost.removeAttribute('onclick'); ghost.removeAttribute('ondragstart'); ghost.removeAttribute('ondragend');
+        for (const name of ghost.getAttributeNames()) if (/^data-(?:action|args)\b/.test(name)) ghost.removeAttribute(name);
         ghost.style.cssText = `position:absolute;margin:0;left:${old.rect.left - viewport.left}px;top:${old.rect.top - viewport.top}px;width:${old.rect.width}px;height:${old.rect.height}px`;
         exitLayer.append(ghost);
         const layer = exitLayer;
@@ -1389,14 +1427,14 @@
     const keptInput = !!window.Recovery?.keepsInput;
     const inner = mode === 'change'
       ? `<h1 tabindex="-1">Set a new password</h1>
-        <form novalidate onsubmit="return App.setPassword(event)">
+        <form novalidate ${UIAction.on('submit', 'setPassword', UIAction.event)}>
           ${field('Current temporary password', `<input class="ctl" type="password" name="cur" autocomplete="current-password" autofocus>`)}
           ${field('New password', `<input class="ctl" type="password" name="pw" autocomplete="new-password">`)}
           ${field('Confirm', `<input class="ctl" type="password" name="pw2">`)}
-          <div class="modal-actions"><button class="btn danger" type="button" onclick="App.logout()">Sign out</button><button class="btn primary" type="submit">Save password</button></div>
+          <div class="modal-actions"><button class="btn danger" type="button" ${UIAction('logout')}>Sign out</button><button class="btn primary" type="submit">Save password</button></div>
         </form>`
       : `<h1 tabindex="-1">Sign in</h1>
-        <form novalidate onsubmit="return App.login(event)">
+        <form novalidate ${UIAction.on('submit', 'login', UIAction.event)}>
           ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username"${keptInput ? '' : ' autofocus'}>`)}
           ${field('Password', `<input class="ctl" type="password" name="password" autocomplete="current-password">`)}
           <div class="modal-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Sign in</button></div>
@@ -1433,10 +1471,10 @@
     });
   }
   function descriptionEditorHtml(value,limit,placeholder) {
-    return `<textarea class="ctl description-editor" name="desc" data-description-editor maxlength="${limit}" ${placeholder?`placeholder="${esc(placeholder)}"`:''} oninput="App.sizeDescriptionEditors()">${esc(value||'')}</textarea>`;
+    return `<textarea class="ctl description-editor" name="desc" data-description-editor maxlength="${limit}" ${placeholder?`placeholder="${esc(placeholder)}"`:''} ${UIAction.on('input', 'sizeDescriptionEditors')}>${esc(value||'')}</textarea>`;
   }
   function descriptionReadHtml(value,key) {
-    return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" onclick="App.toggleDescription(this)" hidden>Show more</button></section>`;
+    return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" ${UIAction('toggleDescription', UIAction.element)} hidden>Show more</button></section>`;
   }
   function sizeTaskTitle() {
     const input = document.querySelector('.tp-title');
@@ -1483,13 +1521,13 @@
       <div class="access-session-main"><div class="access-session-title">${esc(item.device || 'Unknown device')}${item.id === current?.id ? '<span class="current-session">Current</span>' : ''}</div>
       ${item.browser ? `<div class="access-session-sub">${esc(item.browser)}</div>` : ''}
       <dl class="access-session-facts">${fact('IP address',item.ip || 'Unavailable')}${fact('Last active',item.id === current?.id ? 'Now' : item.lastActiveAt ? date(item.lastActiveAt) : 'Never')}</dl></div>
-      ${item.id !== current?.id ? `<button class="btn quiet danger" type="button" aria-label="Revoke ${esc(item.device)} session" onclick="App.revokeSession('${UIArg(item.id)}')">Revoke</button>` : ''}</div>`).join('');
+      ${item.id !== current?.id ? `<button class="btn quiet danger" type="button" aria-label="Revoke ${esc(item.device)} session" ${UIAction('revokeSession', item.id)}>Revoke</button>` : ''}</div>`).join('');
     const appRows = grants.map(item => `<div class="access-session-row" data-grant-id="${esc(item.id)}"><div class="access-session-main">
       <div class="access-session-title">${esc(item.clientName)}<span class="access-client-type">${esc(item.protocol)}</span></div>
       <div class="app-access-scopes">${(item.access || []).map(grant => `<div><span class="access-project">${esc(visibleProjects().find(p=>p.id===grant.projectId)?.name || 'Unavailable project')}</span><span>${esc(grant.permissions.map(permission=>permissions[permission] || permission).join(' · '))}</span></div>`).join('')}</div>
       <dl class="access-session-facts">${fact('Last used',item.lastUsedAt ? date(item.lastUsedAt) : 'Never')}${fact('Connected',date(item.authorizedAt))}${fact('Expires',item.expiresAt ? date(item.expiresAt) : 'No expiry')}</dl>
-      </div><button type="button" class="btn quiet danger" aria-label="Revoke ${esc(item.clientName)} access" onclick="App.revokeAppAccess('${UIArg(item.id)}')">Revoke</button></div>`).join('');
-    return `<section class="section"><div class="access-section-heading"><h2 tabindex="-1">Sessions</h2><button type="button" class="btn quiet danger" onclick="App.revokeOtherSessions()" ${sessions.some(item=>item.id!==current?.id) ? '' : 'disabled'}>Sign out other sessions</button></div><div class="access-session-list">${sessionRows || '<div class="access-empty">No active sessions</div>'}</div></section>
+      </div><button type="button" class="btn quiet danger" aria-label="Revoke ${esc(item.clientName)} access" ${UIAction('revokeAppAccess', item.id)}>Revoke</button></div>`).join('');
+    return `<section class="section"><div class="access-section-heading"><h2 tabindex="-1">Sessions</h2><button type="button" class="btn quiet danger" ${UIAction('revokeOtherSessions')} ${sessions.some(item=>item.id!==current?.id) ? '' : 'disabled'}>Sign out other sessions</button></div><div class="access-session-list">${sessionRows || '<div class="access-empty">No active sessions</div>'}</div></section>
       <section class="section"><h2 tabindex="-1">Connected apps</h2><div class="access-session-list">${appRows || '<div class="access-empty">No connected apps</div>'}</div></section>`;
   }
   function refreshProfileAccess(status = {}) {
@@ -1497,7 +1535,7 @@
     if (!host) return;
     const hadFocus = host.contains(document.activeElement);
     const before=host.getBoundingClientRect().height;
-    setHTML(host,renderProfileAccess() + (status.loading ? '<p class="access-note" role="status">Loading access…</p>' : status.error ? `<p class="access-note" role="alert">${esc(status.error)} <button type="button" class="btn quiet" onclick="App.retryProfileAccess()">Retry</button></p>` : ''));
+    setHTML(host,renderProfileAccess() + (status.loading ? '<p class="access-note" role="status">Loading access…</p>' : status.error ? `<p class="access-note" role="alert">${esc(status.error)} <button type="button" class="btn quiet" ${UIAction('retryProfileAccess')}>Retry</button></p>` : ''));
     fadeContent(host);UIMotion.height(host,before);
     if (hadFocus) (host.querySelector('button:not(:disabled)') || host.querySelector('h2'))?.focus({preventScroll:true});
   }
@@ -1509,17 +1547,17 @@
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
           ${avatarHtml(u.id, 56)}
           <div style="display:flex;gap:8px">
-            <input type="file" id="avIn" accept="image/*" style="display:none" onchange="App.setAvatar(this)">
-            <button class="btn" onclick="document.getElementById('avIn').click()">${u.avatar ? 'Change avatar' : 'Upload avatar'}</button>
-            ${u.avatar ? '<button class="btn" onclick="App.removeAvatar()">Remove</button>' : ''}
+            <input type="file" id="avIn" accept="image/*" style="display:none" ${UIAction.on('change', 'setAvatar', UIAction.element)}>
+            <button class="btn" ${UIAction('chooseAvatar')}>${u.avatar ? 'Change avatar' : 'Upload avatar'}</button>
+            ${u.avatar ? `<button class="btn" ${UIAction('removeAvatar')}>Remove</button>` : ''}
           </div>
         </div>
         ${field('Username', `<input class="ctl mono" value="${esc(userHandle(u))}" disabled>`)}
-        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
+        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave ${UIAction.on('blur', 'updMe', UIAction.value)} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)}>`)}
       </div>
       <div class="section">
         <h2>Password</h2>
-        <form novalidate onsubmit="return App.changePassword(event)">
+        <form novalidate ${UIAction.on('submit', 'changePassword', UIAction.event)}>
           ${field('Current password', `<input class="ctl" type="password" name="cur" autocomplete="current-password">`)}
           <div class="field-row">
             ${field('New password', `<input class="ctl" type="password" name="pw" autocomplete="new-password">`)}
@@ -1575,7 +1613,7 @@
   // ---------- task page ----------
   function taskActivityHtml(task){
     const feed=taskFeedHtml(task,canBoard()),state=collaboration?.taskFeedState?.(task.id);
-    const retry=`<button class="btn quiet" onclick="App.retryTaskActivity('${UIArg(task.id)}')">Retry</button>`;
+    const retry=`<button class="btn quiet" ${UIAction('retryTaskActivity', task.id)}>Retry</button>`;
     if(!feed)return state?.error?`<div class="access-note" role="alert">Could not load activity. ${retry}</div>`:state?.loaded===false?'<div class="access-note" role="status">Loading activity…</div>':'<div class="access-note">No activity yet</div>';
     return state?.error?`<div class="access-note" role="alert">Could not refresh activity. ${retry}</div>${feed}`:feed;
   }
@@ -1608,10 +1646,10 @@
     // one timeline: activity lines and comment blocks, oldest first
     const items = [...Activity.visible(t.activity).map((a) => ({ k: 'act', ...a })), ...(t.comments || []).map((c, i) => ({ k: 'cmt', i, ...c }))].sort((a, b) => a.ts - b.ts);
     const limit = state.activityLimits[t.id] || 50;
-    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" onclick="App.loadOlderActivity('${UIArg(t.id)}')">Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
+    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity', t.id)}>Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
       ? `<div class="tl-act">${avatarHtml(it.who, 16)}<span><b>${esc((userById(it.who) || { name: it.who }).name)}</b> ${esc(it.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><span class="act-time">· ${ago(it.ts)}</span></div>`
       : `<div class="tl-cmt"><div class="cmt-head">${avatarHtml(it.who, 20)}<b>${esc((userById(it.who) || { name: it.who }).name)}</b><span class="act-time" title="${new Date(it.ts).toISOString()}">${ago(it.ts)}</span>
-          ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" onclick="App.delComment('${UIArg(t.id)}',${it.i})">${I.close}</button>` : ''}</div>
+          ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" ${UIAction('delComment', t.id, it.i)}>${I.close}</button>` : ''}</div>
           <div class="cmt-body">${esc(it.text)}</div></div>`).join('');
 
   }
@@ -1620,7 +1658,7 @@
   function taskDraftNote(t, field) {
     if (!taskDraft(t, field)?.unsaved) return '';
     if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
-    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" onclick="App.saveTaskDraft('${UIArg(t.id)}','${UIArg(field)}')">Save</button></p>`;
+    return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
   }
   // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
   const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
@@ -1635,10 +1673,10 @@
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
-      ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave ${UIAction.on('input', 'sizeTaskTitle')} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'title', UIAction.value) : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
+      ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" ${UIAction('openModal', 'unblock', t.id)}>Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" ${UIAction('openModal', 'block', t.id)}>Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
-        <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
+        <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>
         <dl class="task-properties">
           <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
@@ -1649,10 +1687,10 @@
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
-          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value) : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
+          <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
-          ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
+          ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" ${UIAction.on('change', 'attachFiles', t.id, UIAction.element)}>` : ''}
           ${atts}<div class="upload-list"></div></div>
         <div class="tp-sec task-activity"><h2>Activity</h2>
           <div class="timeline">${feed}</div>
@@ -1703,8 +1741,8 @@
         <h2>Project</h2>
         <div class="project-fields">
           <div class="field-row">
-            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
-            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
+            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}
+            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}</div>
           </div>
         </div>
       </div>
@@ -1717,23 +1755,23 @@
               <div class="member-person">${avatarHtml(u.id, 24)}<span><b data-tip="${esc(u.name)}" data-tip-overflow>${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
               <div class="member-grants">
                 ${u.admin ? '<span class="admin-access">Full access</span>' : `
-                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
-                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} ${UIAction.on('change', 'setMemberPermission', u.id, 'manage_roadmap', UIAction.checked, UIAction.element)}><span><b>Roadmap</b></span></label>
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} ${UIAction.on('change', 'setMemberPermission', u.id, 'manage_board', UIAction.checked, UIAction.element)}><span><b>Board</b></span></label>`}
               </div>
-              <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" onclick="App.removeMember('${UIArg(u.id)}')">${I.close}</button>
+              <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" ${UIAction('removeMember', u.id)}>${I.close}</button>
             </div>`).join('') || `<div class="empty-note" style="border:0;text-align:left;padding:4px 0">${query?'No matching members':'No members yet'}</div>`}
         </div>
         ${matching.length>memberWindow.limit?'<button type="button" class="btn quiet" data-more-members>Load more members</button>':''}
         <div style="margin-top:12px;width:260px">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
           ? selectHtml('addMember', { label:'Add member', value: '', placeholder: 'Add member…', search: true, options: candidates.map((u) => ({ v: u.id, l: `${u.name} · ${userHandle(u)}` })), pick: (v) => App.addMember(v) })
           : D.adminUsers?.nextCursor ? '' : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
-        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users onclick="App.loadMoreUsers()" ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
-        ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
+        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users ${UIAction('loadMoreUsers')} ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
+        ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
       </div>
       ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
       <div class="section" style="border-color:color-mix(in srgb,var(--err) 25%,transparent)">
         <h2 style="color:var(--err)">Danger zone</h2>
-        <button class="btn danger" onclick="App.deleteProject()">Delete project</button>
+        <button class="btn danger" ${UIAction('deleteProject')}>Delete project</button>
       </div>
     </div>`;
   }
@@ -1749,12 +1787,12 @@
     const hasMore=D.adminUsers?.loaded?!!D.adminUsers.nextCursor:D.users.length>state.usersLimit;
     return `<div class="settings">
       <div class="section">
-        ${awaiting ? '<p class="access-note" role="status">Loading users…</p>' : D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
+        ${awaiting ? '<p class="access-note" role="status">Loading users…</p>' : D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
         ${listed.map((u) => `
-          <button type="button" class="user-row clickable ${u.active ? '' : 'off'}" data-user-id="${esc(u.id)}" onclick="App.openModal('user','${UIArg(u.id)}')">${avatarHtml(u.id, 22)}
+          <button type="button" class="user-row clickable ${u.active ? '' : 'off'}" data-user-id="${esc(u.id)}" ${UIAction('openModal', 'user', u.id)}>${avatarHtml(u.id, 22)}
             <span class="uname">${esc(u.name)}</span><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${esc(userHandle(u))}</span>
             ${u.active ? '' : '<span class="tag-off">deactivated</span>'}
-            ${u.mustChange ? '<span class="tag-off" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? '<button class="btn quiet" onclick="App.loadMoreUsers()">Load more users</button>' : ''}
+            ${u.mustChange ? '<span class="tag-off" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? `<button class="btn quiet" ${UIAction('loadMoreUsers')}>Load more users</button>` : ''}
       </div>
     </div>`;
   }
@@ -1795,16 +1833,16 @@
           <div style="position:relative;height:6px;background:rgb(var(--tone-rgb) / 0.07);border-radius:3px;overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></div></div>
           <div class="mono" style="font-size:var(--text-xs);color:var(--ink-faint);margin-top:8px">${e.done} of ${e.total} tasks complete · ${pct}%</div></div>` : '';
 
-    return `<div class="scrim" onclick="App.closeOverlays()"></div>
+    return `<div class="scrim" ${UIAction('closeOverlays')}></div>
     <aside class="peek" role="dialog" aria-modal="true" aria-labelledby="peek-title">
       <div class="peek-head">
         <div style="display:flex;align-items:center;justify-content:space-between">
           <span class="mono" style="font-size:var(--text-xs);letter-spacing:0.1em;color:var(--ink-ghost)">${esc(t ? t.name : '')}</span>
-          <button type="button" class="btn icon" aria-label="Close epic" onclick="App.closeOverlays()">${I.close}</button>
+          <button type="button" class="btn icon" aria-label="Close epic" ${UIAction('closeOverlays')}>${I.close}</button>
         </div>
         <h2 id="peek-title" style="font-size:17px;font-weight:600;letter-spacing:-0.01em">${esc(e.title)}</h2>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="chip idle">${ongoing ? 'ongoing' : e.state}</span>
+          <span class="chip idle">${ongoing ? 'Ongoing · ' : ''}${esc(epicStatus(e))}</span>
           <span class="mono" style="font-size:var(--text-xs);color:var(--ink-faint)">${humanShort(d(e.start))} → ${e.end ? humanShort(d(e.end)) : '<span style="color:var(--ink-soft)">no end date</span>'}</span>
         </div>
       </div>
@@ -1814,18 +1852,18 @@
       <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px">
         <div style="display:flex;align-items:baseline;gap:7px"><span style="font-size:var(--text-body);font-weight:600;color:var(--ink)">Tasks</span><span class="mono" data-epic-task-total style="font-size:var(--text-xs);color:var(--ink-ghost)">${page?.loaded?page.tasksTotal:eTasks.length}</span></div>
       </div>
-      <div class="peek-rows">${rows}${page?.tasksCursor?`<button class="btn quiet" onclick="App.loadMoreEpicTasks('${UIArg(e.id)}')">Load more tasks</button>`:''}
+      <div class="peek-rows">${rows}${page?.tasksCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicTasks', e.id)}>Load more tasks</button>`:''}
         <div style="padding:14px 0 6px;font-size:var(--text-body);font-weight:600;color:var(--ink)">Activity</div>
         ${actFeed(e.activity, page?.loaded?Number.MAX_SAFE_INTEGER:8)}
-        ${page?.activityCursor?`<button class="btn quiet" onclick="App.loadMoreEpicActivity('${UIArg(e.id)}')">Load older activity</button>`:''}
+        ${page?.activityCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicActivity', e.id)}>Load older activity</button>`:''}
       </div>
       </div>
       <div class="peek-actions">
         ${canRoadmap() ? `${e.state === 'done'
-          ? `<button class="btn" onclick="App.reopenEpic('${UIArg(e.id)}')">Reopen</button>`
-          : `<button class="btn" onclick="App.closeEpic('${UIArg(e.id)}')">Mark as done</button>`}
-        <button class="btn" onclick="App.openModal('epic','${UIArg(e.id)}')">Edit epic</button>
-        <button class="btn danger" style="margin-left:auto" onclick="App.deleteEpic('${UIArg(e.id)}')">Delete</button>` : '<span class="access-note" style="margin:0">Read only</span>'}
+          ? `<button class="btn" ${UIAction('reopenEpic', e.id)}>Reopen</button>`
+          : `<button class="btn" ${UIAction('closeEpic', e.id)}>Mark as done</button>`}
+        <button class="btn" ${UIAction('openModal', 'epic', e.id)}>Edit epic</button>
+        <button class="btn danger" style="margin-left:auto" ${UIAction('deleteEpic', e.id)}>Delete</button>` : '<span class="access-note" style="margin:0">Read only</span>'}
       </div>
     </aside>`;
   }
@@ -1872,9 +1910,9 @@
   }
 
   function taskModalHtml(m) {
-    if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${canRoadmap()?'<button class="btn primary" onclick="App.openModal(\'epic\')">Create epic</button>':''}</div>`;
+    if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${canRoadmap()?`<button class="btn primary" ${UIAction('openModal', 'epic')}>Create epic</button>`:''}</div>`;
     return `<h2>New task</h2>
-      <form novalidate onsubmit="return App.saveTask(event)">
+      <form novalidate ${UIAction.on('submit', 'saveTask', UIAction.event)}>
         ${field('Title', `<input class="ctl" name="title" placeholder="Fix payment validation" value="${esc(m.title || '')}" maxlength="140" required autofocus>`)}
         ${field('Epic', selectHtml('mEpic', { name: 'epicId', value: taskDestinationEpics().some((e) => e.id === m.epicId) ? m.epicId : '', placeholder: 'Choose an epic', options: taskDestinationEpics().slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })) }))}
         <div class="field-row">
@@ -1882,18 +1920,18 @@
           ${field('Deadline',dateHtml('mTaskDeadline',{label:'Deadline',name:'deadline',value:'',clearable:true,placeholder:'Set deadline'}),true)}
         </div>
         ${field('Description', descriptionEditorHtml(m.desc||'',4000,'Scope and acceptance criteria'), true)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">Create task</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">Create task</button></div>
       </form>`;
   }
   function poolRowHtml(p) {
     const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
-    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
+    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow ${UIAction('promotePool',p.id)}>${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" ${UIAction('editPoolDescription',UIAction.event,p.id)}>${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" ${UIAction('promotePool',p.id)}>${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" ${UIAction('delPool',UIAction.event,p.id)}>${I.close}</button>`:''}</span></div></div>`;
   }
   function resetPoolCapture(){const capture=document.querySelector('.pool-capture');if(!capture)return;capture.classList.remove('is-expanded');const notes=capture.querySelector('#poolNewDesc');notes.value='';const content=capture.querySelector('.pool-capture-notes');content.inert=true;content.setAttribute('aria-hidden','true');const toggle=capture.querySelector('.pool-capture-toggle');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Add description');toggle.title='Add description';setHTML(toggle,I.note);}
 
   function poolReadNotice(empty=false) {
     const page=D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`];
-    if(page?.error)return `<div class="pool-read-status access-note" role="alert">Could not ${page.loaded?'refresh':'load'} items. <button class="btn quiet" onclick="App.retryPool()">Retry</button></div>`;
+    if(page?.error)return `<div class="pool-read-status access-note" role="alert">Could not ${page.loaded?'refresh':'load'} items. <button class="btn quiet" ${UIAction('retryPool')}>Retry</button></div>`;
     if(!empty)return '';
     const pending=page?.loaded===false;
     return `<div class="empty-note"${pending?' role="status"':''}>${pending?'Loading items…':'No items'}</div>`;
@@ -1970,14 +2008,14 @@
       if(!task)return '';
       body=`<h2>${blocking ? task.block ? 'Edit block reason' : 'Block task' : complete ? 'Unblock and complete task?' : 'Unblock task'}</h2>
         ${!blocking ? `<p class="sub">${esc(task.block?.reason || '')}</p>` : ''}
-        <form novalidate data-block-action onsubmit="return App.saveBlock(event,'${UIArg(task.id)}','${UIArg(m.type)}')">
-          ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" onkeydown="App.commentKey(event)"></textarea>`,!blocking)}
-          <div class="modal-actions"><button type="button" class="btn quiet" onclick="App.closeOverlays()">Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
+        <form novalidate data-block-action ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
+          ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
+          <div class="modal-actions"><button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
         </form>`;
     } else if (m.type === 'epic') {
       const e = m.id ? epicById(m.id) : null;
       body = `<h2>${e ? 'Edit epic' : 'New epic'}</h2>
-      <form novalidate onsubmit="return App.saveEpic(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
         ${field('Title', `<input class="ctl" name="title" placeholder="Payment integration" value="${esc(e ? e.title : '')}" maxlength="120" required autofocus>`)}
         ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: tracks().map((t) => ({ v: t.id, l: t.name })) }))}
         <div class="field-row">
@@ -1985,45 +2023,45 @@
           ${field('End', dateHtml('mEnd', { name: 'end', value: (e && e.end) || '', clearable: true, min: () => dateValue('mStart'), minError: 'End date cannot be before the start date.', placeholder: 'No end date' }), true)}
         </div>
         ${field('Description', descriptionEditorHtml(e?.desc,2000), true)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${e ? 'Save' : 'Create epic'}</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${e ? 'Save' : 'Create epic'}</button></div>
       </form>`;
     } else if (m.type === 'milestone') {
       const ms = m.id ? D.milestones.find((x) => x.id === m.id) : null;
       body = `<h2>${ms ? 'Edit milestone' : 'New milestone'}</h2>
-      <form novalidate onsubmit="return App.saveMilestone(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveMilestone', UIAction.event, m.id || '')}>
         ${field('Name', `<input class="ctl" name="name" placeholder="Public launch" value="${esc(ms ? ms.name : '')}" maxlength="60" required autofocus>`)}
         ${field('Date', dateHtml('mDate', { name: 'date', value: ms ? ms.date : iso(today) }))}
         ${field('Goal', descriptionEditorHtml(ms?.desc,500), true)}
-        <div class="modal-actions">${ms ? `<button class="btn danger" type="button" style="margin-right:auto" onclick="App.deleteMilestone('${UIArg(ms.id)}')">Delete</button>` : ''}<button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
+        <div class="modal-actions">${ms ? `<button class="btn danger" type="button" style="margin-right:auto" ${UIAction('deleteMilestone', ms.id)}>Delete</button>` : ''}<button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
       </form>`;
     } else if (m.type === 'track') {
       const t = m.id ? trackById(m.id) : null;
       body = `<h2>${t ? 'Rename track' : 'New track'}</h2>
-      <form novalidate onsubmit="return App.saveTrack(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveTrack', UIAction.event, m.id || '')}>
         ${field('Name', `<input class="ctl" name="name" placeholder="Backend & API" value="${esc(t ? t.name : '')}" maxlength="60" required autofocus>`)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${t ? 'Save' : 'Create track'}</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${t ? 'Save' : 'Create track'}</button></div>
       </form>`;
     } else if (m.type === 'task') {
       body = taskModalHtml(m);
     } else if (m.type === 'project') {
       body = `<h2>New project</h2>
-      <form novalidate onsubmit="return App.saveProjectNew(event)">
+      <form novalidate ${UIAction.on('submit', 'saveProjectNew', UIAction.event)}>
         ${field('Name', `<input class="ctl" name="name" maxlength="60" required autofocus>`)}
         ${field('Task prefix', `<input class="ctl mono" name="key" placeholder="APP" maxlength="4">`)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">Create project</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">Create project</button></div>
       </form>`;
     } else if (m.type === 'user') {
       const u = m.id ? userById(m.id) : null;
       const lastAdmin = u && u.admin && u.active && activeAdmins().length === 1;
       body = `<h2>${u ? 'Edit user' : 'New user'}</h2>
-      <form novalidate onsubmit="return App.saveUser(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveUser', UIAction.event, m.id || '')}>
         ${field('Username', `<input class="ctl mono" name="username" value="${esc(u ? userHandle(u) : '')}" ${u ? 'disabled' : 'autofocus'} maxlength="32">`)}
         ${field('Full name', `<input class="ctl" name="name" value="${esc(u ? u.name : '')}" maxlength="80" ${u ? 'autofocus' : ''}>`)}
         <label class="check" style="margin-bottom:5px"><input type="checkbox" name="admin" ${u && u.admin ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Admin${lastAdmin ? ' <span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">· last active admin</span>' : ''}</label>
         ${u ? `<label class="check" style="margin-bottom:14px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Active</label>` : ''}
         <div class="modal-actions">
-          ${u ? `<button class="btn" type="button" style="margin-right:auto" onclick="App.resetPassword('${UIArg(u.id)}')">Reset password</button>` : ''}
-          <button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button>
+          ${u ? `<button class="btn" type="button" style="margin-right:auto" ${UIAction('resetPassword', u.id)}>Reset password</button>` : ''}
+          <button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button>
           <button class="btn primary" type="submit">${u ? 'Save' : 'Create user'}</button>
         </div>
       </form>`;
@@ -2031,8 +2069,8 @@
       const user=userById(m.id),account=user?.username||user?.name||'Account';
       body = `<h2>Temporary password</h2>
       <div class="temporary-password-meta"><strong>${esc(account)}</strong><span>Shown once</span></div>
-      <div class="pw-box"><span class="mono" id="tmpPw">${esc(m.pw)}</span><button class="btn" type="button" aria-label="Copy temporary password" onclick="App.copyTemporaryPassword()">Copy</button></div>
-      <div class="modal-actions"><button class="btn primary" onclick="App.closeOverlays()">Done</button></div>`;
+      <div class="pw-box"><span class="mono" id="tmpPw">${esc(m.pw)}</span><button class="btn" type="button" aria-label="Copy temporary password" ${UIAction('copyTemporaryPassword')}>Copy</button></div>
+      <div class="modal-actions"><button class="btn primary" ${UIAction('closeOverlays')}>Done</button></div>`;
     } else if (m.type === 'pool') {
       const mine = poolItems('mine'), proj = poolItems('project');
       const pl = state.poolTab === 'mine' ? mine : proj;
@@ -2040,34 +2078,34 @@
       const rows = pl.length?pl.map(poolRowHtml).join('')+poolReadNotice():poolReadNotice(true);
       body = `<div class="pool-view"><div class="pool-head"><h2>Pool</h2>
         <div class="seg" style="margin-left:auto">
-          <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" onclick="App.setPoolTab('mine')">My <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
-          <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" onclick="App.setPoolTab('project')">Team <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
+          <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" ${UIAction('setPoolTab', 'mine')}>My <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
+          <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" ${UIAction('setPoolTab', 'project')}>Team <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
         </div>
-        <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" onclick="App.closeOverlays()">${I.close}</button>
+        <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" ${UIAction('closeOverlays')}>${I.close}</button>
       </div>
-      <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} onkeydown="App.poolKey(event)"><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" onclick="App.togglePoolDescription()">${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" onkeydown="App.poolDescriptionKey(event)"></textarea><div class="pool-description-actions"><button type="button" class="btn primary" onclick="App.addPoolItem()">Add item</button></div></div></div></div>
-      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?'<button class="btn quiet pool-load-more" onclick="App.loadMorePool()">Load more</button>':''}</div></div>`;
+      <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} ${UIAction.on('keydown', 'poolKey', UIAction.event)}><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" ${UIAction('togglePoolDescription')}>${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" ${UIAction.on('keydown', 'poolDescriptionKey', UIAction.event)}></textarea><div class="pool-description-actions"><button type="button" class="btn primary" ${UIAction('addPoolItem')}>Add item</button></div></div></div></div>
+      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?`<button class="btn quiet pool-load-more" ${UIAction('loadMorePool')}>Load more</button>`:''}</div></div>`;
     } else if (m.type === 'knowledge') {
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
       body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
-      <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
+      <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${m.blocked ? '' : `<button class="btn danger" ${UIAction('confirmYes')}>${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
     // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
-    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
+    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title">${body}</div></div>`;
   }
 
   function renderMenu() {
     const m = state.menu;
     if (!m) return '';
-    const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" onclick="App.setTheme('${UIArg(theme)}')"><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
+    const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" ${UIAction('setTheme', theme)}><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
     const autoReload = window.Recovery?.autoReload;
     // A choice for this browser, like the theme, so it keeps the menu open.
-    const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" onclick="App.toggleAutoReload()"><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
-    const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
-      `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
-    return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="App.closeOverlays()"></div>
+    const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" ${UIAction('toggleAutoReload')}><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
+    const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow ${UIAction('menuAction', it.i)}><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
+      `<button class="${it.danger ? 'danger' : ''}" ${UIAction('menuAction', it.i)}>${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
+    return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" ${UIAction('closeOverlays')}></div>
       <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
   }
   let lastMenuTrigger = null;
@@ -2081,10 +2119,12 @@
   // Full SPA renders replace the opener as well as the dialog. Remember its
   // identifying attributes so dismissing a dialog can focus its new counterpart.
   const overlayReturn = { modal:null, peek:null };
+  // What a click on the element runs, which its redrawn copy runs too.
+  const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('data-action')} ${el.getAttribute('data-args') ?? ''}` : null;
   function rememberOpener(element) {
     const el = element?.closest?.('button,a[href],[role="button"],input,textarea') || element;
     if (!el || el === document.body) return null;
-    return { element:el, id:el.id, action:el.getAttribute(bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
+    return { element:el, id:el.id, action:clickAction(el), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
       epic:el.dataset.epic, milestone:el.dataset.milestone, text:el.textContent.trim(),
       selection: typeof el.selectionStart === 'number' ? [el.selectionStart,el.selectionEnd,el.selectionDirection] : null,
       scope:el.closest('.topbar') ? '.topbar' : el.closest('.sidebar') ? '.sidebar' : el.closest('.peek') ? '.peek' : el.closest('.modal') ? '.modal' : '#app' };
@@ -2096,7 +2136,7 @@
     if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
     if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
     // A scrim and a close button can share an action; prefer the same kind of control in the same place.
-    if (!target && record?.action) { const attribute = bootWindow.OneloopEventAttribute?.('onclick') || 'onclick'; target = [...app.querySelectorAll(`${record.scope} [${attribute}]`), ...app.querySelectorAll(`[${attribute}]`)].find(el => el.tagName === record.tag && el.getAttribute(attribute) === record.action); }
+    if (!target && record?.action) target = [...app.querySelectorAll(`${record.scope} [data-action]`), ...app.querySelectorAll('[data-action]')].find(el => el.tagName === record.tag && clickAction(el) === record.action);
     if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
     if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
     if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);
@@ -2160,9 +2200,9 @@
       return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
       <div class="right">
         ${roadmapScaleHtml()}
-        <button class="btn quiet" onclick="App.goToday()">Today</button>
-        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
-        <button class="btn primary" onclick="App.openModal('epic')">${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
+        <button class="btn quiet" ${UIAction('goToday')}>Today</button>
+        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
+        <button class="btn primary" ${UIAction('openModal', 'epic')}>${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }
     if (state.view === 'board') {
@@ -2186,27 +2226,27 @@
       const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
       return `<h1>Board</h1>
       <div class="right board-filters">
-        <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" oninput="App.setBoardQ(this.value,event)" onkeydown="App.boardSearchKey(event)">
+        <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
         ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
         ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
         ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
-        <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" onclick="App.setBlockedFilter(this)">${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-        <button class="btn quiet" onclick="App.openModal('pool')">Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
-        ${canBoard() ? `<button class="btn primary" onclick="App.openModal('task')">${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
+        <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
+        <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+        ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }
     if (state.view === 'task') {
       const t = taskById(state.taskId);
       if (!t) return '<h1>Board</h1>';
-      return `<button class="btn icon" onclick="App.nav('board')" title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
+      return `<button class="btn icon" ${UIAction('nav', 'board')} title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
       <h1 style="display:flex;align-items:center;gap:8px"><span class="mono">${esc(t.id)}</span></h1>
       <span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}<span class="task-save-status" role="status" aria-live="polite">${taskSaveFeedback?.id===t.id?taskSaveFeedback.saving?'Saving…':'Saved':''}</span>
-      ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" onclick="App.taskActions(event,'${UIArg(t.id)}')">${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
+      ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" ${UIAction('taskActions', UIAction.event, t.id)}>${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
     }
     if (state.view === 'storage') return '<h1>Storage</h1><span class="meta">All projects</span>';
     if (state.view === 'inbox') return '<h1>Inbox</h1>';
     if (state.view === 'profile') return `<h1>Profile</h1><span class="meta">${esc(userHandle(me()))}</span>`;
-    if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" onclick="App.openModal('user')">${I.plus} New user</button></div>`;
+    if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" ${UIAction('openModal', 'user')}>${I.plus} New user</button></div>`;
     return `<h1>Settings</h1><span class="meta" data-tip="${esc(project().name)}" data-tip-overflow>${esc(project().name)}</span>`;
   }
 
@@ -2255,7 +2295,6 @@
       window.Recovery?.keepPrompts?.();
       const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
-      migrateEvents?.();
       if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
         const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
         target?.focus({preventScroll:true});
@@ -2275,6 +2314,9 @@
   }
   /** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
   const waitingPasswords=[];
+  // A temporary password is shown once. While it shows, or waits for another
+  // dialog to close, a reload or leaving oneloop would lose it for good.
+  window.Recovery?.trackUnsaved?.(()=>!!D.session&&(state.modal?.type==='temppw'||waitingPasswords.length>0));
   function showWaitingPassword(){
     while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
   }
@@ -2294,7 +2336,7 @@
     document.getElementById('app').classList.toggle('side-open',!!state.sideOpen);
     document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
     document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
-    migrateEvents?.();mountDescription();collaboration?.mount();
+    mountDescription();collaboration?.mount();
     finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
     paintedScope=renderScope();
   }
@@ -2335,22 +2377,22 @@
     const p = project() || {name:'No projects'};
     const u = me();
     const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-    const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?'<button class="btn primary" onclick="App.openModal(\'project\')">Create project</button>':''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" onclick="App.nav('board')">Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
+    const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
     const appRoot = document.getElementById('app'), shell = document.createElement('template');
     setHTML(shell,`
       <a class="skip-link" href="#main">Skip to content</a>
-      <div class="side-scrim" onclick="App.toggleSidebar(false)"></div>
+      <div class="side-scrim" ${UIAction('toggleSidebar', false)}></div>
       <nav class="sidebar" aria-label="Main navigation" ${window.innerWidth <= 900 && !state.sideOpen ? 'inert' : ''}>
         <div class="sidebar-brand has-inbox"><div class="logo" role="img" aria-label="oneloop">${I.logo}<span class="lbl">${I.wordmark}</span></div>${collaboration?.inboxNav(state.view) || ''}</div>
-        <div class="switcher"><button class="switcher-btn btn" style="border-color:rgb(var(--tone-rgb) / 0.06)" ${!project()&&!isAdmin()?'disabled':''} onclick="App.projectMenu(event)" title="${esc(p.name)}" aria-label="Project: ${esc(p.name)}" aria-expanded="${!!state.menu?.projectMenu}" aria-controls="project-switcher-menu">
+        <div class="switcher"><button class="switcher-btn btn" style="border-color:rgb(var(--tone-rgb) / 0.06)" ${!project()&&!isAdmin()?'disabled':''} ${UIAction('projectMenu', UIAction.event)} title="${esc(p.name)}" aria-label="Project: ${esc(p.name)}" aria-expanded="${!!state.menu?.projectMenu}" aria-controls="project-switcher-menu">
           <span class="project-identity"><span class="avatar">${esc(p.name[0].toUpperCase())}</span><span class="lbl project-name">${esc(p.name)}</span></span><span class="lbl project-chevron">${I.chev}</span></button></div>
         <div class="nav">
-          <button class="nav-item ${state.view === 'roadmap' ? 'on' : ''}" ${state.view === 'roadmap' ? 'aria-current="page"' : ''} onclick="App.nav('roadmap')" title="Roadmap">${I.roadmap}<span class="lbl">Roadmap</span></button>
-          <button class="nav-item ${state.view === 'board' || state.view === 'task' ? 'on' : ''}" ${state.view === 'board' || state.view === 'task' ? 'aria-current="page"' : ''} onclick="App.nav('board')" title="Board">${I.board}<span class="lbl">Board</span><span class="end lbl mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${c.open}</span></button>
-          <button class="nav-item ${state.view === 'knowledge' ? 'on' : ''}" ${state.view === 'knowledge' ? 'aria-current="page"' : ''} onclick="App.nav('knowledge')" title="Knowledge">${I.knowledge}<span class="lbl">Knowledge</span></button>
-          ${isAdmin() ? `<button class="nav-item ${state.view === 'settings' ? 'on' : ''}" onclick="App.nav('settings')" title="Settings">${I.settings}<span class="lbl">Settings</span></button>` : ''}
+          <button class="nav-item ${state.view === 'roadmap' ? 'on' : ''}" ${state.view === 'roadmap' ? 'aria-current="page"' : ''} ${UIAction('nav', 'roadmap')} title="Roadmap">${I.roadmap}<span class="lbl">Roadmap</span></button>
+          <button class="nav-item ${state.view === 'board' || state.view === 'task' ? 'on' : ''}" ${state.view === 'board' || state.view === 'task' ? 'aria-current="page"' : ''} ${UIAction('nav', 'board')} title="Board">${I.board}<span class="lbl">Board</span><span class="end lbl mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${c.open}</span></button>
+          <button class="nav-item ${state.view === 'knowledge' ? 'on' : ''}" ${state.view === 'knowledge' ? 'aria-current="page"' : ''} ${UIAction('nav', 'knowledge')} title="Knowledge">${I.knowledge}<span class="lbl">Knowledge</span></button>
+          ${isAdmin() ? `<button class="nav-item ${state.view === 'settings' ? 'on' : ''}" ${UIAction('nav', 'settings')} title="Settings">${I.settings}<span class="lbl">Settings</span></button>` : ''}
         </div>
-        <div class="sidebar-bottom"><div class="profile-area"><button class="me-chip" onclick="App.userMenu(event)" title="${esc(u.name)}" aria-controls="action-menu" aria-expanded="${!!state.menu?.version}">${avatarHtml(u.id, 20)}
+        <div class="sidebar-bottom"><div class="profile-area"><button class="me-chip" ${UIAction('userMenu', UIAction.event)} title="${esc(u.name)}" aria-controls="action-menu" aria-expanded="${!!state.menu?.version}">${avatarHtml(u.id, 20)}
           <span class="lbl uname">${esc(u.name)}</span><span class="lbl profile-chevron">${I.chev}</span></button></div></div>
       </nav>
       <div class="main">
@@ -2387,7 +2429,6 @@
     }
 
     document.querySelectorAll('.timeline > [data-feed-key]').forEach(el=>feedRowMarkup.set(el,el.outerHTML));
-    migrateEvents?.();
     mountDescription();
     if (state.view === 'task') window.Uploads?.mount(state.taskId);
     if (state.view === 'roadmap' && !error) mountRoadmap();
@@ -2488,7 +2529,7 @@
   let pressedScale = null;
   function roadmapScaleHtml() {
     pressedScale = roadmapScale()?.key ?? null;
-    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" onclick="App.setRoadmapScale('${UIArg(scale.key)}')">${scale.label}</button>`).join('')}</div>`;
+    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" ${UIAction('setRoadmapScale', scale.key)}>${scale.label}</button>`).join('')}</div>`;
   }
   function syncRoadmapScale() {
     const current = roadmapScale()?.key ?? null;
@@ -2989,6 +3030,7 @@
       App.toast('Password changed. Other sessions and app access revoked'); render(); return false;
     },
     updMe(v) { const nv = cleanStr(v, 80); if (!nv) return failField(document.querySelector('.settings'), 'name', 'Enter your full name.'); me().name = nv; const chip = document.querySelector('.me-chip'); if (chip) { chip.title = nv; chip.querySelector('.uname').textContent = nv; } App.toast('Profile saved'); },
+    chooseAvatar() { document.getElementById('avIn')?.click(); },
     setAvatar(input) {
       const file = input.files[0]; if (!file) return;
       const r = new FileReader();
@@ -3025,6 +3067,8 @@
     sizeDescription,
     sizeDescriptionEditors,
     sizeTaskTitle,
+    /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
+    leaveField(event, field) { event.preventDefault(); field.blur(); },
     expandDescription() {
       const section = document.querySelector('.task-description');
       if (section) expandedDescriptions.add(section.dataset.descriptionKey);
@@ -3365,6 +3409,7 @@
       if(type==='pool'&&bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.open',{}).catch(bootWindow.OneloopRuntime.report);
     },
     toast: pushToast,
+    offerUndo,
     announce,
     dismissToast,
 
@@ -3537,6 +3582,8 @@
     },
 
     // CRUD — project
+    /** Enter saves a project field, then leaves it. */
+    leaveProjectField(event, input) { event.preventDefault(); App.updateProjectField(input); input.blur(); },
     updateProjectField(input) {
       if (!isAdmin() || !['name','key'].includes(input.name)) return false;
       const value = input.name === 'name' ? cleanStr(input.value, 60) : input.value.toUpperCase();
@@ -3823,7 +3870,7 @@
       if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();if(id)App.cancelPoolDescription(id);else {resetPoolCapture();document.getElementById('poolAdd').focus();}return;}
       if(ev.key==='Enter'&&!ev.shiftKey&&!ev.altKey){ev.preventDefault();if(id){const form=ev.currentTarget.closest('form');if(form)App.savePoolDescription({target:form,preventDefault(){}},id);}else App.addPoolItem();}
     },
-    editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate onsubmit="return App.savePoolDescription(event,'${UIArg(id)}')"><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" onkeydown="App.poolDescriptionKey(event,'${UIArg(id)}')" placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" onclick="App.cancelPoolDescription('${UIArg(id)}')">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
+    editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate ${UIAction.on('submit','savePoolDescription',UIAction.event,id)}><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" ${UIAction.on('keydown','poolDescriptionKey',UIAction.event,id)} placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" ${UIAction('cancelPoolDescription',id)}>Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
     cancelPoolDescription(id,focus=true){const row=document.querySelector(`[data-pool-item="${UIEscape(id)}"]`);if(!row)return;const before=row.getBoundingClientRect().height;row.querySelector('.pool-description-editor')?.remove();const toggle=row.querySelector('.pool-note-toggle');toggle?.setAttribute('aria-expanded','false');UIMotion.height(row,before);if(focus)toggle?.focus({preventScroll:true});},
     savePoolDescription(ev,id){ev.preventDefault();const item=poolItems(state.poolTab).find(p=>p.id===id);if(!item||!me()?.active||(item.scope==='mine'?item.ownerId!==me().id:!canBoard())){App.toast('You no longer have permission to edit this item','error');return false;}const desc=cleanStr(new FormData(ev.target).get('desc'),2000);if(desc!==item.desc){item.desc=desc;App.toast('Description saved');}const row=ev.target.closest('[data-pool-item]'),next=document.createElement('template');setHTML(next,poolRowHtml(item));row.replaceWith(next.content);document.querySelector(`[data-pool-item="${UIEscape(id)}"] .pool-note-toggle`)?.focus({preventScroll:true});return false;},
     promotePool(id) {
@@ -4031,6 +4078,7 @@
     loadMoreUsers(){const count=document.querySelectorAll('.user-row').length;state.usersLimit+=50;render();[...document.querySelectorAll('.user-row')].slice(count).forEach(el=>UIMotion.enter(el));},
     loadOlderActivity(id){state.activityLimits[id]=(state.activityLimits[id]||50)+50;const timeline=document.querySelector('.task-page .timeline'),task=taskById(id);if(timeline&&task){const scroll=document.querySelector('.task-page'),before=scroll.scrollHeight;setHTML(timeline,taskFeedHtml(task,canBoard()));scroll.scrollTop+=scroll.scrollHeight-before;fadeContent(timeline);}},
     taskMoveMenu(event,id){
+      event.stopPropagation(); // The card around the button would open the task.
       if(App._boardMovePending)return;
       if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
       const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){render();focusMovedTask(id);}}}}));
@@ -4060,7 +4108,10 @@
 
   // Pointer gestures share the existing destination, optimistic-save and rollback
   // paths. Touch/pen start on grips so the rest of the Board remains scrollable.
-  let pointerDrag = null, suppressDragClickUntil = 0;
+  // The click that ends a drag is not a click on the card. Some browsers send
+  // it only after the drop has redrawn the Board, however long that takes, so
+  // a drag that started swallows the next click; the next press forgets it.
+  let pointerDrag = null, suppressDragClick = false;
   function pointerEvent(event, currentTarget) {
     const drag = pointerDrag;
     return {target:drag.source,currentTarget,clientX:drag.x,clientY:drag.y,
@@ -4095,7 +4146,7 @@
     const drag=pointerDrag;if(!drag)return;
     cancelAnimationFrame(drag.frame);
     if(drag.started){
-      suppressDragClickUntil=Date.now()+400;
+      suppressDragClick=true;
       if(commit && drag.source.isConnected){
         updatePointerTarget();
         if(drag.target && App._drag){
@@ -4109,7 +4160,7 @@
     if(drag.source.hasPointerCapture?.(drag.pointerId))drag.source.releasePointerCapture(drag.pointerId);
   }
   document.addEventListener('pointerdown',event=>{
-    suppressDragClickUntil=0;
+    suppressDragClick=false;
     if(!event.isPrimary){if(pointerDrag)finishPointerDrag(false);return;}
     if(event.button!==0 || pointerDrag || state.modal || state.peek || state.menu) return;
     const grip=event.target.closest('.grip'),card=event.target.closest('.card[data-task]');
@@ -4142,7 +4193,7 @@
   document.addEventListener('lostpointercapture',event=>{if(pointerDrag?.pointerId===event.pointerId && event.target===pointerDrag.source && !pointerDrag.source.hasPointerCapture?.(event.pointerId))finishPointerDrag(false);},true);
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pointerDrag){event.preventDefault();event.stopImmediatePropagation();finishPointerDrag(false);}},true);
   window.addEventListener('blur',()=>finishPointerDrag(false));
-  document.addEventListener('click',event=>{if(event.detail>0 && Date.now()<suppressDragClickUntil){suppressDragClickUntil=0;event.preventDefault();event.stopImmediatePropagation();}},true);
+  document.addEventListener('click',event=>{if(event.detail>0 && suppressDragClick){suppressDragClick=false;event.preventDefault();event.stopImmediatePropagation();}},true);
   // Native HTML dragging would steal the pointer stream. Retain callable legacy
   // handlers only as a compatibility surface for the shared mutation model.
   document.addEventListener('dragstart',event=>{if(event.target.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);

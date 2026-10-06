@@ -64,6 +64,19 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
   assert(d.querySelector('.markdown-body img[src="https://example.invalid/image.png"]')); assert(!d.querySelector('[data-view-resources]')); close();
 });
 
+test('Markdown can\'t point a label or a control at the app\'s own elements', async () => {
+  const { w, d } = boot();
+  const control = d.createElement('input'); control.type = 'checkbox'; control.id = 'app-control'; d.body.append(control);
+  const clicks = []; control.addEventListener('click', () => clicks.push('app control'));
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'gadget.md' }, '<label for="app-control">Open the picker</label>\n\n<input type="checkbox" form="app-form" popovertarget="app-menu" commandfor="app-menu" command="show-popover">', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const body = host.querySelector('.markdown-body');
+  assert.equal(body.querySelector('[for],[form],[popovertarget],[commandfor],[command]'), null);
+  body.querySelector('label').click();
+  assert.deepEqual(clicks, [], 'the label reaches nothing outside the file');
+});
+
 test('HTML previews frame the server preview in a sandbox and restart it', async () => {
   const { d, file, open, close } = await taskWithFiles();
   file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
@@ -149,6 +162,18 @@ test('in-page links reach headings in any script', async () => {
   assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
 });
 
+test('each Markdown block takes its direction from its own text, as Knowledge pages and attachment previews show it', async () => {
+  const { w, d } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  w.FileViews.markdown(host, { name: 'دليل.md' }, '# دليل الفريق\n\nهذه فقرة عربية.\n\n- البند الأول\n- البند الثاني\n\n> اقتباس\n\n| العمود | Column |\n| - | - |\n| ١ | 1 |\n\n<p dir="ltr">Kept as written.</p>\n\n```js\nconst code = 1;\n```', false);
+  await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
+  const body = host.querySelector('.markdown-body');
+  for (const selector of ['h1', 'p', 'ul', 'blockquote p', 'table']) assert.equal(body.querySelector(selector).getAttribute('dir'), 'auto', selector);
+  for (const selector of ['li', 'td']) assert.equal(body.querySelector(selector).hasAttribute('dir'), false, `${selector} takes its list's or table's direction`);
+  assert.equal([...body.querySelectorAll('p')].at(-1).getAttribute('dir'), 'ltr', 'a direction the file sets stays');
+  assert.equal(body.querySelector('pre').hasAttribute('dir'), false, 'code stays as it is');
+});
+
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
@@ -228,6 +253,21 @@ test('the renderer document returns sanitized SVG with its size', async () => {
   assert.match(drawn.svg, /Ready/); assert.match(drawn.svg, /<style>/);
   assert.doesNotMatch(drawn.svg, /<script|onclick|<a\b/);
   assert.deepEqual(JSON.parse(JSON.stringify(config)), settings); assert.notEqual(config, settings, 'Mermaid gets its own copy');
+});
+
+test('the renderer hides $$ pairs from Mermaid\'s math, and draws a diagram as written when that breaks a name', async () => {
+  const { window: w } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/views/diagram-renderer.html', runScripts: 'outside-only' });
+  w.eval(source('vendor/dompurify/purify'));
+  const rendered = [];
+  // Like Mermaid, a flowchart whose node names get a zero-width space doesn't parse.
+  w.mermaid = { initialize() {}, async render(_id, text) { rendered.push(text); if (text.startsWith('flowchart') && text.includes('\u200b')) throw new Error('Lexical error on line 2'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>Drawn</text></svg>' }; } };
+  w.eval(source('diagram-renderer'));
+  for (const diagram of ['sequenceDiagram\n A->>B: $$x^2$$', 'flowchart LR\n A$$B-->C\n subgraph s$$\n end', 'flowchart LR\n A$$B-->C$$D']) assert.match((await w.renderDiagram('d', diagram, {})).svg, /Drawn/);
+  assert.deepEqual(rendered, [
+    'sequenceDiagram\n A->>B: $\u200b$x^2$\u200b$',
+    'flowchart LR\n A$$B-->C\n subgraph s$$\n end',
+    'flowchart LR\n A$\u200b$B-->C$\u200b$D', 'flowchart LR\n A$$B-->C$$D',
+  ]);
 });
 
 /** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */

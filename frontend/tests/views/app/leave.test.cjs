@@ -25,8 +25,6 @@ function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gatew
     return { ...t, bridge, commands };
   } finally { globalThis.document = previous; }
 }
-/** Run the inline handler for `type` that a browser runs; jsdom runs none. */
-const handle = (element, type) => element.ownerDocument.defaultView.Function(element.getAttribute(`on${type}`)).call(element);
 const ask = t => t.d.querySelector('.confirmation-layer [role="alertdialog"]');
 
 test('an unsent comment makes leaving warn, and a clean page leaves quietly', () => {
@@ -55,13 +53,13 @@ test('search boxes and fields that saved when they lost focus never count', asyn
   const board = bootApp({ route: 'board' });
   type(board.d.querySelector('[data-board-search]'), 'payment');
   assert.equal(leaveWarns(board), false, 'the Board search');
-  const settings = withBridge(bootApp({ route: 'settings' }));
+  const settings = withBridge(bootApp({ route: 'settings', actions: true }));
   type(settings.d.getElementById('member-search'), 'robin');
   assert.equal(leaveWarns(settings), false, 'the member search');
   const name = settings.d.querySelector('.project-fields [name="name"]');
   type(name, 'Renamed project');
   assert.equal(leaveWarns(settings), true, 'a name still being typed');
-  name.blur(); handle(name, 'blur'); await settle();
+  name.blur(); await settle();
   assert.deepEqual(settings.commands.map(command => command.operation), ['project.update']);
   assert.equal(name.value, 'Renamed project');
   assert.equal(leaveWarns(settings), false, 'the name saved when it lost focus');
@@ -81,9 +79,9 @@ test('an untouched New user or Edit user dialog leaves quietly; a ticked checkbo
 });
 
 test('a permission checkbox saves when it changes, so it never counts, also while it has focus', async () => {
-  const t = withBridge(bootApp({ route: 'settings' }));
+  const t = withBridge(bootApp({ route: 'settings', actions: true }));
   const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]:not(:checked)');
-  box.focus(); box.click(); handle(box, 'change'); await settle();
+  box.focus(); box.click(); await settle();
   assert.deepEqual(t.commands.map(command => command.operation), ['membership.update']);
   assert.equal(t.d.activeElement, box);
   assert.equal(leaveWarns(t), false);
@@ -142,14 +140,15 @@ test('a comment that is being sent does not count, and counts again if the send 
   let finish;
   const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
     w.OneloopTransport = {};
-    w.OneloopCollaboration = { bind() { return { saveComment() { return new Promise(resolve => { finish = resolve; }); } }; } };
+    w.OneloopCollaboration = { bind() { return { saveComment(input) { return new Promise(resolve => { finish = saved => { if (!saved) input.unsent(); resolve(saved); }; }); } }; } };
   } });
   type(t.d.getElementById('cmtIn'), 'On its way');
   assert.equal(pageWarns(t), true);
   t.A.addComment('BIR-079');
-  assert.equal(t.d.getElementById('cmtIn').value, 'On its way', 'the text shows until the send settles');
+  assert.equal(t.d.getElementById('cmtIn').value, '', 'the text left the box as it was sent');
   assert.equal(pageWarns(t), false, 'the comment is being sent');
   finish(false); await settle();
+  assert.equal(t.d.getElementById('cmtIn').value, 'On its way', 'a send that failed brings it back');
   assert.equal(pageWarns(t), true, 'the person keeps the text of a send that failed');
 });
 
@@ -160,6 +159,23 @@ test('opening a comment for editing counts only once its text changes', () => {
   assert.equal(pageWarns(t), false);
   type(t.d.getElementById('cmtIn'), 'Saved text, edited');
   assert.equal(pageWarns(t), true);
+});
+
+test('a temporary password counts as unsaved while it shows or waits, so neither a reload after an update nor leaving loses it', () => {
+  const t = bootApp({ route: 'users' });
+  const user = t.D.users.find(item => item.id !== t.D.session.userId);
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.showTemporaryPassword(user.id, 'shown-once-password');
+  assert.ok(t.d.getElementById('tmpPw'));
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true); assert.equal(leaveWarns(t), true);
+  assert.equal(pageWarns(t), false, 'another page of oneloop keeps it');
+  t.A.closeOverlays();
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.openModal('user', user.id);
+  assert.equal(t.A.showTemporaryPassword(user.id, 'waiting-password', { wait: true }), true, 'its own dialog gives way at once');
+  t.A.closeOverlays(); t.A.openModal('project');
+  assert.equal(t.A.showTemporaryPassword(user.id, 'waiting-password', { wait: true }), false);
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'a password waiting for another dialog counts too');
 });
 
 test('running saves, uploads and drafts count only when leaving oneloop', async () => {
@@ -202,10 +218,9 @@ test('another page asks first: Cancel keeps the text and Discard moves on', () =
 async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before || ask(t), 'Back changed the page'); await settle(); }
 
 test('Back saves a field that saves itself before the page changes, and does not ask', async () => {
-  const t = withBridge(bootApp({ route: 'board' }));
+  const t = withBridge(bootApp({ route: 'board', actions: true }));
   t.A.openTask('BIR-079'); await settle();
   const description = t.d.getElementById('task-description');
-  description.addEventListener('blur', () => handle(description, 'blur'));
   type(description, 'Typed before Back');
   await back(t);
   assert.equal(ask(t), null);

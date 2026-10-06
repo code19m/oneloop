@@ -151,3 +151,10 @@ test('membership changes for two people are separate interactions with readable 
   assert.notEqual(add('alice'),add('bob'));
   assert.equal(actionErrorFeedback(new ApiError('Another change is still being saved. Wait a moment and try again.',{code:'interaction_pending'})).message,'Another change is still being saved. Wait a moment and try again.');
 });
+
+test('an avatar the server refuses says why: its type, its size or its data',()=>{
+  const refused=message=>actionErrorFeedback(new ApiError(`invalid avatar: ${message}`,{code:'validation_failed',details:{field:'avatar',message}})).message;
+  assert.equal(refused('must be a PNG, JPEG or WebP image'),'The avatar must be a PNG, JPEG or WebP image.');
+  assert.equal(refused('image data is invalid, or too large to process safely'),'Image data is invalid, or too large to process safely.');
+  assert.equal(refused('must contain 1 byte to 5 MiB'),'The avatar must contain 1 byte to 5 MiB.');
+});

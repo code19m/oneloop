@@ -33,23 +33,23 @@ test('Inbox renders its actor, time and read state through reads and full or sco
 
 const sampleScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'];
 /** The sample Inbox projection, optionally with stored collaboration state. */
-const sampleInbox = stored => bootApp({ route: 'inbox', fixture: 'inbox', html: '<html data-view-samples><head><meta name="theme-color"></head><body><div id="app"></div></body></html>', scripts: sampleScripts, stored: stored ? { 'oneloop.collaboration.v1': stored } : {} });
+const sampleInbox = (stored, options = {}) => bootApp({ route: 'inbox', fixture: 'inbox', html: '<html data-view-samples><head><meta name="theme-color"></head><body><div id="app"></div></body></html>', scripts: sampleScripts, stored: stored ? { 'oneloop.collaboration.v1': stored } : {}, ...options });
 
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
 /** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
 const boot = (route = 'inbox', prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
 
 test('the sample Inbox groups notifications and filters unread rows in place', () => {
-  const t = sampleInbox();
+  const t = sampleInbox(null, { actions: true });
   assert.equal(t.w.DATA.notifications.length, 9); assert.equal(t.d.querySelectorAll('.inbox-row').length, 7); assert.equal(t.d.querySelectorAll('.inbox-row.unread').length, 4);
   assert(t.d.querySelector('.inbox-task-title').textContent.includes('reminder')); assert(t.d.querySelectorAll('.inbox-group-heading').length >= 2);
   const page = t.d.querySelector('.inbox-page'), list = t.d.querySelector('.inbox-list'), controls = t.d.querySelector('.inbox-controls'), kept = t.d.querySelector('[data-notification-id="inbox-sample-v1-0"]');
   t.w.App.inboxFilter('unread', true);
   assert.equal(t.d.querySelector('.inbox-page'), page); assert.equal(t.d.querySelector('.inbox-list'), list); assert.equal(t.d.querySelector('.inbox-controls'), controls); assert.equal(t.d.querySelector('[data-notification-id="inbox-sample-v1-0"]'), kept); assert.equal(list.querySelectorAll('.inbox-row').length, 4);
   t.w.App.inboxFilter('unread', false);
-  // Exercise the rewritten click handler, not just the action method.
+  // Click the button, so its rewritten action runs, not just the method.
   const unread = t.d.querySelector('.inbox-unread-filter');
-  for (let i = 0; i < 4; i++) { t.w.Function(unread.getAttribute('onclick')).call(unread); assert.equal(unread.getAttribute('aria-pressed'), String(i % 2 === 0)); assert.equal(list.querySelectorAll('[data-notification-id]').length, i % 2 === 0 ? 4 : 7); }
+  for (let i = 0; i < 4; i++) { unread.click(); assert.equal(unread.getAttribute('aria-pressed'), String(i % 2 === 0)); assert.equal(list.querySelectorAll('[data-notification-id]').length, i % 2 === 0 ? 4 : 7); }
   assert(t.d.querySelector('.inbox-row-footer .inbox-time')); assert(t.d.querySelector('.inbox-row-footer .inbox-row-actions').textContent.includes('Mark read')); assert(t.d.querySelector('.inbox-row-footer .inbox-row-actions').textContent.includes('Archive'));
 });
 
@@ -114,7 +114,7 @@ test('the Inbox page shows load states and updates in place without losing focus
   const empty=t.d.querySelector('.inbox-empty');assert(empty);t.w.testFacade.inboxPage(loaded);assert.equal(t.d.querySelector('.inbox-empty'),empty);
   t.D.notifications.push({id:'n1',actorId:'robin',actorName:'Robin',projectId:'p1',projectName:'Birch Grove',taskId:'BIR-079',taskTitle:'Review',taskKey:'BIR-079',reason:'assigned',destinationAvailable:true,createdAt:Date.now(),readAt:null,archivedAt:null});
   t.w.testFacade.inboxPage({...loaded,filteredCount:1,unreadCount:1});const open=t.d.querySelector('.inbox-open'),bulk=t.d.querySelector('.inbox-bulk button');
-  for(const node of [open,bulk])node.removeAttribute('onclick');
+  for(const node of [open,bulk])for(const name of ['data-action','data-args'])node.removeAttribute(name);
   t.w.testFacade.inboxPage({...loaded,filteredCount:1,unreadCount:1});assert.equal(t.d.querySelector('.inbox-open'),open,'open control');assert.equal(t.d.querySelector('.inbox-bulk button'),bulk,'bulk control');
   open.focus();t.D.notifications[0].readAt=Date.now();
   t.w.testFacade.inboxPage({...loaded,filteredCount:1,unreadCount:0});assert.equal(t.d.activeElement,t.d.querySelector('.inbox-open'));

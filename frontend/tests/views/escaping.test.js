@@ -3,34 +3,31 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {createRequire} from 'node:module';
-import {compileLegacyHandler} from '../../src/app/view-events.js';
+import {installViewActions} from '../../src/app/view-actions.js';
 import {installViewBridge} from '../../src/app/view-bridge.js';
 
-const {bootApp,settle}=createRequire(import.meta.url)('../support/dom.cjs');
+const {JSDOM,bootApp,settle}=createRequire(import.meta.url)('../support/dom.cjs');
 
 const source=readFileSync(new URL('../../views/motion.js',import.meta.url),'utf8');
 const context=vm.createContext({});
 vm.runInContext(source.slice(source.indexOf('/** Escape'),source.indexOf('window.UIHTML=')),context);
-const {UIEscape,UIArg}=context;
+const {UIEscape,UIAction}=context;
 
-test('HTML and handler escaping preserve hostile quotes without extra actions',()=>{
+test('HTML and action escaping keep hostile values whole without adding attributes or actions',()=>{
   assert.equal(UIEscape(`'"<&>`),'&#39;&quot;&lt;&amp;&gt;');
-  const value="opaque'\\\n\r\"<>&",calls=[];
-  const encoded=UIArg(value);
-  const decoded=encoded.replace(/&(amp|quot|#39|lt|gt);/g,(_,name)=>({amp:'&',quot:'"','#39':"'",lt:'<',gt:'>'}[name]));
-  compileLegacyHandler(`App.openTask('${decoded}')`,()=>({openTask:id=>calls.push(id)})).call({},{});
-  assert.deepEqual(calls,[value]);
-  const attack=UIArg("');App.logout();('").replace(/&#39;/g,"'");
-  assert.throws(()=>compileLegacyHandler(`App.openTask('${attack}')`),/Unsupported/);
+  const value="opaque'\\\n\r\"<>& data-action=\"logout\" ']",calls=[];
+  const dom=new JSDOM(`<button id="b" ${UIAction('openTask',value,UIAction.event)} ${UIAction.on('keydown','epicKey',value)}>Open</button>`);
+  const button=dom.window.document.getElementById('b');
+  assert.deepEqual(button.getAttributeNames(),['id','data-action','data-args','data-action-keydown','data-args-keydown']);
+  assert.deepEqual(JSON.parse(button.dataset.args),[value,{$:'event'}]);
+  dom.window.App={openTask:(id,event)=>calls.push([id,event.type]),logout:()=>calls.push('logout')};
+  installViewActions(dom.window.document);button.click();
+  assert.deepEqual(calls,[[value,'click']]);
 });
 
-test('shared templates encode handler strings, URLs and data attributes',()=>{
-  const numericOrBoolean=new Set(['it.i','!!n.readAt','!filter.unread','!file.ephemeral','task.attachments.indexOf(f)']);
+test('shared templates encode URLs and data attributes',()=>{
   for(const name of ['app','collaboration','uploads']){
     const source=readFileSync(new URL(`../../views/${name}.js`,import.meta.url),'utf8');
-    for(const [attribute] of source.matchAll(/\bon\w+="[^"\n]*"/g)){
-      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.ok(expression.startsWith('UIArg(')||numericOrBoolean.has(expression),`${name}: unencoded handler ${expression}`);
-    }
     for(const [attribute] of source.matchAll(/\b(?:src|href|data-[\w-]+)="[^"\n]*"/g)){
       for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:UIEscape|esc|escape|html)\(/,`${name}: unescaped attribute ${expression}`);
     }
@@ -38,7 +35,7 @@ test('shared templates encode handler strings, URLs and data attributes',()=>{
 });
 
 test('user text with markup stays text on every page, dialog, drawer, menu and tooltip',async()=>{
-  const evil=text=>`${text}<i class="planted" onclick="App.logout()">x</i><img class="planted" src="data:,">`;
+  const evil=text=>`${text}<i class="planted" onclick="App.logout()" data-action="logout">x</i><img class="planted" src="data:,">`;
   const t=bootApp({route:'roadmap',media:()=>true,prepare(D){
     for(const user of D.users)user.name=evil(user.name);
     for(const project of D.projects)project.name=evil(project.name);

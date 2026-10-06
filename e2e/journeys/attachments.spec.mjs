@@ -144,35 +144,60 @@ test('HTML previews run no scripts and load nothing from other sites, framed or 
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
   await openApp(page, instance);
-  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-oneloop-onclick="App.logout()">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nsequenceDiagram\n A->>B: $$x^2$$\n```';
+  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-action="logout" data-action-keydown="logout" data-args="[]">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nsequenceDiagram\n A->>B: $$x^2$$\n```' + '\n\n```mermaid\nflowchart LR\n A$$B-->C\n subgraph s$$\n C-->D$$E-->F$$G\n end\n```';
   await attach(page, 'gadget.md', 'text/markdown', markdown);
   await page.locator('.attachment-title').filter({ hasText: 'gadget.md' }).click();
   const body = page.locator('.markdown-body');
   await expect(body.locator('h1')).toHaveText('Safe reader');
-  await expect(body.locator('[data-reorder-file],[data-reorder-task],[data-oneloop-onclick],[tabindex],svg a')).toHaveCount(0);
+  await expect(body.locator('[data-reorder-file],[data-reorder-task],[data-action],[data-action-keydown],[data-args],[tabindex],svg a')).toHaveCount(0);
   await expect(body.locator('.katex')).toBeVisible();
   await expect(body.locator('[data-footnote-ref]')).toBeVisible();
-  const diagram = body.locator('.markdown-diagram img');
-  await expect(diagram).toBeVisible();
-  await expect.poll(() => diagram.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+  const diagrams = body.locator('.markdown-diagram img');
+  // Mermaid lays out each diagram in its own document, which a busy computer makes slow.
+  await expect(diagrams).toHaveCount(2, { timeout: 15_000 });
+  for (const diagram of await diagrams.all()) await expect.poll(() => diagram.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
   // The sanitizer removes the HTML that Mermaid draws math with, so the label shows its text.
-  expect(decodeURIComponent(await diagram.getAttribute('src'))).toContain('x^2');
+  expect(decodeURIComponent(await diagrams.first().getAttribute('src'))).toContain('x^2');
+  // Dollar signs in node and subgraph names keep the diagram valid.
+  expect(decodeURIComponent(await diagrams.last().getAttribute('src'))).toContain('A$$B');
   await expect(body.getByRole('link', { name: 'External' })).toHaveAttribute('target', '_blank');
   const url = page.url(), writes = [];
   page.on('request', r => { if (r.method() === 'POST') writes.push(r.url()); });
   await body.locator('svg').last().click();
   await page.keyboard.press('Home');
+  await body.getByText('Gadget').click();
+  await expect(page.locator('.confirmation-layer')).toHaveCount(0);
   expect(page.url()).toBe(url);
   expect(writes).toEqual([]);
 });
 
+test('Markdown in Arabic reads right to left, with its list on the right', async ({ page, instance }) => {
+  await openApp(page, instance);
+  await attach(page, 'دليل.md', 'text/markdown', '# دليل الفريق\n\nهذه فقرة عربية تنتهي بنقطة.\n\n- البند الأول\n- البند الثاني\n\nAn English paragraph.');
+  await page.locator('.attachment-title').filter({ hasText: 'دليل.md' }).click();
+  const body = page.locator('.markdown-body');
+  // Where a text sits in its box: right-aligned when it reads right to left.
+  const side = locator => locator.evaluate(element => {
+    const range = document.createRange(), box = element.getBoundingClientRect();
+    range.selectNodeContents(element);
+    const line = range.getClientRects()[0];
+    return Math.round(box.right - line.right) < Math.round(line.left - box.left) ? 'right' : 'left';
+  });
+  await expect(body.locator('p').first()).toHaveText('هذه فقرة عربية تنتهي بنقطة.');
+  expect(await side(body.locator('p').first())).toBe('right');
+  expect(await side(body.locator('li').first())).toBe('right');
+  expect(await side(body.locator('p').last())).toBe('left');
+  const list = await body.locator('ul').evaluate(element => { const style = getComputedStyle(element); return [style.direction, parseFloat(style.paddingRight) > 0, parseFloat(style.paddingLeft)]; });
+  expect(list).toEqual(['rtl', true, 0]);
+});
+
 test('Markdown keeps renderer formatting and cannot borrow dialog classes', async ({ page, instance }) => {
   await openApp(page, instance);
-  await attach(page, 'hostile.md', 'text/markdown', '<div data-oneloop-onclick="App.nav(&quot;users&quot;)" class="confirmation-layer scrim modal-wrap peek">Fake dialog</div>\n\n> [!NOTE]\n> Safe note\n\n```js\nconst value = 1;\n```');
+  await attach(page, 'hostile.md', 'text/markdown', '<div data-action="nav" data-args="[&quot;users&quot;]" class="confirmation-layer scrim modal-wrap peek">Fake dialog</div>\n\n> [!NOTE]\n> Safe note\n\n```js\nconst value = 1;\n```');
   await page.locator('.attachment-title').click();
   const body = page.locator('.markdown-body');
   await expect(body).toBeVisible();
-  await expect(body.locator('.confirmation-layer,.scrim,.modal-wrap,.peek,[data-oneloop-onclick]')).toHaveCount(0);
+  await expect(body.locator('.confirmation-layer,.scrim,.modal-wrap,.peek,[data-action],[data-args]')).toHaveCount(0);
   await expect(body.locator('.markdown-alert')).toHaveCount(1);
   await expect(body.locator('.hljs')).toHaveCount(1);
   await expect(page.locator('[data-file-close]')).toBeVisible();

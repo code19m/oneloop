@@ -24,7 +24,7 @@ test('field saves show a quiet Saved status and block actions announce once', ()
  t.A.updTask(task.id,'state','progress');assert.equal(status(),'Saved');
  t.d.querySelector('.tp-title').dispatchEvent(new t.w.Event('input',{bubbles:true}));assert.equal(status(),'');
  t.A.updTask(task.id,'deadline','bad');assert.equal(status(),'');assert(t.d.querySelector('.date-error'));
- const button=t.d.querySelector('[onclick*="tpAssign"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
+ const button=t.d.querySelector('[data-action="popMulti"][data-args*=\'"tpAssign"\']');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
  block(t,'block','');assert.equal(t.notices.length,0);block(t,'block','Waiting');assert.equal(t.notices.at(-1).text,'Task blocked');
  const count=t.notices.length;block(t,'block','Waiting');assert.equal(t.notices.length,count);block(t,'block','Waiting for review');assert.equal(t.notices.at(-1).text,'Block reason updated');
  block(t,'completeBlocked','Ready');assert.equal(t.notices.at(-1).text,'Task unblocked and completed');assert.equal(task.state,'done');assert.equal(t.notices.length,count+2);
@@ -150,6 +150,15 @@ test('an unsaved description stays on the page through refreshes and offers Save
   assert.equal(t.requests.length, 0);
 });
 
+test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
+  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };
+  title.focus(); title.value = 'Renamed with Enter';
+  assert.equal(enter({ isComposing: true }).defaultPrevented, false); assert.equal(t.d.activeElement, title);
+  assert.equal(enter().defaultPrevented, true);
+  assert.notEqual(t.d.activeElement, title); assert.equal(task.title, 'Renamed with Enter');
+});
+
 test('a pasted line break cleans the title without splitting an emoji at its length limit', () => {
   const t = taskPage(), title = t.d.querySelector('.tp-title');
   title.focus(); title.value = ''; title.setSelectionRange(0, 0);
@@ -244,6 +253,44 @@ test('leaving the task page still closes the prompt, and the change waits there 
   });
 });
 
+test('Ctrl+Z runs the newest Undo while its message shows, and leaves typing in a text field alone', async () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  const runs = [];
+  t.A.offerUndo('First deleted', () => runs.push('first'));
+  t.A.offerUndo('Second deleted', () => runs.push('second'));
+  const press = (target, init = { ctrlKey: true }) => { const event = new t.w.KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ...init }); target.dispatchEvent(event); return event.defaultPrevented; };
+  assert.equal(press(t.d.getElementById('cmtIn')), false, 'in a text field the key undoes typing');
+  assert.equal(press(t.d.body, { ctrlKey: true, shiftKey: true }), false);
+  assert.deepEqual(runs, []);
+  t.A.openModal('task'); t.d.querySelector('.modal button').focus();
+  assert.equal(press(t.d.activeElement), false, 'a dialog is open');
+  t.A.closeOverlays();
+  assert.deepEqual(runs, []);
+  assert.equal(press(t.d.body), true); assert.deepEqual(runs, ['second']);
+  assert.equal(press(t.d.body, { ctrlKey: true, key: 'y', code: 'KeyZ' }), false, 'Ctrl+Y on a German keyboard is no Undo'); assert.deepEqual(runs, ['second']);
+  assert.equal(press(t.d.body, { metaKey: true, key: 'я', code: 'KeyZ' }), true, 'the key in the Z place works without Latin letters'); assert.deepEqual(runs, ['second', 'first']);
+  assert.equal(press(t.d.body), false, 'no Undo is left');
+  assert.equal(t.d.querySelector('.toast-action'), null);
+  t.A.offerUndo('Third deleted', () => {});
+  assert.equal(t.d.querySelector('.toast-action').getAttribute('aria-keyshortcuts'), 'Control+Z');
+  await waitFor(() => t.d.querySelector('[data-announce="polite"]').textContent === 'Third deleted. Press Control+Z to undo.', 'the message says how to undo');
+});
+
+test('an Undo that fails in a way worth trying again offers Undo again, while the server can still restore', () => {
+  const t = bootApp({ route: 'board' });
+  let tries = 0;
+  t.A.offerUndo('WEB-1 deleted', again => { tries++; again('The service is temporarily unavailable. Try again in 1 second.'); });
+  t.d.querySelector('#toast-region .toast-action').click();
+  const failed = () => [...t.d.querySelectorAll('#toast-region .toast[data-toast-id]')].at(-1);
+  assert.equal(failed().dataset.kind, 'error'); assert.match(failed().textContent, /temporarily unavailable/);
+  failed().querySelector('.toast-action').click();
+  assert.equal(tries, 2, 'the person tried again');
+  // Five minutes after the deletion the server can't restore it, so a failure is only reported.
+  const now = t.w.Date.now; t.w.Date.now = () => now() + 5 * 60_000;
+  failed().querySelector('.toast-action').click();
+  assert.equal(tries, 3); assert.equal(failed().querySelector('.toast-action'), null);
+});
+
 test('a message with an action runs it once and closes, and never merges with another', () => {
   const t = bootApp({ route: 'board' });
   const runs = [];
@@ -252,7 +299,7 @@ test('a message with an action runs it once and closes, and never merges with an
   const toasts = [...t.d.querySelectorAll('#toast-region .toast')];
   assert.equal(toasts.length, 2, 'each deletion keeps its own Undo');
   const undo = toasts[0].querySelector('.toast-action');
-  assert.equal(undo.textContent, 'Undo');
+  assert.equal(undo.firstChild.textContent, 'Undo'); assert.equal(undo.querySelector('kbd').getAttribute('aria-hidden'), 'true');
   undo.click(); undo.click();
   assert.deepEqual(runs, ['first']);
   assert.equal(t.d.querySelectorAll('#toast-region .toast[data-toast-id]').length, 1);
