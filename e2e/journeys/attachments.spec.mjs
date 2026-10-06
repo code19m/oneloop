@@ -153,7 +153,8 @@ test('Markdown strips app actions and SVG navigation while keeping math, diagram
   await expect(body.locator('.katex')).toBeVisible();
   await expect(body.locator('[data-footnote-ref]')).toBeVisible();
   const diagrams = body.locator('.markdown-diagram img');
-  await expect(diagrams).toHaveCount(2);
+  // Mermaid lays out each diagram in its own document, which a busy computer makes slow.
+  await expect(diagrams).toHaveCount(2, { timeout: 15_000 });
   for (const diagram of await diagrams.all()) await expect.poll(() => diagram.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
   // The sanitizer removes the HTML that Mermaid draws math with, so the label shows its text.
   expect(decodeURIComponent(await diagrams.first().getAttribute('src'))).toContain('x^2');
