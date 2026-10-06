@@ -1,4 +1,4 @@
-const INBOX_PURGE_INTERVAL_SECONDS: i64 = 60 * 60;
+const INBOX_PURGE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 use crate::clock::unix_now;
 use std::{
@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::{
     sync::{Semaphore, SemaphorePermit, broadcast, watch},
     task::JoinHandle,
-    time::{Duration, sleep},
+    time::{Duration, Instant, sleep},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -31,6 +31,8 @@ const BATCH_TIME: std::time::Duration = std::time::Duration::from_millis(10);
 const LONGEST_IDLE: Duration = Duration::from_secs(5);
 const SHORTEST_IDLE: Duration = Duration::from_secs(1);
 const FIRST_ERROR_PAUSE: Duration = Duration::from_millis(500);
+const MINUTE: Duration = Duration::from_secs(60);
+const HOUR: Duration = Duration::from_secs(60 * 60);
 const DELIVERABLE_TOPICS: &str =
     "'notification.created','domain.activity','inbox.state_changed','access.changed'";
 /// Live-update streams one person may keep open, a small share of the
@@ -185,11 +187,15 @@ pub struct OutboxWorker {
 impl OutboxWorker {
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> AppResult<()> {
         let mut runtime_shutdown = self.runtime.shutdown_receiver();
-        let mut next_purge = 0_i64;
-        let mut next_comment_purge = 0_i64;
-        let mut next_optimize = 0_i64;
-        let mut next_retention = 0_i64;
-        let mut next_throttle_prune = 0_i64;
+        // Maintenance runs on the monotonic clock, so a step of the wall
+        // clock neither stops nor rushes it. The wall clock only decides what
+        // each pass removes.
+        let started = Instant::now();
+        let mut next_purge = started;
+        let mut next_comment_purge = started;
+        let mut next_optimize = started;
+        let mut next_retention = started;
+        let mut next_throttle_prune = started;
         let mut error_pause = FIRST_ERROR_PAUSE;
         loop {
             if *shutdown.borrow() || *runtime_shutdown.borrow() {
@@ -207,30 +213,31 @@ impl OutboxWorker {
                     continue;
                 }
             };
-            if now >= next_throttle_prune {
+            let tick = Instant::now();
+            if tick >= next_throttle_prune {
                 if let Err(error) =
                     crate::retention::prune_login_throttles(self.runtime.db(), now).await
                 {
                     tracing::warn!(%error, "login throttle cleanup failed; retrying in one minute");
                 }
-                next_throttle_prune = now.saturating_add(60);
+                next_throttle_prune = tick + MINUTE;
             }
-            if now >= next_retention {
+            if tick >= next_retention {
                 next_retention = match crate::retention::prune_transient_state(
                     self.runtime.db(),
                     now,
                 )
                 .await
                 {
-                    Ok(false) => now.saturating_add(3600),
-                    Ok(true) => now.saturating_add(60),
+                    Ok(false) => tick + HOUR,
+                    Ok(true) => tick + MINUTE,
                     Err(error) => {
                         tracing::warn!(%error, "transient state cleanup failed; retrying in one minute");
-                        now.saturating_add(60)
+                        tick + MINUTE
                     }
                 };
             }
-            if now >= next_optimize {
+            if tick >= next_optimize {
                 match self
                     .runtime
                     .db()
@@ -240,36 +247,36 @@ impl OutboxWorker {
                     })
                     .await
                 {
-                    Ok(()) => next_optimize = now.saturating_add(60 * 60),
+                    Ok(()) => next_optimize = tick + HOUR,
                     Err(error) => {
                         tracing::warn!(error = %error, "query planner maintenance failed; retrying in one minute");
-                        next_optimize = now.saturating_add(60);
+                        next_optimize = tick + MINUTE;
                     }
                 }
             }
-            if now >= next_comment_purge {
+            if tick >= next_comment_purge {
                 next_comment_purge = match CollaborationService::new(self.runtime.db().clone())
                     .purge_deleted_comments(now)
                     .await
                 {
                     // A full batch suggests more are waiting.
-                    Ok(500..) => now,
-                    Ok(_) => now.saturating_add(60),
+                    Ok(500..) => tick,
+                    Ok(_) => tick + MINUTE,
                     Err(error) => {
                         tracing::warn!(%error, "deleted comment purge failed; retrying in one minute");
-                        now.saturating_add(60)
+                        tick + MINUTE
                     }
                 };
             }
-            if now >= next_purge {
+            if tick >= next_purge {
                 match CollaborationService::new(self.runtime.db().clone())
                     .purge_archived(now)
                     .await
                 {
-                    Ok(_) => next_purge = now.saturating_add(INBOX_PURGE_INTERVAL_SECONDS),
+                    Ok(_) => next_purge = tick + INBOX_PURGE_INTERVAL,
                     Err(error) => {
                         tracing::warn!(error = %error, "archive purge failed; retrying in one minute");
-                        next_purge = now.saturating_add(60);
+                        next_purge = tick + MINUTE;
                     }
                 }
             }
