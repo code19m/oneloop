@@ -338,6 +338,38 @@ fn a_restore_removes_only_the_marker_it_claimed() {
 }
 
 #[test]
+fn a_claimed_marker_leaves_its_path_before_its_lock_is_released() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    let marker = root.path().join(crate::db::RESTORE_MARKER);
+    plant(&marker, &owner("restore", exited_pid()));
+    let (lock, _) = claim_abandoned(&marker).unwrap();
+    let aside = set_aside_claimed_marker(&marker, &lock).unwrap().unwrap();
+    // The lock still holds, and another restore can already write its marker.
+    assert!(!marker.exists());
+    assert!(claim_abandoned(&aside).is_none(), "the claim still holds");
+    plant(&marker, &owner("restore", std::process::id()));
+    drop(lock);
+    fs::remove_file(&aside).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<WorkOwner>(&fs::read(&marker).unwrap())
+            .unwrap()
+            .pid,
+        std::process::id(),
+        "the other restore keeps its marker"
+    );
+    // Removing a claimed marker leaves nothing behind.
+    fs::remove_file(&marker).unwrap();
+    plant(&marker, &owner("restore", exited_pid()));
+    let mut claimed = None;
+    assert!(soon(|| {
+        claimed = claim_abandoned(&marker);
+        claimed.is_some()
+    }));
+    assert!(remove_claimed_marker(&marker, claimed.unwrap().0).unwrap());
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn restoring_again_removes_only_what_an_interrupted_restore_left() {
     let root = tempfile::tempdir_in("target").unwrap();
     let live = root.path().join("live");

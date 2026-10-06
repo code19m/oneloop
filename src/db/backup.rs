@@ -736,15 +736,33 @@ fn names_claimed_file(path: &Path, claimed: &File) -> std::io::Result<bool> {
 }
 
 /// Closes a claimed restore marker and removes it (see `remove_claimed`),
-/// unless the path names another file by now. The check runs while the
-/// claimed file is still open, so its inode can't be in use by another.
+/// unless the path names another file by now.
 fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
-    let same = names_claimed_file(marker, &lock)?;
+    let Some(aside) = set_aside_claimed_marker(marker, &lock)? else {
+        return Ok(false);
+    };
     drop(lock);
-    if same {
-        fs::remove_file(marker)?;
+    fs::remove_file(aside)?;
+    Ok(true)
+}
+
+/// Renames a claimed restore marker to a name of its own, unless the path
+/// names another file by now, and returns the new name. While the claimed
+/// file is open and locked, no other restore can claim or replace it, so the
+/// check holds for the rename. Once the lock is closed, the marker's path is
+/// already free: removing the renamed file can't take a marker that another
+/// restore writes meanwhile.
+fn set_aside_claimed_marker(marker: &Path, lock: &File) -> std::io::Result<Option<PathBuf>> {
+    if !names_claimed_file(marker, lock)? {
+        return Ok(None);
     }
-    Ok(same)
+    let aside = marker.with_file_name(format!(
+        "{}.removed-{}",
+        super::RESTORE_MARKER,
+        Uuid::now_v7()
+    ));
+    fs::rename(marker, &aside)?;
+    Ok(Some(aside))
 }
 
 /// A single file or folder name, with no path separators or dot segments.
