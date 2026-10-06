@@ -1,7 +1,10 @@
 const INBOX_PURGE_INTERVAL_SECONDS: i64 = 60 * 60;
 
 use crate::clock::unix_now;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
@@ -10,6 +13,7 @@ use tokio::{
     task::JoinHandle,
     time::{Duration, sleep},
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{AppError, AppResult, Db};
@@ -29,6 +33,9 @@ const SHORTEST_IDLE: Duration = Duration::from_secs(1);
 const FIRST_ERROR_PAUSE: Duration = Duration::from_millis(500);
 const DELIVERABLE_TOPICS: &str =
     "'notification.created','domain.activity','inbox.state_changed','access.changed'";
+/// Live-update streams one person may keep open, a small share of the
+/// server's connections. A browser tab holds one while it is shown.
+pub(crate) const STREAMS_PER_PERSON: usize = 16;
 
 #[derive(Clone)]
 pub struct CollaborationRuntime {
@@ -40,6 +47,48 @@ struct RuntimeInner {
     hints: broadcast::Sender<Arc<SseHint>>,
     authorization: Semaphore,
     shutdown: watch::Sender<bool>,
+    streams: Mutex<Streams>,
+}
+
+/// The open live-update streams of each person, oldest first, each with the
+/// token that closes it.
+#[derive(Default)]
+struct Streams {
+    opened: u64,
+    open: HashMap<String, VecDeque<(u64, CancellationToken)>>,
+}
+
+/// One person's live-update stream, counted until it is dropped.
+pub(crate) struct LiveStream {
+    runtime: CollaborationRuntime,
+    user_id: String,
+    id: u64,
+    replaced: CancellationToken,
+}
+
+impl LiveStream {
+    /// Completes when the person opened so many newer streams that this one
+    /// must close.
+    pub(crate) async fn replaced(&self) {
+        self.replaced.cancelled().await;
+    }
+}
+
+impl Drop for LiveStream {
+    fn drop(&mut self) {
+        let mut streams = self
+            .runtime
+            .inner
+            .streams
+            .lock()
+            .expect("live stream registry lock");
+        if let Some(open) = streams.open.get_mut(&self.user_id) {
+            open.retain(|(id, _)| *id != self.id);
+            if open.is_empty() {
+                streams.open.remove(&self.user_id);
+            }
+        }
+    }
 }
 
 impl CollaborationRuntime {
@@ -52,7 +101,35 @@ impl CollaborationRuntime {
                 hints,
                 authorization: Semaphore::new(2),
                 shutdown,
+                streams: Mutex::new(Streams::default()),
             }),
+        }
+    }
+
+    /// Counts a new live-update stream of `user_id`. Beyond
+    /// `STREAMS_PER_PERSON`, the person's oldest stream is told to close;
+    /// browsers reconnect a stream that closes.
+    pub(crate) fn open_stream(&self, user_id: &str) -> LiveStream {
+        let replaced = CancellationToken::new();
+        let mut streams = self
+            .inner
+            .streams
+            .lock()
+            .expect("live stream registry lock");
+        streams.opened += 1;
+        let id = streams.opened;
+        let open = streams.open.entry(user_id.to_owned()).or_default();
+        open.push_back((id, replaced.clone()));
+        while open.len() > STREAMS_PER_PERSON {
+            if let Some((_, oldest)) = open.pop_front() {
+                oldest.cancel();
+            }
+        }
+        LiveStream {
+            runtime: self.clone(),
+            user_id: user_id.to_owned(),
+            id,
+            replaced,
         }
     }
 

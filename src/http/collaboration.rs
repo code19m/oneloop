@@ -182,6 +182,8 @@ async fn events(
     let user_id = actor.user_id.clone();
     let service = state.collaboration.clone();
     let runtime = state.collaboration_runtime;
+    // One person's streams can't take more than a few connections.
+    let stream = runtime.open_stream(&user_id);
     let mut updates = runtime.subscribe();
     // Subscribe before checking the snapshot boundary. Later writes are then
     // queued for this stream even if they commit before its first event is sent.
@@ -273,8 +275,11 @@ async fn events(
                     if shutdown.changed().await.is_err() { break; }
                 }
             } => {},
+            // The person opened too many newer streams; the browser reconnects.
+            _ = stream.replaced() => {},
             _ = pump => {},
         }
+        drop(stream);
     });
     Ok((
         [
