@@ -191,7 +191,10 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await field.fill('A title');
   await expect(field).toHaveAccessibleDescription('Existing help');
   await expect(field).not.toHaveAttribute('aria-invalid');
+  // The dialog holds typed text, so Escape asks first.
   await page.keyboard.press('Escape');
+  await page.getByRole('alertdialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard' }).click();
+  await expect(dialog).toHaveCount(0);
   await page.getByRole('button', { name: /^Pool(?: |$)/ }).click();
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
 });
