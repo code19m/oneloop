@@ -7,7 +7,7 @@ import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
-  const app={context:()=>context,openPeek(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},...overrides.app};
+  const app={context:()=>context,openPeek(){},openModal(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},...overrides.app};
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
@@ -599,6 +599,47 @@ test('Use latest in a dialog that saves several fields draws it again from the s
   const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
   state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await tick();await tick();
   assert.deepEqual(redrawn,[true]);assert.deepEqual(finished,['epic:e1'],'the dialog now shows the latest revision');
+}));
+
+/** A conflict prompt answered with Keep my changes, which saves again at the latest revision. */
+const keepMine=()=>({isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'record',expectedRevision:(_key,latest)=>latest,finishRevision(){},handleCommandFailure:async()=>{},
+  resolveConflict:async({retry})=>({handled:true,saved:true,result:await retry(2)})});
+/** A gateway whose first save meets someone else's change. */
+const conflictOnce=(sent)=>({execute:async(_operation,payload,options)=>{sent.push(payload);if(sent.length===1)throw changedElsewhere();return {entities:[],events:[]};}});
+
+test('Keep my changes in Edit epic saves only the fields the person changed, so a teammate\'s new dates stay',()=>withFormData(async()=>{
+  const sent=[],state=epicPage(keepMine(),conflictOnce(sent));
+  state.app.openModal('epic','e1');
+  // A teammate moves the epic while the dialog is open; it still shows the old dates.
+  Object.assign(state.data.epics[0],{start:'2026-02-01',end:'2026-03-01',revision:2});
+  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Renamed epic',desc:'',start:'2026-01-01',end:''})},'e1');await tick();await tick();
+  assert.deepEqual(sent,[{epicId:'e1',title:'Renamed epic'},{epicId:'e1',title:'Renamed epic'}]);
+}));
+
+test('Keep my changes in Edit milestone saves only the fields the person changed, so a teammate\'s new date stays',()=>withFormData(async()=>{
+  const sent=[],state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery:keepMine(),gateway:conflictOnce(sent)});
+  state.data.milestones.push({id:'m1',projectId:'p1',name:'Launch',desc:'Ship it',date:'2026-11-10',revision:1});
+  state.app.openModal('milestone','m1');
+  Object.assign(state.data.milestones[0],{date:'2026-12-24',revision:2});
+  state.app.saveMilestone({preventDefault(){},target:dialogForm({name:'Public launch',desc:'Ship it',date:'2026-11-10'})},'m1');await tick();await tick();
+  assert.deepEqual(sent,[{milestoneId:'m1',title:'Public launch'},{milestoneId:'m1',title:'Public launch'}]);
+}));
+
+test('a Pool promotion sends the item\'s title and description only when the person changed them',()=>withFormData(async()=>{
+  const sent=[],state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1',title:'Idea',desc:'Notes'}},{recovery:keepMine(),gateway:conflictOnce(sent)});
+  state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
+  state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'}),querySelectorAll:()=>[]}});await tick();await tick();
+  assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId'],['assigneeIds','deadline','description','epicId','poolItemId']]);
+}));
+
+test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',()=>withFormData(async()=>{
+  let target;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
+  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}});
+  state.app.openModal('epic','e1');
+  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Epic',desc:'',start:'2026-01-05',end:''},{'[name="start"]':{type:'hidden',value:'2026-01-05'}})},'e1');await tick();await tick();
+  assert.equal(target.element,undefined);assert.equal(typeof target.acceptLatest,'function');
+  assert.equal(target.latestValue({start:'2026-02-01'}),'2026-02-01','the prompt still names the saved date');
 }));
 
 test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{

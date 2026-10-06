@@ -50,6 +50,27 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const openPeek=app.openPeek.bind(app);
   const moveTaskOrder=app.moveTaskOrder.bind(app);
   const nav=app.nav.bind(app);
+  const openModal=app.openModal.bind(app);
+
+  // The values an edit dialog showed when it opened. A save sends only the
+  // fields the person changed, so Keep my changes never puts back a value
+  // that someone else saved in a field this person left alone.
+  /** @type {{type:string,id:string,values:Record<string,unknown>}|null} */
+  let dialogBase=null;
+  /** @type {Record<string,(item:any)=>Record<string,unknown>>} */
+  const DIALOG_VALUES={
+    epic:(item)=>({trackId:item.trackId,title:text(item.title,120),description:text(item.desc,2000),startDate:item.start,endDate:item.end||null}),
+    milestone:(item)=>({title:text(item.name,60),description:text(item.desc,500),milestoneDate:item.date}),
+  };
+  function noteDialog(type,id){const item=type==='epic'?epic(id):type==='milestone'?milestone(id):null;dialogBase=item?{type,id,values:DIALOG_VALUES[type](item)}:null;}
+  /** After Use latest draws the dialog again, it shows the saved values. */
+  function rebaseDialog(){if(dialogBase)noteDialog(dialogBase.type,dialogBase.id);}
+  /** The fields of `values` that differ from what the dialog showed when it opened; all of them when that is unknown. */
+  function changedFields(type,id,values){
+    const base=dialogBase?.type===type&&dialogBase.id===id?dialogBase.values:null;
+    return base?Object.fromEntries(Object.entries(values).filter(([key,value])=>(value??null)!==(base[key]??null))):values;
+  }
+  app.openModal=(type,id,...rest)=>{noteDialog(type,id);return openModal(type,id,...rest);};
 
   function fieldError(form,name,message){
     if(form&&typeof form.querySelector==='function'&&form.querySelector(`[name="${name}"]`)){
@@ -364,6 +385,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         // text below). Until then, it stays on the revision it was opened at,
         // so saving it again still meets the other change.
         const dialog=!options.coalesce&&!!options.form?.closest?.('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
+        // A picker keeps its value in a hidden input, which can't show the
+        // saved value by itself; the whole dialog is drawn again instead.
+        const control=showsLatest&&field?dialogControl(options.form,field):null,inPlace=!!control&&control.type!=='hidden';
         try{
           /** @type {number|undefined} */ let retriedAt;
           const resolved=await recovery.resolveConflict({
@@ -372,9 +396,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             latestEntity:()=>latestEntity(operation,payload,entity),
             retry:(expectedRevision)=>{retriedAt=expectedRevision;if(operation==='pool.promote'&&promotionSource?.id===payload.poolItemId)promotionSource.entity.revision=expectedRevision;return gateway.execute(operation,payload,{expectedRevision,interactionKey});},
             target:{
-              element:options.conflictElement??(showsLatest&&field?()=>dialogControl(options.form,field):undefined),
+              element:options.conflictElement??(inPlace?()=>dialogControl(options.form,field):undefined),
               latestValue:(item)=>conflictValue(operation,payload,item),
-              ...(showsLatest&&!field?{acceptLatest:()=>app.redrawDialog?.()}:{}),
+              ...(showsLatest&&!inPlace?{acceptLatest:()=>{rebaseDialog();app.redrawDialog?.();}}:{}),
             },
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
@@ -595,7 +619,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const project=data.projects.find((entry)=>entry.id===payload.projectId),eligible=new Set((project?.members??[]).map((member)=>member.userId));
     if(payload.assigneeIds.some((id)=>!eligible.has(id)||data.users.find((user)=>user.id===id)?.active===false))return fieldError(form,'assignees','Choose active project members. A selected person is no longer available.');
     const operation=source?'pool.promote':'task.create';
-    const body=source?{poolItemId:source.id,epicId:payload.epicId,title:payload.title,description:payload.description,deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
+    // Text the person left as the Pool item had it follows the item, so Keep
+    // my changes never puts back a title or description changed meanwhile.
+    const ownTitle=payload.title!==text(modal?.title,140),ownDescription=payload.description!==text(modal?.desc,4000);
+    const body=source?{poolItemId:source.id,epicId:payload.epicId,...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
     pendingTaskForms.add(form);
     const buttons=Array.from(form.querySelectorAll?.('button[type="submit"],input[type="submit"]')??[]);
     const disabled=buttons.map(button=>button.disabled);
@@ -633,7 +660,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(!validDate(base.startDate))return fieldError(form,'start','Enter a valid start date in YYYY-MM-DD format.');
     if(!validOptionalDate(form,'end',base.endDate))return false;
     if(base.endDate&&base.endDate<base.startDate)return fieldError(form,'end','End date cannot be before the start date.');
-    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...base}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
+    return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changedFields('epic',item.id,base)}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
   };
   app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
   app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
@@ -644,7 +671,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   app.saveTrack=(event,id)=>{const form=event.target,values=formValues(event),item=id?track(id):null,name=text(values.get('name'),60);if(!name)return fieldError(form,'name','Give the track a name.');return fire(execute(item?'track.update':'track.create',item?{trackId:item.id,name}:{projectId:context().projectId,name,description:''},item,item?'Track renamed':'Track created',{create:!item,form,closeForm:true}));};
   app.deleteTrack=(id)=>{const item=track(id);if(!item)return;app.confirm({title:'Delete track?',text:`“${item.name}” will be removed.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
-  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...base}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
+  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
   app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
 
   app.saveBlock=(event,id,mode)=>{

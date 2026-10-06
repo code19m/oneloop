@@ -119,6 +119,24 @@ test('Edit epic shows the saved title in the drawer it was opened from',async()=
  }finally{Object.assign(globalThis,previous);}
 });
 
+test('the Edit epic and Edit milestone dialogs send only the fields the person changed',async()=>{
+ const t=bootApp({route:'roadmap'}),previous={document:globalThis.document,FormData:globalThis.FormData};
+ Object.assign(globalThis,{document:t.d,FormData:t.w.FormData});
+ t.D.epics.forEach(epic=>epic.projectId=t.D.tracks.find(track=>track.id===epic.trackId).projectId);
+ const epic=t.D.epics.find(item=>item.projectId===t.A.context().projectId&&item.state!=='done'),milestone=t.D.milestones[0];
+ const sent=[];
+ installViewBridge({app:t.A,data:t.D,api:{},gateway:{execute:async(operation,payload)=>{sent.push([operation,payload]);return {entities:[],events:[]};}},reads:{cancel(){}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ try{
+  t.A.openModal('epic',epic.id);
+  let form=t.d.querySelector('.modal form');form.querySelector('[name="title"]').value='Renamed in the dialog';
+  t.A.saveEpic({target:form,preventDefault(){}},epic.id);await settle();
+  t.A.openModal('milestone',milestone.id);
+  form=t.d.querySelector('.modal form');form.querySelector('[name="desc"]').value='A new goal';
+  t.A.saveMilestone({target:form,preventDefault(){}},milestone.id);await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)),[['epic.update',{epicId:epic.id,title:'Renamed in the dialog'}],['milestone.update',{milestoneId:milestone.id,description:'A new goal'}]]);
+ }finally{Object.assign(globalThis,previous);}
+});
+
 test('Keep my changes closes an Unblock dialog that its conflict reload re-rendered',async()=>{
  const t=bootApp({route:'task/BIR-079',prepare(D){
   const task=D.tasks.find(item=>item.id==='BIR-079');Object.assign(task,{internalId:'task-1',revision:1});
