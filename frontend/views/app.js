@@ -972,10 +972,12 @@
     el.addEventListener('mouseenter', () => clearTimeout(EPIC_TIP.hideTimer));
     el.addEventListener('mouseleave', () => App.epicLeave());
   }
+  // The words the product uses for an epic's status.
+  const epicStatus = (epic) => ({ planning: 'Planning', active: 'In progress', done: 'Done' })[epic.state] || epic.state;
   function showEpicTip(anchor, id) {
     const epic = epicById(id);
     if (!epic||!canReadProject(trackById(epic.trackId)?.projectId)) return;
-    const status = { planning: 'Planning', active: 'In progress', done: 'Done' }[epic.state] || epic.state;
+    const status = epicStatus(epic);
     mountRoadmapTip(anchor, 'epic-tooltip', `<div class="epic-tip-title">${esc(epic.title)}</div>
       <div class="epic-tip-track">${esc(trackById(epic.trackId)?.name || '')}</div>
       <dl class="epic-tip-facts"><div><dt>Status</dt><dd>${esc(status)}</dd></div><div><dt>Tasks</dt><dd>${epic.counted === false ? countsLoading : `${epic.done} / ${epic.total} done`}</dd></div>
@@ -1837,7 +1839,7 @@
         </div>
         <h2 id="peek-title" style="font-size:17px;font-weight:600;letter-spacing:-0.01em">${esc(e.title)}</h2>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="chip idle">${ongoing ? 'ongoing' : e.state}</span>
+          <span class="chip idle">${ongoing ? 'Ongoing · ' : ''}${esc(epicStatus(e))}</span>
           <span class="mono" style="font-size:var(--text-xs);color:var(--ink-faint)">${humanShort(d(e.start))} → ${e.end ? humanShort(d(e.end)) : '<span style="color:var(--ink-soft)">no end date</span>'}</span>
         </div>
       </div>

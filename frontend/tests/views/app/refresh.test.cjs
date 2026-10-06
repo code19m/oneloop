@@ -13,7 +13,7 @@ for(const replacement of [null,'modal','drawer'])test(`epic reopening updates it
  const gateway=createCommandGateway({api,data:t.D});
  installViewBridge({app:t.A,data:t.D,api,gateway,reads:{epic:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
  try{
-  t.A.openPeek(epic.id);await settle();assert.equal(t.d.querySelector('.peek .chip').textContent,'done');
+  t.A.openPeek(epic.id);await settle();assert.equal(t.d.querySelector('.peek .chip').textContent,'Done');
   t.A.reopenEpic(epic.id);assert(release);
   let input,drawer;
   if(replacement){
@@ -26,7 +26,7 @@ for(const replacement of [null,'modal','drawer'])test(`epic reopening updates it
    assert.equal(t.d.querySelector('.peek'),drawer);assert.equal(t.d.querySelector('.modal [name="title"]'),input);
    assert.equal(input.value,'Next draft');assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
   }else{
-   assert.equal(t.d.querySelector('.peek .chip').textContent,'planning');
+   assert.equal(t.d.querySelector('.peek .chip').textContent,'Planning');
    assert.equal(t.d.querySelector('.peek-actions button').textContent,'Mark as done');
   }
  }finally{globalThis.document=previous;}

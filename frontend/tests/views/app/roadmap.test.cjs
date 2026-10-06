@@ -401,3 +401,16 @@ test('a scale change eases over a few frames, and a wheel zoom takes over where 
   assert(Math.abs(perDay() / (second / 1.15) - 1) < 0.02, 'the wheel zooms out from where the scale change was');
   assert.deepEqual(scales(r.d), pressed(null));
 });
+
+test('the epic drawer names every status as the Roadmap does, and an ongoing epic shows both facts', () => {
+  const t = boot();
+  const epic = t.D.epics.find(item => t.D.tracks.find(track => track.id === item.trackId)?.projectId === t.A.context().projectId);
+  const shown = [];
+  for (const end of ['2026-12-31', null]) for (const state of ['planning', 'active', 'done']) {
+    Object.assign(epic, { state, end });
+    t.A.openPeek(epic.id);
+    shown.push(t.d.querySelector('.peek .chip').textContent);
+    t.A.closeOverlays();
+  }
+  assert.deepEqual(shown, ['Planning', 'In progress', 'Done', 'Ongoing · Planning', 'Ongoing · In progress', 'Ongoing · Done']);
+});
