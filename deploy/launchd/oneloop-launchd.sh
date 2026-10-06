@@ -7,7 +7,7 @@ if [ "$#" -ne 1 ]; then
   exit 0
 fi
 stop() {
-  echo "oneloop: $1, then bootstrap the job again" >&2
+  echo "oneloop: $1, then unload the job with launchctl bootout and load it again with launchctl bootstrap" >&2
   exit 0
 }
 [ -f "$1" ] && [ -x "$1" ] || stop "cannot run $1; fix the path in the plist"
