@@ -135,8 +135,9 @@ the upgrade notes before you upgrade.
   small pieces instead of whole files, and a folder of 5,000 files syncs in
   about 6 seconds.
 - Time zone rules come from the server's time zone database when it is at
-  least as new as oneloop's own copy, which is now IANA 2026c instead of 2025b.
-  This brings the 2026 changes for British Columbia, Alberta and Morocco.
+  least as new as oneloop's own copy, which is now IANA 2026e instead of 2025b.
+  This brings the 2026 changes for British Columbia, Alberta, Morocco,
+  Manitoba and the Northwest Territories.
   `oneloop serve --check` shows which copy is in use.
 - `oneloop --version` also shows the source revision. Setup and upgrade
   messages and the help are clearer, and `user add --help` and
@@ -275,8 +276,6 @@ the upgrade notes before you upgrade.
 - On phones and narrow windows, a dragged card reaches columns that are off
   screen.
 - In Firefox, dropping a Board card no longer opens its task page.
-- In Safari, a track menu opens right after a track move, and a new project
-  opens even if its dialog was redrawn.
 - On a systemd server, the docs run `oneloop` commands as the `oneloop`
   account with the unit's settings, so backups, test restores and upgrades
   work as written, and the upgrade steps name a release tag that exists.
@@ -287,9 +286,8 @@ the upgrade notes before you upgrade.
 
 ### Security
 
-- Names in confirmation dialogs, such as **Remove member?** and
-  **Reset password?**, show as text. Before, a display name with markup could
-  run app actions when an admin opened such a dialog.
+- A display name with markup shows as text in the **Member has open work**
+  dialog. Before, it could run app actions when an admin opened that dialog.
 - The app page uses only its own scripts and styles, and adds HTML only
   through its own templates and HTML cleaner, which the browser enforces
   (Trusted Types). Mermaid draws diagrams in a separate document.
