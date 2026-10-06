@@ -242,6 +242,21 @@ test('the renderer document returns sanitized SVG with its size', async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(config)), settings); assert.notEqual(config, settings, 'Mermaid gets its own copy');
 });
 
+test('the renderer hides $$ pairs from Mermaid\'s math, and draws a diagram as written when that breaks a name', async () => {
+  const { window: w } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/views/diagram-renderer.html', runScripts: 'outside-only' });
+  w.eval(source('vendor/dompurify/purify'));
+  const rendered = [];
+  // Like Mermaid, a flowchart whose node names get a zero-width space doesn't parse.
+  w.mermaid = { initialize() {}, async render(_id, text) { rendered.push(text); if (text.startsWith('flowchart') && text.includes('\u200b')) throw new Error('Lexical error on line 2'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>Drawn</text></svg>' }; } };
+  w.eval(source('diagram-renderer'));
+  for (const diagram of ['sequenceDiagram\n A->>B: $$x^2$$', 'flowchart LR\n A$$B-->C\n subgraph s$$\n end', 'flowchart LR\n A$$B-->C$$D']) assert.match((await w.renderDiagram('d', diagram, {})).svg, /Drawn/);
+  assert.deepEqual(rendered, [
+    'sequenceDiagram\n A->>B: $\u200b$x^2$\u200b$',
+    'flowchart LR\n A$$B-->C\n subgraph s$$\n end',
+    'flowchart LR\n A$\u200b$B-->C$\u200b$D', 'flowchart LR\n A$$B-->C$$D',
+  ]);
+});
+
 /** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */
 function lazyPreviews() {
   const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
