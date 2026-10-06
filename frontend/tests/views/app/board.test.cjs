@@ -331,3 +331,23 @@ test('a card dropped below a long column follows its last shown card and stays d
   assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === shown.at(-1)).internalId);
   assert.deepEqual(t.doneCards(), [...shown, task.id]);
 });
+
+test('the click that ends a card drag never opens the card, however late it comes', () => {
+  const t = bootApp({ route: 'board', actions: true, beforeScript: (name, w) => {
+    if (name === 'app') w.OneloopRuntime = { invoke: () => Promise.resolve({}), report() {} };
+  } });
+  t.d.elementFromPoint = () => null;
+  const card = t.d.querySelector('.board .card[data-task]');
+  const pointer = (type, x) => card.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, pointerType: 'mouse', clientX: x, clientY: 10 }));
+  const click = () => card.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+  pointer('pointerdown', 10); pointer('pointermove', 40);
+  assert.ok(t.A._drag, 'the drag started');
+  pointer('pointerup', 40);
+  // Firefox clicks only after the drop's redraw, which a busy page can take a second to finish.
+  const now = t.w.Date.now; t.w.Date.now = () => now() + 1000;
+  click();
+  assert.equal(t.w.location.hash, '#/board');
+  // The next press forgets the drag, so a plain click opens the card.
+  pointer('pointerdown', 10); pointer('pointerup', 10); click();
+  assert.equal(t.w.location.hash, `#/task/${card.dataset.task}`);
+});

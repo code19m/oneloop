@@ -4100,7 +4100,10 @@
 
   // Pointer gestures share the existing destination, optimistic-save and rollback
   // paths. Touch/pen start on grips so the rest of the Board remains scrollable.
-  let pointerDrag = null, suppressDragClickUntil = 0;
+  // The click that ends a drag is not a click on the card. Some browsers send
+  // it only after the drop has redrawn the Board, however long that takes, so
+  // a drag that started swallows the next click; the next press forgets it.
+  let pointerDrag = null, suppressDragClick = false;
   function pointerEvent(event, currentTarget) {
     const drag = pointerDrag;
     return {target:drag.source,currentTarget,clientX:drag.x,clientY:drag.y,
@@ -4135,7 +4138,7 @@
     const drag=pointerDrag;if(!drag)return;
     cancelAnimationFrame(drag.frame);
     if(drag.started){
-      suppressDragClickUntil=Date.now()+400;
+      suppressDragClick=true;
       if(commit && drag.source.isConnected){
         updatePointerTarget();
         if(drag.target && App._drag){
@@ -4149,7 +4152,7 @@
     if(drag.source.hasPointerCapture?.(drag.pointerId))drag.source.releasePointerCapture(drag.pointerId);
   }
   document.addEventListener('pointerdown',event=>{
-    suppressDragClickUntil=0;
+    suppressDragClick=false;
     if(!event.isPrimary){if(pointerDrag)finishPointerDrag(false);return;}
     if(event.button!==0 || pointerDrag || state.modal || state.peek || state.menu) return;
     const grip=event.target.closest('.grip'),card=event.target.closest('.card[data-task]');
@@ -4182,7 +4185,7 @@
   document.addEventListener('lostpointercapture',event=>{if(pointerDrag?.pointerId===event.pointerId && event.target===pointerDrag.source && !pointerDrag.source.hasPointerCapture?.(event.pointerId))finishPointerDrag(false);},true);
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pointerDrag){event.preventDefault();event.stopImmediatePropagation();finishPointerDrag(false);}},true);
   window.addEventListener('blur',()=>finishPointerDrag(false));
-  document.addEventListener('click',event=>{if(event.detail>0 && Date.now()<suppressDragClickUntil){suppressDragClickUntil=0;event.preventDefault();event.stopImmediatePropagation();}},true);
+  document.addEventListener('click',event=>{if(event.detail>0 && suppressDragClick){suppressDragClick=false;event.preventDefault();event.stopImmediatePropagation();}},true);
   // Native HTML dragging would steal the pointer stream. Retain callable legacy
   // handlers only as a compatibility surface for the shared mutation model.
   document.addEventListener('dragstart',event=>{if(event.target.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);
