@@ -66,7 +66,9 @@ Open **Users** and click the person.
   to restore them with their old project access.
 
 Both actions sign the person out everywhere and disconnect their AI assistants.
-The last active admin can't be deactivated or lose the admin role.
+The last active admin can't be deactivated or lose the admin role. An admin who
+loses the role while on **Users**, **Storage** or **Settings** is moved to the
+**Board** with the message "You no longer have admin access."
 
 If no admin can sign in, reset a password on the server. This works while
 oneloop is running:

@@ -490,6 +490,20 @@ test('Save in Edit user finds the account after a refresh replaced its row',asyn
   }finally{globalThis.FormData=OriginalFormData;}
 });
 
+test('Save in Edit user after the admin role is gone says so and leaves Users, instead of doing nothing',async()=>{
+  const OriginalFormData=globalThis.FormData,fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],navigated=[];
+  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
+  globalThis.FormData=class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}};
+  try{
+    const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{nav:(view)=>navigated.push(view)},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {};}}});
+    state.data.users.push({id:'u1',admin:false,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
+    state.app.saveUser({target:form,preventDefault(){}},'u2');await tick();
+    assert.deepEqual(saved,[],'nothing is sent');
+    assert.equal(state.closed,1);assert.deepEqual(navigated,['board']);
+    assert.deepEqual(state.toasts,[['You no longer have admin access.','info']]);
+  }finally{globalThis.FormData=OriginalFormData;}
+});
+
 /** A task page whose commands go through the real gateway and are answered one by one. */
 function taskPage(overrides={}){
   let gateway;

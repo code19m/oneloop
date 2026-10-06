@@ -14,6 +14,7 @@ import {
 } from './action-feedback.js';
 import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
+import { leaveAdminPage } from '../features/recovery/controller.js';
 
 /** The server's username order: SQLite's binary collation, not the browser's locale. */
 const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
@@ -184,6 +185,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   const reportFor=(scope,options={},current=()=>true)=>(error)=>{if(sessionScope()===scope&&current())report(error,options);};
+  const stillAdmin=()=>!!data.users.find((user)=>user.id===data.session?.userId)?.admin;
+  /** An admin action found the person is no longer an admin: leave the admin page or dialog and say so. */
+  function adminGone(){
+    if(!leaveAdminPage(data,app,context()))app.toast('You no longer have admin access.','error');
+    const error=new ApiError('You no longer have admin access.',{status:403,code:'forbidden'});
+    /** @type {any} */(error).oneloopReported=true;return error;
+  }
 
   // A task field save repaints in the background, so it never replaces the
   // field being edited. Other changes paint at once, or, under a dialog opened
@@ -563,7 +571,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const expectedRevision=item.revision;
       // A refresh may replace the cached row, so look the account up by id.
       const save=()=>{
-        if(sessionScope()!==scope||!data.users.some(user=>user.id===id)||!data.users.find(user=>user.id===data.session?.userId)?.admin)return Promise.resolve();
+        if(sessionScope()!==scope)return Promise.resolve();
+        if(!stillAdmin())return Promise.reject(adminGone());
+        if(!data.users.some(user=>user.id===id)){fieldError(form,'name','This user is no longer listed. Reload Users and try again.');return Promise.resolve();}
         return api.updateUser(id,{displayName,isAdmin,isActive,expectedRevision}).then((user)=>{
         const latest=data.users.find(entry=>entry.id===id);
         if(sessionScope()!==scope||!latest)return;
@@ -759,7 +769,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     // Keep the displayed permission authoritative until the confirmation is accepted.
     if(!enabled&&input)input.checked=true;
     const apply=()=>{
-      if(sessionScope()!==scope||context().projectId!==project.id||!data.users.find(user=>user.id===data.session?.userId)?.admin)return false;
+      if(sessionScope()!==scope||context().projectId!==project.id)return false;
+      if(!stillAdmin()){adminGone();return false;}
       const latest=project.members.find(item=>item.userId===userId);if(!latest)return false;
       const current=new Set(latest.permissions);enabled?current.add(permission):current.delete(permission);
       // A change that fails shows the saved permission again.

@@ -725,6 +725,23 @@ export function createRecoveryController({
   return Object.freeze(controller);
 }
 
+/**
+ * Leave an admin page or dialog after an authoritative refresh shows that the
+ * person is no longer an admin, and say why. Nothing typed there can be saved
+ * any more, so this never asks first.
+ * @param {any} data @param {any} app @param {any} previous the page and dialog shown before the refresh
+ */
+export function leaveAdminPage(data, app, previous) {
+  const person = data.users?.find((user) => user.id === data.session?.userId);
+  if (!person || person.admin) return false;
+  const page = ['users','storage','settings'].includes(previous?.view), dialog = ['user','project','knowledge','temppw'].includes(previous?.modal?.type);
+  if (!page && !dialog) return false;
+  if (dialog) app.closeOverlays?.();
+  if (page) app.nav('board', { discard: true });
+  app.toast?.('You no longer have admin access.', 'info');
+  return true;
+}
+
 /** Leave an inaccessible project after an authoritative metadata refresh, and say why.
  * @param {any} data @param {any} app @param {any} previous @param {string} [name] the project's name before the refresh
  */
