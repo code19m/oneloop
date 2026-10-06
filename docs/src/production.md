@@ -52,7 +52,7 @@ on each device.
 ### nginx
 
 This example is also in the repository as
-[`deploy/nginx/oneloop.conf.example`](https://github.com/code19m/oneloop/blob/v0.1.0-rc.2/deploy/nginx/oneloop.conf.example):
+[`deploy/nginx/oneloop.conf.example`](https://github.com/code19m/oneloop/blob/v0.1.0-rc.3/deploy/nginx/oneloop.conf.example):
 
 ```nginx
 {{#include ../../deploy/nginx/oneloop.conf.example}}
@@ -131,7 +131,7 @@ With `docker run`, use `--restart unless-stopped --stop-timeout 35`.
    ```
 
 2. Save the
-   [unit file](https://github.com/code19m/oneloop/blob/v0.1.0-rc.2/deploy/systemd/oneloop.service.example)
+   [unit file](https://github.com/code19m/oneloop/blob/v0.1.0-rc.3/deploy/systemd/oneloop.service.example)
    as `/etc/systemd/system/oneloop.service`. Set your `ONELOOP_PUBLIC_URL` and
    any other [settings](reference.md#configuration) in it. The unit keeps data
    in `/var/lib/oneloop/data` and uses systemd's sandbox options.
@@ -180,7 +180,7 @@ Create the job and log folders:
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs
 ```
 
-The [deploy/launchd](https://github.com/code19m/oneloop/tree/v0.1.0-rc.2/deploy/launchd)
+The [deploy/launchd](https://github.com/code19m/oneloop/tree/v0.1.0-rc.3/deploy/launchd)
 folder has three files to download:
 
 - `com.oneloop.example.plist` is the job. Replace every `REPLACE_ME`, set your

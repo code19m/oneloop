@@ -19,7 +19,7 @@ Create a folder, for example `oneloop`, and save this file in it as
 Or download the file:
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.2/deploy/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.3/deploy/compose.yaml
 ```
 
 Run the next commands in that folder. First, create the database:
@@ -63,7 +63,7 @@ Build and install a release. This takes a few minutes and puts `oneloop` in
 `~/.cargo/bin`:
 
 ```sh
-cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.2 --locked
+cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.3 --locked
 ```
 
 You can choose another tag from the
