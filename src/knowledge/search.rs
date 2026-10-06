@@ -150,7 +150,8 @@ impl Index {
         });
         let file_count = files.len();
 
-        let mut documents: Vec<(u8, DocumentHits)> = Vec::new();
+        // The best hits of each matching document, and how many it has.
+        let mut documents: Vec<(u8, &Document, Vec<&Entry>, usize)> = Vec::new();
         let mut hit_count = 0;
         for document in &self.documents {
             let mut hits: Vec<(u8, &Entry)> = document
@@ -174,28 +175,18 @@ impl Index {
             }
             hits.sort_by_key(|(score, _)| *score);
             hit_count += hits.len();
-            let best = hits[0].0;
-            documents.push((
-                best,
-                DocumentHits {
-                    path: document.path.clone(),
-                    total: hits.len(),
-                    hits: hits
-                        .into_iter()
-                        .take(HITS_PER_DOCUMENT_MAX)
-                        .map(|(_, entry)| Hit {
-                            heading: entry.heading.clone(),
-                            section: entry.section.clone(),
-                            snippet: snippet(&entry.text, &entry.text_lower, &words),
-                        })
-                        .collect(),
-                },
-            ));
+            let (best, total) = (hits[0].0, hits.len());
+            let best_hits = hits
+                .into_iter()
+                .take(HITS_PER_DOCUMENT_MAX)
+                .map(|(_, entry)| entry)
+                .collect();
+            documents.push((best, document, best_hits, total));
         }
-        documents.sort_by(|(a_score, a), (b_score, b)| {
+        documents.sort_by(|(a_score, a, _, a_total), (b_score, b, _, b_total)| {
             a_score
                 .cmp(b_score)
-                .then(b.total.cmp(&a.total))
+                .then(b_total.cmp(a_total))
                 .then(a.path.cmp(&b.path))
         });
         Results {
@@ -207,10 +198,22 @@ impl Index {
                     folder: name.folder,
                 })
                 .collect(),
+            // Excerpts are made only for the documents in the reply.
             documents: documents
                 .into_iter()
                 .take(DOCUMENTS_MAX)
-                .map(|(_, hits)| hits)
+                .map(|(_, document, hits, total)| DocumentHits {
+                    path: document.path.clone(),
+                    total,
+                    hits: hits
+                        .into_iter()
+                        .map(|entry| Hit {
+                            heading: entry.heading.clone(),
+                            section: entry.section.clone(),
+                            snippet: snippet(&entry.text, &entry.text_lower, &words),
+                        })
+                        .collect(),
+                })
                 .collect(),
             file_count,
             hit_count,
@@ -291,9 +294,10 @@ fn terms(query: &str) -> Vec<String> {
 }
 
 /// A short excerpt around the first matching word, cut at word boundaries.
+/// It works on byte offsets in the text, so a long section isn't copied.
 fn snippet(text: &str, lower: &str, words: &[String]) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= SNIPPET_CHARS {
+    let length = text.chars().count();
+    if length <= SNIPPET_CHARS {
         return text.to_owned();
     }
     // Case folding rarely changes length; the character position is close
@@ -303,30 +307,34 @@ fn snippet(text: &str, lower: &str, words: &[String]) -> String {
         .filter_map(|word| lower.find(word.as_str()))
         .min()
         .map_or(0, |byte| lower[..byte].chars().count())
-        .min(chars.len());
-    let mut start = found.saturating_sub(SNIPPET_CHARS / 3);
+        .min(length);
+    let mut start = text
+        .char_indices()
+        .nth(found.saturating_sub(SNIPPET_CHARS / 3))
+        .map_or(text.len(), |(at, _)| at);
     if start > 0 {
-        start = chars[..start]
-            .iter()
-            .rposition(|c| c.is_whitespace())
-            .map_or(start, |space| space + 1);
+        start = text[..start]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(start, |(at, space)| at + space.len_utf8());
     }
-    let mut end = (start + SNIPPET_CHARS).min(chars.len());
-    if end < chars.len() {
-        end = chars[start..end]
-            .iter()
-            .rposition(|c| c.is_whitespace())
-            .map_or(end, |space| start + space);
+    let mut end = text[start..]
+        .char_indices()
+        .nth(SNIPPET_CHARS)
+        .map_or(text.len(), |(at, _)| start + at);
+    if end < text.len() {
+        end = text[start..end]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(end, |(at, _)| start + at);
     }
-    let mut excerpt: String = chars[start..end]
-        .iter()
-        .collect::<String>()
-        .trim()
-        .to_owned();
+    let mut excerpt = text[start..end].trim().to_owned();
     if start > 0 {
         excerpt.insert_str(0, "… ");
     }
-    if end < chars.len() {
+    if end < text.len() {
         excerpt.push_str(" …");
     }
     excerpt
@@ -461,6 +469,20 @@ mod tests {
         assert!(excerpt.ends_with(" …"));
         assert!(excerpt.contains("needle sits here"));
         assert!(excerpt.chars().count() <= SNIPPET_CHARS + 4);
+    }
+
+    #[test]
+    fn an_excerpt_of_a_long_section_copies_only_the_excerpt() {
+        let text = format!(
+            "{} the needle sits here {}",
+            "word ".repeat(200_000),
+            "tail ".repeat(60)
+        );
+        let lower = text.to_lowercase();
+        let (excerpt, peak) =
+            crate::test_memory::peak_heap(|| snippet(&text, &lower, &["needle".into()]));
+        assert!(excerpt.contains("the needle sits here"), "{excerpt}");
+        assert!(peak < 4096, "{peak} bytes for {} bytes of text", text.len());
     }
 
     #[test]

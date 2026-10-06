@@ -51,6 +51,8 @@ const fn text_bytes(chars: usize) -> u64 {
 /// The part of a Markdown file that MCP reads for its title, headings and
 /// sections: as much as search reads, and ten times what a reply holds.
 const MARKDOWN_SOURCE_BYTES: u64 = INDEXED_FILE_BYTES as u64;
+/// How long a search waits for the one before it, like a database request.
+const SEARCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -79,6 +81,8 @@ pub(super) struct Inner {
     /// MCP reads one file's text at a time, so the memory of large files
     /// never adds up.
     readers: Arc<tokio::sync::Semaphore>,
+    /// Searches run one at a time.
+    searches: Arc<tokio::sync::Semaphore>,
 }
 
 /// What search and MCP need from one synced commit, built on first use.
@@ -369,6 +373,7 @@ impl KnowledgeService {
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
                 readers: Arc::new(tokio::sync::Semaphore::new(1)),
+                searches: Arc::new(tokio::sync::Semaphore::new(1)),
             }),
         }
     }
@@ -645,10 +650,26 @@ impl KnowledgeService {
 
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
         actor.require_ready()?;
-        Ok(match self.catalog(actor, project_id).await? {
-            Some(catalog) => catalog.index.search(query),
-            None => Results::default(),
+        let Some(catalog) = self.catalog(actor, project_id).await? else {
+            return Ok(Results::default());
+        };
+        // A search reads the whole index, which takes a while for a large
+        // folder. It runs off the async workers, one at a time, so searches
+        // can't slow other requests down; a search that waits too long is
+        // told to try again.
+        let permit = tokio::time::timeout(SEARCH_WAIT, self.inner.searches.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                AppError::Unavailable("knowledge search is busy; try again shortly".into())
+            })?
+            .map_err(|_| AppError::Unavailable("knowledge search is shutting down".into()))?;
+        let query = query.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            catalog.index.search(&query)
         })
+        .await
+        .map_err(|error| AppError::internal(format!("knowledge search failed: {error}")))
     }
 
     /// For MCP clients: the README of `folder` and a compact file index.
@@ -1558,6 +1579,62 @@ fn cut(text: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
+        use crate::auth::{AuthService, LoginResult, NewUser, create_user};
+        // This test's runtime runs on this thread, so whatever a search scans
+        // and builds on the async worker counts against this thread's heap.
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        let password = "test-only-password-012345";
+        db.transaction(move |tx| {
+            let user = NewUser {
+                username: "admin".into(),
+                display_name: "Admin".into(),
+                password: password.into(),
+                is_admin: true,
+                must_change_password: false,
+            };
+            create_user(tx, user, unix_now()?)?;
+            tx.execute_batch(
+                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+                 INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,created_at,updated_at,generation)
+                 VALUES('p','https://git.example.test/docs.git','main','','ready','c',1,1,'g');",
+            )?;
+            for index in 0..300 {
+                let section = "## Shared steps\n\nShared words for every reader.\n\n";
+                let content = format!("# Note {index}\n\n{}", section.repeat(6));
+                tx.execute(
+                    "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                     VALUES('p',?1,?2,'text/plain','markdown',?3,1,?4)",
+                    params![format!("shared-{index}.md"), content.len() as i64, format!("sum-{index}"), content.into_bytes()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let login = AuthService::new(db.clone())
+            .login("admin", password, Default::default(), None)
+            .await
+            .unwrap();
+        let LoginResult::Authenticated(session) = login else {
+            panic!("the session limit can't be reached");
+        };
+        let service = KnowledgeService::new(db, 0);
+        // The first search builds the index.
+        service.search(&session.actor, "p", "shared").await.unwrap();
+        let watch = crate::test_memory::Watch::start();
+        let results = service
+            .search(&session.actor, "p", "shared words")
+            .await
+            .unwrap();
+        assert_eq!((results.file_count, results.hit_count), (0, 1800));
+        assert_eq!(results.documents.len(), 50);
+        assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
+    }
 
     #[test]
     fn long_text_is_cut_at_a_nearby_line_break() {
