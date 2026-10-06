@@ -13,8 +13,10 @@ export function mapActivity(event, users = []) {
   switch (event.eventType) {
     case 'comment.edited': text = 'edited a comment'; break;
     case 'comment.deleted': text = 'removed a comment'; break;
+    case 'comment.restored': text = 'restored a comment'; break;
     case 'task.created': text = 'created the task'; break;
     case 'task.deleted': text = 'deleted the task'; break;
+    case 'task.restored': text = 'restored the task'; break;
     case 'task.moved': text = event.fieldKey === 'status' ? `moved the task to ${statusName(event.after)}` : 'reordered the task'; break;
     case 'task.assignee.added': text = `assigned ${userName(event.after)}`; break;
     case 'task.assignee.removed': text = `unassigned ${userName(event.before)}`; break;
@@ -37,6 +39,7 @@ export function mapActivity(event, users = []) {
     }
     case 'attachment.created': text = `attached ${event.metadata?.name ?? 'a file'}`; break;
     case 'attachment.deleted': text = `deleted attachment: ${event.metadata?.name ?? 'file'}`; break;
+    case 'attachment.restored': text = `restored attachment: ${event.metadata?.name ?? 'file'}`; break;
     case 'attachment.retention.updated': text = `made ${event.metadata?.name ?? 'an attachment'} ${event.after ? 'temporary' : 'permanent'}`; break;
     case 'attachment.cleaned': text = `Temporary file removed during storage cleanup: ${event.metadata?.name ?? 'file'}`; break;
     default: text = String(event.eventType ?? 'updated the task').replaceAll('.', ' ').replaceAll('_', ' '); break;

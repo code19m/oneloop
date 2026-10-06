@@ -8,21 +8,30 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now, files::AttachmentView};
+use oneloop::{
+    AppState, Db, application,
+    auth::unix_now,
+    files::{AttachmentView, FileService},
+};
 use rusqlite::params;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-struct Fixture {
-    _directory: TempDir,
-    app: Router,
-    db: Db,
-    manager_cookie: String,
+pub(super) struct Fixture {
+    pub(super) _directory: TempDir,
+    pub(super) app: Router,
+    pub(super) files: FileService,
+    pub(super) db: Db,
+    pub(super) manager_cookie: String,
     outsider_cookie: String,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
+        Self::with_storage_limit(100 * 1024 * 1024).await
+    }
+
+    pub(super) async fn with_storage_limit(limit: u64) -> Self {
         let (directory, db) = crate::support::database();
         let manager = support::add_user(&db, "manager", false).await;
         let outsider = support::add_user(&db, "outsider", false).await;
@@ -68,18 +77,25 @@ impl Fixture {
         .unwrap();
 
         let mut config = support::config(directory.path(), "https://tasks.example.test", &[]);
-        config.storage_limit_bytes = 100 * 1024 * 1024;
+        config.storage_limit_bytes = limit;
         config.disk_min_free_bytes = 0;
+        let application = application(AppState::new(config, db.clone()));
         Self {
             _directory: directory,
-            app: application(AppState::new(config, db.clone())).router,
+            app: application.router,
+            files: application.files,
             db,
             manager_cookie: format!("__Host-oneloop_session={}", manager.token),
             outsider_cookie: format!("__Host-oneloop_session={}", outsider.token),
         }
     }
 
-    async fn upload(&self, key: &str, name: &str, bytes: &[u8]) -> (StatusCode, Vec<u8>) {
+    pub(super) async fn upload(
+        &self,
+        key: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> (StatusCode, Vec<u8>) {
         let boundary = "oneloop-test-boundary";
         let mut body = format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -323,6 +339,54 @@ async fn html_preview_keeps_server_sandbox_and_rechecks_current_access() {
     assert!(!rendered.contains("<iframe"));
     assert!(!rendered.contains("<link"));
     assert!(rendered.contains("<p>kept</p>"));
+}
+
+#[tokio::test]
+async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
+    let fixture = Fixture::new().await;
+    let (status, body) = fixture.upload("undo-upload", "undo.txt", b"undo me").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
+    let send = |method: &str, uri: String, origin: bool, body: Body| {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::COOKIE, &fixture.manager_cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "undo-delete");
+        if origin {
+            request = request.header(header::ORIGIN, "https://tasks.example.test");
+        }
+        fixture.app.clone().oneshot(request.body(body).unwrap())
+    };
+    let deleted = send(
+        "DELETE",
+        format!(
+            "/api/attachments/{}?expectedRevision={}",
+            attachment.id, attachment.revision
+        ),
+        true,
+        Body::empty(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    let restore = serde_json::json!({
+        "expectedRevision": attachment.revision + 1,
+        "idempotencyKey": "undo-restore",
+    })
+    .to_string();
+    let uri = format!("/api/attachments/{}/restore", attachment.id);
+    let cross_site = send("POST", uri.clone(), false, Body::from(restore.clone()))
+        .await
+        .unwrap();
+    assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
+    let restored = send("POST", uri, true, Body::from(restore)).await.unwrap();
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored: AttachmentView = serde_json::from_value(body_json(restored).await).unwrap();
+    assert_eq!(restored.id, attachment.id);
+    assert_eq!(restored.revision, attachment.revision + 2);
+    assert!(restored.download_url.is_some());
 }
 
 /// The policy of every attachment and Knowledge HTML preview.

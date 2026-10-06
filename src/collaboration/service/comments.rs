@@ -212,14 +212,12 @@ pub(super) fn delete_comment(
         return Err(AppError::Conflict("comment is already deleted".into()));
     }
     ensure_revision(before.revision, expected_revision)?;
+    // The text and mentions stay hidden for the Undo window; the purge in
+    // `purge_deleted_comments` removes them after it.
     tx.execute(
-        "UPDATE comments SET content='',deleted_at=?1,edited_at=NULL,revision=revision+1
+        "UPDATE comments SET deleted_at=?1,revision=revision+1
          WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
         params![now, input.comment_id, expected_revision],
-    )?;
-    tx.execute(
-        "DELETE FROM comment_mentions WHERE comment_id=?1",
-        [&input.comment_id],
     )?;
     tx.execute(
         "UPDATE notification_recipients SET excerpt_snapshot=NULL
@@ -254,6 +252,77 @@ pub(super) fn delete_comment(
     ))
 }
 
+/// Undoes a deletion within the Undo window, for the people who could delete
+/// the comment. Its text, mentions and Inbox excerpts come back; nobody is
+/// notified again.
+pub(super) fn restore_comment(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    input: CommentRestore,
+    expected_revision: i64,
+    now: i64,
+) -> AppResult<Mutation> {
+    let before = changeable_comment_tx(tx, &input.comment_id)?;
+    require_participation(tx, actor, &before.project_id)?;
+    require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
+    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    let Some(deleted_at) = before.deleted_at else {
+        return Err(AppError::Conflict("the comment is not deleted".into()));
+    };
+    ensure_revision(before.revision, expected_revision)?;
+    crate::domain::require_undo_window("comment", deleted_at, now)?;
+    let content: String = tx.query_row(
+        "SELECT content FROM comments WHERE id=?1",
+        [&input.comment_id],
+        |row| row.get(0),
+    )?;
+    if content.is_empty() {
+        // Deleted before Undo existed, when deletion emptied the text at once.
+        return Err(AppError::PreconditionFailed(
+            "the comment's text is gone, so it can't be restored".into(),
+        ));
+    }
+    tx.execute(
+        "UPDATE comments SET deleted_at=NULL,revision=revision+1
+         WHERE id=?1 AND revision=?2 AND deleted_at IS NOT NULL",
+        params![input.comment_id, expected_revision],
+    )?;
+    tx.execute(
+        "UPDATE notification_recipients SET excerpt_snapshot=?1
+         WHERE notification_id IN (SELECT id FROM notification_events WHERE comment_id=?2)",
+        params![truncate_excerpt(&content, 240), input.comment_id],
+    )?;
+    let view = comment_view_tx(tx, &input.comment_id)?;
+    // Retries of the comment's creation and edits show it again.
+    tombstone_comment_replays(tx, &view)?;
+    invalidate_comment_inboxes_tx(tx, &input.comment_id, now)?;
+    let event = record_activity_tx(
+        tx,
+        actor,
+        ActivityInput {
+            project_id: Some(&before.project_id),
+            entity_type: "comment",
+            entity_id: &input.comment_id,
+            task_id: Some(&before.task_id),
+            event_type: "comment.restored",
+            field_key: None,
+            before: None,
+            after: None,
+            metadata: json!({}),
+            entity_revision: Some(expected_revision + 1),
+        },
+        now,
+    )?;
+    Ok(Mutation::new(
+        serde_json::to_value(view).unwrap_or(Value::Null),
+        vec![event],
+        "comment",
+        &input.comment_id,
+    ))
+}
+
+/// Replaces the comment in cached retry responses with `comment`: the
+/// tombstone after a deletion, or the comment again after a restore.
 pub(super) fn tombstone_comment_replays(
     tx: &Transaction<'_>,
     comment: &CommentView,

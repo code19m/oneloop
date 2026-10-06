@@ -236,6 +236,7 @@ export function createApiClient({
     updateAttachment: (id,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/attachments/${encodeURIComponent(id)}`,{method:'PATCH',body:input,signal}),
     reorderAttachment: (taskId,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/tasks/${encodeURIComponent(taskId)}/attachments/reorder`,{method:'POST',body:input,signal}),
     deleteAttachment: (id,{expectedRevision,idempotencyKey=crypto.randomUUID(),signal})=>request(`/api/attachments/${encodeURIComponent(id)}?expectedRevision=${encodeURIComponent(expectedRevision)}`,{method:'DELETE',headers:{'Idempotency-Key':idempotencyKey},signal}),
+    restoreAttachment: (id,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/attachments/${encodeURIComponent(id)}/restore`,{method:'POST',body:input,signal}),
     comments: (taskId,{cursor,limit=50,signal,background}=/** @type {{cursor?:string,limit?:number,signal?:AbortSignal,background?:boolean}} */({}))=>{
       const query=new URLSearchParams({limit:String(limit)});if(cursor)query.set('cursor',cursor);
       return request(`/api/discussion/tasks/${encodeURIComponent(taskId)}/comments?${query}`,{signal,background});

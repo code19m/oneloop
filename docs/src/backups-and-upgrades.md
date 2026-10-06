@@ -11,9 +11,10 @@ oneloop, with the same environment, for example
 A backup is a complete, verified copy of the database, all uploaded files and
 the `keys` folder. That folder holds the key that encrypts Knowledge
 credentials, so a restored instance can still sync. oneloop keeps running
-while you make a backup. While the backup copies the database, file uploads,
-downloads and deletions wait. One that waits more than 5 seconds fails, and you
-can try it again.
+while you make a backup. While the backup copies the database, file uploads
+and downloads wait. One that waits more than 5 seconds fails, and you can try
+it again. Image thumbnails aren't copied; oneloop makes them again when people
+view the images.
 
 First, create a backup folder that only the account that runs oneloop can use:
 
@@ -168,8 +169,8 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database in <data folder> migrated from 2 to 4` and the
-folder of its backup, or `database in <data folder> is current (schema 4)` if
+`db migrate` prints `database in <data folder> migrated from 2 to 5` and the
+folder of its backup, or `database in <data folder> is current (schema 5)` if
 there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
@@ -192,7 +193,7 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database in <data folder> migrated from 16 to 4`.
+It prints something like `database in <data folder> migrated from 16 to 5`.
 Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back

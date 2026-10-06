@@ -70,8 +70,8 @@ small hints over SSE, and clients then fetch what changed.
   and the Inbox. `CollaborationRuntime` runs the outbox worker and the SSE fan
   out.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
-  capacity and cleanup, previews, read leases and crash recovery. `FileStore`
-  owns the bytes on disk.
+  capacity and cleanup, previews and thumbnails, read leases and crash
+  recovery. `FileStore` owns the bytes on disk.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
   project, read-only. Its commands manage the source, and each connect or
   change starts a new source generation; results from an older one are
@@ -212,6 +212,16 @@ never contain passwords, tokens or request bodies.
 **Time.** Timestamps are Unix seconds (`i64`) from `clock::unix_now`. Calendar
 dates such as deadlines are `YYYY-MM-DD` strings in the instance time zone,
 `ONELOOP_TIMEZONE`, which also defines "today" and "this week".
+
+**Undo.** Deleting a task, comment or attachment hides it at once and keeps
+its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore operation can
+bring it back. A restore puts the item back at its old position, or at the end
+of its list when that position was taken, and unassigns people who left the
+project from an unfinished task. After the window, file maintenance removes the
+files with deletion jobs, and the collaboration worker empties deleted
+comments; until then the files count as pending deletion. A deleted task's own
+row and its comments stay in the database; only its files are removed.
+Restoring is a browser operation; MCP doesn't offer it.
 
 **IDs.** Records have UUIDv7 string IDs, created by the server. Tasks also get
 a readable key such as `WEB-042` from the project prefix and a per-project

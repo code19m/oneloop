@@ -18,8 +18,9 @@ use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     files::{
-        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentView, FileRead,
-        MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, UploadDeadline, UploadStart,
+        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
+        ConditionalRead, FileRead, MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead,
+        UploadDeadline, UploadStart,
     },
 };
 
@@ -46,12 +47,20 @@ pub(crate) fn router() -> Router<AppState> {
             patch(update_attachment).delete(delete_attachment),
         )
         .route(
+            "/api/attachments/{attachment_id}/restore",
+            post(restore_attachment),
+        )
+        .route(
             "/api/attachments/{attachment_id}/download",
             get(download_attachment),
         )
         .route(
             "/api/attachments/{attachment_id}/content",
             get(content_attachment),
+        )
+        .route(
+            "/api/attachments/{attachment_id}/thumbnail",
+            get(thumbnail_attachment),
         )
         .route(
             "/api/attachments/{attachment_id}/source",
@@ -269,6 +278,25 @@ async fn delete_attachment(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn restore_attachment(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(attachment_id): Path<String>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<AttachmentRestore>,
+) -> AppResult<Json<AttachmentView>> {
+    require_canonical_origin(
+        &axum::http::Method::POST,
+        &headers,
+        &state.config.public_url,
+    )?;
+    state
+        .files
+        .restore_attachment(&actor, &attachment_id, input)
+        .await
+        .map(Json)
+}
+
 async fn download_attachment(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
@@ -300,6 +328,52 @@ async fn content_attachment(
         )
         .await?;
     conditional_file_response(read, &headers).await
+}
+
+async fn thumbnail_attachment(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+    Path(attachment_id): Path<String>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    require_safe_file_destination(&headers)?;
+    match state
+        .files
+        .open_thumbnail(&actor, &attachment_id, validator(&headers))
+        .await?
+    {
+        ThumbnailRead::Thumbnail {
+            bytes,
+            media_type,
+            etag,
+            name,
+        } => {
+            let mut response = Response::new(Body::from(bytes));
+            let headers = response.headers_mut();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-cache"),
+            );
+            headers.insert(
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            );
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                content_disposition(&name, false)?,
+            );
+            headers.insert(
+                header::ETAG,
+                HeaderValue::from_str(&etag).expect("checksum ETag"),
+            );
+            Ok(response)
+        }
+        ThumbnailRead::NotModified(etag) => {
+            conditional_file_response(ConditionalRead::NotModified(etag), &headers).await
+        }
+        ThumbnailRead::Original(read) => conditional_file_response(read, &headers).await,
+    }
 }
 
 async fn source_attachment(

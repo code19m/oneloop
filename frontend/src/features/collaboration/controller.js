@@ -57,7 +57,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
 export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected OneloopTransport');
   const data=transport.data;
-  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
+  let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
@@ -275,6 +275,23 @@ export function installCollaborationController({ transport, eventSourceFactory =
     const promise=performDeleteComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;
   }
 
+  // Undo of a deletion: the comment comes back at the revision the deletion left.
+  async function performRestoreComment(input){
+    const expectedTask=app?.context?.().taskId;
+    try{
+      const response=await execute('discussion.comment.restore',{commentId:input.comment.id},{expectedRevision:input.comment.revision,interactionKey:`discussion.comment.restore:${input.comment.id}`});
+      if(response.stale)return false;
+      const entity=(response.result.entities??[]).find((item)=>item&&item.id===input.comment.id);
+      const task=currentTask(input.task.internalId);if(!task||!entity)return false;
+      const mapped=mapComment(entity),index=task.comments.findIndex((item)=>item.id===mapped.id);if(index>=0)task.comments.splice(index,1,mapped);
+      await refreshActivity(task,true);if(app?.context?.().view==='task'&&app.context().taskId===expectedTask)facade?.commentRestored?.(task.id,mapped.id);return true;
+    }catch(error){report(error,false);return false;}
+  }
+  function restoreComment(input){
+    const key=`restore:${input.comment.id}`;if(interactions.has(key))return interactions.get(key);
+    const promise=performRestoreComment(input).finally(()=>interactions.delete(key));interactions.set(key,promise);return promise;
+  }
+
   async function refreshActivity(task,background){
     try{
       const response=await transport.api.activity(task.projectId,{taskId:task.internalId,limit:50,background});
@@ -471,7 +488,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
         const key=`${currentSession()}:${filterKey(facade.filter())}`;if((inboxEntry||!inboxPage.loaded||inboxPage.key!==key)&&!inboxPage.loading&&!(inboxPage.error&&inboxPage.key===key)){inboxEntry=false;readInbox(facade.filter(),{background:inboxPage.loaded});}
       }
     },
-    saveComment,deleteComment,
+    saveComment,deleteComment,restoreComment,
     loadInbox:(filter)=>readInbox(filter),
     moreInbox:(filter)=>inboxPage.nextCursor?readInbox(filter,{append:true}):Promise.resolve({done:true}),
     moreTask(id){const task=currentTask(id);return task?readTask(task,{append:true}):Promise.resolve({done:true});},
