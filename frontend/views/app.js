@@ -420,11 +420,13 @@
   // Undo also answers Ctrl+Z, or Command+Z on Apple devices, while its message
   // shows, so the keyboard reaches it without moving focus. In a text field
   // the key undoes typing, as always, and with a dialog, drawer or menu open
-  // it does nothing. The key's place counts too, for layouts without a Z.
+  // it does nothing. On a layout without Latin letters, the key in the Z
+  // place counts too; on others that place can hold another letter, such as
+  // the Y of a German keyboard, so only the letter counts.
   const UNDO_KEY = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgentData?.platform || navigator.platform || '')
     ? { label: '⌘Z', aria: 'Meta+Z', spoken: 'Command+Z' } : { label: 'Ctrl+Z', aria: 'Control+Z', spoken: 'Control+Z' };
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || (String(event.key).toLowerCase() !== 'z' && event.code !== 'KeyZ')) return;
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || (String(event.key).toLowerCase() !== 'z' && (/^[a-z]$/i.test(event.key) || event.code !== 'KeyZ'))) return;
     if (event.target?.closest?.('input,textarea,select,[contenteditable="true"],.confirmation-layer,.modal,[role="dialog"]') || state.modal || state.peek || state.menu || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay')) return;
     const toast = toastQueue.findLast(item => item.el && item.action?.label === 'Undo');
     if (!toast) return;
@@ -2314,7 +2316,7 @@
   const waitingPasswords=[];
   // A temporary password is shown once. While it shows, or waits for another
   // dialog to close, a reload or leaving oneloop would lose it for good.
-  window.Recovery?.trackUnsaved?.(()=>state.modal?.type==='temppw'||waitingPasswords.length>0);
+  window.Recovery?.trackUnsaved?.(()=>!!D.session&&(state.modal?.type==='temppw'||waitingPasswords.length>0));
   function showWaitingPassword(){
     while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
   }

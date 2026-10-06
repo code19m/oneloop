@@ -267,7 +267,8 @@ test('Ctrl+Z runs the newest Undo while its message shows, and leaves typing in 
   t.A.closeOverlays();
   assert.deepEqual(runs, []);
   assert.equal(press(t.d.body), true); assert.deepEqual(runs, ['second']);
-  assert.equal(press(t.d.body, { metaKey: true, key: 'я', code: 'KeyZ' }), true, 'the key in the Z place works in any layout'); assert.deepEqual(runs, ['second', 'first']);
+  assert.equal(press(t.d.body, { ctrlKey: true, key: 'y', code: 'KeyZ' }), false, 'Ctrl+Y on a German keyboard is no Undo'); assert.deepEqual(runs, ['second']);
+  assert.equal(press(t.d.body, { metaKey: true, key: 'я', code: 'KeyZ' }), true, 'the key in the Z place works without Latin letters'); assert.deepEqual(runs, ['second', 'first']);
   assert.equal(press(t.d.body), false, 'no Undo is left');
   assert.equal(t.d.querySelector('.toast-action'), null);
   t.A.offerUndo('Third deleted', () => {});
