@@ -105,7 +105,7 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await openApp(page, instance, 'board');
     await expect(page.locator('.card .dl')).not.toHaveClass(/late/);
     await expect(page.locator('.card .dl')).toHaveText('Sep 27');
-    await expect(page.locator('.card .dl')).toHaveAttribute('title', 'Deadline 2026-09-27');
+    await expect(page.locator('.card .dl')).toHaveAttribute('data-tip', 'Deadline 2026-09-27');
     await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
     await expect(page.locator('.today-pill')).toHaveText('Sep 27');
     await page.evaluate(key => App.openTask(key), task.taskKey);

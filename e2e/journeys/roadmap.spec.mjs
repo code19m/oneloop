@@ -72,6 +72,82 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
   expect(await unchanged()).toBe(true);
 });
 
+test('Weeks, Months and Quarters zoom the Roadmap in place and keep today in view', async ({ page, instance }) => {
+  await openApp(page, instance, 'roadmap');
+  const scale = page.getByRole('group', { name: 'Timeline scale' });
+  await expect(scale.getByRole('button', { name: 'Months' })).toHaveAttribute('aria-pressed', 'true');
+  const todayShows = async () => {
+    const [pill, view] = await Promise.all([page.locator('.today-pill').boundingBox(), page.locator('#rmScroll').boundingBox()]);
+    return pill.x >= view.x && pill.x + pill.width <= view.x + view.width;
+  };
+  await scale.getByRole('button', { name: 'Weeks' }).click();
+  await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.rm-month-grid .rm-week').first()).toBeVisible();
+  expect(await todayShows()).toBe(true);
+  // Safari leaves focus on the page after a click on a button, as a click on empty space does.
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press('q');
+  await expect(scale.getByRole('button', { name: 'Quarters' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(todayShows).toBe(true);
+});
+
+test.describe('with Reduce motion', () => {
+  test.use({ reducedMotion: 'reduce' });
+
+  test('a scale change keeps today, then the selected epic, where they were', async ({ page, instance }) => {
+    const { project, track } = instance.projects[0];
+    const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    // A long epic leaves room to scroll on both sides of today, even at Quarters.
+    await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Platform migration', startDate: day(-365), endDate: day(365) });
+    // Four weeks fit the view at Weeks and are wider than the shortest bar at Quarters.
+    await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: 'Holiday freeze', startDate: day(70), endDate: day(98) });
+    await openApp(page, instance, 'roadmap');
+    const scale = page.getByRole('group', { name: 'Timeline scale' });
+    const left = locator => locator.evaluate(element => element.getBoundingClientRect().left);
+    const middle = locator => locator.evaluate(element => { const box = element.getBoundingClientRect(); return (box.left + box.right) / 2; });
+    const keeps = async (measure, label) => {
+      const before = await measure();
+      for (const name of ['Weeks', 'Quarters', 'Months']) {
+        await scale.getByRole('button', { name }).click();
+        await expect(scale.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+        expect(Math.abs(await measure() - before), `${label} after ${name}`).toBeLessThanOrEqual(2);
+      }
+    };
+    await page.getByRole('button', { name: 'Today', exact: true }).click();
+    await keeps(() => left(page.locator('.today-pill')), 'today');
+    const bar = page.locator('[data-epic]').filter({ hasText: 'Holiday freeze' });
+    await bar.focus();
+    await bar.evaluate(element => element.scrollIntoView({ block: 'nearest', inline: 'center' }));
+    await keeps(() => middle(bar), 'the selected epic');
+  });
+});
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 375, height: 812 } });
+
+  test('the Roadmap header keeps Today, Milestone and Epic in view', async ({ page, instance }) => {
+    await openApp(page, instance, 'roadmap');
+    const header = page.locator('.topbar');
+    for (const name of ['Today', 'Milestone', 'Epic']) {
+      const box = await header.getByRole('button', { name, exact: true }).boundingBox();
+      expect(box.x, name).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, name).toBeLessThanOrEqual(375);
+    }
+    // Pinch zoom, the wheel and W, M and Q still change the scale here.
+    await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
+  });
+});
+
+test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
+  const { epic, task } = instance.projects[0];
+  await openApp(page, instance, 'roadmap');
+  await page.locator(`[data-epic="${epic.id}"]`).press('Enter');
+  const rows = page.locator('.peek .task-row');
+  await expect(rows).toContainText(task.title);
+  await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed by a teammate' }, task.revision);
+  await expect(rows).toContainText('Renamed by a teammate');
+});
+
 test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project, track, task } = instance.projects[0];

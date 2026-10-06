@@ -162,7 +162,7 @@ test('compact deadlines show the year when it differs and expose the complete da
   D.tasks.find(task=>task.id==='BIR-079').deadline=`${year-1}-09-26`;
  }});
  const chip=t.d.querySelector('[data-task="BIR-079"] .dl'),year=new t.w.Date().getFullYear();
- assert(chip.textContent.includes(String(year-1)));assert.equal(chip.title,`Deadline ${year-1}-09-26`);
+ assert(chip.textContent.includes(String(year-1)));assert.equal(chip.dataset.tip,`Deadline ${year-1}-09-26`);
  t.D.tasks.find(task=>task.id==='BIR-079').deadline=`${year+1}-09-26`;t.A.refreshBoard();
  assert(t.d.querySelector('[data-task="BIR-079"] .dl').textContent.includes(String(year+1)));
 });

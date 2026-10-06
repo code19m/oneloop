@@ -128,3 +128,15 @@ test('streaming upload observers carry the session context from before send',asy
     assert.equal(events[0].requestContext.sessionGeneration,1);
   }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
 });
+
+test('an upload counts as unsaved work until it settles',async()=>{
+  const previous=globalThis.OneloopRecovery,tracked=[];
+  globalThis.OneloopRecovery={trackWrite:promise=>tracked.push(promise)};
+  try{
+    const xhr=new MockXhr();xhr.send=()=>{};
+    const installed=installAttachmentTransport(runtime(),{xhrFactory:()=>xhr,formDataFactory:()=>new MockFormData()});
+    const upload=installed.api.uploadAttachment('task',{file:new Blob(['a']),idempotencyKey:'leaving'});
+    assert.deepEqual(tracked,[upload]);
+    xhr.onload();await upload;
+  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+});

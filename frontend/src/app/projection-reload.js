@@ -19,6 +19,31 @@ export function routeScope(hash, app) {
 }
 
 /**
+ * Load the projection as someone signs in: the page the tab shows, in the
+ * project it showed when the last session ended, so the project switcher and
+ * the loaded work agree. A task they can't open loads only metadata, and a
+ * project they can't open loads the default project.
+ * @param {{bootstrap:any,getApp:()=>any,location?:{hash:string}}} options
+ */
+export function createSignInLoad({ bootstrap, getApp, location = globalThis.location }) {
+  /** @type {string|undefined} */ let shown;
+  return Object.freeze({
+    /** Remember the project on screen as a session ends. */
+    sessionEnded() { shown = getApp()?.context?.().projectId ?? undefined; },
+    async load() {
+      const scope = routeScope(location.hash, getApp());
+      try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : scope); }
+      catch (error) {
+        if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
+        if (scope.taskId) return bootstrap.load({ view: 'metadata' });
+        if (shown) return bootstrap.load(scope);
+        throw error;
+      }
+    },
+  });
+}
+
+/**
  * Reload the projection and every window the page shows beyond it. A live
  * (background) refresh never interrupts a load someone started: it waits for
  * that load, then refreshes whatever is shown by then.
@@ -49,7 +74,15 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       const previous=app?.context?.(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
         if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
-        if(previous.view==='roadmap')return complete(await reads.roadmap(previous.projectId,{background:!!scope.background}));
+        if(previous.view==='roadmap'){
+          // An open epic drawer lists tasks, so it reads them again too. A
+          // live read waits for a Load more someone started instead of
+          // cancelling it.
+          const views=[reads.roadmap(previous.projectId,{background:!!scope.background})];
+          if(previous.peek&&data.epics.some((item)=>item.id===previous.peek))views.push(reads.epic(previous.peek,{background:!!scope.background}));
+          const results=await Promise.all(views);
+          return complete(results.find((result)=>result?.stale)??results[0]);
+        }
       }
       let loaded,destinationError;
       try { loaded=await bootstrap.load({projectId:app?.context?.().projectId,...routeScope(location.hash,app),...scope}); }

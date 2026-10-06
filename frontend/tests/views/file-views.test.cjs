@@ -203,6 +203,19 @@ test('diagrams render in their own document, fall back on syntax errors and drop
   assert(!pending.querySelector('img'));
 });
 
+test('a diagram is drawn again in the new colors when the theme changes, also with System', async () => {
+  const { w, d } = boot();
+  stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme}</text></svg>`, width: 10, height: 10 }; } });
+  const host = d.createElement('div'); d.body.append(host);
+  d.documentElement.dataset.theme = 'light';
+  w.FileViews.markdown(host, { name: 'diagram.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
+  const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>(\w+)<\/text>/)?.[1];
+  await waitFor(() => drawnIn() === 'default', 'the diagram shows in the light colors');
+  // The device turned dark while the theme follows it.
+  d.documentElement.dataset.theme = 'dark';
+  await waitFor(() => drawnIn() === 'dark', 'the diagram shows in the dark colors');
+});
+
 test('the renderer document returns sanitized SVG with its size', async () => {
   const { window: w } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/views/diagram-renderer.html', runScripts: 'outside-only' });
   w.eval(source('vendor/dompurify/purify'));

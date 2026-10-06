@@ -147,7 +147,7 @@
   const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
   const logAct = (obj, text, change, context) => Activity.record(obj, me()?.id || 'system', text, change, undefined, context);
   const actFeed = (list, limit) => Activity.visible(list).slice(-(limit || 8)).reverse().map((a) =>
-    `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" title="${formatInstant(a.ts)}">${ago(a.ts)}</time></div>`).join('')
+    `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
     || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
 
   const counts = () => {
@@ -183,6 +183,8 @@
     signOut: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2.5H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3.5M7 8h7M11 5l3 3-3 3"/></svg>',
     sun: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1v1M8 14v1M1 8h1M14 8h1M3 3l.7.7M12.3 12.3l.7.7M3 13l.7-.7M12.3 3.7l.7-.7"/></svg>',
     moon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.8 9.5A6 6 0 0 1 6.5 2.2 6 6 0 1 0 13.8 9.5Z"/></svg>',
+    device: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11v3"/></svg>',
+    reload: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M12.5 1.5v3h-3"/></svg>',
     person: '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.6c.9-2.6 2.8-3.9 5.2-3.9s4.3 1.3 5.2 3.9"/></svg>',
     arrow: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>',
     clock: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.4 1.6"/></svg>',
@@ -423,7 +425,8 @@
   document.addEventListener('visibilitychange', () => setToastPause('hidden', document.hidden));
 
   let pendingConfirmation = null;
-  function askConfirmation({ title, text, action, match, confirm, cancel }) {
+  // A `local` choice, such as discarding typed text, changes nothing on the server, so it works offline.
+  function askConfirmation({ title, text, action, match, confirm, cancel, local = false }) {
     if (pendingConfirmation) return false;
     closePop(true);
     const returnFocus = document.activeElement;
@@ -458,7 +461,7 @@
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (pendingConfirmation !== record || (match !== undefined && input.value !== match)) return;
-      if(window.Recovery && !Recovery.ensureOnline())return;
+      if(!local && window.Recovery && !Recovery.ensureOnline())return;
       accept.disabled = true; close(true); confirm();
     });
     function onKey(event) {
@@ -474,6 +477,10 @@
     document.body.append(layer);
     (input || layer.querySelector('[data-confirm-cancel]')).focus();
     return true;
+  }
+  /** Ask before typed text is lost: Discard runs `leave`; Cancel, or a question already open, runs `stay`. */
+  function askToDiscard(leave, stay = () => {}, text = 'Text you typed on this page will be lost.') {
+    if (askConfirmation({ title:'Discard changes?', text, action:'Discard', local:true, confirm:leave, cancel:stay }) === false) stay();
   }
 
   // Popovers are imperative on purpose: opening one never re-renders the app,
@@ -567,7 +574,7 @@
     const cur = def.options.find((o) => o.v === def.value);
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
       ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" title="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : `onclick="App.popSelect(event,'${UIArg(key)}')"`}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   const MULTI = {};
@@ -575,7 +582,7 @@
     MULTI[key] = def;
     const label = def.summary();
     return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
-      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" title="${esc(label)}" ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
+      <button type="button" data-filter-key="${esc(key)}" aria-expanded="false" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${def.values().length ? '' : ' empty'}" data-tip="${esc(label)}" data-tip-overflow ${def.label ? `aria-label="${esc(def.label)}"` : ''} ${def.disabled ? 'disabled' : `onclick="App.popMulti(event,'${UIArg(key)}')"`}>${def.icon ? def.icon() : ''}<span class="sel-label">${esc(label)}</span>${def.cls ? '' : I.chev}</button>
     </div>`;
   }
   // Date values always use ISO. The editor owns separators; users enter digits.
@@ -690,10 +697,26 @@
     if (!def || def.disabled || !wrap) return false;
     const value = parseDateInput(raw), error = dateError(def, value);
     if (error) return dateFieldError(wrap, error, focusError);
-    if (value !== (def.value || '') && def.pick && def.pick(value) === false) return false;
+    const sending = value !== (def.value || '') && !!def.pick, result = sending ? def.pick(value) : true;
+    if (result === false) return false;
+    const previous = def.value;
     def.value = value;
     wrap.querySelector('input[type="hidden"]').value = value;
     wrap.querySelector('.date-text').value = value || '';
+    // A date that saves itself counts as saved once the server accepted it,
+    // though it may keep focus, as after Enter. One the server refused counts
+    // again, and the next Enter or Tab sends it again.
+    if (def.autosave) {
+      const settled = (saved) => {
+        const current = document.querySelector(`[data-date-key="${UIEscape(key)}"]`);
+        if (saved !== false) { const input = current?.querySelector('.date-text'); if (input && parseDateInput(input.value) === value) window.Recovery?.markSaved?.(input); return; }
+        if (DPS[key] !== def || def.value !== value) return;
+        def.value = previous;
+        const hidden = current?.querySelector('input[type="hidden"]'); if (hidden) hidden.value = previous || '';
+      };
+      if (sending && typeof result?.then === 'function') { def.pending = value; result.then((saved) => { if (def.pending === value) def.pending = null; settled(saved); }); }
+      else if (def.pending !== value) settled(result);
+    }
     dateFieldError(wrap, '');
     // A corrected range can resolve the other field's error as well.
     const scope = wrap.closest('form') || wrap.parentElement;
@@ -719,7 +742,7 @@
     const placeholder = def.disabled ? 'Not set' : def.placeholder || (label === 'Date' ? 'Select date' : 'Set ' + label.toLowerCase());
     return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${UIEscape(key)}">
       <input type="hidden" name="${def.name}" value="${esc(def.value || '')}">
-      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
+      ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `oninput="App.dateTyping('${UIArg(key)}')" onblur="App.dateBlur(event,'${UIArg(key)}')" onkeydown="App.dateKey(event,'${UIArg(key)}')"`}>
       <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : `onclick="App.popDate(event,'${UIArg(key)}')"`}>${def.icon || I.cal}</button></div>
     </div>`;
   }
@@ -756,6 +779,17 @@
   let RAIL = 208;
   const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
   const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
+  /** Fixed scales of the timeline, in pixels per day. Months is the zoom a Roadmap opens at. */
+  const ROADMAP_SCALES = [
+    { key: 'weeks', label: 'Weeks', ppd: 30, shortcut: 'W' },
+    { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
+    { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
+  ];
+  /** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
+  const WEEK_AXIS_PPD = 18;
+  const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
+  /** The epic last focused or opened on the Roadmap, which a scale change keeps in view. */
+  let roadmapSelection = null;
 
   /** The data's dates: `start` anchors day 0 and `end` is the last date the timeline must reach before it fills the view. */
   function rmRange() {
@@ -941,6 +975,8 @@
   /** @type {{model:any,layout:any,metrics:{barHeight:number,width:number,height:number}}|null} The latest rendered Roadmap, which mountRoadmap binds. */
   let renderedRoadmap = null;
   function renderRoadmap() {
+    // A scale change still easing finishes first, so the new Roadmap starts at its zoom.
+    roadmapGestureCleanup();
     const barHeight = measureEpicHeight();
     RAIL = window.innerWidth <= 900 ? 132 : 208;
     const model = roadmapModel();
@@ -966,7 +1002,7 @@
       const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
       lanes += `<div class="lane" data-track="${UIEscape(t.id)}" ${canRoadmap() ? `ondragover="App.laneOver(event)" ondrop="App.trackDrop(event,'${UIArg(t.id)}')"` : ''} style="height:${lane.height}px">
         <div class="rail-cell lane-head" style="width:${RAIL}px">
-          <h2 class="name" title="${esc(t.name)}">${esc(t.name)}</h2><div class="sub">${sub}</div>
+          <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
           ${canRoadmap() ? `<div class="head-ctl">
             <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" onkeydown="App.trackReorderKey(event,'${UIArg(t.id)}')" data-reorderable="true" ondragstart="App.trackDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()" title="Drag to reorder or use arrow keys">${I.grip}</button>
             <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" onclick="App.trackMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>
@@ -1189,13 +1225,13 @@
         const av = (t.assignees || []).filter(userById);
         const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
         return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ondragstart="App.taskDragStart(event,'${UIArg(t.id)}')" ondragend="App.dragEnd()"` : ''} onclick="App.openTask('${UIArg(t.id)}')">
-          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" title="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${formatInstant(t.block.at)}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
-          <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}">${esc(t.title)}</button>
+          <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" onclick="event.stopPropagation();App.taskMoveMenu(event,'${UIArg(t.id)}')">${I.kebab}</button>` : ''}</span></div>
+          <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
           <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
-          <div class="epic" title="${esc(e ? e.title : '')}">${esc(e ? e.title : '')}</div>
+          <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
           <div class="card-foot">
-            <span class="mono" title="created">${t.created ? humanInstant(t.created) : ''}</span>
-            ${t.deadline ? `<span class="mono dl${overdue(t) ? ' late' : ''}" title="Deadline ${esc(t.deadline)}">${I.clock}${humanShort(d(t.deadline))}${overdue(t) ? ' · Overdue' : ''}</span>` : ''}
+            <span class="mono card-created"${t.created ? ` data-tip="Created ${esc(formatInstant(t.created))}"` : ''}>${t.created ? humanInstant(t.created) : ''}</span>
+            ${t.deadline ? `<span class="mono dl${overdue(t) ? ' late' : ''}" data-tip="Deadline ${esc(t.deadline)}">${I.clock}${humanShort(d(t.deadline))}${overdue(t) ? ' · Overdue' : ''}</span>` : ''}
             <span class="avs">${avs}</span>
           </div></div>`;
       }).join('');
@@ -1479,7 +1515,7 @@
           </div>
         </div>
         ${field('Username', `<input class="ctl mono" value="${esc(userHandle(u))}" disabled>`)}
-        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
+        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
       </div>
       <div class="section">
         <h2>Password</h2>
@@ -1599,7 +1635,7 @@
 
     const late = overdue(t);
     return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
-        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
+        <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave oninput="App.sizeTaskTitle()" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();this.blur()}" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','title',this.value)"` : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" onclick="App.openModal('unblock','${UIArg(t.id)}')">Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" onclick="App.openModal('block','${UIArg(t.id)}')">Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
         <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" onclick="App.openModal('block','${UIArg(t.id)}')">${I.blocked}Block task</button>` : ''}</div>
@@ -1607,13 +1643,13 @@
           <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
           <div class="task-property"><dt>Assignees</dt><dd>${msHtml('tpAssign', t.id, !canEdit)}</dd></div>
-          <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
-          <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}" title="${formatInstant(t.created)}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
+          <div class="task-property task-property-date prop-row${late ? ' late' : ''}"><dt>Deadline</dt><dd>${dateHtml('tpDl', { hideLabel: true, cls: 'prop', disabled: !canEdit, icon: I.clock, name: '_dl', value: t.deadline || '', clearable: true, autosave: true, pick: (v) => App.updTask(t.id, 'deadline', v) })}<span class="task-overdue" ${late ? '' : 'hidden'}>Overdue</span></dd></div>
+          <div class="task-property"><dt>Created at</dt><dd>${Number.isFinite(t.created)?`<time class="task-created-at" datetime="${new Date(t.created).toISOString()}">${formatInstant(t.created)}</time>`:'<span class="task-created-at">Unavailable</span>'}</dd></div>
         </dl>
       </aside>
       <div class="tp-main">
         <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
+          <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave onfocus="App.expandDescription()" oninput="App.sizeDescription()" ${canEdit ? `onblur="App.updTask('${UIArg(t.id)}','desc',this.value)"` : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
           <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" onclick="App.toggleDescription()" hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
         <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
           ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" onchange="App.attachFiles('${UIArg(t.id)}',this)">` : ''}
@@ -1667,8 +1703,8 @@
         <h2>Project</h2>
         <div class="project-fields">
           <div class="field-row">
-            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
-            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
+            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
+            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
           </div>
         </div>
       </div>
@@ -1678,11 +1714,11 @@
         <div class="member-access-list" aria-busy="${UIEscape(!!D.adminUsers?.loading)}">
           ${matching.slice(0,memberWindow.limit).map(({ user: u, record: m }) => `
             <div class="member-access-row ${u.active ? '' : 'off'}">
-              <div class="member-person">${avatarHtml(u.id, 24)}<span><b title="${esc(u.name)}">${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
+              <div class="member-person">${avatarHtml(u.id, 24)}<span><b data-tip="${esc(u.name)}" data-tip-overflow>${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
               <div class="member-grants">
                 ${u.admin ? '<span class="admin-access">Full access</span>' : `
-                  <label class="permission-check"><input type="checkbox" aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
-                  <label class="permission-check"><input type="checkbox" aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
               </div>
               <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" onclick="App.removeMember('${UIArg(u.id)}')">${I.close}</button>
             </div>`).join('') || `<div class="empty-note" style="border:0;text-align:left;padding:4px 0">${query?'No matching members':'No members yet'}</div>`}
@@ -1747,7 +1783,7 @@
     const stateBits = (x) => [stIcon(x.state), `<span style="color:${stateColor[x.state]}">${STATUS[x.state].toLowerCase()}</span>`];
     const rows = eTasks.map((x) => {
       const [dot, m] = stateBits(x);
-      return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" title="${esc(x.title)}">${esc(x.title)}</span><span class="tm">${m}</span></div>`;
+      return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" data-tip="${esc(x.title)}" data-tip-overflow>${esc(x.title)}</span><span class="tm">${m}</span></div>`;
     }).join('') || '<div class="empty-note" style="margin:14px 0">no tasks yet</div>';
 
     const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
@@ -1851,7 +1887,7 @@
   }
   function poolRowHtml(p) {
     const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
-    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" title="${esc(p.title)}" onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
+    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
   }
   function resetPoolCapture(){const capture=document.querySelector('.pool-capture');if(!capture)return;capture.classList.remove('is-expanded');const notes=capture.querySelector('#poolNewDesc');notes.value='';const content=capture.querySelector('.pool-capture-notes');content.inert=true;content.setAttribute('aria-hidden','true');const toggle=capture.querySelector('.pool-capture-toggle');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Add description');toggle.title='Add description';setHTML(toggle,I.note);}
 
@@ -2018,14 +2054,18 @@
       <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
-    return `<div class="scrim" onclick="App.closeOverlays()"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
+    // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
+    return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">${body}</div></div>`;
   }
 
   function renderMenu() {
     const m = state.menu;
     if (!m) return '';
-    const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${['light', 'dark'].map((theme) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.current === theme ? 'on' : ''}" aria-pressed="${window.Theme.current === theme}" onclick="App.setTheme('${UIArg(theme)}')"><span class="menu-icon" aria-hidden="true">${theme === 'light' ? I.sun : I.moon}</span>${theme === 'light' ? 'Light' : 'Dark'}</button>`).join('')}</div>`;
-    const items = m.items.map((it) => it.theme ? themeControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" title="${esc(it.projectName)}" onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
+    const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" onclick="App.setTheme('${UIArg(theme)}')"><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
+    const autoReload = window.Recovery?.autoReload;
+    // A choice for this browser, like the theme, so it keeps the menu open.
+    const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" onclick="App.toggleAutoReload()"><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
+    const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow onclick="App.menuAction(${it.i})"><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
       `<button class="${it.danger ? 'danger' : ''}" onclick="App.menuAction(${it.i})">${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
     return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" onclick="App.closeOverlays()"></div>
       <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
@@ -2119,8 +2159,9 @@
     if (state.view === 'roadmap') {
       return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
       <div class="right">
+        ${roadmapScaleHtml()}
         <button class="btn quiet" onclick="App.goToday()">Today</button>
-        ${canRoadmap() ? `<button class="btn" onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span> Milestone</button>
+        ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow onclick="App.openModal('milestone')"><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
         <button class="btn primary" onclick="App.openModal('epic')">${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
       </div>`;
     }
@@ -2132,7 +2173,7 @@
         const allowed = new Set(choices.map(epic=>epic.id));
         state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
         const def = MULTI.fEpic;
-        if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.title=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
+        if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.dataset.tip=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
       };
       const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
         options, search: options.length > 6,
@@ -2166,7 +2207,7 @@
     if (state.view === 'inbox') return '<h1>Inbox</h1>';
     if (state.view === 'profile') return `<h1>Profile</h1><span class="meta">${esc(userHandle(me()))}</span>`;
     if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" onclick="App.openModal('user')">${I.plus} New user</button></div>`;
-    return `<h1>Settings</h1><span class="meta" title="${esc(project().name)}">${esc(project().name)}</span>`;
+    return `<h1>Settings</h1><span class="meta" data-tip="${esc(project().name)}" data-tip-overflow>${esc(project().name)}</span>`;
   }
 
   let paintedPage=null;
@@ -2210,6 +2251,8 @@
     rendering=true;
     try{
       renderContent();
+      // An unanswered conflict prompt goes back beside its redrawn field before focus is restored.
+      window.Recovery?.keepPrompts?.();
       const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
       migrateEvents?.();
@@ -2433,6 +2476,7 @@
       for (const el of [connector, pill]) if (el) el.style.left = `${todayX}px`;
       for (const el of Object.values(view.cells)) el?.style.setProperty('--ppd', String(ppd));
       applyRoadmapLayout(view, roadmapLayout(model, ppd, view.metrics));
+      syncRoadmapScale();
     }
     const left = Math.max(0, RAIL + day * ppd - cx);
     if (Math.abs(sc.scrollLeft - left) >= 0.5) sc.scrollLeft = left;
@@ -2440,22 +2484,75 @@
     mountRoadmapCalendar(view);
   }
 
+  /** The scale the header shows as pressed; after a free zoom, none. */
+  let pressedScale = null;
+  function roadmapScaleHtml() {
+    pressedScale = roadmapScale()?.key ?? null;
+    return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${UIEscape(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${UIEscape(scale.shortcut)}" onclick="App.setRoadmapScale('${UIArg(scale.key)}')">${scale.label}</button>`).join('')}</div>`;
+  }
+  function syncRoadmapScale() {
+    const current = roadmapScale()?.key ?? null;
+    if (current === pressedScale) return;
+    pressedScale = current;
+    document.querySelectorAll('.roadmap-scale [data-scale]').forEach((button) => {
+      const on = button.dataset.scale === current;
+      button.setAttribute('aria-pressed', String(on)); button.classList.toggle('on', on);
+    });
+  }
+
+  /** The selected epic's bar while it shows in the view, or null. */
+  function selectedEpicBar(view) {
+    const found = roadmapSelection && view.lanes.flatMap((lane) => lane.bars).find((bar) => bar.el.dataset.epic === roadmapSelection);
+    if (!found?.el.isConnected) return null;
+    const box = found.el.getBoundingClientRect(), port = view.sc.getBoundingClientRect();
+    const shows = box.right > port.left + RAIL && box.left < port.right && box.bottom > port.top + view.layout.axisHeight && box.top < port.bottom - MONTH_ROW;
+    return shows ? found : null;
+  }
+  /**
+   * What a scale change keeps in place: the selected epic while it shows,
+   * else today while it shows, else the date in the middle of the view.
+   * An epic that fits the view keeps its middle, moved into the view if
+   * needed; a wider one keeps its start when that shows, and otherwise the
+   * middle of the part that shows. Returns the day and its distance from the
+   * scroller's left edge.
+   */
+  function scaleAnchor(view, ppd) {
+    const { sc, model } = view, width = sc.clientWidth, room = width - RAIL;
+    const x = (day) => RAIL + day * view.ppd - sc.scrollLeft;
+    const margin = Math.min(80, room / 4), inside = (cx) => Math.min(Math.max(cx, RAIL + margin), width - margin);
+    const selected = selectedEpicBar(view);
+    if (selected) {
+      const { from, to } = selected.item;
+      if (to !== null && (to - from) * ppd <= room) return { day: (from + to) / 2, cx: inside(x((from + to) / 2)) };
+      if (x(from) >= RAIL) return { day: from, cx: x(from) };
+      const shown = (Math.max(from, sc.scrollLeft / view.ppd) + Math.min(to ?? model.span, (sc.scrollLeft + room) / view.ppd)) / 2;
+      return { day: shown, cx: x(shown) };
+    }
+    const today = x(model.today);
+    if (today >= RAIL && today <= width) return { day: model.today, cx: today };
+    const cx = RAIL + room / 2;
+    return { day: (sc.scrollLeft + cx - RAIL) / view.ppd, cx };
+  }
+
   const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:'short' });
   /**
    * Month labels and lines cover the visible dates plus one view of overscan
-   * each way, so the DOM stays bounded at every zoom level. The cells follow
-   * --ppd, so this redraws them only when the view nears the window's edge,
-   * the window becomes much wider than needed or passes the end of the range,
-   * or a partial month at either end gains or loses its label.
+   * each way, so the DOM stays bounded at every zoom level. From WEEK_AXIS_PPD,
+   * weeks get lines too, and the bottom row labels each week with its Monday's
+   * date instead of each month. The cells follow --ppd, so this redraws them
+   * only when the view nears the window's edge, the window becomes much wider
+   * than needed or passes the end of the range, a partial month at either end
+   * gains or loses its label, or the axis changes between months and weeks.
    */
   function mountRoadmapCalendar(view) {
     const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
     const end = Math.max(model.span, (view.metrics.width - RAIL) / ppd);
     const day = (/** @type {Date} */ dt) => (dt - start) / DAY;
     const labeled = (/** @type {number} */ from, /** @type {number} */ to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
+    const weeks = ppd >= WEEK_AXIS_PPD;
     const startMonth = new Date(start); startMonth.setUTCDate(1); startMonth.setUTCMonth(startMonth.getUTCMonth() + 1);
     const endMonth = new Date(+start + end * DAY); endMonth.setUTCDate(1); endMonth.setUTCHours(0, 0, 0, 0);
-    const labels = `${labeled(0, Math.min(day(startMonth), end))}:${labeled(Math.max(day(endMonth), 0), end)}`;
+    const labels = `${weeks}:${labeled(0, Math.min(day(startMonth), end))}:${labeled(Math.max(day(endMonth), 0), end)}`;
     const margin = width / 2 / ppd;
     const need = { from: Math.max(0, sc.scrollLeft / ppd - margin), to: Math.min(end, (sc.scrollLeft + width - RAIL) / ppd + margin) };
     const shown = view.calendar;
@@ -2468,25 +2565,38 @@
       const next = new Date(m); next.setUTCMonth(next.getUTCMonth() + 1);
       const from = Math.max(day(m), 0), to = Math.min(day(next), end);
       const label = monthFormatter.format(m) + (m.getUTCMonth() === 0 || +m === +first ? ' ' + String(m.getUTCFullYear()).slice(2) : '');
-      if (labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
+      if (!weeks && labeled(from, to)) months += `<div class="rm-month" style="--d:${from};--n:${to - from}">${label}</div>`;
       if (day(next) < end) {
         seps += `<div class="rm-month-line" aria-hidden="true" style="--d:${day(next)}"></div>`;
         axisSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${day(next)}"></div>`;
       }
       covered = to;
     }
+    // Each week starts on a Monday, labeled with its date and, outside this year, the year.
+    let weekSeps = '';
+    if (weeks) for (const monday = new Date(+first + ((8 - first.getUTCDay()) % 7) * DAY); day(monday) < Math.min(last, end); monday.setUTCDate(monday.getUTCDate() + 7)) {
+      const at = day(monday);
+      if (at <= 0) continue;
+      if (monday.getUTCDate() !== 1) seps += `<div class="rm-week-line" aria-hidden="true" style="--d:${at}"></div>`;
+      weekSeps += `<div class="rm-axis-divider" aria-hidden="true" style="--d:${at}"></div>`;
+      months += `<div class="rm-week" style="--d:${at}">${humanShort(monday)}</div>`;
+    }
     view.calendar = { from: Math.max(0, day(first)), to: covered, labels };
     setHTML(view.cells.axis, axisSeps);
     setHTML(view.cells.lines, seps);
-    setHTML(view.cells.months, axisSeps + months);
+    setHTML(view.cells.months, (weeks ? weekSeps : axisSeps) + months);
   }
 
   let roadmapGestureCleanup = () => {};
+  /** @type {(RoadmapView & {zoomTo:(ppd:number)=>void})|null} The Roadmap on the page, which a scale change zooms. */
+  let mountedRoadmap = null;
   function mountRoadmap() {
     roadmapGestureCleanup();
     const sc = /** @type {HTMLElement|null} */(document.getElementById('rmScroll'));
     if (!sc || !renderedRoadmap) return;
-    const view = bindRoadmap(sc, renderedRoadmap);
+    const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (/** @type {number} */ _ppd) => {} });
+    mountedRoadmap = view;
+    sc.addEventListener('focusin', (event) => { const bar = /** @type {Element} */(event.target).closest?.('[data-epic]'); if (bar) roadmapSelection = bar.dataset.epic; });
     if (state.rmScrollLeft === null) state.rmScrollLeft = Math.max(RAIL + view.model.today * view.ppd - sc.clientWidth * 0.42, 0);
     sc.scrollLeft = state.rmScrollLeft;
     sc.scrollTop = state.rmScrollTop;
@@ -2519,6 +2629,7 @@
     let frame = 0, pointerX = NaN;
     /** @type {ReturnType<typeof setTimeout>|undefined} */ let idle;
     const begin = (/** @type {'wheel'|'pinch'|'gesture'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
+      stopScale(false);
       hideEpicTip();
       const cx = clientX - left;
       view.zoomLeft = sc.scrollLeft;
@@ -2592,11 +2703,41 @@
       if (e.type === 'gestureend') end();
     };
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) sc.addEventListener(type, pinchGesture);
+
+    // A scale change eases to its zoom in place, over a few frames like the
+    // other short motions; a wheel or pinch takes over from wherever it is.
+    /** @type {{ppd:number,day:number,cx:number,from:number,started:number|null}|null} */ let scaled = null;
+    let scaleFrame = 0;
+    function stopScale(finish = true) {
+      if (scaleFrame) cancelAnimationFrame(scaleFrame);
+      scaleFrame = 0;
+      if (finish && scaled && sc.isConnected) zoomRoadmap(view, scaled.ppd, scaled.day, scaled.cx);
+      scaled = null;
+    }
+    const stepScale = (/** @type {number} */ time) => {
+      scaleFrame = 0;
+      if (!scaled || !sc.isConnected) return;
+      scaled.started ??= time - 1000 / 60;
+      const progress = Math.min(1, (time - scaled.started) / MOTION.normal), eased = 1 - (1 - progress) ** 3;
+      zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
+      if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else scaled = null;
+    };
+    view.zoomTo = (ppd) => {
+      if (gesture) end();
+      stopScale();
+      hideEpicTip();
+      const { day, cx } = scaleAnchor(view, ppd);
+      if (reducedMotion.matches || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); return; }
+      scaled = { ppd, day, cx, from: view.ppd, started: null };
+      scaleFrame = requestAnimationFrame(stepScale);
+    };
     roadmapGestureCleanup = () => {
       if(calendarFrame)cancelAnimationFrame(calendarFrame);
       sizeObserver?.disconnect();if(sizeFrame!==null)cancelAnimationFrame(sizeFrame);sizeFrame=null;
       clearTimeout(idle); if (frame) cancelAnimationFrame(frame);
       frame = 0; gesture = null; sc.removeEventListener('touchmove', movePinch);
+      stopScale();
+      if (mountedRoadmap === view) mountedRoadmap = null;
     };
   }
 
@@ -2728,6 +2869,8 @@
     clearTaskSaving,
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
     confirm: askConfirmation,
+    askToDiscard,
+    followAddress,
     fieldError: failField,
     showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
     // With `wait`, a password that arrives while another dialog is open shows
@@ -2816,10 +2959,14 @@
       const complete = () => { D.session = { userId:u.id,authenticatedAt:Date.now() }; currentBrowserSession(); state.rmScrollLeft = null; const target=window.Recovery?.consumeReturn() || '#/roadmap'; setLocalHash(target); resolveRoute(); render(); };
       if (window.Recovery) Recovery.loginAtLimit(u,complete); else complete(); return false;
     },
+    /** What Sign out asks, which says when typed text would be lost. */
+    signOutText() {
+      return window.Recovery?.hasUnsavedInput?.() ? 'End your current browser session. Text you typed and have not saved will be lost.' : 'End your current browser session.';
+    },
     logout() {
       if (!D.session) return;
       const userId = me().id, sessionId = D.session.id;
-      askConfirmation({ title:'Sign out?', text:'End your current browser session.', action:'Sign out', confirm:() => {
+      askConfirmation({ title:'Sign out?', text:App.signOutText(), action:'Sign out', confirm:() => {
         if (!D.session || me().id !== userId || D.session.id !== sessionId) return;
         const current = currentBrowserSession(); if (current) current.revokedAt = Date.now();
         window.Uploads?.clearAccount(userId); clearToasts(); D.session = null; state.modal = null; state.menu = null; state.peek = null; render();
@@ -2853,6 +3000,7 @@
       const r = ev.currentTarget.getBoundingClientRect();
       App._openMenu([
         { theme: true },
+        ...(window.Recovery?.setAutoReload ? [{ autoReload: true }] : []),
         { sep: true },
         { label: 'Profile', icon: I.person, fn: () => App.nav('profile') },
         ...(isAdmin() ? [{ label: 'Users', icon: I.users, fn: () => App.nav('users') },{ label: 'Storage', icon: I.storage, fn: () => App.nav('storage') }] : []),
@@ -2861,6 +3009,17 @@
       ], r.left, r.top, { version: true, above: true, trigger:ev.currentTarget });
     },
     setTheme(value) { window.Theme.set(value); },
+    toggleAutoReload() {
+      window.Recovery?.setAutoReload?.(!window.Recovery?.autoReload);
+      App.autoReloadChanged();
+    },
+    /** Show Reload after updates as it is now, also after another tab changed it. */
+    autoReloadChanged() {
+      const on = !!window.Recovery?.autoReload, button = document.querySelector('[data-auto-reload]');
+      if (!button || button.getAttribute('aria-pressed') === String(on)) return;
+      button.setAttribute('aria-pressed', String(on));
+      setHTML(button.querySelector('.menu-check'), on ? I.tick : '');
+    },
     clearTaskSaved,
     noteTaskSaved:taskSaved,
     sizeDescription,
@@ -3017,7 +3176,7 @@
           const oldE = epicById(t.epicId), newE = taskDestinationEpics().find(epic => epic.id === v);
           if (!newE) {
             const control = document.querySelector('#select-tpEpic');
-            if (control && oldE) { control.querySelector('.sel-label').textContent = oldE.title; control.title = oldE.title; }
+            if (control && oldE) { control.querySelector('.sel-label').textContent = oldE.title; control.dataset.tip = oldE.title; }
             if (SELS.tpEpic) SELS.tpEpic.value = t.epicId;
             App.toast('Choose an open epic. Completed epics must be reopened first.', 'error'); return false;
           }
@@ -3061,7 +3220,7 @@
         if (foot) foot.style.display = def.values().length && def.clear ? '' : 'none';
         [...list.querySelectorAll('.pop-opt')].forEach((oel) => oel.addEventListener('click', () => {
           const focused=document.activeElement===oel,value=oel.dataset.v;def.toggle(value);
-          btn.querySelector('.sel-label').textContent = def.summary(); btn.title = def.summary();
+          btn.querySelector('.sel-label').textContent = def.summary(); btn.dataset.tip = def.summary();
           btn.classList.toggle('empty', !def.values().length);
           paint();if(focused)[...list.querySelectorAll('.pop-opt')].find(option=>option.dataset.v===value)?.focus({preventScroll:true});
         }));
@@ -3073,7 +3232,7 @@
       const input = el.querySelector('.pop-search');
       if (input) { input.focus(); input.addEventListener('input', () => { q = input.value.trim().toLowerCase(); paint(); }); }
       const foot = el.querySelector('.pop-foot button');
-      if (foot) foot.addEventListener('click', () => { def.clear(); btn.querySelector('.sel-label').textContent = def.summary(); btn.title = def.summary(); btn.classList.add('empty'); paint(); });
+      if (foot) foot.addEventListener('click', () => { def.clear(); btn.querySelector('.sel-label').textContent = def.summary(); btn.dataset.tip = def.summary(); btn.classList.add('empty'); paint(); });
       POP.onKey = (e) => {
         if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closePop();btn.focus({preventScroll:true});}
         else if(e.key==='Tab')closePop();
@@ -3143,6 +3302,13 @@
       state.modal=null;render();if(message)App.toast(message);return false;
     },
     setBlockedFilter(button){state.boardBlocked=!state.boardBlocked;button?.setAttribute('aria-pressed',String(state.boardBlocked));applyBoardFilters();},
+    /** Zoom the Roadmap to a fixed scale, in place, keeping the selected epic or today where it is. */
+    setRoadmapScale(key) {
+      const scale = ROADMAP_SCALES.find((item) => item.key === key);
+      if (!scale) return;
+      if (state.view === 'roadmap' && mountedRoadmap?.sc.isConnected) { mountedRoadmap.zoomTo(scale.ppd); return; }
+      state.pxPerDay = scale.ppd; syncRoadmapScale();
+    },
     goToday() {
       const sc = document.getElementById('rmScroll');
       const { start } = rmRange();
@@ -3178,7 +3344,14 @@
       App.roadmapTipKey(ev);
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
     },
-    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; renderOverlays(); },
+    openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; roadmapSelection = id; renderOverlays(); },
+    /** Escape: a dialog with typed text asks before it closes. */
+    dismissOverlays() {
+      const close = () => state.modal?.poolId ? App.returnToPool() : App.closeOverlays();
+      const dialog = state.modal ? document.querySelector('#overlay-root .modal') : null;
+      if (dialog && window.Recovery?.hasTypedInputIn?.(dialog)) { askToDiscard(close, () => {}, 'Text you typed in this dialog will be lost.'); return; }
+      close();
+    },
     closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
     openModal(type, id, epicId) {
       if(type==='pool'&&!canReadProject(state.projectId))return;
@@ -3734,7 +3907,7 @@
         if (hid) hid.value = o.v;
         def.value = o.v;
         btn.classList.toggle('empty', o.v === '' || o.v == null);
-        btn.querySelector('.sel-label').textContent = o.l; btn.title = o.l;
+        btn.querySelector('.sel-label').textContent = o.l; btn.dataset.tip = o.l;
         clearFieldError(btn);
         if (def.pick) def.pick(o.v);
         restoreOpener(returnFocus);
@@ -3787,9 +3960,12 @@
       if(ev.key==='Enter'&&ev.repeat){ev.preventDefault();return;}
       if (ev.key === 'Enter') { ev.preventDefault(); commitDate(key, ev.target.value, true); }
       else if (ev.key === 'Escape') {
-        ev.preventDefault(); ev.stopPropagation(); closePop(true);
+        // Escape closes the calendar or undoes the typing first; with nothing to undo, it goes on to the dialog.
+        const undoes = POP.id === 'dp:' + key || ev.target.value !== (DPS[key].value || '');
+        closePop(true);
         ev.target.value = DPS[key].value || '';
         dateFieldError(ev.target.closest('.date-field'), '');
+        if (undoes) { ev.preventDefault(); ev.stopPropagation(); }
       } else if (ev.key === 'ArrowDown' && ev.altKey) {
         ev.preventDefault(); ev.target.closest('.date-field').querySelector('.date-trigger').click();
       }
@@ -3994,13 +4170,38 @@
     }
     state.view=['roadmap','board','settings','profile','users','inbox','storage'].includes(route)?route:'notfound';
   }
+  /** The address Discard let through, which routes without asking again. */
+  let discardedFor = null;
+  /** Go to an address that the person already chose to leave typed text for. */
+  function followAddress(hash) { discardedFor = new URL(hash, location.href).href; location.hash = hash; }
+  /**
+   * Back, Forward or an address typed by hand: a field that saves itself saves
+   * first, as no browser blurs it here. If typed text would still be lost, the
+   * old address comes back while oneloop asks; Discard goes on.
+   */
+  function mayFollowAddress(event) {
+    if (event.newURL === discardedFor) { discardedFor = null; return true; }
+    const active = document.activeElement;
+    if (active?.matches?.('[data-autosave]')) active.blur();
+    if (!window.Recovery?.hasUnsavedInput?.({ leaving:false })) return true;
+    const { oldURL, newURL } = event;
+    history.replaceState(history.state, '', oldURL);
+    askToDiscard(() => {
+      discardedFor = newURL;
+      history.replaceState(history.state, '', newURL);
+      window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL }));
+    });
+    return false;
+  }
   window.addEventListener('hashchange',(event)=>{
-    window.Recovery?.clearPageError();
     // Local navigation already painted its destination. Consume only that
     // exact history event, so external hashes and Back/Forward still route.
     const index=locallyRenderedHashes.indexOf(event.newURL);
-    if(index!==-1){locallyRenderedHashes.splice(index,1);return;}
+    if(index!==-1){locallyRenderedHashes.splice(index,1);window.Recovery?.clearPageError();return;}
     if(event.newURL && event.newURL!==location.href)return;
+    // Staying keeps the page, so the route loader must not load the new one either.
+    if(!mayFollowAddress(event)){event.stopImmediatePropagation();return;}
+    window.Recovery?.clearPageError();
     state.peek=null;state.modal=null;state.menu=null;resolveRoute();render();
   });
   document.addEventListener('scroll', (e) => { if (!EPIC_TIP.el?.contains(e.target)) hideEpicTip(); }, true);
@@ -4010,6 +4211,19 @@
   document.addEventListener('focusin', (event) => {
     if (state.menu && !event.target.closest?.('#overlay-root > .menu')) dismissMenu(false);
   }, true);
+  // W, M and Q switch the Roadmap's scale while focus is on the Roadmap page,
+  // or on the page itself, as after a click on empty space or, in Safari, on a
+  // button. Not in a text field, a menu or a dialog: single-letter keys work
+  // only there, so they can't fire by accident elsewhere.
+  document.addEventListener('keydown', (event) => {
+    if (state.view !== 'roadmap' || event.defaultPrevented || event.repeat || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const scale = ROADMAP_SCALES.find((item) => item.shortcut === String(event.key).toUpperCase());
+    const onPage = event.target === document.body || event.target === document.documentElement || event.target.closest?.('#main,.page-header');
+    if (!scale || !onPage || event.target.closest('input,textarea,select,[contenteditable="true"]') || state.modal || state.peek || state.menu || state.sideOpen && innerWidth <= 900 || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || document.getElementById('app').inert) return;
+    event.preventDefault();
+    App.setRoadmapScale(scale.key);
+    announce(`Roadmap scale: ${scale.label}`);
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Tab' || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || POP.el?.contains(document.activeElement)) return;
     const panel = document.querySelector('#overlay-root > .modal-wrap .modal') || document.querySelector('#overlay-root > .peek');
@@ -4027,9 +4241,9 @@
   }, true);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.sideOpen && !state.menu && !state.modal && !state.peek && !POP.el) { e.preventDefault(); App.toggleSidebar(false); return; }
-    if (e.key === 'Escape' && state.modal?.poolId) { App.returnToPool(); return; }
+    if (e.key === 'Escape' && state.modal?.poolId) { App.dismissOverlays(); return; }
     if (e.key === 'Escape' && state.menu&&!state.modal&&!state.peek) {e.preventDefault();dismissMenu();return;}
-    if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.closeOverlays(); }
+    if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.dismissOverlays(); }
   });
   document.addEventListener('pointerdown', (e) => {
     clearTimeout(pressedControlTimer);

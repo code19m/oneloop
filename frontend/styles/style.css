@@ -364,6 +364,10 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rm-axis-divider { position:absolute;top:0;bottom:0;left:calc(var(--d) * var(--ppd) * 1px);width:1px;background:var(--line-soft);pointer-events:none; }
 .rm-month-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:1px;background:var(--line-soft);pointer-events:none; }
 .rm-month { line-height: 16px; position: absolute; top: 7px; left: calc(var(--d) * var(--ppd) * 1px); width: calc(var(--n) * var(--ppd) * 1px); text-align: center; font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; color: var(--ink-ghost); }
+/* From the zoom where weeks show, week lines are dashed so month lines stand out. */
+.rm-week-line { position:absolute;left:calc(var(--rm-rail) + var(--d) * var(--ppd) * 1px);top:var(--rm-axis-h);bottom:var(--rm-month-h);width:0;border-left:1px dashed var(--line);pointer-events:none; }
+.rm-week { line-height:16px;position:absolute;top:7px;left:calc(var(--d) * var(--ppd) * 1px);padding-left:8px;white-space:nowrap;font-family:var(--font-sans);font-size:var(--text-sm);color:var(--ink-ghost); }
+.roadmap-scale button { white-space:nowrap; }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
 .rm-axis .rail-cell { z-index: 6; box-shadow: none; }
@@ -419,6 +423,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 @media(hover:hover) {
   .bar:hover { background:color-mix(in srgb,var(--epic-surface),var(--ink) var(--epic-hover-tint));border-color:color-mix(in srgb,var(--epic-edge),var(--ink) 16%); }
 }
+/* The tooltip for data-tip details: hover, keyboard focus and tap all reach it. */
+.app-tip { position:fixed;z-index:150;max-width:min(320px,calc(100vw - 16px));padding:6px 9px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:var(--surface-raised);box-shadow:var(--shadow-modal);color:var(--ink);font-family:var(--font-sans);font-size:var(--text-sm);line-height:1.45;white-space:pre-line;overflow-wrap:anywhere;animation:fade-in var(--motion-fast) var(--ease-out); }
 .epic-tooltip { position:fixed;z-index:94;width:340px;max-width:calc(100vw - 16px);max-height:min(420px,calc(100dvh - 16px));overflow:auto;padding:16px;border:1px solid var(--line-strong);border-radius:14px;background:var(--surface-glass);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);box-shadow:var(--shadow-modal);color:var(--ink);overflow-wrap:anywhere; }
 .epic-tip-title { font-size:var(--text-body);font-weight:600;line-height:1.4; }
 .epic-tip-track { margin-top:4px;font-size:var(--text-sm);color:var(--ink-muted); }
@@ -758,6 +764,12 @@ div.ms-label {cursor:default}
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  /* A zoom sizes and moves the Roadmap, then sets its scroll position and
+     reads where things are. Even a 0.01ms transition keeps the old sizes and
+     places until the next frame, so the browser would clamp the scroll
+     position to the old width and the next scale change would start from old
+     places. */
+  .rm-canvas, .rm-canvas * { transition-property: none !important; }
 }
 
 /* Theme changes stay within the open profile menu. */
@@ -870,6 +882,12 @@ div.ms-label {cursor:default}
 @media (max-width:900px) {
   .roadmap-meta { display:none; }
 }
+/* A narrow Roadmap header gives way, least needed first: the summary, then
+   the scale buttons (pinching, the wheel and W, M and Q still zoom), then the
+   word Milestone, so Today, Milestone and Epic stay in view. */
+@container (max-width:924px) { .roadmap-meta { display:none; } }
+@container (max-width:689px) { .roadmap-scale { display:none; } }
+@container (max-width:455px) { .roadmap-milestone .btn-label { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap; } }
 
 /* A persistent notification stack; unrelated renders never restart its timers. */
 .toast-region { position:fixed;right:max(20px,env(safe-area-inset-right));bottom:max(20px,env(safe-area-inset-bottom));width:min(360px,calc(100vw - 32px));max-height:calc(100dvh - 40px);display:flex;flex-direction:column;gap:8px;z-index:120;pointer-events:none; }
@@ -1046,7 +1064,11 @@ a.attachment-name:hover { text-decoration:underline; }
 .profile-menu button { font-weight:500;gap:10px; }
 .profile-menu .menu-icon { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:16px;height:16px; }
 .profile-menu .menu-icon svg { width:16px;height:16px; }
-.profile-menu .theme-options button { gap:6px; }
+/* Reload after updates is a toggle; its check sits at the end of the row. */
+.profile-menu .menu-check { display:flex;align-items:center;justify-content:center;flex:0 0 14px;margin-left:auto; }
+.profile-menu .menu-check svg { width:13px;height:13px; }
+/* Three choices share the menu width, so each puts its icon above its label. */
+.profile-menu .theme-options button { flex-direction:column;gap:3px;padding:6px 2px;font-size:var(--text-xs);line-height:1.25; }
 
 /* Approved Waypoint identity; labels stay vector-sharp at every density. */
 .logo { color:var(--ink); }
@@ -1066,6 +1088,8 @@ a.attachment-name:hover { text-decoration:underline; }
 /* Blocking is visible independently of workflow status. */
 .blocked-badge { display:inline-flex;align-items:center;gap:5px;flex-shrink:0;padding:3px 7px;border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);border-radius:5px;background:color-mix(in srgb,var(--warn) 16%,var(--surface-canvas));color:var(--warn);font:500 var(--text-xs)/1.4 var(--font-sans);white-space:nowrap; }
 .blocked-badge svg { width:14px;height:14px; }
+/* On the light theme's tinted badge the warning color alone reads at 4.1:1; a little ink makes it 5:1. */
+:root[data-theme="light"] .blocked-badge { color:color-mix(in srgb,var(--warn) 85%,var(--ink)); }
 .card.blocked { border-color:color-mix(in srgb,var(--warn) 45%,transparent);border-left:3px solid var(--warn);padding-left:12px;background:color-mix(in srgb,var(--warn) 6%,var(--surface-raised)); }
 .card.blocked:hover { border-color:var(--warn);background:color-mix(in srgb,var(--warn) 9%,var(--surface-raised)); }
 .task-block { grid-area:blocker;border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface-canvas));border-radius:10px;padding:16px 18px;color:var(--ink);overflow-wrap:anywhere; }
