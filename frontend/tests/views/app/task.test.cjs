@@ -262,8 +262,12 @@ test('Ctrl+Z runs the newest Undo while its message shows, and leaves typing in 
   assert.equal(press(t.d.getElementById('cmtIn')), false, 'in a text field the key undoes typing');
   assert.equal(press(t.d.body, { ctrlKey: true, shiftKey: true }), false);
   assert.deepEqual(runs, []);
+  t.A.openModal('task'); t.d.querySelector('.modal button').focus();
+  assert.equal(press(t.d.activeElement), false, 'a dialog is open');
+  t.A.closeOverlays();
+  assert.deepEqual(runs, []);
   assert.equal(press(t.d.body), true); assert.deepEqual(runs, ['second']);
-  assert.equal(press(t.d.body, { metaKey: true }), true); assert.deepEqual(runs, ['second', 'first']);
+  assert.equal(press(t.d.body, { metaKey: true, key: 'я', code: 'KeyZ' }), true, 'the key in the Z place works in any layout'); assert.deepEqual(runs, ['second', 'first']);
   assert.equal(press(t.d.body), false, 'no Undo is left');
   assert.equal(t.d.querySelector('.toast-action'), null);
   t.A.offerUndo('Third deleted', () => {});

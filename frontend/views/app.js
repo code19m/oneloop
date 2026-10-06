@@ -419,12 +419,13 @@
   }
   // Undo also answers Ctrl+Z, or Command+Z on Apple devices, while its message
   // shows, so the keyboard reaches it without moving focus. In a text field
-  // the key undoes typing, as always.
+  // the key undoes typing, as always, and with a dialog, drawer or menu open
+  // it does nothing. The key's place counts too, for layouts without a Z.
   const UNDO_KEY = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgentData?.platform || navigator.platform || '')
     ? { label: '⌘Z', aria: 'Meta+Z', spoken: 'Command+Z' } : { label: 'Ctrl+Z', aria: 'Control+Z', spoken: 'Control+Z' };
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || String(event.key).toLowerCase() !== 'z') return;
-    if (event.target?.closest?.('input,textarea,select,[contenteditable="true"],.confirmation-layer') || pendingConfirmation) return;
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) || (String(event.key).toLowerCase() !== 'z' && event.code !== 'KeyZ')) return;
+    if (event.target?.closest?.('input,textarea,select,[contenteditable="true"],.confirmation-layer,.modal,[role="dialog"]') || state.modal || state.peek || state.menu || POP.el || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay')) return;
     const toast = toastQueue.findLast(item => item.el && item.action?.label === 'Undo');
     if (!toast) return;
     event.preventDefault();

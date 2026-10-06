@@ -344,6 +344,16 @@ test('Undo answers Ctrl+Z after a deletion, and a busy server leaves a way to tr
   const deleted = page.locator('#toast-region .toast').filter({ hasText: `${key} deleted` });
   await expect(deleted.getByRole('button', { name: 'Undo' })).toHaveAttribute('aria-keyshortcuts', /\+Z$/);
   await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
+  // With a dialog open, the key belongs to the dialog.
+  await page.getByRole('button', { name: 'Task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New task' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect(dialog).toBeVisible();
+  expect(restores).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`.board .card[data-task="${key}"]`)).toHaveCount(0);
   await page.keyboard.press('ControlOrMeta+z');
   const failed = page.locator('#toast-region .toast[data-kind="error"]').filter({ hasText: 'Try the same action again' });
   await expect(failed.getByRole('button', { name: 'Undo' })).toBeVisible();

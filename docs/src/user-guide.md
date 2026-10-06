@@ -144,8 +144,8 @@ itself.
 
 After you delete a task, a file or a comment, the message that confirms it has
 an **Undo** button while it is shown. Ctrl+Z (Cmd+Z on macOS) does the same
-while focus is not in a text field. The message stays while the pointer or
-focus is on it. Undo puts the item back where it was, or at the end of its
+while focus is not in a text field and no dialog is open. The message stays
+while the pointer or focus is on it. Undo puts the item back where it was, or at the end of its
 list if another item took that place, with its comments and files. People who
 left the project meanwhile are no longer assigned to a restored task, unless it
 is done. The history keeps the deletion, the undo and these changes.
