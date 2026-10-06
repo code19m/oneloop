@@ -189,6 +189,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   // back when the same person signs in again; anyone else never sees them.
   const draftKey=(taskId,field)=>`${data.session?.userId??''}|${taskId}|${field}`;
   function pruneDrafts(){if(!data.session)return;const scope=`${data.session.userId}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  /** Forget the drafts of a task the person deleted: they can't be saved, and Undo brings back the saved task. */
+  function dropDrafts(taskId){for(const [key,draft] of drafts)if(draft.taskId===taskId)drafts.delete(key);}
   // A save the end of a session cut off leaves its draft Not saved.
   function unsaved(draft){if(draft&&sessionScope()!==draft.scope)draft.unsaved=true;}
   const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
@@ -589,7 +591,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
     }));
   };
-  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>nav('board')}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
+  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
   // Undo restores the task at the revision its deletion left.
   function undoTaskDeletion(item,result){
     const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;

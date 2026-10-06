@@ -12,8 +12,8 @@ function leaveWarns(t) { const event = new t.w.Event('beforeunload', { cancelabl
 const pageWarns = t => t.w.Recovery.hasUnsavedInput({ leaving: false });
 const type = (element, value) => { element.focus(); element.value = value; };
 /** The production page changes: the view bridge with the real recovery controller. */
-function withBridge(t, { reloadBootstrap = async () => ({ stale: false }) } = {}) {
-  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway: {}, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
+function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gateway = {} } = {}) {
+  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
   return { ...t, bridge };
 }
 const ask = t => t.d.querySelector('.confirmation-layer [role="alertdialog"]');
@@ -120,6 +120,18 @@ test('running saves, uploads and drafts count only when leaving oneloop', async 
   assert.equal(leaveWarns(t), false);
   t.bridge.keepTaskDraft('BIR-079', 'desc', 'A description that could not be saved');
   assert.equal(leaveWarns(t), true); assert.equal(pageWarns(t), false, 'a draft waits for the task page');
+});
+
+test('deleting a task drops its Not saved drafts, and its Undo counts as nothing unsaved', async () => {
+  const page = bootApp({ route: 'task/BIR-079' }), item = page.D.tasks.find(task => task.id === 'BIR-079');
+  const t = withBridge(page, { gateway: { execute: async () => ({ entities: [{ id: item.internalId, revision: 7 }], events: [] }), hasPending: () => false } });
+  t.bridge.keepTaskDraft('BIR-079', 'desc', 'A description that could not be saved');
+  assert.equal(leaveWarns(t), true, 'a draft waits for the task page');
+  t.A.deleteTask('BIR-079');
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => t.d.querySelector('.toast-action'), 'the deletion offers Undo');
+  assert.equal(t.A.context().view, 'board'); assert.equal(ask(t), null, 'deleting goes to the Board without asking');
+  assert.equal(leaveWarns(t), false, 'nothing of the deleted task counts');
 });
 
 test('another page asks first: Cancel keeps the text and Discard moves on', () => {
