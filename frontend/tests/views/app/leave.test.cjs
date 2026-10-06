@@ -18,7 +18,7 @@ const type = (element, value) => { element.focus(); element.value = value; };
  */
 function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gateway } = {}) {
   const commands = [];
-  gateway ??= { execute: (operation, payload) => new Promise(() => { commands.push({ operation, payload }); }), hasPending: () => false };
+  gateway ??= { execute: (operation, payload) => new Promise((resolve, reject) => { commands.push({ operation, payload, resolve, reject }); }), hasPending: () => false };
   const previous = globalThis.document; globalThis.document = t.d;
   try {
     const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
@@ -89,18 +89,53 @@ test('a permission checkbox saves when it changes, so it never counts, also whil
   assert.equal(leaveWarns(t), false);
 });
 
-test('a deadline saved with Enter stops counting, though it keeps focus', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+/** Type a deadline on the task page and press Enter, as a person does. */
+function enterDeadline(t, value) {
   const deadline = t.d.getElementById('tpDl-input');
-  type(deadline, '2026-12-24');
-  assert.equal(pageWarns(t), true, 'typed and not saved yet');
+  type(deadline, value);
   t.A.dateKey({ key: 'Enter', target: deadline, preventDefault() {}, stopPropagation() {} }, 'tpDl');
+  return deadline;
+}
+/** Leave the deadline field with Tab, which saves it. */
+const tabAway = (t, deadline) => { deadline.blur(); t.A.dateBlur({ target: deadline }, 'tpDl'); };
+const deadlines = t => t.commands.map(command => [command.operation, command.payload.deadline]);
+
+test('a deadline saved with Enter counts as saved once the server accepts it, though it keeps focus', async () => {
+  const t = withBridge(bootApp({ route: 'task/BIR-079' })), task = t.D.tasks.find(item => item.id === 'BIR-079');
+  const deadline = enterDeadline(t, '2026-12-24');
   await settle();
-  assert.deepEqual(t.commands.map(command => [command.operation, command.payload.deadline]), [['task.update', '2026-12-24']]);
+  assert.deepEqual(deadlines(t), [['task.update', '2026-12-24']]);
+  assert.equal(pageWarns(t), true, 'not saved until the server answers');
+  Object.assign(task, { deadline: '2026-12-24', revision: task.revision + 1 });
+  t.commands[0].resolve({ entities: [{ id: task.internalId, revision: task.revision }], events: [] }); await settle();
   assert.equal(t.d.activeElement, deadline);
   assert.equal(leaveWarns(t), false);
-  deadline.blur(); t.A.dateBlur({ target: deadline }, 'tpDl'); await settle();
+  tabAway(t, deadline); await settle();
   assert.equal(t.commands.length, 1, 'leaving the field does not save the same date again');
+});
+
+test('a deadline whose save fails keeps counting, and Tab sends it again', async () => {
+  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const deadline = enterDeadline(t, '2026-12-24');
+  await settle();
+  t.commands[0].reject(new t.w.TestApiError('down', { status: 503, code: 'unavailable' })); await settle();
+  assert.equal(deadline.value, '2026-12-24', 'the field keeps the typed date');
+  assert.equal(pageWarns(t), true); assert.equal(leaveWarns(t), true);
+  tabAway(t, deadline); await settle();
+  assert.deepEqual(deadlines(t), [['task.update', '2026-12-24'], ['task.update', '2026-12-24']]);
+});
+
+test('a deadline typed offline is refused at once, keeps counting, and Tab sends it once online', async () => {
+  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Network', { code: 'network_error' }) });
+  const deadline = enterDeadline(t, '2026-12-24');
+  await settle();
+  assert.deepEqual(t.commands, [], 'nothing is sent');
+  assert.match(t.d.getElementById('toast-region').textContent, /Reconnect before making this change\./);
+  assert.equal(deadline.value, '2026-12-24'); assert.equal(pageWarns(t), true);
+  t.w.Recovery.observeResponse({ ok: true }); assert.equal(t.w.Recovery.connection, 'live');
+  tabAway(t, deadline); await settle();
+  assert.deepEqual(deadlines(t), [['task.update', '2026-12-24']]);
 });
 
 test('a comment that is being sent does not count, and counts again if the send fails', async () => {

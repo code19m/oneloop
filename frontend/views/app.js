@@ -697,12 +697,26 @@
     if (!def || def.disabled || !wrap) return false;
     const value = parseDateInput(raw), error = dateError(def, value);
     if (error) return dateFieldError(wrap, error, focusError);
-    if (value !== (def.value || '') && def.pick && def.pick(value) === false) return false;
+    const sending = value !== (def.value || '') && !!def.pick, result = sending ? def.pick(value) : true;
+    if (result === false) return false;
+    const previous = def.value;
     def.value = value;
     wrap.querySelector('input[type="hidden"]').value = value;
     wrap.querySelector('.date-text').value = value || '';
-    // A date that saves itself saved now, though it may keep focus, as after Enter.
-    if (def.autosave) window.Recovery?.markSaved?.(wrap.querySelector('.date-text'));
+    // A date that saves itself counts as saved once the server accepted it,
+    // though it may keep focus, as after Enter. One the server refused counts
+    // again, and the next Enter or Tab sends it again.
+    if (def.autosave) {
+      const settled = (saved) => {
+        const current = document.querySelector(`[data-date-key="${UIEscape(key)}"]`);
+        if (saved !== false) { const input = current?.querySelector('.date-text'); if (input && parseDateInput(input.value) === value) window.Recovery?.markSaved?.(input); return; }
+        if (DPS[key] !== def || def.value !== value) return;
+        def.value = previous;
+        const hidden = current?.querySelector('input[type="hidden"]'); if (hidden) hidden.value = previous || '';
+      };
+      if (sending && typeof result?.then === 'function') { def.pending = value; result.then((saved) => { if (def.pending === value) def.pending = null; settled(saved); }); }
+      else if (def.pending !== value) settled(result);
+    }
     dateFieldError(wrap, '');
     // A corrected range can resolve the other field's error as well.
     const scope = wrap.closest('form') || wrap.parentElement;

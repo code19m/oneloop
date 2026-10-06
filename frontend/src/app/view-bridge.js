@@ -267,7 +267,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
    */
   function saveTaskField(item,field,value,{base}={}){
     const form=globalThis.document?.querySelector?.('.task-page');
-    if(field==='state')return started(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    // A field without a draft, such as the deadline or the status, is refused at
+    // once when it can't be sent, so its caller keeps it unsaved. A title or
+    // description goes on: its draft keeps a refused value and sends it later.
+    if(field==='state'&&refusedAtOnce(null))return false;
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
     const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
@@ -283,8 +287,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(previous?.unsaved)base??=previous.base;
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
-    }
-    return started(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    }else if(refusedAtOnce(form))return false;
+    return accepted(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -437,11 +441,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   function fire(promise) { promise.catch(() => {}); return false; }
   /**
-   * A save that started returns true and one refused at once returns false, as
-   * the views' own saves do: a date field, for one, takes its new value and
-   * counts as saved only when its save started.
+   * Resolves whether the server accepted a save: true once it went through, or
+   * had nothing to change; false when it failed or the session ended. A date
+   * field, for one, counts as saved only then.
    */
-  function started(promise) { promise.catch(() => {}); return true; }
+  function accepted(promise) { return promise.then((result) => !result?.stale, () => false); }
+  /** Whether a save can't start now: a retry the server asked to wait for, or no connection, which `ensureOnline` says. */
+  const refusedAtOnce = (form) => isFormRetryPending(form) || (recovery?.ensureOnline ? !recovery.ensureOnline() : false);
   function formValues(event) { event?.preventDefault?.(); return new FormData(event.target); }
 
   app.login = (event) => {
