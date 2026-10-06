@@ -187,8 +187,8 @@ thumbnail a moment after the upload.
 | File path | 1,024 bytes |
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |
-| Search | 8 words and 200 characters |
-| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files |
+| Search | 8 words and 200 characters. One search runs at a time, and each person can have one search that runs or waits. Another search of the same person gets "try again" at once, and a search that waits 5 seconds gets it too |
+| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files and the first 5,000 sections of Markdown files, and the first 1 KiB of each heading; in path order, as much as fits in the project's 64 MiB search index |
 
 All query words must occur in the same file or folder path, Markdown section,
 or plain-text line. Matching ignores letter case. Files outside the searchable
@@ -237,18 +237,20 @@ Some emoji count as two characters.
 | --- | --- |
 | Connection | Ends after 30 days without use, and after 90 days at most |
 | App registrations | 10 per hour from one address; 300 per hour in total |
+| Connection requests | 10 waiting for approval per person; another one ends the oldest. An app's `state` value may be up to 4,096 bytes |
 | File tickets | Work once and expire after 5 minutes |
 | Items per page | 50 (100 for comments, activity and the Inbox) |
 | Retry keys | Remembered for 24 hours |
 | Knowledge overview | 200 files, and 20,000 characters of the README |
-| Knowledge file | 100,000 characters |
+| Knowledge file | 100,000 characters. Headings and sections come from the first 1 MiB of a Markdown file, up to 5,000 sections, and from the first 1 KiB of each heading. One file is read at a time; a read that waits 5 seconds gets "try again" |
 
 **Server**
 
 | Limit | Value |
 | --- | --- |
 | Open connections | 1,024; extra connections get 503 with `Retry-After: 1` |
-| Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response |
+| Live updates | 16 connections per person, one for each browser tab that shows oneloop, and only from oneloop's own pages. Another one closes the person's oldest, and that tab reconnects when it is shown or used again |
+| Request headers | Must arrive within 15 seconds of opening the connection, or of the previous response; within 5 minutes from a [trusted proxy](production.md#trusted-proxy) |
 | Request body size | 256 KiB for normal requests; 1 MiB for MCP calls |
 | Request body speed | May pause for up to 60 seconds; after the first minute, must arrive at 1 KiB per second on average |
 | Response | After the first minute of waiting, the client must read 1 KiB per second on average, or the connection closes. A client that stops reading is disconnected within 5 minutes. |

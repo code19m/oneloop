@@ -30,7 +30,38 @@ pub(crate) struct Section {
 /// Split a document into sections. Fenced code belongs to its section's text
 /// but never starts a section.
 pub(crate) fn sections(source: &str) -> Vec<Section> {
-    let lines = lines_with_offsets(source);
+    split(source, true)
+}
+
+/// The sections of a document without their text, for readers that need only
+/// the headings and where each section is.
+pub(crate) fn outline(source: &str) -> Vec<Section> {
+    split(source, false)
+}
+
+/// Sections read from one document. Each costs some memory however short it
+/// is, so a document of nothing but headings stops here; the rest of it is
+/// left out.
+const SECTIONS_MAX: usize = 5_000;
+
+/// Bytes of a heading that are read. Each mark in them costs memory while
+/// they are read, and headings go into search results and MCP replies, so a
+/// long heading line is read only up to here.
+pub(crate) const HEADING_BYTES_MAX: usize = 1_024;
+
+/// The start of a heading's source, cut at a character boundary.
+fn heading_source(text: &str) -> &str {
+    let mut end = text.len().min(HEADING_BYTES_MAX);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Reads the document a line at a time, so a long document costs memory for
+/// its sections, not for its lines.
+fn split(source: &str, with_text: bool) -> Vec<Section> {
+    let mut lines = lines_with_offsets(source).peekable();
     let mut sections = Vec::new();
     let mut current = Section {
         heading: None,
@@ -39,62 +70,64 @@ pub(crate) fn sections(source: &str) -> Vec<Section> {
         text: String::new(),
     };
     let mut fence: Option<(char, usize)> = None;
-    let mut body: Vec<&str> = Vec::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let (offset, line) = lines[index];
+    let mut body = Plain::default();
+    while let Some((offset, line)) = lines.next() {
         if let Some((marker, length)) = fence {
             if closes_fence(line, marker, length) {
                 fence = None;
-            } else {
+            } else if with_text {
                 body.push(line);
             }
-            index += 1;
             continue;
         }
         if let Some(opened) = opens_fence(line) {
             fence = Some(opened);
-            index += 1;
             continue;
         }
-        let setext = lines
-            .get(index + 1)
-            .and_then(|(_, next)| setext_level(line, next));
-        let heading = atx_heading(line).or_else(|| {
+        let setext = lines.peek().and_then(|(_, next)| setext_level(line, next));
+        let atx = atx_heading(line);
+        let underlined = atx.is_none() && setext.is_some();
+        let heading = atx.or_else(|| {
             setext.map(|level| Heading {
                 level,
-                text: inline_text(line.trim()),
+                text: inline_text(heading_source(line.trim())),
                 anchor: String::new(),
             })
         });
         if let Some(heading) = heading {
             current.end = offset;
-            current.text = plain(&body);
+            current.text = body.take();
             if current.heading.is_some() || !current.text.is_empty() {
                 sections.push(current);
             }
-            body.clear();
+            if sections.len() == SECTIONS_MAX {
+                return anchored(sections);
+            }
             current = Section {
                 heading: Some(heading),
                 start: offset,
                 end: source.len(),
                 text: String::new(),
             };
-            index += if setext.is_some() && atx_heading(line).is_none() {
-                2
-            } else {
-                1
-            };
+            if underlined {
+                lines.next();
+            }
             continue;
         }
-        body.push(line);
-        index += 1;
+        if with_text {
+            body.push(line);
+        }
     }
     current.end = source.len();
-    current.text = plain(&body);
+    current.text = body.take();
     if current.heading.is_some() || !current.text.is_empty() {
         sections.push(current);
     }
+    anchored(sections)
+}
+
+/// Gives each heading its link anchor, made unique within the document.
+fn anchored(mut sections: Vec<Section>) -> Vec<Section> {
     let mut occurrences = std::collections::HashMap::new();
     let mut used = std::collections::HashSet::new();
     for heading in sections
@@ -196,18 +229,17 @@ pub(crate) fn slug(text: &str) -> String {
         .collect()
 }
 
-fn lines_with_offsets(source: &str) -> Vec<(usize, &str)> {
-    let mut lines = Vec::new();
+fn lines_with_offsets(source: &str) -> impl Iterator<Item = (usize, &str)> {
     // A byte order mark is not part of the first line.
     let (mut offset, source) = match source.strip_prefix('\u{feff}') {
         Some(rest) => ('\u{feff}'.len_utf8(), rest),
         None => (0, source),
     };
-    for line in source.split_inclusive('\n') {
-        lines.push((offset, line.trim_end_matches(['\n', '\r'])));
+    source.split_inclusive('\n').map(move |line| {
+        let start = offset;
         offset += line.len();
-    }
-    lines
+        (start, line.trim_end_matches(['\n', '\r']))
+    })
 }
 
 fn indent(line: &str) -> Option<&str> {
@@ -248,7 +280,7 @@ fn atx_heading(line: &str) -> Option<Heading> {
     }
     Some(Heading {
         level: level as u8,
-        text: inline_text(text),
+        text: inline_text(heading_source(text)),
         anchor: String::new(),
     })
 }
@@ -279,108 +311,7 @@ fn setext_level(line: &str, next: &str) -> Option<u8> {
 /// tags and code marks go, emphasis marks go when they pair up, escapes and
 /// common entities are decoded, and runs of whitespace become one space.
 pub(crate) fn inline_text(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let mut closers = Closers::new(&chars);
-    let mut pieces = Vec::with_capacity(chars.len());
-    // Where a link's text ends, and where reading resumes after its target.
-    let mut link_ends = HashMap::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if let Some(resume) = link_ends.remove(&index) {
-            index = resume;
-            continue;
-        }
-        let c = chars[index];
-        match c {
-            '!' if chars.get(index + 1) == Some(&'[') => index += 1,
-            '[' => {
-                if let Some(close) = closers.next(index + 1, ']') {
-                    let resume = match chars.get(close + 1) {
-                        Some('(') => closers
-                            .next(close + 2, ')')
-                            .map_or(chars.len(), |end| end + 1),
-                        Some('[') => closers
-                            .next(close + 2, ']')
-                            .map_or(chars.len(), |end| end + 1),
-                        _ => close + 1,
-                    };
-                    link_ends.insert(close, resume);
-                } else {
-                    pieces.push(Piece::Text(c));
-                }
-                index += 1;
-            }
-            '<' => {
-                let end = closers.next(index + 1, '>');
-                match end {
-                    Some(end)
-                        if chars
-                            .get(index + 1)
-                            .is_some_and(|next| next.is_ascii_alphabetic() || *next == '/') =>
-                    {
-                        let inner = &chars[index + 1..end];
-                        if inner.contains(&'@') || inner.windows(3).any(|w| w == [':', '/', '/']) {
-                            pieces.extend(inner.iter().copied().map(Piece::Text));
-                        }
-                        index = end + 1;
-                    }
-                    _ => {
-                        pieces.push(Piece::Text(c));
-                        index += 1;
-                    }
-                }
-            }
-            '`' => index += 1,
-            '~' if chars.get(index + 1) == Some(&'~') => index += 2,
-            '\\' if chars
-                .get(index + 1)
-                .is_some_and(|next| next.is_ascii_punctuation()) =>
-            {
-                pieces.push(Piece::Text(chars[index + 1]));
-                index += 2;
-            }
-            '&' => match entity(&chars[index..]) {
-                Some((decoded, length)) => {
-                    pieces.push(Piece::Text(decoded));
-                    index += length;
-                }
-                None => {
-                    pieces.push(Piece::Text(c));
-                    index += 1;
-                }
-            },
-            '*' | '_' => {
-                let length = chars[index..].iter().take_while(|next| **next == c).count();
-                let (before, after) = (
-                    index.checked_sub(1).map(|i| chars[i]),
-                    chars.get(index + length).copied(),
-                );
-                let left = flanking(after, before);
-                let right = flanking(before, after);
-                let (open, close) = if c == '*' {
-                    (left, right)
-                } else {
-                    (
-                        left && (!right || before.is_some_and(is_punctuation)),
-                        right && (!left || after.is_some_and(is_punctuation)),
-                    )
-                };
-                pieces.push(Piece::Run {
-                    star: c == '*',
-                    left: u32::try_from(length).unwrap_or(u32::MAX),
-                    open,
-                    close,
-                });
-                index += length;
-            }
-            _ => {
-                pieces.push(Piece::Text(c));
-                index += 1;
-            }
-        }
-    }
-    drop(closers);
-    drop(chars);
+    let mut pieces = pieces(value);
     pair_emphasis(&mut pieces);
     // Runs of whitespace become one space, and none is left at either end.
     let mut out = String::with_capacity(value.len());
@@ -397,7 +328,8 @@ pub(crate) fn inline_text(value: &str) -> String {
     };
     for piece in pieces {
         match piece {
-            Piece::Text(c) => push(c),
+            Piece::Source(start, end) => value[start..end].chars().for_each(&mut push),
+            Piece::Decoded(c) => push(c),
             Piece::Run { star, left, .. } => {
                 for _ in 0..left {
                     push(if star { '*' } else { '_' });
@@ -408,10 +340,141 @@ pub(crate) fn inline_text(value: &str) -> String {
     out
 }
 
-/// One character of a line, or a run of emphasis marks. A long line holds
-/// one piece per character, so pieces stay small.
+/// The pieces of one line of inline Markdown, in order. Text between marks is
+/// one piece, so a long line of prose holds a few pieces, not one for each
+/// character. Every mark is ASCII, so the line is read by bytes, and an index
+/// where a mark is found is always a character boundary.
+fn pieces(value: &str) -> Vec<Piece> {
+    let bytes = value.as_bytes();
+    let mut closers = Closers::new(bytes);
+    let mut pieces = Vec::new();
+    // Where a link's text ends, and where reading resumes after its target.
+    let mut link_ends = HashMap::new();
+    // Where the text not yet in a piece starts.
+    let mut text = 0;
+    let mut index = 0;
+    // Ends the text before `index`, which the mark there replaces.
+    let flush = |pieces: &mut Vec<Piece>, text: usize, index: usize| {
+        if text < index {
+            pieces.push(Piece::Source(text, index));
+        }
+    };
+    while index < bytes.len() {
+        if let Some(resume) = link_ends.remove(&index) {
+            flush(&mut pieces, text, index);
+            index = resume;
+            text = index;
+            continue;
+        }
+        let c = bytes[index];
+        match c {
+            b'!' if bytes.get(index + 1) == Some(&b'[') => {
+                flush(&mut pieces, text, index);
+                index += 1;
+                text = index;
+            }
+            b'[' => {
+                if let Some(close) = closers.next(index + 1, b']') {
+                    let resume = match bytes.get(close + 1) {
+                        Some(b'(') => closers
+                            .next(close + 2, b')')
+                            .map_or(bytes.len(), |end| end + 1),
+                        Some(b'[') => closers
+                            .next(close + 2, b']')
+                            .map_or(bytes.len(), |end| end + 1),
+                        _ => close + 1,
+                    };
+                    link_ends.insert(close, resume);
+                    flush(&mut pieces, text, index);
+                    text = index + 1;
+                }
+                index += 1;
+            }
+            b'<' => match closers.next(index + 1, b'>') {
+                Some(end)
+                    if bytes
+                        .get(index + 1)
+                        .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'/') =>
+                {
+                    flush(&mut pieces, text, index);
+                    let inner = &value[index + 1..end];
+                    if inner.contains('@') || inner.contains("://") {
+                        pieces.push(Piece::Source(index + 1, end));
+                    }
+                    index = end + 1;
+                    text = index;
+                }
+                _ => index += 1,
+            },
+            b'`' => {
+                flush(&mut pieces, text, index);
+                index += 1;
+                text = index;
+            }
+            b'~' if bytes.get(index + 1) == Some(&b'~') => {
+                flush(&mut pieces, text, index);
+                index += 2;
+                text = index;
+            }
+            b'\\'
+                if bytes
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_ascii_punctuation()) =>
+            {
+                flush(&mut pieces, text, index);
+                pieces.push(Piece::Source(index + 1, index + 2));
+                index += 2;
+                text = index;
+            }
+            b'&' => {
+                if let Some((decoded, length)) = entity(&bytes[index..]) {
+                    flush(&mut pieces, text, index);
+                    pieces.push(Piece::Decoded(decoded));
+                    index += length;
+                    text = index;
+                } else {
+                    index += 1;
+                }
+            }
+            b'*' | b'_' => {
+                flush(&mut pieces, text, index);
+                let length = bytes[index..].iter().take_while(|next| **next == c).count();
+                let (before, after) = (
+                    value[..index].chars().next_back(),
+                    value[index + length..].chars().next(),
+                );
+                let left = flanking(after, before);
+                let right = flanking(before, after);
+                let (open, close) = if c == b'*' {
+                    (left, right)
+                } else {
+                    (
+                        left && (!right || before.is_some_and(is_punctuation)),
+                        right && (!left || after.is_some_and(is_punctuation)),
+                    )
+                };
+                pieces.push(Piece::Run {
+                    star: c == b'*',
+                    left: u32::try_from(length).unwrap_or(u32::MAX),
+                    open,
+                    close,
+                });
+                index += length;
+                text = index;
+            }
+            _ => index += 1,
+        }
+    }
+    flush(&mut pieces, text, bytes.len());
+    pieces
+}
+
+/// Part of a line as the reader sees it.
 enum Piece {
-    Text(char),
+    /// The source bytes from one offset to another, as written.
+    Source(usize, usize),
+    /// A character written as an entity.
+    Decoded(char),
     /// A run of `*` (or `_`), with the marks not yet paired.
     Run {
         star: bool,
@@ -484,11 +547,12 @@ fn pair_emphasis(pieces: &mut [Piece]) {
     }
 }
 
-/// A character reference at the start of `chars`: a decimal or hexadecimal
+/// A character reference at the start of `bytes`: a decimal or hexadecimal
 /// number, or one of the names common in prose. Returns it and its length.
-fn entity(chars: &[char]) -> Option<(char, usize)> {
-    let end = chars.iter().take(34).position(|c| *c == ';')?;
-    let body: String = chars[1..end].iter().collect();
+/// A reference is ASCII, so its length in bytes is its length in characters.
+fn entity(bytes: &[u8]) -> Option<(char, usize)> {
+    let end = bytes.iter().take(34).position(|c| *c == b';')?;
+    let body = std::str::from_utf8(&bytes[1..end]).ok()?;
     let decoded = if let Some(number) = body.strip_prefix('#') {
         let (digits, radix) = match number.strip_prefix(['x', 'X']) {
             Some(hex) if (1..=6).contains(&hex.len()) => (hex, 16),
@@ -504,7 +568,7 @@ fn entity(chars: &[char]) -> Option<(char, usize)> {
             .and_then(char::from_u32)
             .unwrap_or('\u{fffd}')
     } else {
-        match body.as_str() {
+        match body {
             "amp" => '&',
             "lt" => '<',
             "gt" => '>',
@@ -521,23 +585,23 @@ fn entity(chars: &[char]) -> Option<(char, usize)> {
 /// remembered, and the scan only moves forward, so a line full of unclosed
 /// brackets still takes linear time.
 struct Closers<'a> {
-    chars: &'a [char],
-    memo: Vec<(char, usize, Option<usize>)>,
+    bytes: &'a [u8],
+    memo: Vec<(u8, usize, Option<usize>)>,
     #[cfg(test)]
     scanned: usize,
 }
 
 impl<'a> Closers<'a> {
-    fn new(chars: &'a [char]) -> Self {
+    fn new(bytes: &'a [u8]) -> Self {
         Self {
-            chars,
+            bytes,
             memo: Vec::with_capacity(3),
             #[cfg(test)]
             scanned: 0,
         }
     }
 
-    fn next(&mut self, from: usize, target: char) -> Option<usize> {
+    fn next(&mut self, from: usize, target: u8) -> Option<usize> {
         if let Some((_, start, found)) = self.memo.iter().find(|(c, ..)| *c == target)
             && *start <= from
             && found.is_none_or(|at| at >= from)
@@ -545,14 +609,14 @@ impl<'a> Closers<'a> {
             return *found;
         }
         let found = self
-            .chars
+            .bytes
             .get(from..)?
             .iter()
             .position(|c| *c == target)
             .map(|offset| from + offset);
         #[cfg(test)]
         {
-            self.scanned += found.map_or(self.chars.len(), |at| at + 1) - from;
+            self.scanned += found.map_or(self.bytes.len(), |at| at + 1) - from;
         }
         self.memo.retain(|(c, ..)| *c != target);
         self.memo.push((target, from, found));
@@ -560,11 +624,16 @@ impl<'a> Closers<'a> {
     }
 }
 
-/// Plain text of block lines: list markers, quotes and table pipes removed.
-fn plain(lines: &[&str]) -> String {
-    let mut text = String::new();
-    let mut previous_row = false;
-    for line in lines {
+/// Plain text of block lines, added one line at a time: list markers, quotes
+/// and table pipes removed.
+#[derive(Default)]
+struct Plain {
+    text: String,
+    previous_row: bool,
+}
+
+impl Plain {
+    fn push(&mut self, line: &str) {
         let mut line = line.trim();
         // Table rows read as one list: cells and rows are both separated by dots.
         let row = line.starts_with('|');
@@ -572,7 +641,7 @@ fn plain(lines: &[&str]) -> String {
             .chars()
             .all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' '))
         {
-            continue;
+            return;
         }
         while let Some(rest) = line.strip_prefix('>') {
             line = rest.trim_start();
@@ -590,17 +659,32 @@ fn plain(lines: &[&str]) -> String {
         {
             line = rest;
         }
-        let cells = line.trim_matches('|').replace('|', " · ");
-        let inline = inline_text(&cells);
+        let cells = line.trim_matches('|');
+        let inline = if cells.contains('|') {
+            inline_text(&cells.replace('|', " · "))
+        } else {
+            inline_text(cells)
+        };
         if !inline.is_empty() {
-            if !text.is_empty() {
-                text.push_str(if row && previous_row { " · " } else { " " });
+            if self.text.is_empty() {
+                self.text = inline;
+            } else {
+                self.text.push_str(if row && self.previous_row {
+                    " · "
+                } else {
+                    " "
+                });
+                self.text.push_str(&inline);
             }
-            text.push_str(&inline);
-            previous_row = row;
+            self.previous_row = row;
         }
     }
-    text
+
+    /// The text so far, leaving the builder empty for the next section.
+    fn take(&mut self) -> String {
+        self.previous_row = false;
+        std::mem::take(&mut self.text)
+    }
 }
 
 #[cfg(test)]
@@ -672,27 +756,76 @@ mod tests {
             "[".repeat(10_000),
             "x>[y](".repeat(2_000),
         ] {
-            let chars: Vec<char> = line.chars().collect();
-            let mut closers = Closers::new(&chars);
-            for index in 0..chars.len() {
-                for target in [']', ')', '>'] {
+            let mut closers = Closers::new(line.as_bytes());
+            for index in 0..line.len() {
+                for target in [b']', b')', b'>'] {
                     closers.next(index, target);
                 }
             }
             assert!(
-                closers.scanned <= 3 * (chars.len() + 1),
+                closers.scanned <= 3 * (line.len() + 1),
                 "{}",
                 closers.scanned
             );
         }
         assert_eq!(inline_text(&"<".repeat(1_000)).len(), 1_000);
-        // A long line holds one piece per character.
-        assert!(std::mem::size_of::<Piece>() <= 8);
         assert_eq!(inline_text(" \t a \u{2003} *b*\n c \u{3000}"), "a b c");
         assert_eq!(
             inline_text("[a](b) and 2 < 3 [e] <https://f.test>"),
             "a and 2 < 3 e https://f.test"
         );
+    }
+
+    #[test]
+    fn reading_costs_memory_for_the_text_not_for_each_character_or_line() {
+        use crate::test_memory::peak_heap;
+        // A megabyte of prose on one line, as generated pages and tables have.
+        let line = "Plain words, and more words. ".repeat(36_000);
+        let (text, peak) = peak_heap(|| inline_text(&line));
+        assert_eq!(text.len(), line.len() - 1);
+        assert!(peak < 2 * line.len(), "{peak} bytes for {}", line.len());
+        let (parsed, peak) = peak_heap(|| sections(&line));
+        assert_eq!(parsed[0].text, text);
+        assert!(peak < 2 * line.len(), "{peak} bytes for {}", line.len());
+        // A megabyte of empty lines.
+        let blank = "\n".repeat(1024 * 1024);
+        let (parsed, peak) = peak_heap(|| sections(&blank));
+        assert!(parsed.is_empty());
+        assert!(peak < 64 * 1024, "{peak} bytes for {}", blank.len());
+        // An outline leaves the text out.
+        let document = format!("# Title\n\n{line}");
+        let (parsed, peak) = peak_heap(|| outline(&document));
+        assert_eq!(parsed[0].heading.as_ref().unwrap().text, "Title");
+        assert!(parsed[0].text.is_empty());
+        assert!(peak < 64 * 1024, "{peak} bytes for {}", document.len());
+    }
+
+    #[test]
+    fn a_long_heading_is_read_up_to_its_limit() {
+        use crate::test_memory::peak_heap;
+        // A megabyte of emphasis marks, each of which costs memory to pair.
+        let marks = "*a".repeat(512 * 1024);
+        for document in [format!("# {marks}\n\nText.\n"), format!("a{marks}\n===\n")] {
+            let (parsed, peak) = peak_heap(|| outline(&document));
+            let heading = parsed[0].heading.as_ref().unwrap();
+            assert!((1..=HEADING_BYTES_MAX).contains(&heading.text.len()));
+            assert!(peak < 128 * 1024, "{peak} bytes");
+        }
+        // A cut never splits a character.
+        let wide = format!("# a{}\n", "é".repeat(HEADING_BYTES_MAX));
+        let heading = outline(&wide).remove(0).heading.unwrap();
+        assert_eq!(heading.text.len(), HEADING_BYTES_MAX - 1);
+    }
+
+    #[test]
+    fn a_document_of_headings_is_read_up_to_its_section_limit() {
+        let headings = "# Title\n\n".to_owned() + &"## Step\nDone.\n".repeat(200_000);
+        let (parsed, peak) = crate::test_memory::peak_heap(|| outline(&headings));
+        assert_eq!(parsed.len(), SECTIONS_MAX);
+        let last = &parsed[SECTIONS_MAX - 1];
+        assert_eq!(last.heading.as_ref().unwrap().anchor, "step-4998");
+        assert_eq!(&headings[last.start..last.end], "## Step\nDone.\n");
+        assert!(peak < 2 * 1024 * 1024, "{peak} bytes");
     }
 
     #[test]

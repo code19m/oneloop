@@ -474,6 +474,10 @@ async fn finalize_attachment_upload(
             .transaction(move |tx| {
                 let now = unix_now()?;
                 require_file_access_tx(tx, &actor, &project_id, true, false, now)?;
+                // Someone may have deleted the task while the bytes arrived.
+                if task_project(tx, &task_id)? != project_id {
+                    return Err(AppError::NotFound { resource: "task" });
+                }
                 let active: bool = tx.query_row(
                     SELECT_UPLOAD_RESERVATIONS_SQL,
                     params![reservation_id, now],

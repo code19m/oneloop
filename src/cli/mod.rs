@@ -188,6 +188,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     init_tracing(config.log_level);
     tracing::info!(public_url = %config.public_url, trusted_proxies = ?config.trusted_proxies, "proxy configuration");
     let listen = config.listen;
+    let trusted_proxies = config.trusted_proxies.clone();
     let data_dir = config.data_dir.clone();
     let timezone_database = config.timezone.database().to_string();
     let state = AppState::new(config, db);
@@ -212,13 +213,18 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
         "oneloop listening"
     );
     let mut stopped = shutdown.subscribe();
-    let server = crate::http::server::serve(listener, application.router, async move {
-        while !*stopped.borrow_and_update() {
-            if stopped.changed().await.is_err() {
-                break;
+    let server = crate::http::server::serve(
+        listener,
+        application.router,
+        async move {
+            while !*stopped.borrow_and_update() {
+                if stopped.changed().await.is_err() {
+                    break;
+                }
             }
-        }
-    });
+        },
+        &trusted_proxies,
+    );
     tokio::pin!(server);
     let supervision = crate::runtime::supervise_workers(
         worker,

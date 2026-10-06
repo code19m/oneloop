@@ -311,7 +311,8 @@ pub(super) fn unblock_task(
     if complete {
         let position = task_append_position(tx, &task.project_id, "done")?;
         tx.execute(
-            "UPDATE tasks SET status='done',position=?1,completed_at=?2,updated_at=?2,revision=revision+1 WHERE id=?3 AND revision=?4",
+            "UPDATE tasks SET status='done',position=?1,completed_at=?2,completion_order=(SELECT COALESCE(MAX(completion_order),0)+1
+             FROM tasks WHERE completion_order>0),updated_at=?2,revision=revision+1 WHERE id=?3 AND revision=?4",
             params![position, now, input.task_id, expected],
         )?;
     } else {

@@ -55,26 +55,17 @@ impl FileBody {
         }
     }
 
-    /// All the bytes at once, for readers that need the whole file.
-    pub(super) async fn read_all(self) -> AppResult<Vec<u8>> {
-        let Self {
-            rowid,
-            checksum,
-            length,
-            ..
-        } = self;
-        self.db
-            .snapshot(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT substr(content,1,?3) FROM knowledge_files WHERE rowid=?1 AND checksum=?2",
-                        rusqlite::params![rowid, checksum, length as i64],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or_else(changed)
-            })
-            .await
+    /// The first `limit` bytes at most, at once, for readers that need the
+    /// start of a file in memory. Only those bytes are read.
+    pub(super) async fn read_start(self, limit: u64) -> AppResult<Vec<u8>> {
+        read_chunk(
+            self.db,
+            self.rowid,
+            self.checksum,
+            0,
+            self.length.min(limit),
+        )
+        .await
     }
 }
 

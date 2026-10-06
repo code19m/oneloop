@@ -129,6 +129,15 @@ test('a newest-first Done keeps live cards in completion order, newest first',()
   assert.equal(data.tasks.find(item=>item.internalId==='new').completedAt,null);
 });
 
+test('a newest-first Done puts the task completed last first within one second',()=>{
+  const data=createLegacyData(),value=bootstrap();
+  value.doneOrder='completed';value.boardPages={done:{nextCursor:null,total:0}};value.selectedProjectId='p1';
+  hydrateLegacyData(data,value);
+  const done=(id,completionOrder)=>({...value.tasks[0],id,taskKey:`BIR-${id}`,status:'done',position:1,completedAt:200,completionOrder});
+  appendBoardTasks(data,[done('first',7),done('last',9),done('second',8)]);
+  assert.deepEqual(data.tasks.filter(item=>item.state==='done').map(item=>item.internalId),['last','second','first']);
+});
+
 test('an explicitly empty roadmap clears stale project collections',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());
   replaceRoadmap(data,{projectId:'p1',tracks:[],epics:[],milestones:[]});

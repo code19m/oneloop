@@ -4,7 +4,7 @@
 //! credential.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Not,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -29,21 +29,35 @@ use super::{
     content::FileBody,
     git::{Git, Limits},
     markdown,
-    search::{Content, Index, Results},
+    search::{Content, INDEX_BYTES_MAX, Index, Results},
     secrets::{Purpose, SecretBox, generate_deploy_key},
     source::{self, GitUrl, Transport},
 };
 
 /// Text files larger than this are found by name only.
 const INDEXED_FILE_BYTES: i64 = 1024 * 1024;
-/// Memory for search indexes across projects; the newest always stays.
-const CATALOG_BYTES: usize = 128 * 1024 * 1024;
+/// Memory for search indexes across projects, as one project's index may
+/// use. The newest always stays.
+const CATALOG_BYTES: usize = INDEX_BYTES_MAX;
+/// Text read to build an index. An index holds each character at least twice,
+/// so more would not fit into it.
+const CATALOG_TEXT_BYTES: i64 = (INDEX_BYTES_MAX / 2) as i64;
 const OVERVIEW_FILES_MAX: usize = 200;
 const OVERVIEW_SECTIONS_MAX: usize = 12;
 const README_CHARS_MAX: usize = 20_000;
 const FILE_TEXT_CHARS_MAX: usize = 100_000;
 const FILE_HEADINGS_MAX: usize = 60;
 const PATH_QUERY_MAX: usize = 1_024;
+/// Bytes that always hold `chars` characters, whatever the script.
+const fn text_bytes(chars: usize) -> u64 {
+    4 * chars as u64
+}
+/// The part of a Markdown file that MCP reads for its title, headings and
+/// sections: as much as search reads, and ten times what a reply holds.
+const MARKDOWN_SOURCE_BYTES: u64 = INDEXED_FILE_BYTES as u64;
+/// How long a search or a file read waits for the one before it, like a
+/// database request.
+const QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -69,6 +83,44 @@ pub(super) struct Inner {
     catalogs: Mutex<Vec<Arc<Catalog>>>,
     /// Indexes are built one at a time; a request that waited finds the result.
     builds: tokio::sync::Mutex<()>,
+    /// MCP reads one file's text at a time, so the memory of large files
+    /// never adds up.
+    readers: Arc<tokio::sync::Semaphore>,
+    /// Searches run one at a time.
+    searches: Arc<tokio::sync::Semaphore>,
+    /// People with a search that runs or waits. Each has one at most, so no
+    /// one can fill the queue.
+    searchers: Mutex<HashSet<String>>,
+}
+
+/// A person's search while it runs or waits.
+struct Searching<'a> {
+    inner: &'a Inner,
+    user_id: &'a str,
+}
+
+impl<'a> Searching<'a> {
+    /// A person who already has a search is told to try again at once.
+    fn start(inner: &'a Inner, user_id: &'a str) -> AppResult<Self> {
+        let mut searchers = inner.searchers.lock().expect("searchers lock");
+        if !searchers.insert(user_id.to_owned()) {
+            return Err(AppError::Unavailable(
+                "your previous knowledge search is still running; try again shortly".into(),
+            ));
+        }
+        Ok(Self { inner, user_id })
+    }
+}
+
+impl Drop for Searching<'_> {
+    // A search ends when its request does, even one that is cancelled.
+    fn drop(&mut self) {
+        self.inner
+            .searchers
+            .lock()
+            .expect("searchers lock")
+            .remove(self.user_id);
+    }
 }
 
 /// What search and MCP need from one synced commit, built on first use.
@@ -77,14 +129,6 @@ struct Catalog {
     /// The source generation and commit it was built from.
     key: String,
     index: Index,
-    outlines: HashMap<String, Outline>,
-}
-
-#[derive(Default)]
-struct Outline {
-    title: Option<String>,
-    /// Level-two headings.
-    sections: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -358,6 +402,9 @@ impl KnowledgeService {
                 waiting: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
+                readers: Arc::new(tokio::sync::Semaphore::new(1)),
+                searches: Arc::new(tokio::sync::Semaphore::new(1)),
+                searchers: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -634,10 +681,27 @@ impl KnowledgeService {
 
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
         actor.require_ready()?;
-        Ok(match self.catalog(actor, project_id).await? {
-            Some(catalog) => catalog.index.search(query),
-            None => Results::default(),
+        let _searching = Searching::start(&self.inner, &actor.user_id)?;
+        let Some(catalog) = self.catalog(actor, project_id).await? else {
+            return Ok(Results::default());
+        };
+        // A search reads the whole index, which takes a while for a large
+        // folder. It runs off the async workers, one at a time, so searches
+        // can't slow other requests down; a search that waits too long is
+        // told to try again.
+        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.searches.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                AppError::Unavailable("knowledge search is busy; try again shortly".into())
+            })?
+            .map_err(|_| AppError::Unavailable("knowledge search is shutting down".into()))?;
+        let query = query.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            catalog.index.search(&query)
         })
+        .await
+        .map_err(|error| AppError::internal(format!("knowledge search failed: {error}")))
     }
 
     /// For MCP clients: the README of `folder` and a compact file index.
@@ -677,12 +741,14 @@ impl KnowledgeService {
             .map(|file| file.path.clone());
         let readme = match readme_path {
             Some(path) => {
-                let text = self.text(actor, project_id, &path).await?;
+                let (text, longer) = self
+                    .text(actor, project_id, &path, text_bytes(README_CHARS_MAX))
+                    .await?;
                 let (content, truncated) = cut(&text, README_CHARS_MAX);
                 Some(ReadmeText {
                     path,
                     content,
-                    truncated,
+                    truncated: truncated || longer,
                 })
             }
             None => None,
@@ -690,7 +756,7 @@ impl KnowledgeService {
         let outline = |path: &str| {
             catalog
                 .as_ref()
-                .and_then(|catalog| catalog.outlines.get(path))
+                .and_then(|catalog| catalog.index.outline(path))
         };
         let files = inside
             .iter()
@@ -772,16 +838,31 @@ impl KnowledgeService {
                 "applies to Markdown files only",
             ));
         }
-        let text = self.text(actor, project_id, &file.path).await?;
         let query = section
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
-        // A file can hold megabytes of Markdown: parse it off the async workers.
+        // Only the start of a file can be part of a reply, so only the start
+        // is read. One file at a time is read and parsed, off the async
+        // workers, so many calls at once can't use up the memory; a read
+        // that waits too long is told to try again.
+        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.readers.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                AppError::Unavailable("knowledge reader is busy; try again shortly".into())
+            })?
+            .map_err(|_| AppError::Unavailable("knowledge reader is shutting down".into()))?;
+        let limit = if markdown_file {
+            MARKDOWN_SOURCE_BYTES
+        } else {
+            text_bytes(FILE_TEXT_CHARS_MAX)
+        };
+        let (text, longer) = self.text(actor, project_id, &file.path, limit).await?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let mut content = text.as_str();
             if markdown_file {
-                let sections = markdown::sections(&text);
+                let sections = markdown::outline(&text);
                 result.title = markdown::title(&sections);
                 result.headings = sections
                     .iter()
@@ -799,25 +880,46 @@ impl KnowledgeService {
                     result.section = Some(query);
                 }
             }
+            // The file goes on past what was read, and so may the content.
+            let unfinished = longer
+                && content.as_ptr().addr() + content.len() == text.as_ptr().addr() + text.len();
             let (content, truncated) = cut(content, FILE_TEXT_CHARS_MAX);
             result.content = Some(content);
-            result.truncated = truncated;
+            result.truncated = truncated || unfinished;
             Ok(result)
         })
         .await
         .map_err(|error| AppError::internal(format!("knowledge reader failed: {error}")))?
     }
 
-    /// A text file's full content, read after the caller is authorized.
-    async fn text(&self, actor: &Actor, project_id: &str, path: &str) -> AppResult<String> {
+    /// The first `limit` bytes of a text file as text, read after the caller
+    /// is authorized, and whether the file is longer.
+    async fn text(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        path: &str,
+        limit: u64,
+    ) -> AppResult<(String, bool)> {
         let read = self
             .file(actor, project_id, path, FileMode::Download, None)
             .await?;
-        let bytes = match read.body {
-            Some(body) => body.read_all().await?,
-            None => Vec::new(),
+        let Some(body) = read.body else {
+            return Ok((String::new(), false));
         };
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let longer = body.len() > limit;
+        let mut bytes = body.read_start(limit).await?;
+        // A character that the limit splits is left out; other bytes that
+        // aren't UTF-8 become U+FFFD. Valid text is not copied.
+        if longer
+            && let Err(error) = std::str::from_utf8(&bytes)
+            && error.error_len().is_none()
+        {
+            bytes.truncate(error.valid_up_to());
+        }
+        let text = String::from_utf8(bytes)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+        Ok((text, longer))
     }
 
     async fn catalog(&self, actor: &Actor, project_id: &str) -> AppResult<Option<Arc<Catalog>>> {
@@ -842,24 +944,6 @@ impl KnowledgeService {
                     (path, kind, text)
                 })
                 .collect();
-            let mut outlines = HashMap::new();
-            for (path, kind, text) in &texts {
-                if let (Some(PreviewKind::Markdown), Some(text)) = (kind, text) {
-                    let sections = markdown::sections(text);
-                    outlines.insert(
-                        path.clone(),
-                        Outline {
-                            title: markdown::title(&sections),
-                            sections: sections
-                                .iter()
-                                .filter_map(|section| section.heading.as_ref())
-                                .filter(|heading| heading.level == 2)
-                                .map(|heading| heading.text.clone())
-                                .collect(),
-                        },
-                    );
-                }
-            }
             let index = Index::build(texts.iter().map(|(path, kind, text)| {
                 let content = match (kind, text) {
                     (Some(PreviewKind::Markdown), Some(text)) => Content::Markdown(text),
@@ -872,7 +956,6 @@ impl KnowledgeService {
                 project_id,
                 key,
                 index,
-                outlines,
             })
         })
         .await
@@ -913,20 +996,35 @@ impl KnowledgeService {
                     return Ok(Loaded::Missing);
                 }
                 let mut statement = connection.prepare(
-                    "SELECT path,preview_kind,
-                            CASE WHEN preview_kind IN ('markdown','text') AND media_type LIKE 'text/%' AND size<=?2 THEN content END,
-                            media_type
+                    "SELECT rowid,path,preview_kind,media_type,size,
+                            preview_kind IN ('markdown','text') AND media_type LIKE 'text/%' AND size<=?2
                      FROM knowledge_files WHERE project_id=?1 ORDER BY path",
                 )?;
-                let files = statement
+                let listed = statement
                     .query_map(params![project, INDEXED_FILE_BYTES], |row| {
                         Ok((
-                            row.get::<_, String>(0)?,
-                            preview_kind(row.get::<_, Option<String>>(1)?.as_deref(), &row.get::<_, String>(3)?),
-                            row.get::<_, Option<Vec<u8>>>(2)?,
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            preview_kind(row.get::<_, Option<String>>(2)?.as_deref(), &row.get::<_, String>(3)?),
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, bool>(5)?,
                         ))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
+                // Text past what the index can hold is never read.
+                let mut content = connection
+                    .prepare_cached("SELECT content FROM knowledge_files WHERE rowid=?1")?;
+                let mut read = 0;
+                let mut files = Vec::with_capacity(listed.len());
+                for (rowid, path, kind, size, indexed) in listed {
+                    let text = if indexed && read + size <= CATALOG_TEXT_BYTES {
+                        read += size;
+                        Some(content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?)
+                    } else {
+                        None
+                    };
+                    files.push((path, kind, text));
+                }
                 Ok(Loaded::Files(key, files))
             })
             .await
@@ -1509,6 +1607,204 @@ fn cut(text: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project with a synced folder of Markdown `files`, and a signed-in
+    /// admin for each of `people`.
+    async fn synced_project(
+        files: Vec<(String, String)>,
+        people: &[&str],
+    ) -> (tempfile::TempDir, KnowledgeService, Vec<Actor>) {
+        use crate::auth::{AuthService, LoginResult, NewUser, create_user};
+        let root = tempfile::tempdir_in("target").unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let db = Db::open(root.path()).unwrap();
+        let password = "test-only-password-012345";
+        let usernames: Vec<String> = people.iter().map(|name| (*name).to_owned()).collect();
+        let names = usernames.clone();
+        db.transaction(move |tx| {
+            for username in names {
+                let user = NewUser {
+                    display_name: username.clone(),
+                    username,
+                    password: password.into(),
+                    is_admin: true,
+                    must_change_password: false,
+                };
+                create_user(tx, user, unix_now()?)?;
+            }
+            tx.execute_batch(
+                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
+                 INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,created_at,updated_at,generation)
+                 VALUES('p','https://git.example.test/docs.git','main','','ready','c',1,1,'g');",
+            )?;
+            for (path, content) in files {
+                tx.execute(
+                    "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                     VALUES('p',?1,?2,'text/plain','markdown',?3,1,?4)",
+                    params![path, content.len() as i64, format!("sum-{path}"), content.into_bytes()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let auth = AuthService::new(db.clone());
+        let mut actors = Vec::new();
+        for username in &usernames {
+            let login = auth
+                .login(username, password, Default::default(), None)
+                .await
+                .unwrap();
+            let LoginResult::Authenticated(session) = login else {
+                panic!("the session limit can't be reached");
+            };
+            actors.push(session.actor);
+        }
+        (root, KnowledgeService::new(db, 0), actors)
+    }
+
+    #[tokio::test]
+    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
+        // This test's runtime runs on this thread, so whatever a search scans
+        // and builds on the async worker counts against this thread's heap.
+        let section = "## Shared steps\n\nShared words for every reader.\n\n";
+        let files = (0..300)
+            .map(|index| {
+                let content = format!("# Note {index}\n\n{}", section.repeat(6));
+                (format!("shared-{index}.md"), content)
+            })
+            .collect();
+        let (_root, service, people) = synced_project(files, &["admin"]).await;
+        // The first search builds the index.
+        service.search(&people[0], "p", "shared").await.unwrap();
+        let watch = crate::test_memory::Watch::start();
+        let results = service
+            .search(&people[0], "p", "shared words")
+            .await
+            .unwrap();
+        assert_eq!((results.file_count, results.hit_count), (0, 1800));
+        assert_eq!(results.documents.len(), 50);
+        assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
+    }
+
+    #[tokio::test]
+    async fn each_person_has_one_search_and_a_search_waits_at_most_five_seconds() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nShared words.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice", "bob"]).await;
+        let (alice, bob) = (&people[0], &people[1]);
+        // The first search builds the index.
+        service.search(alice, "p", "shared").await.unwrap();
+        tokio::time::pause();
+        let search = |actor: &Actor| {
+            let (service, actor) = (service.clone(), actor.clone());
+            tokio::spawn(async move { service.search(&actor, "p", "shared").await })
+        };
+        let searching = |actor: &Actor| {
+            let searchers = service.inner.searchers.lock().unwrap();
+            searchers.contains(&actor.user_id)
+        };
+        // A long search holds the one slot, and Alice's search waits for it.
+        let held = service
+            .inner
+            .searches
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let first = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        // Her next one is told at once to try again; Bob's waits its turn.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.search(alice, "p", "shared"),
+        )
+        .await
+        .expect("a second search of one person doesn't wait");
+        assert!(
+            matches!(second, Err(AppError::Unavailable(_))),
+            "{second:?}"
+        );
+        let other = search(bob);
+        drop(held);
+        first.await.unwrap().unwrap();
+        other.await.unwrap().unwrap();
+        // A search whose request ends lets its person search again at once.
+        let held = service
+            .inner
+            .searches
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let cancelled = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        assert!(!searching(alice));
+        // A search that waits too long is told to try again.
+        let waiting = search(bob);
+        tokio::time::sleep(QUEUE_WAIT + std::time::Duration::from_secs(1)).await;
+        let waited = waiting.await.unwrap();
+        assert!(
+            matches!(waited, Err(AppError::Unavailable(_))),
+            "{waited:?}"
+        );
+        assert!(!searching(bob));
+        drop(held);
+        service.search(bob, "p", "shared").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reply_holds_only_the_start_of_each_long_heading() {
+        let long = "Long words ".repeat(10_000);
+        let mut content = format!("# {long}\n\nIntro.\n\n");
+        for _ in 0..10 {
+            content.push_str(&format!("## {long}\n\nText.\n\n"));
+        }
+        let files = vec![("long.md".to_owned(), content)];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        let read = service
+            .read_text(&people[0], "p", "long.md", None)
+            .await
+            .unwrap();
+        let title = read.title.unwrap();
+        assert!(title.starts_with("Long words Long"));
+        assert!(
+            title.len() <= markdown::HEADING_BYTES_MAX,
+            "{}",
+            title.len()
+        );
+        assert!(read.headings.len() > 1);
+        for heading in &read.headings {
+            assert!(heading.len() <= markdown::HEADING_BYTES_MAX + "## ".len());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_read_waits_at_most_five_seconds_for_the_one_before_it() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nWords.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        tokio::time::pause();
+        // Another read holds the one reader.
+        let held = service.inner.readers.clone().acquire_owned().await.unwrap();
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            service.read_text(&people[0], "p", "note.md", None),
+        )
+        .await
+        .expect("a read doesn't wait for long");
+        assert!(matches!(read, Err(AppError::Unavailable(_))), "{read:?}");
+        drop(held);
+        let read = service
+            .read_text(&people[0], "p", "note.md", None)
+            .await
+            .unwrap();
+        assert_eq!(read.content.as_deref(), Some("# Note\n\nWords.\n"));
+    }
 
     #[test]
     fn long_text_is_cut_at_a_nearby_line_break() {

@@ -2,7 +2,7 @@
 //! file, and section text for Markdown and other text files. A query matches
 //! when every word appears, ignoring case.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
@@ -15,12 +15,25 @@ const DOCUMENTS_MAX: usize = 50;
 const HITS_PER_DOCUMENT_MAX: usize = 5;
 const SNIPPET_CHARS: usize = 160;
 const TEXT_LINES_MAX: usize = 5_000;
+/// Memory one project's index may use, by `Index::bytes`. Once it is full,
+/// later files are found by name only, as files over the size limit are.
+pub(crate) const INDEX_BYTES_MAX: usize = 64 * 1024 * 1024;
+/// What one allocation costs besides its bytes.
+const ALLOCATION_BYTES: usize = 32;
 
 pub(crate) struct Index {
     names: Vec<Name>,
     documents: Vec<Document>,
+    outlines: HashMap<String, Outline>,
     /// Approximate memory held by the index.
     bytes: usize,
+}
+
+/// A Markdown file's title and level-two headings.
+#[derive(Default)]
+pub(crate) struct Outline {
+    pub(crate) title: Option<String>,
+    pub(crate) sections: Vec<String>,
 }
 
 struct Name {
@@ -51,67 +64,127 @@ pub(crate) enum Content<'a> {
     None,
 }
 
+/// The memory a string holds.
+fn held(value: &str, capacity: usize) -> usize {
+    if value.is_empty() && capacity == 0 {
+        0
+    } else {
+        capacity + ALLOCATION_BYTES
+    }
+}
+
 impl Index {
     pub(crate) fn build<'a>(files: impl IntoIterator<Item = (&'a str, Content<'a>)>) -> Self {
         let mut folders = BTreeSet::new();
-        let mut names = Vec::new();
-        let mut documents = Vec::new();
+        let mut index = Self {
+            names: Vec::new(),
+            documents: Vec::new(),
+            outlines: HashMap::new(),
+            bytes: 0,
+        };
+        let mut full = false;
         for (path, content) in files {
             let mut parts: Vec<&str> = path.split('/').collect();
             parts.pop();
             for depth in 1..=parts.len() {
                 folders.insert(parts[..depth].join("/"));
             }
-            names.push(Name::new(path, false));
+            index.add_name(path, false);
+            if full {
+                continue;
+            }
             let file_name = path.rsplit('/').next().unwrap_or(path);
-            let entries = match content {
+            let mut entries = Vec::new();
+            let mut add = |index: &mut Self, entry: Entry| {
+                let cost = entry.bytes();
+                if index.bytes + cost > INDEX_BYTES_MAX {
+                    return false;
+                }
+                index.bytes += cost;
+                entries.push(entry);
+                true
+            };
+            match content {
                 Content::Markdown(source) => {
                     let sections = markdown::sections(source);
-                    let title = markdown::title(&sections).unwrap_or_else(|| file_name.to_owned());
-                    sections
-                        .into_iter()
-                        .map(|section| {
-                            let (heading, anchor) = section.heading.map_or_else(
-                                || (title.clone(), None),
-                                |heading| (heading.text, Some(heading.anchor)),
-                            );
-                            Entry::new(heading, section.text, anchor)
-                        })
-                        .collect()
+                    let title = markdown::title(&sections);
+                    let outline = Outline {
+                        title: title.clone(),
+                        sections: sections
+                            .iter()
+                            .filter_map(|section| section.heading.as_ref())
+                            .filter(|heading| heading.level == 2)
+                            .map(|heading| heading.text.clone())
+                            .collect(),
+                    };
+                    let cost = outline.bytes() + held(path, path.len());
+                    if index.bytes + cost > INDEX_BYTES_MAX {
+                        full = true;
+                        continue;
+                    }
+                    index.bytes += cost;
+                    index.outlines.insert(path.to_owned(), outline);
+                    let title = title.unwrap_or_else(|| file_name.to_owned());
+                    for section in sections {
+                        let (heading, anchor) = section.heading.map_or_else(
+                            || (title.clone(), None),
+                            |heading| (heading.text, Some(heading.anchor)),
+                        );
+                        if !add(&mut index, Entry::new(heading, section.text, anchor)) {
+                            full = true;
+                            break;
+                        }
+                    }
                 }
-                Content::Text(source) => source
-                    .lines()
-                    .take(TEXT_LINES_MAX)
-                    .enumerate()
-                    .filter(|(_, line)| !line.trim().is_empty())
-                    .map(|(number, line)| {
-                        Entry::new(format!("Line {}", number + 1), line.trim().to_owned(), None)
-                    })
-                    .collect(),
-                Content::None => Vec::new(),
-            };
+                Content::Text(source) => {
+                    for (number, line) in source.lines().take(TEXT_LINES_MAX).enumerate() {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let entry = Entry::new(
+                            format!("Line {}", number + 1),
+                            line.trim().to_owned(),
+                            None,
+                        );
+                        if !add(&mut index, entry) {
+                            full = true;
+                            break;
+                        }
+                    }
+                }
+                Content::None => {}
+            }
             if !entries.is_empty() {
-                documents.push(Document {
+                entries.shrink_to_fit();
+                index.bytes +=
+                    std::mem::size_of::<Document>() + held(path, path.len()) + ALLOCATION_BYTES;
+                index.documents.push(Document {
                     path: path.to_owned(),
                     entries,
                 });
             }
         }
-        names.extend(folders.iter().map(|folder| Name::new(folder, true)));
-        let bytes = names.iter().map(|name| name.path.len() * 3).sum::<usize>()
-            + documents
-                .iter()
-                .flat_map(|document| &document.entries)
-                .map(|entry| {
-                    (entry.heading.len() + entry.text.len()) * 2
-                        + entry.section.as_ref().map_or(0, String::len)
-                })
-                .sum::<usize>();
-        Self {
-            names,
-            documents,
-            bytes,
+        for folder in &folders {
+            index.add_name(folder, true);
         }
+        index.names.shrink_to_fit();
+        index.documents.shrink_to_fit();
+        index
+    }
+
+    /// Every file and folder can be found by name, however full the index is.
+    fn add_name(&mut self, path: &str, folder: bool) {
+        let name = Name::new(path, folder);
+        self.bytes += std::mem::size_of::<Name>()
+            + held(&name.path, name.path.capacity())
+            + held(&name.lower, name.lower.capacity())
+            + held(&name.base_lower, name.base_lower.capacity());
+        self.names.push(name);
+    }
+
+    /// The outline of a Markdown file that the index holds.
+    pub(crate) fn outline(&self, path: &str) -> Option<&Outline> {
+        self.outlines.get(path)
     }
 
     pub(crate) fn bytes(&self) -> usize {
@@ -150,7 +223,8 @@ impl Index {
         });
         let file_count = files.len();
 
-        let mut documents: Vec<(u8, DocumentHits)> = Vec::new();
+        // The best hits of each matching document, and how many it has.
+        let mut documents: Vec<(u8, &Document, Vec<&Entry>, usize)> = Vec::new();
         let mut hit_count = 0;
         for document in &self.documents {
             let mut hits: Vec<(u8, &Entry)> = document
@@ -174,28 +248,18 @@ impl Index {
             }
             hits.sort_by_key(|(score, _)| *score);
             hit_count += hits.len();
-            let best = hits[0].0;
-            documents.push((
-                best,
-                DocumentHits {
-                    path: document.path.clone(),
-                    total: hits.len(),
-                    hits: hits
-                        .into_iter()
-                        .take(HITS_PER_DOCUMENT_MAX)
-                        .map(|(_, entry)| Hit {
-                            heading: entry.heading.clone(),
-                            section: entry.section.clone(),
-                            snippet: snippet(&entry.text, &entry.text_lower, &words),
-                        })
-                        .collect(),
-                },
-            ));
+            let (best, total) = (hits[0].0, hits.len());
+            let best_hits = hits
+                .into_iter()
+                .take(HITS_PER_DOCUMENT_MAX)
+                .map(|(_, entry)| entry)
+                .collect();
+            documents.push((best, document, best_hits, total));
         }
-        documents.sort_by(|(a_score, a), (b_score, b)| {
+        documents.sort_by(|(a_score, a, _, a_total), (b_score, b, _, b_total)| {
             a_score
                 .cmp(b_score)
-                .then(b.total.cmp(&a.total))
+                .then(b_total.cmp(a_total))
                 .then(a.path.cmp(&b.path))
         });
         Results {
@@ -207,10 +271,22 @@ impl Index {
                     folder: name.folder,
                 })
                 .collect(),
+            // Excerpts are made only for the documents in the reply.
             documents: documents
                 .into_iter()
                 .take(DOCUMENTS_MAX)
-                .map(|(_, hits)| hits)
+                .map(|(_, document, hits, total)| DocumentHits {
+                    path: document.path.clone(),
+                    total,
+                    hits: hits
+                        .into_iter()
+                        .map(|entry| Hit {
+                            heading: entry.heading.clone(),
+                            section: entry.section.clone(),
+                            snippet: snippet(&entry.text, &entry.text_lower, &words),
+                        })
+                        .collect(),
+                })
                 .collect(),
             file_count,
             hit_count,
@@ -239,6 +315,37 @@ impl Entry {
             section,
             text,
         }
+    }
+
+    /// The memory the entry holds, its strings included.
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + [
+                &self.heading,
+                &self.heading_lower,
+                &self.text,
+                &self.text_lower,
+            ]
+            .into_iter()
+            .chain(&self.section)
+            .map(|value| held(value, value.capacity()))
+            .sum::<usize>()
+    }
+}
+
+impl Outline {
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .title
+                .as_ref()
+                .map_or(0, |title| held(title, title.capacity()))
+            + self.sections.capacity() * std::mem::size_of::<String>()
+            + self
+                .sections
+                .iter()
+                .map(|section| held(section, section.capacity()))
+                .sum::<usize>()
     }
 }
 
@@ -291,9 +398,10 @@ fn terms(query: &str) -> Vec<String> {
 }
 
 /// A short excerpt around the first matching word, cut at word boundaries.
+/// It works on byte offsets in the text, so a long section isn't copied.
 fn snippet(text: &str, lower: &str, words: &[String]) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= SNIPPET_CHARS {
+    let length = text.chars().count();
+    if length <= SNIPPET_CHARS {
         return text.to_owned();
     }
     // Case folding rarely changes length; the character position is close
@@ -303,30 +411,34 @@ fn snippet(text: &str, lower: &str, words: &[String]) -> String {
         .filter_map(|word| lower.find(word.as_str()))
         .min()
         .map_or(0, |byte| lower[..byte].chars().count())
-        .min(chars.len());
-    let mut start = found.saturating_sub(SNIPPET_CHARS / 3);
+        .min(length);
+    let mut start = text
+        .char_indices()
+        .nth(found.saturating_sub(SNIPPET_CHARS / 3))
+        .map_or(text.len(), |(at, _)| at);
     if start > 0 {
-        start = chars[..start]
-            .iter()
-            .rposition(|c| c.is_whitespace())
-            .map_or(start, |space| space + 1);
+        start = text[..start]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(start, |(at, space)| at + space.len_utf8());
     }
-    let mut end = (start + SNIPPET_CHARS).min(chars.len());
-    if end < chars.len() {
-        end = chars[start..end]
-            .iter()
-            .rposition(|c| c.is_whitespace())
-            .map_or(end, |space| start + space);
+    let mut end = text[start..]
+        .char_indices()
+        .nth(SNIPPET_CHARS)
+        .map_or(text.len(), |(at, _)| start + at);
+    if end < text.len() {
+        end = text[start..end]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(end, |(at, _)| start + at);
     }
-    let mut excerpt: String = chars[start..end]
-        .iter()
-        .collect::<String>()
-        .trim()
-        .to_owned();
+    let mut excerpt = text[start..end].trim().to_owned();
     if start > 0 {
         excerpt.insert_str(0, "… ");
     }
-    if end < chars.len() {
+    if end < text.len() {
         excerpt.push_str(" …");
     }
     excerpt
@@ -464,10 +576,42 @@ mod tests {
     }
 
     #[test]
-    fn the_index_reports_the_memory_it_holds() {
+    fn an_excerpt_of_a_long_section_copies_only_the_excerpt() {
+        let text = format!(
+            "{} the needle sits here {}",
+            "word ".repeat(200_000),
+            "tail ".repeat(60)
+        );
+        let lower = text.to_lowercase();
+        let (excerpt, peak) =
+            crate::test_memory::peak_heap(|| snippet(&text, &lower, &["needle".into()]));
+        assert!(excerpt.contains("the needle sits here"), "{excerpt}");
+        assert!(peak < 4096, "{peak} bytes for {} bytes of text", text.len());
+    }
+
+    #[test]
+    fn the_index_keeps_to_its_budget_and_reports_the_memory_it_holds() {
+        use crate::test_memory::{live_heap, peak_heap};
         assert_eq!(Index::build([]).bytes(), 0);
-        let small = Index::build([("a.md", Content::Markdown("# A\n\nshort\n"))]);
-        assert!(index().bytes() > small.bytes() && small.bytes() > 0);
+        // 2,000 files of 5,000 one-character lines: 20 MB, 10 million lines.
+        let lines = "a\n".repeat(5_000);
+        let paths: Vec<String> = (0..2_000).map(|n| format!("notes/n{n:04}.txt")).collect();
+        let before = live_heap();
+        let (index, peak) = peak_heap(|| {
+            Index::build(
+                paths
+                    .iter()
+                    .map(|path| (path.as_str(), Content::Text(&lines))),
+            )
+        });
+        let held = live_heap() - before;
+        assert!(peak < INDEX_BYTES_MAX, "{peak} bytes at the peak");
+        let bytes = index.bytes();
+        assert!(held / 2 <= bytes && bytes <= held * 2, "{bytes} for {held}");
+        // Files past the budget are found by name only.
+        assert_eq!(index.search("n1999").files.len(), 1);
+        let indexed = index.documents.len();
+        assert!((1..2_000).contains(&indexed), "{indexed}");
     }
 
     #[test]

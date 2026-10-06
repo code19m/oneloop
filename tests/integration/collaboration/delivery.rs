@@ -1767,3 +1767,54 @@ async fn a_worker_waiting_after_errors_stops_when_asked() {
     let stopped = tokio::time::timeout(std::time::Duration::from_millis(10), worker).await;
     assert!(stopped.is_ok(), "the worker sleeps through the stop");
 }
+
+#[tokio::test(start_paused = true)]
+async fn maintenance_runs_by_elapsed_time_whatever_the_wall_clock_says() {
+    let SeededProject {
+        root: _root, db, ..
+    } = seeded_project().await;
+    // A comment deleted well before the Undo window, with its text kept.
+    let delete = async |id: &'static str| {
+        db.run(move |connection| {
+            connection.execute(
+                "INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at,deleted_at)
+                 VALUES(?1,'p1','task','alice',?1,'secret text',?2,?2)",
+                rusqlite::params![id, now() - 3600],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    };
+    let kept = async |id: &'static str| -> bool {
+        db.run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT content<>'' FROM comments WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap()
+    };
+    delete("first").await;
+    let runtime = CollaborationRuntime::new(db.clone());
+    let (stop, signal) = tokio::sync::watch::channel(false);
+    let worker = runtime.spawn_worker(signal);
+    // The first pass runs at once.
+    while kept("first").await {
+        tokio::task::yield_now().await;
+    }
+    delete("second").await;
+    // The next pass comes a minute later on the monotonic clock, which paused
+    // time advances while the wall clock stays where it was.
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    let mut waited = 0;
+    while kept("second").await && waited < 10 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        waited += 1;
+    }
+    assert!(!kept("second").await);
+    stop.send(true).unwrap();
+    worker.await.unwrap().unwrap();
+}

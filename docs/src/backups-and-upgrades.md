@@ -45,6 +45,10 @@ yourself once you are sure that no backup is running. oneloop tells computers
 apart by their host name, so don't share a backup folder between computers
 that have the same host name.
 
+While it copies the files, a backup also keeps links to them in the hidden
+folder `.oneloop-backup-pins` inside the data directory. If the backup stops
+halfway, the server removes that folder within a minute.
+
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:
 
@@ -177,8 +181,8 @@ docker compose run --rm oneloop db migrate --backup-dir /backups
 docker compose up -d
 ```
 
-`db migrate` prints `database in <data folder> migrated from 2 to 5` and the
-folder of its backup, or `database in <data folder> is current (schema 5)` if
+`db migrate` prints `database in <data folder> migrated from 2 to 6` and the
+folder of its backup, or `database in <data folder> is current (schema 6)` if
 there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
@@ -201,7 +205,7 @@ let you try the next version early.
 
 If you ran oneloop from source before its first release candidate, upgrade the
 same way. `db migrate` makes a backup and converts the old database in one step.
-It prints something like `database in <data folder> migrated from 16 to 5`.
+It prints something like `database in <data folder> migrated from 16 to 6`.
 Until you do this, `oneloop serve` refuses to start.
 
 ## Roll back

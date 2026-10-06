@@ -1,6 +1,6 @@
 {
   "comment": "Headings whose anchors must match in src/knowledge/markdown.rs (anchors: search targets and MCP sections) and views/file-views.js (ids: every rendered heading, in order).",
-  "source": "\ufeff# Guide\n\n## ⚙\ufe0f Configuration\n\n## Foo  Bar\n\n## Q&amp;A\n\n## _config.yml\n\n> ## Quoted\n\n## Quoted\n\n## हिन्दी\n\n## เมื่อไหร่\n\n## Ⓐ circled\n\n## A\ufeffB\n\n## Оплата и сроки\n\n## The **bold** `code` [link](x.md) \\*\n\n## 5 \\* 3 = 15\n\n## Setup\n\n## Setup\n\n## Setup-1\n\nSetext title\n============\n\n```text\n## Not a heading\n```\n\n- item\n\n  ## In a list\n\n<div>\n\n## After HTML\n\n</div>\n\n### __init__.py and snake_case\n\n## [Оплата](#оплата-и-сроки) &#x1F600; &nbsp;end\n",
+  "source": "\ufeff# Guide\n\n## ⚙\ufe0f Configuration\n\n## Foo  Bar\n\n## Q&amp;A\n\n## _config.yml\n\n> ## Quoted\n\n## Quoted\n\n## हिन्दी\n\n## เมื่อไหร่\n\n## Ⓐ circled\n\n## A\ufeffB\n\n## Оплата и сроки\n\n## The **bold** `code` [link](x.md) \\*\n\n## 5 \\* 3 = 15\n\n## Setup\n\n## Setup\n\n## Setup-1\n\nSetext title\n============\n\n```text\n## Not a heading\n```\n\n- item\n\n  ## In a list\n\n<div>\n\n## After HTML\n\n</div>\n\n### __init__.py and snake_case\n\n## [Оплата](#оплата-и-сроки) &#x1F600; &nbsp;end\n\n## Cut !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!é here\n",
   "anchors": [
     "guide",
     "\ufe0f-configuration",
@@ -22,7 +22,8 @@
     "in-a-list",
     "after-html",
     "initpy-and-snake_case",
-    "оплата--end"
+    "оплата--end",
+    "cut-"
   ],
   "ids": [
     "md-guide",
@@ -46,6 +47,7 @@
     "md-in-a-list",
     "md-after-html",
     "md-initpy-and-snake_case",
-    "md-оплата--end"
+    "md-оплата--end",
+    "md-cut-"
   ]
 }

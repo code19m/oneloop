@@ -403,6 +403,25 @@ fn output_to_a_reader_that_stopped_is_not_an_error() {
         assert_eq!(stderr, "", "{arguments:?}");
     }
     assert!(root.path().join("oneloop.sqlite3").is_file());
+    // Help, with no arguments at all.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_oneloop"))
+        .env_clear()
+        .stdout(writer)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    // An error keeps its exit code when nothing reads standard error.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_oneloop"))
+        .env_clear()
+        .args(["serve", "--check"])
+        .stderr(writer)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
 /// The password that `user add` and `user passwd` set must be replaced at the

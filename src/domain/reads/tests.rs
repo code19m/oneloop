@@ -61,8 +61,11 @@ fn newest_done_pages_read_the_partial_index_in_order() {
     let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
     for (sql, values) in [
         (NEWEST_DONE_SQL, params!["p", 51]),
-        (NEWEST_DONE_AFTER_SQL, params!["p", 1_800_000_000, "t", 51]),
-        (UNDATED_DONE_SQL, params!["p", "t", 51]),
+        (
+            NEWEST_DONE_AFTER_SQL,
+            params!["p", 1_800_000_000, 7, "t", 51],
+        ),
+        (UNDATED_DONE_SQL, params!["p", "t", 7, 51]),
     ] {
         let mut explain = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let plan = explain
@@ -80,9 +83,12 @@ fn newest_done_pages_read_the_partial_index_in_order() {
         .prepare(&format!("EXPLAIN QUERY PLAN {NEWEST_DONE_AFTER_SQL}"))
         .unwrap();
     let plan: String = explain
-        .query_row(params!["p", 1_800_000_000, "t", 51], |r| r.get(3))
+        .query_row(params!["p", 1_800_000_000, 7, "t", 51], |r| r.get(3))
         .unwrap();
-    assert!(plan.contains("(completed_at,id)<(?,?)"), "{plan}");
+    assert!(
+        plan.contains("(completed_at,completion_order,id)<(?,?,?)"),
+        "{plan}"
+    );
 }
 
 #[test]

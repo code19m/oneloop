@@ -17,6 +17,10 @@ const THUMBNAIL_QUEUE_LENGTH: usize = 256;
 /// A stored thumbnail larger than this is damaged and made again.
 const MAX_THUMBNAIL_BYTES: u64 = 1024 * 1024;
 const THUMBNAIL_JPEG_QUALITY: u8 = 80;
+/// The marker of an image that gets no thumbnail: the decoder refused it, or
+/// decoding it ended the process twice. An empty marker means an attempt is
+/// under way, or ended with the process.
+const IMPOSSIBLE_MARKER: &[u8] = b"oneloop: no thumbnail";
 
 #[derive(Default)]
 pub(super) struct ThumbnailQueue {
@@ -63,10 +67,12 @@ fn thumbnail_etag(checksum: &str) -> String {
     format!("\"{checksum}-thumbnail-{THUMBNAIL_SIDE}\"")
 }
 
-/// A thumbnail file. An empty one records that the original can't be decoded
-/// within the limits, so its views show the original without trying again.
+/// A thumbnail file, or a marker in its place.
 enum StoredThumbnail {
     Ready(Vec<u8>, &'static str),
+    /// An attempt is under way, or ended with the process: it gets one retry.
+    Pending,
+    /// Views show the original without trying again.
     Impossible,
     Missing,
 }
@@ -128,7 +134,7 @@ impl FileService {
                     });
                 }
                 StoredThumbnail::Impossible => {}
-                StoredThumbnail::Missing => self.queue_thumbnail(key),
+                StoredThumbnail::Pending | StoredThumbnail::Missing => self.queue_thumbnail(key),
             }
         }
         let original = self
@@ -151,6 +157,9 @@ impl FileService {
             .read_to_end(&mut bytes)
             .await?;
         if bytes.is_empty() {
+            return Ok(StoredThumbnail::Pending);
+        }
+        if bytes == IMPOSSIBLE_MARKER {
             return Ok(StoredThumbnail::Impossible);
         }
         match detect::signature_image(&bytes) {
@@ -217,10 +226,14 @@ impl FileService {
     }
 
     async fn make_thumbnail(&self, key: &str, used: &mut Option<u64>) -> AppResult<bool> {
-        let destination = self.store.thumbnail_path(key)?;
-        if fs::try_exists(&destination).await? {
-            return Ok(false);
-        }
+        // The worker makes one thumbnail at a time, so a marker it finds is
+        // from an attempt that never finished. That attempt gets one retry,
+        // marked impossible while it runs, so a second crash isn't repeated.
+        let marker = match self.stored_thumbnail(key).await? {
+            StoredThumbnail::Missing => &[][..],
+            StoredThumbnail::Pending => IMPOSSIBLE_MARKER,
+            StoredThumbnail::Ready(..) | StoredThumbnail::Impossible => return Ok(false),
+        };
         // Thumbnails never take usage to the cleanup threshold, where storage
         // cleanup would only remove them again, so from there nothing is decoded.
         let current = match *used {
@@ -240,11 +253,9 @@ impl FileService {
             .acquire()
             .await
             .map_err(|_| AppError::Unavailable("image worker is shutting down".into()))?;
-        // The empty marker of an image that can't be decoded goes in first,
-        // once the image is known to be still wanted. A decode that ends the
-        // process leaves it, so later views show the original instead of
-        // decoding the image again.
-        if !self.write_thumbnail(key, &[], None).await? {
+        // The marker goes in first, once the image is known to be still
+        // wanted. A decode that ends the process leaves it.
+        if !self.write_thumbnail(key, marker, None).await? {
             return Ok(false);
         }
         let rendered = tokio::task::spawn_blocking(move || {
@@ -260,7 +271,10 @@ impl FileService {
                 return Err(error);
             }
             // A decoder that fails or panics on this file would do so again.
-            Ok(Err(RenderError::Image)) | Err(_) => return Ok(false),
+            Ok(Err(RenderError::Image)) | Err(_) => {
+                self.write_thumbnail(key, IMPOSSIBLE_MARKER, None).await?;
+                return Ok(false);
+            }
         };
         let size = bytes.len() as u64;
         let disk = (current.saturating_add(size) < threshold)
@@ -270,8 +284,14 @@ impl FileService {
             self.remove_thumbnail(key).await;
             return Ok(false);
         };
-        if !self.write_thumbnail(key, &bytes, Some(&disk)).await? {
-            return Ok(false);
+        match self.write_thumbnail(key, &bytes, Some(&disk)).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            // The image is fine; a later view tries again.
+            Err(error) => {
+                self.remove_thumbnail(key).await;
+                return Err(error);
+            }
         }
         disk.published();
         *used = Some(current.saturating_add(size));

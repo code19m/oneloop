@@ -411,7 +411,7 @@ pub fn throttle_bucket(ip: IpAddr) -> String {
     }
 }
 
-fn is_trusted(address: IpAddr, trusted: &[IpNet]) -> bool {
+pub(crate) fn is_trusted(address: IpAddr, trusted: &[IpNet]) -> bool {
     trusted.iter().any(|network| {
         network.contains(&address)
             || match (address, network) {

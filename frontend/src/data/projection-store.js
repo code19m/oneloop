@@ -93,7 +93,7 @@ function mapTask(task) {
     internalId: task.id, id: task.taskKey, projectId: task.projectId, epicId: task.epicId,
     title: task.title, desc: task.description ?? '', detailsLoaded:typeof task.description==='string', state: STATUS_TO_LEGACY[task.status] ?? task.status,
     order: task.position, deadline: task.deadline ?? null, created: secondsToMilliseconds(task.createdAt), updatedAt: secondsToMilliseconds(task.updatedAt),
-    completedAt: secondsToMilliseconds(task.completedAt) ?? null, revision: task.revision, assignees: [...(task.assigneeIds ?? [])], block: mapBlock(task.activeBlock),
+    completedAt: secondsToMilliseconds(task.completedAt) ?? null, completionOrder: task.completionOrder ?? null, revision: task.revision, assignees: [...(task.assigneeIds ?? [])], block: mapBlock(task.activeBlock),
     attachments: task.attachments ?? [], comments: task.comments ?? [], activity: task.activity ?? [],
   };
 }
@@ -135,11 +135,12 @@ export function appendBoardTasks(data, taskViews) {
 
 /**
  * Match the server's order within each column: position, then opaque ID. A
- * newest-first Done orders by completion time, newest first, then by ID the
- * other way round; a task without a completion time comes last. Done tasks
- * then sort after all others, so the order stays consistent across columns.
- * @param {{order:number,internalId:string,state?:string,completedAt?:number|null}} left
- * @param {{order:number,internalId:string,state?:string,completedAt?:number|null}} right
+ * newest-first Done orders by completion time, newest first, then by
+ * completion order and ID the other way round; a task without a completion
+ * time comes last. Done tasks then sort after all others, so the order stays
+ * consistent across columns.
+ * @param {{order:number,internalId:string,state?:string,completedAt?:number|null,completionOrder?:number|null}} left
+ * @param {{order:number,internalId:string,state?:string,completedAt?:number|null,completionOrder?:number|null}} right
  * @param {string} [doneOrder]
  */
 export function compareTaskOrder(left, right, doneOrder) {
@@ -147,7 +148,7 @@ export function compareTaskOrder(left, right, doneOrder) {
   if(doneOrder==='completed'){
     const leftDone=left.state==='done',rightDone=right.state==='done';
     if(leftDone!==rightDone)return leftDone?1:-1;
-    if(leftDone)return (right.completedAt??-1)-(left.completedAt??-1) || -byId;
+    if(leftDone)return (right.completedAt??-1)-(left.completedAt??-1) || (right.completionOrder??0)-(left.completionOrder??0) || -byId;
   }
   return left.order-right.order || byId;
 }
@@ -345,7 +346,7 @@ function patchEntity(target,entity){
   if(entity.entityType==='track'){set('projectId');set('name');set('description','desc');set('position','order');}
   if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');if(Object.hasOwn(entity,'taskTotal'))target.counted=true;set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
   if(entity.entityType==='milestone'){set('projectId');set('title','name');set('description','desc');set('milestoneDate','date');}
-  if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('completedAt','completedAt',(value)=>secondsToMilliseconds(value)??null);set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
+  if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('completedAt','completedAt',(value)=>secondsToMilliseconds(value)??null);set('completionOrder');set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
   if(entity.entityType==='poolItem'){set('projectId');set('scope','scope',(value)=>SCOPE_TO_LEGACY[value]??value);set('ownerUserId','ownerId');set('title');set('description','desc');set('createdAt','created',secondsToMilliseconds);}
   if(entity.entityType==='taskBlock'){set('reason');set('createdBy','by');set('createdAt','at',secondsToMilliseconds);set('mentions');set('resolution');}
   return target;
