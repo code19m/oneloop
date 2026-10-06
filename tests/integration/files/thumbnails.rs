@@ -189,6 +189,30 @@ async fn release(pipe: &Path, worker: JoinHandle<u64>) -> u64 {
     worker.await.unwrap()
 }
 
+/// Opens the other end of a piped original once a decode opens it. The decode
+/// then waits to read until the returned end is closed.
+#[cfg(unix)]
+async fn reading(pipe: &Path) -> rustix::fd::OwnedFd {
+    use rustix::{
+        fs::{Mode, OFlags},
+        io::Errno,
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match rustix::fs::open(
+            pipe,
+            OFlags::WRONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(writer) => return writer,
+            Err(Errno::NXIO) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(error) => panic!("open {}: {error}", pipe.display()),
+        }
+    }
+}
+
 /// Waits up to 10 seconds for `condition`.
 async fn within_seconds(mut condition: impl FnMut() -> bool) -> bool {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -331,10 +355,9 @@ async fn images_without_a_thumbnail_show_the_original() {
         );
         assert_eq!(body.len() as u64, attachment.size, "{}", attachment.name);
         if original.is_some() {
-            // An empty file records that this original can't be decoded, so
-            // later views don't queue the work again.
-            let marker = fixture.thumbnail_file(attachment);
-            assert_eq!(std::fs::metadata(&marker).unwrap().len(), 0);
+            // A marker records that this original can't be decoded, so later
+            // views don't queue the work again.
+            assert!(fixture.thumbnail_file(attachment).exists());
         }
     }
     assert_eq!(fixture.files.make_queued_thumbnails().await, 0);
@@ -428,8 +451,7 @@ async fn an_image_that_needs_too_much_memory_to_decode_shows_the_original() {
     let original = super::flat_webp(6000, 4500);
     let attachment = fixture.attach("flat", "flat.webp", &original).await;
     assert_eq!(fixture.files.make_queued_thumbnails().await, 0);
-    let marker = fixture.thumbnail_file(&attachment);
-    assert_eq!(std::fs::metadata(&marker).unwrap().len(), 0);
+    assert!(fixture.thumbnail_file(&attachment).exists());
     let (status, headers, body) = fixture
         .get(attachment.thumbnail_url.as_deref().unwrap(), None)
         .await;
@@ -469,6 +491,57 @@ async fn an_image_is_marked_before_it_decodes_so_a_crash_is_not_repeated() {
     // tries again.
     assert_eq!(made, 0);
     assert!(!marker.exists());
+}
+
+#[tokio::test]
+async fn an_image_whose_decode_never_finished_gets_one_more_try() {
+    let fixture = Fixture::new().await;
+    let attachment = fixture
+        .attach("retried", "retried.png", &png(300, 300, false))
+        .await;
+    // A process started on the queued image and ended before it was done.
+    let marker = fixture.thumbnail_file(&attachment);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap();
+    assert_eq!(fixture.files.make_queued_thumbnails().await, 1);
+    let url = attachment.thumbnail_url.as_deref().unwrap();
+    let (status, headers, _) = fixture.get(url, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_retry_that_ends_the_process_too_leaves_the_original_for_good() {
+    let fixture = Fixture::new().await;
+    let original = png(300, 300, false);
+    let attachment = fixture.attach("crashing", "crashing.png", &original).await;
+    let marker = fixture.thumbnail_file(&attachment);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap();
+    let pipe = fixture.pipe_original(&attachment);
+    let worker = fixture.start_worker();
+    // The retry decodes, and the process ends meanwhile: nothing after the
+    // decode runs.
+    let writer = reading(&pipe).await;
+    worker.abort();
+    let _ = worker.await;
+    drop(writer);
+    assert!(
+        std::fs::metadata(&marker).unwrap().len() > 0,
+        "the retry is marked first"
+    );
+    std::fs::remove_file(&pipe).unwrap();
+    std::fs::write(&pipe, &original).unwrap();
+    // Views show the original, and the image is never decoded again.
+    let url = attachment.thumbnail_url.as_deref().unwrap();
+    for _ in 0..2 {
+        let (status, headers, body) = fixture.get(url, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert_eq!(body.as_ref(), original.as_slice());
+        assert_eq!(fixture.files.make_queued_thumbnails().await, 0);
+    }
 }
 
 #[cfg(unix)]

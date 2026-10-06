@@ -8,7 +8,8 @@ Before your team uses oneloop, set up three things:
 
 Give oneloop at least 512 MB of memory. It uses about 50 MiB when idle, and up
 to about 200 MiB more while it decodes an image for a thumbnail or an avatar,
-one image at a time.
+one image at a time. Knowledge search keeps up to 64 MiB of indexes, and
+needs up to about 100 MiB more while it builds one.
 
 ## HTTPS with a reverse proxy
 
@@ -79,6 +80,12 @@ Separate several addresses or CIDR ranges with commas. List only real proxies,
 never a network that visitors use. The proxy must replace `X-Forwarded-For`,
 not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
 `X-Forwarded-Proto`.
+
+Naming the proxy also keeps its idle connections to oneloop open
+[longer](reference.md#limits) than proxies such as Caddy, nginx and Tailscale
+keep them. Otherwise oneloop closes them first, and a request that the proxy
+sends on a connection just as oneloop closes it fails with 502. So Caddy needs
+no `keepalive` setting.
 
 ### Rules for any proxy
 

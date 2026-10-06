@@ -444,7 +444,20 @@ export function installCollaborationController({ transport, eventSourceFactory =
     }
   }
 
+  // A newer tab of the same person took this tab's stream. The tab reconnects
+  // when it is used or shown again, so tabs over the limit don't take turns.
+  function resumeOnUse(){
+    if(!source)startEvents();
+  }
+  function waitForUse(){
+    for(const name of ['pointerdown','keydown'])visibility?.addEventListener?.(name,resumeOnUse,{once:true});
+  }
+  function stopWaitingForUse(){
+    for(const name of ['pointerdown','keydown'])visibility?.removeEventListener?.(name,resumeOnUse);
+  }
+
   function startEvents(initial=false){
+    stopWaitingForUse();
     source?.close?.();source=null;if(disposed||!data.session||data.session.temporary||visibility?.visibilityState==='hidden')return;
     try{
       source=eventSourceFactory('/api/events'+(initial&&data.syncCursor?`?cursor=${encodeURIComponent(data.syncCursor)}`:''));
@@ -456,6 +469,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
         if(Object.hasOwn(payload,'userId')&&globalThis.OneloopRecovery?.ownsAnswer?.(payload.userId)===false){source?.close?.();source=null;return;}
         const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
+      source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();});
       source.addEventListener?.('error',()=>{
         if(source!==activeSource)return;
         source?.close?.();source=null;
@@ -508,7 +522,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
     setArchived:(id,currentlyArchived)=>changeInbox(currentlyArchived?'inbox.restore':'inbox.archive',id),
     bulk:(action,filter)=>bulkInbox(action==='read'?'inbox.bulkMarkRead':'inbox.bulkArchive',filter),
     openNotification,
-    dispose(){disposed=true;visibility?.removeEventListener?.('visibilitychange',visibilityChanged);unsubscribe?.();source?.close?.();source=null;taskController?.abort();inboxController?.abort();clearProjectReconcile();clearLiveReads();sessionCheck=null;},
+    dispose(){disposed=true;stopWaitingForUse();visibility?.removeEventListener?.('visibilitychange',visibilityChanged);unsubscribe?.();source?.close?.();source=null;taskController?.abort();inboxController?.abort();clearProjectReconcile();clearLiveReads();sessionCheck=null;},
   };
   globalThis.OneloopCollaboration=controller;
   return controller;

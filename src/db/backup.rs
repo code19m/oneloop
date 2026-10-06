@@ -24,6 +24,8 @@ use crate::{
 };
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024 * 1024;
+/// Inside the data directory: links to the files a running backup copies.
+const PINS: &str = ".oneloop-backup-pins";
 
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
@@ -253,7 +255,7 @@ fn create_backup_inner(
 
     // Only one backup uses this area at a time. Reclaim pins left by an interrupted
     // process before starting; pins are links, never the live original directory.
-    let pins = BackupPins::new(layout.root().join(".oneloop-backup-pins"))?;
+    let pins = BackupPins::new(layout.root().join(PINS))?;
     let mut partial_created = false;
     let result = (|| {
         fs::create_dir(&partial)?;
@@ -662,6 +664,7 @@ fn remove_claimed(path: &Path, lock: File) -> std::io::Result<()> {
 /// working folder and the names the marker lists as published, then the
 /// marker. Otherwise it changes nothing, and the target stays refused.
 fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
+    remove_set_aside_markers(target)?;
     let marker = target.join(super::RESTORE_MARKER);
     if !marker.try_exists()? {
         return Ok(());
@@ -734,15 +737,57 @@ fn names_claimed_file(path: &Path, claimed: &File) -> std::io::Result<bool> {
 }
 
 /// Closes a claimed restore marker and removes it (see `remove_claimed`),
-/// unless the path names another file by now. The check runs while the
-/// claimed file is still open, so its inode can't be in use by another.
+/// unless the path names another file by now.
 fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
-    let same = names_claimed_file(marker, &lock)?;
+    let Some(aside) = set_aside_claimed_marker(marker, &lock)? else {
+        return Ok(false);
+    };
     drop(lock);
-    if same {
-        fs::remove_file(marker)?;
+    match fs::remove_file(aside) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(true),
     }
-    Ok(same)
+}
+
+/// Removes markers that a restore set aside and couldn't remove, because it
+/// ended in between (see `set_aside_claimed_marker`). Nothing holds them.
+fn remove_set_aside_markers(target: &Path) -> std::io::Result<()> {
+    let prefix = format!("{}.removed-", super::RESTORE_MARKER);
+    for entry in fs::read_dir(target)? {
+        let entry = entry?;
+        let set_aside = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok());
+        if !set_aside || !entry.file_type()?.is_file() {
+            continue;
+        }
+        match fs::remove_file(entry.path()) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Renames a claimed restore marker to a name of its own, unless the path
+/// names another file by now, and returns the new name. While the claimed
+/// file is open and locked, no other restore can claim or replace it, so the
+/// check holds for the rename. Once the lock is closed, the marker's path is
+/// already free: removing the renamed file can't take a marker that another
+/// restore writes meanwhile.
+fn set_aside_claimed_marker(marker: &Path, lock: &File) -> std::io::Result<Option<PathBuf>> {
+    if !names_claimed_file(marker, lock)? {
+        return Ok(None);
+    }
+    let aside = marker.with_file_name(format!(
+        "{}.removed-{}",
+        super::RESTORE_MARKER,
+        Uuid::now_v7()
+    ));
+    fs::rename(marker, &aside)?;
+    Ok(Some(aside))
 }
 
 /// A single file or folder name, with no path separators or dot segments.
@@ -785,6 +830,21 @@ fn snapshot_database(source: &Connection, destination: &Path) -> AppResult<()> {
     // lock, before publication. Do not duplicate that expensive scan here.
     drop(target);
     sync_file(destination)
+}
+
+/// Removes the links that an interrupted backup left in the data directory,
+/// unless a backup runs now. They would keep deleted files on disk until the
+/// next backup. Returns whether there were any.
+pub(crate) fn remove_abandoned_backup_pins(layout: &DataLayout) -> AppResult<bool> {
+    let pins = layout.root().join(PINS);
+    if !pins.try_exists()? {
+        return Ok(false);
+    }
+    let Some(_backup) = layout.try_backup_lock()? else {
+        return Ok(false);
+    };
+    fs::remove_dir_all(&pins)?;
+    Ok(true)
 }
 
 struct BackupPins(PathBuf);

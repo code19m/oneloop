@@ -406,6 +406,31 @@ test('hidden tabs release SSE slots and resume without a stale bootstrap cursor'
   visibility.dispatchEvent(new Event('visibilitychange'));assert.equal(streams.length,2);
 });
 
+test('a tab whose stream a newer tab took reconnects only when it is used or shown again',()=>{
+  const visibility=new EventTarget();visibility.visibilityState='visible';
+  const streams=[];
+  const t=fixture({visibility,eventSourceFactory:url=>{
+    const stream={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};
+    streams.push(stream);return stream;
+  }});
+  try{
+    assert.equal(streams.length,1);
+    streams[0].listeners.replaced({data:'{"kind":"replaced"}'});
+    assert.equal(streams[0].closed,true);
+    assert.equal(streams.length,1,'no reconnect on its own');
+    visibility.dispatchEvent(new Event('pointerdown'));
+    assert.equal(streams.length,2);
+    visibility.dispatchEvent(new Event('keydown'));
+    assert.equal(streams.length,2,'one reconnect for one use');
+    streams[1].listeners.replaced({data:'{"kind":"replaced"}'});
+    visibility.visibilityState='hidden';visibility.dispatchEvent(new Event('visibilitychange'));
+    visibility.visibilityState='visible';visibility.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(streams.length,3);
+    visibility.dispatchEvent(new Event('pointerdown'));
+    assert.equal(streams.length,3,'a shown tab is connected already');
+  }finally{t.controller.dispose();}
+});
+
 test('discussion hints skip unrelated views but refresh the visible Inbox across project context',async()=>{
   useMockedClock();
   for(const view of ['board','roadmap','profile','users','settings','storage','inbox']){

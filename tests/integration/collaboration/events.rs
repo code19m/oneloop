@@ -41,19 +41,53 @@ async fn app() -> (tempfile::TempDir, Db, Actor, Router, CollaborationRuntime) {
 }
 
 async fn events(app: &Router, uri: &str) -> axum::response::Response {
+    events_as(app, uri, "alice-token-at-least-thirty-two-characters").await
+}
+
+async fn events_as(app: &Router, uri: &str, token: &str) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
                 .uri(uri)
-                .header(
-                    "cookie",
-                    "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
-                )
+                .header("cookie", format!("__Host-oneloop_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap()
+}
+
+/// Adds `count` members of project `p1` who are signed in, and returns their
+/// session tokens.
+async fn signed_in_members(db: &Db, count: usize) -> Vec<String> {
+    let tokens: Vec<String> = (0..count)
+        .map(|index| format!("member-{index}-token-at-least-thirty-two-characters"))
+        .collect();
+    let rows = tokens.clone();
+    db.transaction(move |tx| {
+        let now = now();
+        for (index, token) in rows.iter().enumerate() {
+            let id = format!("member-{index}");
+            tx.execute(
+                "INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
+                 VALUES(?1,?1,?1,'x',?2,?2,?2)",
+                rusqlite::params![id, now],
+            )?;
+            tx.execute(
+                "INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1',?1,?2,?2)",
+                rusqlite::params![id, now],
+            )?;
+            tx.execute(
+                "INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
+                 VALUES(?1,?1,?2,?3,?3,?3,?4,?4)",
+                rusqlite::params![id, token_hash(token), now, now + 86_400],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    tokens
 }
 
 async fn frame(body: &mut Body) -> String {
@@ -247,12 +281,15 @@ async fn lagging_streams_reconcile_and_shutdown_cancels_a_blocked_sender() {
 async fn three_hundred_streams_deliver_without_exhausting_database_admission() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut bodies = Vec::new();
-    for _ in 0..300 {
-        let response = events(&app, "/api/events").await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let mut body = response.into_body();
-        frame(&mut body).await;
-        bodies.push(body);
+    // Each person may keep sixteen streams open.
+    for token in signed_in_members(&db, 20).await {
+        for _ in 0..15 {
+            let response = events_as(&app, "/api/events", &token).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut body = response.into_body();
+            frame(&mut body).await;
+            bodies.push(body);
+        }
     }
     hint(&db, &alice).await;
     let started = std::time::Instant::now();
@@ -285,6 +322,103 @@ async fn three_hundred_streams_deliver_without_exhausting_database_admission() {
     eprintln!("300 streams plus 60 Inbox reads: {:?}", started.elapsed());
     drop(bodies);
     receivers(&runtime, 0).await;
+}
+
+#[tokio::test]
+async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
+    let (_root, db, alice, app, runtime) = app().await;
+    let mut bodies = Vec::new();
+    for _ in 0..16 {
+        let mut body = events(&app, "/api/events").await.into_body();
+        frame(&mut body).await;
+        bodies.push(body);
+    }
+    // A closed stream frees its place, so the next one closes nothing.
+    drop(bodies.pop());
+    receivers(&runtime, 15).await;
+    for _ in 0..2 {
+        let mut body = events(&app, "/api/events").await.into_body();
+        frame(&mut body).await;
+        bodies.push(body);
+    }
+    // The seventeenth closed the oldest, which says why first.
+    let mut oldest = bodies.remove(0);
+    assert!(frame(&mut oldest).await.contains("event: replaced"));
+    assert!(
+        timeout(Duration::from_secs(5), oldest.frame())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    receivers(&runtime, 16).await;
+    // Someone else still connects, and every open stream gets new hints.
+    let member = signed_in_members(&db, 1).await.remove(0);
+    let mut other = events_as(&app, "/api/events", &member).await.into_body();
+    frame(&mut other).await;
+    bodies.push(other);
+    hint(&db, &alice).await;
+    runtime.worker().run_once().await.unwrap();
+    for body in &mut bodies {
+        assert!(frame(body).await.contains("event: hint"));
+    }
+}
+
+#[tokio::test]
+async fn a_request_that_fails_closes_none_of_the_persons_streams() {
+    let (_root, db, alice, app, runtime) = app().await;
+    let mut bodies = Vec::new();
+    for _ in 0..16 {
+        let mut body = events(&app, "/api/events").await.into_body();
+        frame(&mut body).await;
+        bodies.push(body);
+    }
+    // The snapshot check of a seventeenth stream fails.
+    let rename = async |from: &'static str, to: &'static str| {
+        db.run(move |connection| {
+            connection.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to}"))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    };
+    rename("security_events", "security_events_away").await;
+    let failed = events(&app, "/api/events?cursor=snapshot").await;
+    rename("security_events_away", "security_events").await;
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    receivers(&runtime, 16).await;
+    hint(&db, &alice).await;
+    runtime.worker().run_once().await.unwrap();
+    for body in &mut bodies {
+        assert!(frame(body).await.contains("event: hint"));
+    }
+}
+
+#[tokio::test]
+async fn pages_of_other_sites_cannot_open_streams() {
+    let (_root, _db, _alice, app, _runtime) = app().await;
+    for (site, status) in [
+        ("same-origin", StatusCode::OK),
+        ("none", StatusCode::OK),
+        ("same-site", StatusCode::FORBIDDEN),
+        ("cross-site", StatusCode::FORBIDDEN),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events")
+                    .header(
+                        "cookie",
+                        "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
+                    )
+                    .header("sec-fetch-site", site)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{site}");
+    }
 }
 
 #[tokio::test]

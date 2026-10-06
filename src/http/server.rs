@@ -25,6 +25,7 @@ use hyper_util::{
     server::conn::auto::Builder,
     service::TowerToHyperService,
 };
+use ipnet::IpNet;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::TcpListener,
@@ -41,6 +42,10 @@ const LIMITS: Limits = Limits {
     // Also ends connections that send no request, from their opening or
     // their previous response.
     header_timeout: Duration::from_secs(15),
+    // Proxies keep idle connections to oneloop for a minute or two, and send
+    // a request on one even while oneloop closes it. A trusted proxy's
+    // connections outlast that, so no request is lost to the race.
+    proxy_header_timeout: Duration::from_secs(5 * 60),
     body: Pace {
         longest_wait: Some(Duration::from_secs(60)),
         grace: Duration::from_secs(60),
@@ -61,6 +66,7 @@ const LIMITS: Limits = Limits {
 struct Limits {
     connections: usize,
     header_timeout: Duration,
+    proxy_header_timeout: Duration,
     body: Pace,
     response: Pace,
 }
@@ -79,12 +85,15 @@ struct Pace {
     most_credit: Duration,
 }
 
+/// Serves `router` until `shutdown`. Connections from `trusted_proxies` may
+/// stay idle longer than others.
 pub(crate) async fn serve(
     listener: TcpListener,
     router: Router,
     shutdown: impl Future<Output = ()>,
+    trusted_proxies: &[IpNet],
 ) -> io::Result<()> {
-    serve_with_limits(listener, router, shutdown, LIMITS).await
+    serve_with_limits(listener, router, shutdown, LIMITS, trusted_proxies.into()).await
 }
 
 async fn serve_with_limits(
@@ -92,6 +101,7 @@ async fn serve_with_limits(
     router: Router,
     shutdown: impl Future<Output = ()>,
     limits: Limits,
+    trusted_proxies: Arc<[IpNet]>,
 ) -> io::Result<()> {
     let mut connections = JoinSet::new();
     let (closing, _) = watch::channel(false);
@@ -132,6 +142,7 @@ async fn serve_with_limits(
                     address,
                     router.clone(),
                     limits,
+                    trusted_proxies.clone(),
                     closing.subscribe(),
                 ));
             }
@@ -157,11 +168,18 @@ async fn serve_connection<T>(
     address: SocketAddr,
     router: Router,
     limits: Limits,
+    trusted_proxies: Arc<[IpNet]>,
     mut shutdown: watch::Receiver<bool>,
 ) where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let service = TowerToHyperService::new(router.layer(axum::Extension(ConnectInfo(address))));
+    let header_timeout =
+        if crate::http::security::is_trusted(address.ip().to_canonical(), &trusted_proxies) {
+            limits.proxy_header_timeout
+        } else {
+            limits.header_timeout
+        };
     // Proxies and browsers reach oneloop over HTTP/1.1. Its header timer runs
     // from the moment a connection opens; cleartext HTTP/2 would let a client
     // hold a connection without a request, or stall a stream without reading.
@@ -169,7 +187,7 @@ async fn serve_connection<T>(
     builder
         .http1()
         .timer(TokioTimer::new())
-        .header_read_timeout(limits.header_timeout);
+        .header_read_timeout(header_timeout);
     let io = TokioIo::new(PacedWrites::new(io, limits.response));
     let connection = builder.serve_connection(io, service);
     tokio::pin!(connection);
@@ -394,6 +412,19 @@ mod tests {
         watch::Sender<bool>,
         tokio::task::JoinHandle<()>,
     ) {
+        connect_from(router, buffer, &[])
+    }
+
+    /// As `connect`, from 127.0.0.1, with these trusted proxies.
+    fn connect_from(
+        router: Router,
+        buffer: usize,
+        trusted_proxies: &[IpNet],
+    ) -> (
+        DuplexStream,
+        watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (client, server) = tokio::io::duplex(buffer);
         let (closing, shutdown) = watch::channel(false);
         let connection = tokio::spawn(serve_connection(
@@ -401,6 +432,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 1)),
             router,
             LIMITS,
+            trusted_proxies.into(),
             shutdown,
         ));
         (client, closing, connection)
@@ -427,6 +459,45 @@ mod tests {
                 .expect("a connection without a request must close")
                 .unwrap();
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_trusted_proxy_may_keep_an_idle_connection_for_five_minutes() {
+        let router = || Router::new().route("/", axum::routing::post(|| async { "ok" }));
+        let send = async |client: &mut DuplexStream| {
+            client
+                .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\nok") {
+                let mut byte = [0];
+                client.read_exact(&mut byte).await.unwrap();
+                response.push(byte[0]);
+            }
+        };
+        // An ordinary client's idle connection closes after 15 seconds.
+        let (mut client, _closing, connection) = connect(router(), 64 * 1024);
+        send(&mut client).await;
+        tokio::time::timeout(LIMITS.header_timeout + Duration::from_secs(1), connection)
+            .await
+            .expect("an idle connection closes")
+            .unwrap();
+        // Proxies keep idle connections for minutes and may send a request on
+        // one at any time; a trusted proxy's connection is still there.
+        let proxy = [IpNet::from(std::net::IpAddr::from([127, 0, 0, 1]))];
+        let (mut client, _closing, connection) = connect_from(router(), 64 * 1024, &proxy);
+        send(&mut client).await;
+        tokio::time::sleep(Duration::from_secs(4 * 60)).await;
+        assert!(!connection.is_finished());
+        send(&mut client).await;
+        tokio::time::timeout(
+            LIMITS.proxy_header_timeout + Duration::from_secs(1),
+            connection,
+        )
+        .await
+        .expect("an idle proxy connection closes too")
+        .unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -664,6 +735,7 @@ mod tests {
                 connections: 1,
                 ..LIMITS
             },
+            Arc::from([]),
         ));
         (address, stop, server)
     }
@@ -743,9 +815,14 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(serve(listener, router, async {
-            let _ = stopped.await;
-        }));
+        let server = tokio::spawn(serve(
+            listener,
+            router,
+            async {
+                let _ = stopped.await;
+            },
+            &[],
+        ));
         let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
         socket
             .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")

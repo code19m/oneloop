@@ -1212,6 +1212,43 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     retry.finish().await.unwrap();
 }
 
+#[tokio::test]
+async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let begin =
+        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let deleted = async |at: Option<i64>| {
+        fixture
+            .db
+            .run(move |connection| {
+                connection.execute("UPDATE tasks SET deleted_at=?1 WHERE id='task'", [at])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    };
+    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+        panic!("new upload must not replay")
+    };
+    pending.write_chunk(b"la").await.unwrap();
+    // A teammate deletes the task while the rest of the bytes arrive.
+    deleted(Some(now())).await;
+    pending.write_chunk(b"te").await.unwrap();
+    let finished = pending.finish().await;
+    assert!(
+        matches!(finished, Err(AppError::NotFound { resource: "task" })),
+        "{finished:?}"
+    );
+    // After Undo, the same retry key uploads the file.
+    deleted(None).await;
+    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+        panic!("a failed upload must not replay")
+    };
+    retry.write_chunk(b"late").await.unwrap();
+    retry.finish().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
@@ -1330,7 +1367,11 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     service
-        .upload_avatar(&fixture.manager, png.clone())
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            png.clone(),
+        )
         .await
         .unwrap();
     let deletion_queue = |sql: &'static str| {
@@ -1345,7 +1386,10 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
     )
     .await
     .unwrap();
-    service.upload_avatar(&fixture.manager, png).await.unwrap();
+    service
+        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap();
     service.remove_avatar(&fixture.manager).await.unwrap();
     deletion_queue("DROP TRIGGER queue_fails").await.unwrap();
     // Nothing refers to the replaced files, so reconciliation deletes both.
@@ -1371,7 +1415,9 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
         .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     assert!(matches!(
-        service.upload_avatar(&fixture.manager, png).await,
+        service
+            .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+            .await,
         Err(AppError::Rule {
             kind: oneloop::error::RuleKind::StorageFull,
             ..
@@ -1416,7 +1462,10 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    let url = service.upload_avatar(&fixture.manager, png).await.unwrap();
+    let url = service
+        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap();
     assert!(url.starts_with("/api/users/manager/avatar?v="));
     let mut avatar = service
         .open_avatar(&fixture.manager, "manager")
@@ -1428,7 +1477,11 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
     assert_eq!((decoded.width(), decoded.height()), (256, 256));
     assert!(
         service
-            .upload_avatar(&fixture.manager, b"not an image".to_vec())
+            .upload_avatar(
+                &fixture.manager,
+                service.avatar_slot().unwrap(),
+                b"not an image".to_vec()
+            )
             .await
             .is_err()
     );
@@ -1441,14 +1494,22 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
     // 27 megapixels of lossless WebP need over 200 MiB to decode, though the
     // file is a few bytes.
     let refused = service
-        .upload_avatar(&fixture.manager, super::flat_webp(6000, 4500))
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            super::flat_webp(6000, 4500),
+        )
         .await;
     assert!(
         matches!(&refused, Err(AppError::Validation { field, .. }) if field == "avatar"),
         "{refused:?}"
     );
     service
-        .upload_avatar(&fixture.manager, super::flat_webp(600, 450))
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot().unwrap(),
+            super::flat_webp(600, 450),
+        )
         .await
         .unwrap();
 }
@@ -1709,7 +1770,11 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    assert!(full.upload_avatar(&fixture.viewer, png).await.is_err());
+    assert!(
+        full.upload_avatar(&fixture.viewer, full.avatar_slot().unwrap(), png)
+            .await
+            .is_err()
+    );
     let listed = service
         .list_attachments(&fixture.manager, "task")
         .await
@@ -2180,7 +2245,10 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
-    let error = service.upload_avatar(&f.manager, png).await.unwrap_err();
+    let error = service
+        .upload_avatar(&f.manager, service.avatar_slot().unwrap(), png)
+        .await
+        .unwrap_err();
     assert!(
         error.to_string().contains("original avatar commit failure"),
         "{error}"
@@ -2777,6 +2845,72 @@ async fn a_restored_attachment_keeps_its_place_unless_the_files_were_reordered()
     assert_eq!(
         listed_names(&service, &f.viewer).await,
         ["c.txt", "a.txt", "b.txt"]
+    );
+}
+
+#[tokio::test]
+async fn files_reorder_after_a_deletion_an_undo_and_an_upload() {
+    let f = Fixture::new().await;
+    let service = f.service(100 * 1024 * 1024);
+    // Moves `name` just before `target`, as the browser does.
+    let place = async |name: &str, target: &str| {
+        let items = service
+            .list_attachments(&f.viewer, "task")
+            .await
+            .unwrap()
+            .items;
+        let find = |wanted: &str| items.iter().find(|item| item.name == wanted).unwrap();
+        let (moving, target) = (find(name), find(target));
+        service
+            .reorder(
+                &f.manager,
+                "task",
+                AttachmentReorder {
+                    attachment_id: moving.id.clone(),
+                    target_id: target.id.clone(),
+                    after: false,
+                    expected_revision: moving.revision,
+                    idempotency_key: format!("place-{name}-{}", moving.revision),
+                },
+            )
+            .await
+            .unwrap();
+        listed_names(&service, &f.viewer).await
+    };
+    let mut files = Vec::new();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"] {
+        files.push(upload(&service, &f.manager, name, name, name.as_bytes(), false).await);
+    }
+    let c = &files[2];
+    service
+        .delete_attachment(&f.manager, &c.id, c.revision, "delete-c")
+        .await
+        .unwrap();
+    assert_eq!(
+        place("a.txt", "e.txt").await,
+        ["b.txt", "d.txt", "a.txt", "e.txt"]
+    );
+    assert_eq!(
+        place("e.txt", "b.txt").await,
+        ["e.txt", "b.txt", "d.txt", "a.txt"]
+    );
+    // Undo puts the file last, and the files still move.
+    service
+        .restore_attachment(&f.manager, &c.id, restore("restore-c", c.revision + 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        listed_names(&service, &f.viewer).await,
+        ["e.txt", "b.txt", "d.txt", "a.txt", "c.txt"]
+    );
+    assert_eq!(
+        place("c.txt", "e.txt").await,
+        ["c.txt", "e.txt", "b.txt", "d.txt", "a.txt"]
+    );
+    upload(&service, &f.manager, "f.txt", "f.txt", b"f", false).await;
+    assert_eq!(
+        place("f.txt", "c.txt").await,
+        ["f.txt", "c.txt", "e.txt", "b.txt", "d.txt", "a.txt"]
     );
 }
 
