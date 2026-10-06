@@ -517,6 +517,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   };
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
+    // The server takes avatars up to this size, so a larger image isn't sent.
+    const limit=data.limits?.maxAvatarBytes??5*1024*1024,tooLarge=`Use an image of at most ${Math.round(limit/1024/1024*10)/10} MiB.`;
+    if(file.size>limit){input.value='';app.toast(tooLarge,'error');return;}
     const scope=sessionScope(),generation=++avatarGeneration;
     if(avatarQueueScope!==scope){avatarQueueScope=scope;avatarQueue=Promise.resolve();}
     const request=avatarQueue.catch(()=>{}).then(async()=>{
@@ -525,7 +528,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
       me.avatar=response.avatarUrl;if(context().view==='profile'){app.refresh();app.toast('Avatar updated');}return response;
     });
-    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+    const reportAvatar=reportFor(scope,{},()=>generation===avatarGeneration);
+    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch((error)=>{
+      if(error?.status===413||error?.code==='request_too_large'){if(sessionScope()===scope&&generation===avatarGeneration)app.toast(tooLarge,'error');return;}
+      reportAvatar(error);
+    }).finally(()=>{input.value='';}));
   };
   app.removeAvatar=()=>{
     const me=data.users.find((item)=>item.id===data.session?.userId);if(!me)return false;

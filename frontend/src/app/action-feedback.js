@@ -115,6 +115,11 @@ function fieldLabel(field) {
 function friendlyValidation(field, message) {
   // The server words password rules for people, and an admin may have set them.
   if (field === 'password') return message;
+  // The server says what is wrong with an avatar: its type, its size or its data.
+  if (field === 'avatar') {
+    const reason = message.replace(/\.$/, '');
+    return /^must\b/.test(reason) ? `The avatar ${reason}.` : `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`;
+  }
   const label = fieldLabel(field);
   const requiredRange = message.match(/^must contain (\d+)[–-](\d+) characters$/);
   if (requiredRange) return `Use ${requiredRange[1]}–${requiredRange[2]} characters for the ${label}.`;

@@ -504,6 +504,18 @@ test('Save in Edit user after the admin role is gone says so and leaves Users, i
   }finally{globalThis.FormData=OriginalFormData;}
 });
 
+test('an avatar larger than the server takes is refused before it is sent, and a refusal by size says the limit',async()=>{
+  const sent=[];let answer;
+  const state=fixture({view:'profile',projectId:'p1',board:{}},{api:{uploadAvatar:async(file)=>{sent.push(file.size);throw answer;}}});
+  state.data.users.push({id:'u1',name:'Me',admin:false,active:true});state.data.limits={maxAvatarBytes:5*1024*1024};
+  const input=(size)=>({files:[{size}],value:'picked'});
+  const big=input(6*1024*1024);state.app.setAvatar(big);await tick();
+  assert.deepEqual(sent,[]);assert.equal(big.value,'','the same image can be picked again');
+  answer=new ApiError('The request exceeds the size limit',{status:413,code:'request_too_large'});state.app.setAvatar(input(4*1024*1024));await tick();await tick();
+  answer=new ApiError('invalid avatar: must be a PNG, JPEG or WebP image',{status:400,code:'validation_failed',details:{field:'avatar',message:'must be a PNG, JPEG or WebP image'}});state.app.setAvatar(input(1024));await tick();await tick();
+  assert.deepEqual(state.toasts,[['Use an image of at most 5 MiB.','error'],['Use an image of at most 5 MiB.','error'],['The avatar must be a PNG, JPEG or WebP image.','error']]);
+});
+
 /** A task page whose commands go through the real gateway and are answered one by one. */
 function taskPage(overrides={}){
   let gateway;
