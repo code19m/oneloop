@@ -357,6 +357,8 @@ impl FileService {
         target: Option<u64>,
         deficit: u64,
     ) -> AppResult<FileRuntimeReport> {
+        // The data lease comes before any gate, as on every other file path.
+        let _lease = self.db.acquire_data_lease().await?;
         // A per-directory cross-process gate also covers separately constructed services.
         let path = self.store.layout().root().join(".oneloop-cleanup.lock");
         let gate =
@@ -381,7 +383,6 @@ impl FileService {
             return Ok(FileRuntimeReport::default());
         };
         let mut report = FileRuntimeReport::default();
-        let _lease = self.db.acquire_data_lease().await?;
         let usage = self.capacity_usage().await?.total();
         let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
         let previews = regular_files(self.store.previews()).await?;
