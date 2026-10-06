@@ -3946,9 +3946,12 @@
       if(ev.key==='Enter'&&ev.repeat){ev.preventDefault();return;}
       if (ev.key === 'Enter') { ev.preventDefault(); commitDate(key, ev.target.value, true); }
       else if (ev.key === 'Escape') {
-        ev.preventDefault(); ev.stopPropagation(); closePop(true);
+        // Escape closes the calendar or undoes the typing first; with nothing to undo, it goes on to the dialog.
+        const undoes = POP.id === 'dp:' + key || ev.target.value !== (DPS[key].value || '');
+        closePop(true);
         ev.target.value = DPS[key].value || '';
         dateFieldError(ev.target.closest('.date-field'), '');
+        if (undoes) { ev.preventDefault(); ev.stopPropagation(); }
       } else if (ev.key === 'ArrowDown' && ev.altKey) {
         ev.preventDefault(); ev.target.closest('.date-field').querySelector('.date-trigger').click();
       }

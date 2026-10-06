@@ -265,6 +265,20 @@ test('Escape on a dialog with typed text asks first; a clean dialog closes at on
   assert.equal(t.d.querySelector('.modal'), null);
 });
 
+test('Escape in a dialog\'s date field undoes the typed date first, then reaches the dialog', () => {
+  const t = bootApp({ route: 'roadmap' });
+  t.A.openModal('milestone');
+  const date = t.d.querySelector('.modal .date-text'), saved = date.value;
+  // A browser runs the field's own key handler before the page's.
+  date.addEventListener('keydown', event => t.A.dateKey(event, 'mDate'));
+  const escape = () => date.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  type(date, '2031-01-0');
+  escape();
+  assert.equal(date.value, saved); assert(t.d.querySelector('.modal'), 'the first Escape undoes the typing');
+  escape();
+  assert.equal(t.d.querySelector('.modal'), null, 'the next one closes the dialog');
+});
+
 test('Reload after updates is a choice in the account menu, which stays open', () => {
   const t = bootApp({ route: 'board' });
   t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
