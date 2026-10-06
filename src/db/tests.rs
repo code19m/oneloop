@@ -88,3 +88,33 @@ fn report_database_lock_holder() {
         other => println!("no read lock: {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_waiting_for_the_data_lock_goes_before_later_file_operations() {
+    let root = tempfile::tempdir_in("target").unwrap();
+    migrate(root.path(), None).unwrap();
+    let db = Db::open(root.path()).unwrap();
+    // A file operation is under way when a backup asks for the lock alone.
+    let running = db.acquire_data_lease().await.unwrap();
+    let layout = db.layout().clone();
+    let waiting = std::thread::spawn(move || layout.open_exclusive_lock());
+    let intent = open_lock_file(&root.path().join(DATA_INTENT_FILE)).unwrap();
+    let deadline = Instant::now() + ADMISSION_TIMEOUT;
+    while Instant::now() < deadline && intent.try_lock_shared().is_ok() {
+        intent.unlock().unwrap();
+        tokio::task::yield_now().await;
+    }
+    // One that starts now waits until the backup is done.
+    let later = tokio::spawn({
+        let db = db.clone();
+        async move { db.acquire_data_lease().await }
+    });
+    drop(running);
+    let exclusive = tokio::task::spawn_blocking(move || waiting.join().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!later.is_finished());
+    drop(exclusive);
+    later.await.unwrap().unwrap();
+}

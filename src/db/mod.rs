@@ -23,6 +23,10 @@ pub(crate) const RESTORE_MARKER: &str = ".oneloop-restore-incomplete";
 
 const DATABASE_FILE: &str = "oneloop.sqlite3";
 const DATA_LOCK_FILE: &str = ".oneloop-data.lock";
+/// Held by a command while it waits for the data lock alone. File operations
+/// that start meanwhile wait behind it, so a steady stream of them can't keep
+/// the lock taken.
+const DATA_INTENT_FILE: &str = ".oneloop-data-intent.lock";
 const BACKUP_LOCK_FILE: &str = ".oneloop-backup.lock";
 const INSTANCE_LOCK_FILE: &str = ".oneloop-instance.lock";
 const DEFAULT_POOL_SIZE: usize = 8;
@@ -88,8 +92,13 @@ impl DataLayout {
     }
 
     pub(crate) fn open_exclusive_lock(&self) -> AppResult<File> {
+        let deadline = Instant::now() + ADMISSION_TIMEOUT;
+        let intent = open_lock_file(&self.root.join(DATA_INTENT_FILE))?;
+        wait_for_exclusive_lock_until(&intent, &self.data_lock(), deadline)?;
         let file = open_lock_file(&self.data_lock())?;
-        wait_for_exclusive_lock(&file, &self.data_lock())?;
+        wait_for_exclusive_lock_until(&file, &self.data_lock(), deadline)?;
+        // Leases that were waiting behind the intent now wait for this lock.
+        drop(intent);
         Ok(file)
     }
 
@@ -282,30 +291,48 @@ impl Db {
         &self.inner.layout
     }
 
-    /// Waits up to five seconds while a backup holds the data lock. Waiting
-    /// takes no blocking thread, so many requests can wait at once.
+    /// Waits up to five seconds while a backup or another command holds the
+    /// data lock, or waits for it. Waiting takes no blocking thread, so many
+    /// requests can wait at once.
     pub async fn acquire_data_lease(&self) -> AppResult<DataLease> {
         let path = self.inner.layout.data_lock();
-        let file = {
-            let path = path.clone();
-            tokio::task::spawn_blocking(move || open_lock_file(&path))
-                .await
-                .map_err(|error| {
-                    AppError::internal(format!("data lease worker failed: {error}"))
-                })??
+        let intent_path = self.inner.layout.root.join(DATA_INTENT_FILE);
+        let (file, intent) = {
+            let (path, intent_path) = (path.clone(), intent_path.clone());
+            tokio::task::spawn_blocking(move || {
+                AppResult::Ok((open_lock_file(&path)?, open_lock_file(&intent_path)?))
+            })
+            .await
+            .map_err(|error| AppError::internal(format!("data lease worker failed: {error}")))??
         };
         let started = tokio::time::Instant::now();
         loop {
-            match file.try_lock_shared() {
-                Ok(()) => return Ok(DataLease { _lock: file }),
-                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < ADMISSION_TIMEOUT => {
-                    tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+            // A command that waits for the lock alone goes first.
+            let announced = match intent.try_lock_shared() {
+                Ok(()) => {
+                    intent
+                        .unlock()
+                        .map_err(|error| lock_failed_error(&intent_path, error))?;
+                    false
                 }
-                Err(std::fs::TryLockError::WouldBlock) => return Err(lock_busy_error(&path)),
+                Err(std::fs::TryLockError::WouldBlock) => true,
                 Err(std::fs::TryLockError::Error(error)) => {
-                    return Err(lock_failed_error(&path, error));
+                    return Err(lock_failed_error(&intent_path, error));
+                }
+            };
+            if !announced {
+                match file.try_lock_shared() {
+                    Ok(()) => return Ok(DataLease { _lock: file }),
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(error)) => {
+                        return Err(lock_failed_error(&path, error));
+                    }
                 }
             }
+            if started.elapsed() >= ADMISSION_TIMEOUT {
+                return Err(lock_busy_error(&path));
+            }
+            tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
         }
     }
 
@@ -679,12 +706,17 @@ fn warn_public_permissions(path: &Path) -> AppResult<()> {
 }
 
 fn wait_for_exclusive_lock(file: &File, path: &Path) -> AppResult<()> {
-    let start = Instant::now();
+    wait_for_exclusive_lock_until(file, path, Instant::now() + ADMISSION_TIMEOUT)
+}
+
+/// Takes `file`'s lock alone, or fails at `deadline` with an error that names
+/// `path`.
+fn wait_for_exclusive_lock_until(file: &File, path: &Path, deadline: Instant) -> AppResult<()> {
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::WouldBlock) => {
-                if start.elapsed() >= ADMISSION_TIMEOUT {
+                if Instant::now() >= deadline {
                     return Err(lock_busy_error(path));
                 }
                 std::thread::sleep(LOCK_RETRY_INTERVAL);
