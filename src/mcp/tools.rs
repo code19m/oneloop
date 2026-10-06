@@ -975,7 +975,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_knowledge_file",
-        description = "Read one knowledge base file's text, or one Markdown section with its subsections, up to 100,000 characters. Markdown files also list their headings. Images, PDFs and other binary files return metadata only.",
+        description = "Read one knowledge base file's text, or one Markdown section with its subsections, up to 100,000 characters. Markdown files also list their headings; headings and sections come from the first 1 MiB of a file. Images, PDFs and other binary files return metadata only.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

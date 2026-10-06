@@ -44,6 +44,13 @@ const README_CHARS_MAX: usize = 20_000;
 const FILE_TEXT_CHARS_MAX: usize = 100_000;
 const FILE_HEADINGS_MAX: usize = 60;
 const PATH_QUERY_MAX: usize = 1_024;
+/// Bytes that always hold `chars` characters, whatever the script.
+const fn text_bytes(chars: usize) -> u64 {
+    4 * chars as u64
+}
+/// The part of a Markdown file that MCP reads for its title, headings and
+/// sections: as much as search reads, and ten times what a reply holds.
+const MARKDOWN_SOURCE_BYTES: u64 = INDEXED_FILE_BYTES as u64;
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -69,6 +76,9 @@ pub(super) struct Inner {
     catalogs: Mutex<Vec<Arc<Catalog>>>,
     /// Indexes are built one at a time; a request that waited finds the result.
     builds: tokio::sync::Mutex<()>,
+    /// MCP reads one file's text at a time, so the memory of large files
+    /// never adds up.
+    readers: Arc<tokio::sync::Semaphore>,
 }
 
 /// What search and MCP need from one synced commit, built on first use.
@@ -358,6 +368,7 @@ impl KnowledgeService {
                 waiting: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
+                readers: Arc::new(tokio::sync::Semaphore::new(1)),
             }),
         }
     }
@@ -677,12 +688,14 @@ impl KnowledgeService {
             .map(|file| file.path.clone());
         let readme = match readme_path {
             Some(path) => {
-                let text = self.text(actor, project_id, &path).await?;
+                let (text, longer) = self
+                    .text(actor, project_id, &path, text_bytes(README_CHARS_MAX))
+                    .await?;
                 let (content, truncated) = cut(&text, README_CHARS_MAX);
                 Some(ReadmeText {
                     path,
                     content,
-                    truncated,
+                    truncated: truncated || longer,
                 })
             }
             None => None,
@@ -772,16 +785,31 @@ impl KnowledgeService {
                 "applies to Markdown files only",
             ));
         }
-        let text = self.text(actor, project_id, &file.path).await?;
         let query = section
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
-        // A file can hold megabytes of Markdown: parse it off the async workers.
+        // Only the start of a file can be part of a reply, so only the start
+        // is read. One file at a time is read and parsed, off the async
+        // workers, so many calls at once can't use up the memory.
+        let permit = self
+            .inner
+            .readers
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| AppError::Unavailable("knowledge reader is shutting down".into()))?;
+        let limit = if markdown_file {
+            MARKDOWN_SOURCE_BYTES
+        } else {
+            text_bytes(FILE_TEXT_CHARS_MAX)
+        };
+        let (text, longer) = self.text(actor, project_id, &file.path, limit).await?;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let mut content = text.as_str();
             if markdown_file {
-                let sections = markdown::sections(&text);
+                let sections = markdown::outline(&text);
                 result.title = markdown::title(&sections);
                 result.headings = sections
                     .iter()
@@ -799,25 +827,46 @@ impl KnowledgeService {
                     result.section = Some(query);
                 }
             }
+            // The file goes on past what was read, and so may the content.
+            let unfinished = longer
+                && content.as_ptr().addr() + content.len() == text.as_ptr().addr() + text.len();
             let (content, truncated) = cut(content, FILE_TEXT_CHARS_MAX);
             result.content = Some(content);
-            result.truncated = truncated;
+            result.truncated = truncated || unfinished;
             Ok(result)
         })
         .await
         .map_err(|error| AppError::internal(format!("knowledge reader failed: {error}")))?
     }
 
-    /// A text file's full content, read after the caller is authorized.
-    async fn text(&self, actor: &Actor, project_id: &str, path: &str) -> AppResult<String> {
+    /// The first `limit` bytes of a text file as text, read after the caller
+    /// is authorized, and whether the file is longer.
+    async fn text(
+        &self,
+        actor: &Actor,
+        project_id: &str,
+        path: &str,
+        limit: u64,
+    ) -> AppResult<(String, bool)> {
         let read = self
             .file(actor, project_id, path, FileMode::Download, None)
             .await?;
-        let bytes = match read.body {
-            Some(body) => body.read_all().await?,
-            None => Vec::new(),
+        let Some(body) = read.body else {
+            return Ok((String::new(), false));
         };
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let longer = body.len() > limit;
+        let mut bytes = body.read_start(limit).await?;
+        // A character that the limit splits is left out; other bytes that
+        // aren't UTF-8 become U+FFFD. Valid text is not copied.
+        if longer
+            && let Err(error) = std::str::from_utf8(&bytes)
+            && error.error_len().is_none()
+        {
+            bytes.truncate(error.valid_up_to());
+        }
+        let text = String::from_utf8(bytes)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+        Ok((text, longer))
     }
 
     async fn catalog(&self, actor: &Actor, project_id: &str) -> AppResult<Option<Arc<Catalog>>> {
@@ -845,7 +894,7 @@ impl KnowledgeService {
             let mut outlines = HashMap::new();
             for (path, kind, text) in &texts {
                 if let (Some(PreviewKind::Markdown), Some(text)) = (kind, text) {
-                    let sections = markdown::sections(text);
+                    let sections = markdown::outline(text);
                     outlines.insert(
                         path.clone(),
                         Outline {

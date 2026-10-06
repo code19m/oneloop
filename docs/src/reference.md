@@ -188,7 +188,7 @@ thumbnail a moment after the upload.
 | Sync | Checks the branch every minute; after a failure, every 5 minutes |
 | Sync time | A check stops after 30 seconds, a download after 5 minutes |
 | Search | 8 words and 200 characters |
-| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files |
+| Searchable text | Markdown and text files up to 1 MiB; only the first 5,000 lines of plain-text files and the first 5,000 sections of Markdown files |
 
 All query words must occur in the same file or folder path, Markdown section,
 or plain-text line. Matching ignores letter case. Files outside the searchable
@@ -241,7 +241,7 @@ Some emoji count as two characters.
 | Items per page | 50 (100 for comments, activity and the Inbox) |
 | Retry keys | Remembered for 24 hours |
 | Knowledge overview | 200 files, and 20,000 characters of the README |
-| Knowledge file | 100,000 characters |
+| Knowledge file | 100,000 characters. Headings and sections come from the first 1 MiB of a Markdown file, up to 5,000 sections |
 
 **Server**
 
