@@ -7,7 +7,11 @@
   window.renderDiagram = async (id, source, config) => {
     // A copy made here, so Mermaid works with this document's own objects.
     window.mermaid.initialize(JSON.parse(JSON.stringify(config)));
-    const { svg } = await window.mermaid.render(id, source);
+    // Mermaid draws $$…$$ math as HTML in a <foreignObject>, which the
+    // sanitizer below removes, so such a label would be empty. A zero-width
+    // space between two dollar signs hides the math from Mermaid, and the
+    // label shows its text instead.
+    const { svg } = await window.mermaid.render(id, source.replace(/\$(?=\$)/g, '$​'));
     const clean = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['foreignObject', 'a', 'image'], FORBID_ATTR: ['onload', 'onclick'] });
     const bounds = new DOMParser().parseFromString(clean, 'image/svg+xml').documentElement.getAttribute('viewBox')?.trim().split(/[ ,]+/).map(Number);
     const sized = bounds?.length === 4 && bounds[2] > 0 && bounds[3] > 0;

@@ -3,8 +3,11 @@
 The examples use the [systemd setup](production.md#systemd-linux) for an
 install from source, with data in `/var/lib/oneloop/data`, and the example
 `compose.yaml` for Docker. Run `oneloop` commands as the account that runs
-oneloop, with the same environment, for example
-`sudo -u oneloop env ONELOOP_DATA_DIR=/var/lib/oneloop/data /usr/local/bin/oneloop backup create …`.
+oneloop, with the settings from its unit file, for example:
+
+```sh
+sudo -u oneloop env $(systemctl show oneloop -p Environment --value) /usr/local/bin/oneloop backup create …
+```
 
 ## Back up
 
@@ -91,9 +94,10 @@ sudo -u oneloop env ONELOOP_DATA_DIR=/var/lib/oneloop/restore-test \
   /usr/local/bin/oneloop serve
 ```
 
-Sign in at `http://127.0.0.1:19220` and open a few tasks and files. Then stop
-the test server with Ctrl+C, and delete the folder with
-`sudo rm -rf /var/lib/oneloop/restore-test`.
+Sign in at `http://127.0.0.1:19220` and open a few tasks and files. On a remote
+server, first open an SSH tunnel with
+`ssh -L 19220:127.0.0.1:19220 you@your-server`. Then stop the test server with
+Ctrl+C, and delete the folder with `sudo rm -rf /var/lib/oneloop/restore-test`.
 
 ## Restore
 
@@ -105,7 +109,7 @@ instance.
 2. Move the current data directory aside. Keep it until you are sure that the
    restore worked:
    ```sh
-   mv /var/lib/oneloop/data /var/lib/oneloop/data.old
+   sudo mv /var/lib/oneloop/data /var/lib/oneloop/data.old
    ```
 3. Restore the backup:
    ```sh
@@ -151,12 +155,16 @@ you choose, and it changes nothing if the backup fails.
    cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.2 --locked
    sudo install ~/.cargo/bin/oneloop /usr/local/bin/oneloop
    ```
-4. Upgrade the database, and check the result. `db migrate` saves its backup
-   in the backup folder from [Back up](#back-up):
+4. Upgrade the database, and check the result with the settings from the unit
+   file. `db migrate` saves its backup in the backup folder from
+   [Back up](#back-up):
    ```sh
    oneloop db migrate --backup-dir /var/backups/oneloop
-   oneloop serve --check
+   sudo -u oneloop env $(systemctl show oneloop -p Environment --value) \
+     /usr/local/bin/oneloop serve --check
    ```
+   If you changed the unit file, run `sudo systemctl daemon-reload` first, so
+   that the check reads the new settings.
 5. Start oneloop.
 
 With Docker, set up the backup folder as described in [Back up](#back-up), and

@@ -72,7 +72,7 @@ a review.
 
 - **+ Task** creates a task. It needs a title and an epic that isn't Done.
 - Drag a card to change its status or its place in the column. On a touch
-  screen, drag it by its **⋯** button. The **⋯** menu can also move it, which
+  screen, drag it by its **⋮** button. The **⋮** menu can also move it, which
   works well with a keyboard.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
@@ -109,7 +109,7 @@ Click a card to open the task. Your changes save automatically.
   and **Forward** buttons, while text you typed, such as a comment, isn't sent
   or saved yet. Most browsers also ask before you reload or close the tab. A
   dialog with text you typed asks before **Escape** closes it.
-- To delete a task, use the **⋯** menu at the top of the page.
+- To delete a task, use the **⋮** menu at the top of the page.
 
 ### Blocking
 
@@ -130,7 +130,7 @@ files. Comments can't have files.
 
 Click a file to preview it. oneloop shows images, PDFs, Markdown (with tables,
 math and Mermaid diagrams), HTML pages, text and code. You can download any
-file.
+file. Diagrams show math in their labels as plain text, such as `$$x^2$$`.
 
 HTML previews show the page without running its scripts or loading anything
 from other sites, such as images, styles and fonts. Styles, images and fonts
@@ -218,8 +218,10 @@ files don't notify anyone.
 Click an item to open the task at the right place; this also marks the item
 read. **Archive** puts an item away. You can filter by project or show only
 unread items. **Mark all as read** and **Archive all** affect every item matching
-the current filters, including later pages. There is no bulk undo, but you can
-restore individual items from **Archived** and use **Mark unread**. See
+the current filters, including later pages. While a project or **Unread** filter
+is on, they read **Mark filtered as read** and **Archive filtered**. There is no
+bulk undo, but you can restore individual items from **Archived** and use
+**Mark unread**. See
 [retention limits](reference.md#limits) for how long archived items remain.
 
 ## Your account

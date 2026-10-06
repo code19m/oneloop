@@ -36,8 +36,8 @@ oneloop stays small on purpose.
 
 ## Project status
 
-The current version is 0.1.0-rc.2, the second release candidate. Small teams can
-use it, but expect some bugs. Read the [changelog](changelog.md) before you
+The current version is 0.1.0-rc.2, a release candidate. Small teams can use it,
+but expect some bugs. Read the [changelog](changelog.md) before you
 upgrade.
 
 oneloop runs on Linux (x86_64 and arm64) and on macOS with Apple silicon, either
