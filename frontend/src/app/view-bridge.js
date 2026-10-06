@@ -43,6 +43,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const unsentCaptures = [];
   /** @type {{projectId:string,scope:string,title:string,description:string,key:string}|null} */
   let returnedCapture = null;
+  // Pool items on their way, so a second Enter on the field one just left says nothing.
+  let capturesSending = 0;
   let projectGeneration = 0;
   let usersGeneration=0,profileGeneration=0,routeGeneration=0,profileNameGeneration=0,avatarGeneration=0;
   let usersController=null,profileController=null;
@@ -724,19 +726,19 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     event.preventDefault();
     const input=event.target;
     const enteredTitle=input.value,title=text(enteredTitle,140);
-    if(!title){app.toast('Give the Pool item a title.','error');return false;}
+    if(!title){if(!capturesSending)app.toast('Give the Pool item a title.','error');return false;}
     const notes=/** @type {HTMLTextAreaElement|null} */(document.getElementById('poolNewDesc'));
     const description=text(notes?.value||'',2000),scope=context().poolTab==='project'?'team':'personal',projectId=context().projectId,sent=sessionScope(),userId=data.session?.userId??'';
     // An item sent again after an unknown result keeps its key, so it is added once.
     const returned=returnedCapture;returnedCapture=null;
     const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
-    input.value='';if(notes)notes.value='';
+    input.value='';if(notes)notes.value='';capturesSending++;
     return fire(execute('pool.create',{projectId,scope,title,description},null,'Pool item added',{
       create:true,paint:false,interactionKey:key,poolScope:scope,onAccepted:returnCaptures,
     }).catch((error)=>{
       if(sessionScope()===sent){unsentCaptures.push({userId,projectId,scope,title,description,key});returnCaptures();}
       throw error;
-    }));
+    }).finally(()=>{capturesSending--;}));
   };
   /** Put the oldest item that wasn't added back in the capture field of its Pool, once the field is empty. */
   function returnCaptures(){

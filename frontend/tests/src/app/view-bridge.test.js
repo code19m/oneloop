@@ -377,6 +377,20 @@ test('an item sent from the Pool leaves the field at once, and the next one is s
   }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
 });
 
+test('Enter on the empty Pool field says nothing while the item that left it is on its way',async()=>{
+  const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
+  const sent=deferred();
+  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:()=>sent.promise}});
+  const event={key:'Enter',target:capture.input,preventDefault(){}};
+  try{
+    capture.input.value='Only idea';state.app.poolKey(event);state.app.poolKey(event);
+    assert.deepEqual(state.toasts,[]);
+    sent.resolve({entities:[],events:[]});await tick();await tick();
+    state.app.poolKey(event);
+    assert.deepEqual(state.toasts.at(-1),['Give the Pool item a title.','error']);
+  }finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}
+});
+
 test('a Pool item that can\'t be added comes back once the field is free, and is added once',async()=>{
   const previous=globalThis.document,capture=poolCapture();globalThis.document=capture.document;
   const commands=[];let fail=true;
