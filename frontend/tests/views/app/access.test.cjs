@@ -96,7 +96,7 @@ const {w,d,A}=boot('users',{prepare:D=>{D.users.find(u=>u.id===D.session.userId)
 });
 
 test('row actions open the right editor, Pool promotion keeps its title and navigation dismisses stale overlays', () => {
-const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');w.Function('event',d.querySelector('.pool-promote').getAttribute('onclick'))(new w.Event('click'));assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
+const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');d.querySelector('.pool-promote').click();assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
 });
 
 test('a reserved task prefix is rejected inline and a new prefix keeps the old one reserved', () => {
@@ -176,7 +176,7 @@ test('temporary passwords show the account, copy exactly, report clipboard failu
     assert.equal(t.d.querySelector('.temporary-password-meta strong').textContent,user.username);
     assert(!t.d.querySelector('.modal').textContent.includes(user.id));
     assert.equal(t.d.getElementById('tmpPw').textContent,password);
-    assert(!t.d.querySelector('[aria-label="Copy temporary password"]').getAttribute('onclick').includes(password));
+    const copy=t.d.querySelector('[aria-label="Copy temporary password"]');assert.equal(copy.dataset.action,'copyTemporaryPassword');assert(!copy.outerHTML.includes(password));
     await t.A.copyTemporaryPassword();assert.deepEqual(copies,[password]);assert.deepEqual(messages,[['Copied']]);
     t.w.navigator.clipboard.writeText=async()=>{throw Error('Clipboard denied');};
     await t.A.copyTemporaryPassword();assert.equal(messages.length,2);assert.equal(messages[1][1],'error');assert(messages[1][0].includes('copy it manually'));

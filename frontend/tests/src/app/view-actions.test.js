@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { installViewActions } from '../../../src/app/view-actions.js';
+import { actionEvents, installViewActions } from '../../../src/app/view-actions.js';
+import { installViewBridge } from '../../../src/app/view-bridge.js';
 
-const { JSDOM } = createRequire(import.meta.url)('../../support/dom.cjs');
+const { JSDOM, bootApp } = createRequire(import.meta.url)('../../support/dom.cjs');
 
 /** A page with actions installed, whose App and Recovery record each call. */
 function page(html) {
@@ -131,4 +133,38 @@ test('arguments that are not a JSON array run nothing and are reported; removing
   assert.deepEqual(t.errors, [['TypeError', 'object'], ['SyntaxError', 'broken']]);
   t.remove(); t.click(t.$('fine'));
   assert.deepEqual(t.calls, []);
+});
+
+/** Every script and page in views/ and src/, as [path, source]. */
+function appSources() {
+  const frontend = new URL('../../../', import.meta.url);
+  return ['views/', 'src/'].flatMap((folder) => readdirSync(new URL(folder, frontend), { recursive: true })
+    .filter((name) => /\.(?:js|html)$/.test(name)).map((name) => [folder + name, readFileSync(new URL(folder + name, frontend), 'utf8')]));
+}
+
+test('no inline event handler is left in the app\'s markup', () => {
+  const w = new JSDOM('').window;
+  // The handler attributes browsers know, as lowercase names; camelCase names in code are no handlers.
+  const names = new Set([w.HTMLElement.prototype, w.Document.prototype, w.Window.prototype, w.HTMLBodyElement.prototype].flatMap((prototype) => Object.getOwnPropertyNames(prototype)).filter((name) => /^on[a-z]+$/.test(name)));
+  const handler = new RegExp(`(?<![\\w$.])(?:${[...names].join('|')}|onanimation[a-z]+|ontransition[a-z]+)\\s*=`, 'g');
+  const found = appSources().flatMap(([file, source]) => [...source.matchAll(handler)].map((match) => `${file}: ${source.slice(match.index, match.index + 60)}`));
+  assert.ok(names.has('onclick') && names.has('onkeydown'));
+  assert.deepEqual(found, []);
+});
+
+test('every action in the app\'s markup answers an event that actions hear and names an existing method', () => {
+  const actions = [], placeholders = [];
+  for (const [file, source] of appSources()) {
+    for (const [, method] of source.matchAll(/UIAction\(\s*'([^']*)'/g)) actions.push([file, 'click', method]);
+    for (const [, type, method] of source.matchAll(/UIAction\.on\(\s*'([^']*)',\s*'([^']*)'/g)) actions.push([file, type, method]);
+    for (const [, type, method] of source.matchAll(/data-action(?:-([a-z]+))?=["']([^"'$]*)["']/g)) actions.push([file, type ?? 'click', method]);
+    for (const [, name] of source.matchAll(/UIAction\.(\w+)/g)) if (!['on', 'event', 'element', 'value', 'checked'].includes(name)) placeholders.push(`${file}: UIAction.${name}`);
+  }
+  assert.ok(actions.length > 150, `${actions.length} actions found`);
+  assert.deepEqual(placeholders, []);
+  // The views as the app runs them, with the production actions.
+  const t = bootApp({ route: 'board' });
+  installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway: {}, auth: {}, recovery: {}, reloadBootstrap: async () => ({}) });
+  const exists = (method) => method.startsWith('Recovery.') ? typeof t.w.Recovery[method.slice('Recovery.'.length)] === 'function' : Object.hasOwn(t.A, method) && typeof t.A[method] === 'function';
+  assert.deepEqual(actions.filter(([, type, method]) => !actionEvents.includes(type) || !exists(method)), []);
 });

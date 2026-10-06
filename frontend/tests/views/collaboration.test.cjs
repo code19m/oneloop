@@ -357,8 +357,8 @@ test('comment/reply edit consolidation, reverts, unchanged saves, content finger
 });
 
 test('Enter submits block/edit/unblock/completion, mentions select first, Shift/IME/repeat guards and failed-submit input preservation', () => {
- const t=boot(),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
- const open=mode=>{t.A.openModal(mode,task.id);const form=t.d.querySelector('form[data-block-action]');form.onsubmit=ev=>t.A.saveBlock(ev,task.id,mode);input=form.querySelector('textarea');return form;};
+ const t=bootApp({route:'task/BIR-079',actions:true}),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
+ const open=mode=>{t.A.openModal(mode,task.id);const form=t.d.querySelector('form[data-block-action]');input=form.querySelector('textarea');return form;};
  const key=(options={})=>{const ev={currentTarget:input,key:'Enter',defaultPrevented:false,preventDefault(){this.defaultPrevented=true;},stopPropagation(){},...options};t.A.commentKey(ev);return ev;};
  open('block');key();assert(!task.block);assert(t.d.querySelector('.ferr'));
  typeBlock(t,'Waiting');assert(!key({shiftKey:true}).defaultPrevented);assert(!key({isComposing:true}).defaultPrevented);assert(!key({keyCode:229}).defaultPrevented);assert(key({repeat:true}).defaultPrevented);assert(!task.block);

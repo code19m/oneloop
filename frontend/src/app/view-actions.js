@@ -23,6 +23,8 @@
 
 const BUBBLING = Object.freeze(['click', 'submit', 'input', 'change', 'keydown', 'dragstart', 'dragend', 'dragover', 'dragleave', 'drop']);
 const OWN = Object.freeze(['focus', 'blur', 'mouseenter', 'mouseleave']);
+/** The events an action can answer. */
+export const actionEvents = Object.freeze([...BUBBLING, ...OWN]);
 const UNTRUSTED = '.markdown-body,.file-preview-body';
 
 /** @type {Record<string,(event:Event,element:any)=>unknown>} */

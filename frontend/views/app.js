@@ -1433,7 +1433,7 @@
     });
   }
   function descriptionEditorHtml(value,limit,placeholder) {
-    return `<textarea class="ctl description-editor" name="desc" data-description-editor maxlength="${limit}" ${placeholder?`placeholder="${esc(placeholder)}"`:''} oninput="App.sizeDescriptionEditors()">${esc(value||'')}</textarea>`;
+    return `<textarea class="ctl description-editor" name="desc" data-description-editor maxlength="${limit}" ${placeholder?`placeholder="${esc(placeholder)}"`:''} ${UIAction.on('input', 'sizeDescriptionEditors')}>${esc(value||'')}</textarea>`;
   }
   function descriptionReadHtml(value,key) {
     return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" ${UIAction('toggleDescription', UIAction.element)} hidden>Show more</button></section>`;
@@ -1872,9 +1872,9 @@
   }
 
   function taskModalHtml(m) {
-    if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${canRoadmap()?'<button class="btn primary" onclick="App.openModal(\'epic\')">Create epic</button>':''}</div>`;
+    if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${canRoadmap()?`<button class="btn primary" ${UIAction('openModal', 'epic')}>Create epic</button>`:''}</div>`;
     return `<h2>New task</h2>
-      <form novalidate onsubmit="return App.saveTask(event)">
+      <form novalidate ${UIAction.on('submit', 'saveTask', UIAction.event)}>
         ${field('Title', `<input class="ctl" name="title" placeholder="Fix payment validation" value="${esc(m.title || '')}" maxlength="140" required autofocus>`)}
         ${field('Epic', selectHtml('mEpic', { name: 'epicId', value: taskDestinationEpics().some((e) => e.id === m.epicId) ? m.epicId : '', placeholder: 'Choose an epic', options: taskDestinationEpics().slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })) }))}
         <div class="field-row">
@@ -1882,18 +1882,18 @@
           ${field('Deadline',dateHtml('mTaskDeadline',{label:'Deadline',name:'deadline',value:'',clearable:true,placeholder:'Set deadline'}),true)}
         </div>
         ${field('Description', descriptionEditorHtml(m.desc||'',4000,'Scope and acceptance criteria'), true)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">Create task</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">Create task</button></div>
       </form>`;
   }
   function poolRowHtml(p) {
     const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
-    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow onclick="App.promotePool('${UIArg(p.id)}')">${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" onclick="App.editPoolDescription(event,'${UIArg(p.id)}')">${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" onclick="App.promotePool('${UIArg(p.id)}')">${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" onclick="App.delPool(event,'${UIArg(p.id)}')">${I.close}</button>`:''}</span></div></div>`;
+    return `<div class="pool-row${canBoard()?' promotable':''}" data-pool-item="${UIEscape(p.id)}"><div class="pool-item-main"><div class="pool-item-copy">${canBoard()?`<button type="button" class="txt pool-promote" aria-label="Create task from ${esc(p.title)}" data-tip="${esc(p.title)}" data-tip-overflow ${UIAction('promotePool',p.id)}>${esc(p.title)}</button>`:`<span class="txt">${esc(p.title)}</span>`}${p.desc?`<span class="pool-description-preview">${esc(p.desc)}</span>`:''}</div><span class="act">${writable||p.desc?`<button type="button" class="btn icon pool-note-toggle" aria-label="${writable?p.desc?'Edit description':'Add description':'View description'} for ${esc(p.title)}" title="${writable?p.desc?'Edit description':'Add description':'View description'}" aria-expanded="false" ${UIAction('editPoolDescription',UIAction.event,p.id)}>${I.note}</button>`:''}${canBoard()?`<button type="button" class="btn icon pool-promote-action" aria-label="Create task from ${esc(p.title)}" title="Create task" ${UIAction('promotePool',p.id)}>${I.arrow}</button>`:''}${writable?`<button type="button" class="btn icon pool-delete" aria-label="Delete ${esc(p.title)}" title="Delete item" ${UIAction('delPool',UIAction.event,p.id)}>${I.close}</button>`:''}</span></div></div>`;
   }
   function resetPoolCapture(){const capture=document.querySelector('.pool-capture');if(!capture)return;capture.classList.remove('is-expanded');const notes=capture.querySelector('#poolNewDesc');notes.value='';const content=capture.querySelector('.pool-capture-notes');content.inert=true;content.setAttribute('aria-hidden','true');const toggle=capture.querySelector('.pool-capture-toggle');toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label','Add description');toggle.title='Add description';setHTML(toggle,I.note);}
 
   function poolReadNotice(empty=false) {
     const page=D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`];
-    if(page?.error)return `<div class="pool-read-status access-note" role="alert">Could not ${page.loaded?'refresh':'load'} items. <button class="btn quiet" onclick="App.retryPool()">Retry</button></div>`;
+    if(page?.error)return `<div class="pool-read-status access-note" role="alert">Could not ${page.loaded?'refresh':'load'} items. <button class="btn quiet" ${UIAction('retryPool')}>Retry</button></div>`;
     if(!empty)return '';
     const pending=page?.loaded===false;
     return `<div class="empty-note"${pending?' role="status"':''}>${pending?'Loading items…':'No items'}</div>`;
@@ -1970,14 +1970,14 @@
       if(!task)return '';
       body=`<h2>${blocking ? task.block ? 'Edit block reason' : 'Block task' : complete ? 'Unblock and complete task?' : 'Unblock task'}</h2>
         ${!blocking ? `<p class="sub">${esc(task.block?.reason || '')}</p>` : ''}
-        <form novalidate data-block-action onsubmit="return App.saveBlock(event,'${UIArg(task.id)}','${UIArg(m.type)}')">
-          ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" onkeydown="App.commentKey(event)"></textarea>`,!blocking)}
-          <div class="modal-actions"><button type="button" class="btn quiet" onclick="App.closeOverlays()">Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
+        <form novalidate data-block-action ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
+          ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
+          <div class="modal-actions"><button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
         </form>`;
     } else if (m.type === 'epic') {
       const e = m.id ? epicById(m.id) : null;
       body = `<h2>${e ? 'Edit epic' : 'New epic'}</h2>
-      <form novalidate onsubmit="return App.saveEpic(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
         ${field('Title', `<input class="ctl" name="title" placeholder="Payment integration" value="${esc(e ? e.title : '')}" maxlength="120" required autofocus>`)}
         ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: tracks().map((t) => ({ v: t.id, l: t.name })) }))}
         <div class="field-row">
@@ -1985,45 +1985,45 @@
           ${field('End', dateHtml('mEnd', { name: 'end', value: (e && e.end) || '', clearable: true, min: () => dateValue('mStart'), minError: 'End date cannot be before the start date.', placeholder: 'No end date' }), true)}
         </div>
         ${field('Description', descriptionEditorHtml(e?.desc,2000), true)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${e ? 'Save' : 'Create epic'}</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${e ? 'Save' : 'Create epic'}</button></div>
       </form>`;
     } else if (m.type === 'milestone') {
       const ms = m.id ? D.milestones.find((x) => x.id === m.id) : null;
       body = `<h2>${ms ? 'Edit milestone' : 'New milestone'}</h2>
-      <form novalidate onsubmit="return App.saveMilestone(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveMilestone', UIAction.event, m.id || '')}>
         ${field('Name', `<input class="ctl" name="name" placeholder="Public launch" value="${esc(ms ? ms.name : '')}" maxlength="60" required autofocus>`)}
         ${field('Date', dateHtml('mDate', { name: 'date', value: ms ? ms.date : iso(today) }))}
         ${field('Goal', descriptionEditorHtml(ms?.desc,500), true)}
-        <div class="modal-actions">${ms ? `<button class="btn danger" type="button" style="margin-right:auto" onclick="App.deleteMilestone('${UIArg(ms.id)}')">Delete</button>` : ''}<button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
+        <div class="modal-actions">${ms ? `<button class="btn danger" type="button" style="margin-right:auto" ${UIAction('deleteMilestone', ms.id)}>Delete</button>` : ''}<button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
       </form>`;
     } else if (m.type === 'track') {
       const t = m.id ? trackById(m.id) : null;
       body = `<h2>${t ? 'Rename track' : 'New track'}</h2>
-      <form novalidate onsubmit="return App.saveTrack(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveTrack', UIAction.event, m.id || '')}>
         ${field('Name', `<input class="ctl" name="name" placeholder="Backend & API" value="${esc(t ? t.name : '')}" maxlength="60" required autofocus>`)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">${t ? 'Save' : 'Create track'}</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${t ? 'Save' : 'Create track'}</button></div>
       </form>`;
     } else if (m.type === 'task') {
       body = taskModalHtml(m);
     } else if (m.type === 'project') {
       body = `<h2>New project</h2>
-      <form novalidate onsubmit="return App.saveProjectNew(event)">
+      <form novalidate ${UIAction.on('submit', 'saveProjectNew', UIAction.event)}>
         ${field('Name', `<input class="ctl" name="name" maxlength="60" required autofocus>`)}
         ${field('Task prefix', `<input class="ctl mono" name="key" placeholder="APP" maxlength="4">`)}
-        <div class="modal-actions"><button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button><button class="btn primary" type="submit">Create project</button></div>
+        <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">Create project</button></div>
       </form>`;
     } else if (m.type === 'user') {
       const u = m.id ? userById(m.id) : null;
       const lastAdmin = u && u.admin && u.active && activeAdmins().length === 1;
       body = `<h2>${u ? 'Edit user' : 'New user'}</h2>
-      <form novalidate onsubmit="return App.saveUser(event,'${UIArg(m.id || '')}')">
+      <form novalidate ${UIAction.on('submit', 'saveUser', UIAction.event, m.id || '')}>
         ${field('Username', `<input class="ctl mono" name="username" value="${esc(u ? userHandle(u) : '')}" ${u ? 'disabled' : 'autofocus'} maxlength="32">`)}
         ${field('Full name', `<input class="ctl" name="name" value="${esc(u ? u.name : '')}" maxlength="80" ${u ? 'autofocus' : ''}>`)}
         <label class="check" style="margin-bottom:5px"><input type="checkbox" name="admin" ${u && u.admin ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Admin${lastAdmin ? ' <span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">· last active admin</span>' : ''}</label>
         ${u ? `<label class="check" style="margin-bottom:14px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Active</label>` : ''}
         <div class="modal-actions">
-          ${u ? `<button class="btn" type="button" style="margin-right:auto" onclick="App.resetPassword('${UIArg(u.id)}')">Reset password</button>` : ''}
-          <button class="btn quiet" type="button" onclick="App.closeOverlays()">Cancel</button>
+          ${u ? `<button class="btn" type="button" style="margin-right:auto" ${UIAction('resetPassword', u.id)}>Reset password</button>` : ''}
+          <button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button>
           <button class="btn primary" type="submit">${u ? 'Save' : 'Create user'}</button>
         </div>
       </form>`;
@@ -2031,8 +2031,8 @@
       const user=userById(m.id),account=user?.username||user?.name||'Account';
       body = `<h2>Temporary password</h2>
       <div class="temporary-password-meta"><strong>${esc(account)}</strong><span>Shown once</span></div>
-      <div class="pw-box"><span class="mono" id="tmpPw">${esc(m.pw)}</span><button class="btn" type="button" aria-label="Copy temporary password" onclick="App.copyTemporaryPassword()">Copy</button></div>
-      <div class="modal-actions"><button class="btn primary" onclick="App.closeOverlays()">Done</button></div>`;
+      <div class="pw-box"><span class="mono" id="tmpPw">${esc(m.pw)}</span><button class="btn" type="button" aria-label="Copy temporary password" ${UIAction('copyTemporaryPassword')}>Copy</button></div>
+      <div class="modal-actions"><button class="btn primary" ${UIAction('closeOverlays')}>Done</button></div>`;
     } else if (m.type === 'pool') {
       const mine = poolItems('mine'), proj = poolItems('project');
       const pl = state.poolTab === 'mine' ? mine : proj;
@@ -2040,18 +2040,18 @@
       const rows = pl.length?pl.map(poolRowHtml).join('')+poolReadNotice():poolReadNotice(true);
       body = `<div class="pool-view"><div class="pool-head"><h2>Pool</h2>
         <div class="seg" style="margin-left:auto">
-          <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" onclick="App.setPoolTab('mine')">My <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
-          <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" onclick="App.setPoolTab('project')">Team <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
+          <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" ${UIAction('setPoolTab', 'mine')}>My <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
+          <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" ${UIAction('setPoolTab', 'project')}>Team <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
         </div>
-        <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" onclick="App.closeOverlays()">${I.close}</button>
+        <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" ${UIAction('closeOverlays')}>${I.close}</button>
       </div>
-      <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} onkeydown="App.poolKey(event)"><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" onclick="App.togglePoolDescription()">${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" onkeydown="App.poolDescriptionKey(event)"></textarea><div class="pool-description-actions"><button type="button" class="btn primary" onclick="App.addPoolItem()">Add item</button></div></div></div></div>
-      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?'<button class="btn quiet pool-load-more" onclick="App.loadMorePool()">Load more</button>':''}</div></div>`;
+      <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} ${UIAction.on('keydown', 'poolKey', UIAction.event)}><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" ${UIAction('togglePoolDescription')}>${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" ${UIAction.on('keydown', 'poolDescriptionKey', UIAction.event)}></textarea><div class="pool-description-actions"><button type="button" class="btn primary" ${UIAction('addPoolItem')}>Add item</button></div></div></div></div>
+      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?`<button class="btn quiet pool-load-more" ${UIAction('loadMorePool')}>Load more</button>`:''}</div></div>`;
     } else if (m.type === 'knowledge') {
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
       body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
-      <div class="modal-actions"><button class="btn quiet" onclick="App.closeOverlays()">Cancel</button>${m.blocked ? '' : `<button class="btn danger" onclick="App.confirmYes()">${esc(m.action)}</button>`}</div>`;
+      <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${m.blocked ? '' : `<button class="btn danger" ${UIAction('confirmYes')}>${esc(m.action)}</button>`}</div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
     // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
@@ -3831,7 +3831,7 @@
       if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();if(id)App.cancelPoolDescription(id);else {resetPoolCapture();document.getElementById('poolAdd').focus();}return;}
       if(ev.key==='Enter'&&!ev.shiftKey&&!ev.altKey){ev.preventDefault();if(id){const form=ev.currentTarget.closest('form');if(form)App.savePoolDescription({target:form,preventDefault(){}},id);}else App.addPoolItem();}
     },
-    editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate onsubmit="return App.savePoolDescription(event,'${UIArg(id)}')"><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" onkeydown="App.poolDescriptionKey(event,'${UIArg(id)}')" placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" onclick="App.cancelPoolDescription('${UIArg(id)}')">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
+    editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate ${UIAction.on('submit','savePoolDescription',UIAction.event,id)}><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" ${UIAction.on('keydown','poolDescriptionKey',UIAction.event,id)} placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" ${UIAction('cancelPoolDescription',id)}>Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
     cancelPoolDescription(id,focus=true){const row=document.querySelector(`[data-pool-item="${UIEscape(id)}"]`);if(!row)return;const before=row.getBoundingClientRect().height;row.querySelector('.pool-description-editor')?.remove();const toggle=row.querySelector('.pool-note-toggle');toggle?.setAttribute('aria-expanded','false');UIMotion.height(row,before);if(focus)toggle?.focus({preventScroll:true});},
     savePoolDescription(ev,id){ev.preventDefault();const item=poolItems(state.poolTab).find(p=>p.id===id);if(!item||!me()?.active||(item.scope==='mine'?item.ownerId!==me().id:!canBoard())){App.toast('You no longer have permission to edit this item','error');return false;}const desc=cleanStr(new FormData(ev.target).get('desc'),2000);if(desc!==item.desc){item.desc=desc;App.toast('Description saved');}const row=ev.target.closest('[data-pool-item]'),next=document.createElement('template');setHTML(next,poolRowHtml(item));row.replaceWith(next.content);document.querySelector(`[data-pool-item="${UIEscape(id)}"] .pool-note-toggle`)?.focus({preventScroll:true});return false;},
     promotePool(id) {

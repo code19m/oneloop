@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readFileSync} from 'node:fs';
-import { compileLegacyHandler,viewEventAttributes } from '../../../src/app/view-events.js';
+import { compileLegacyHandler } from '../../../src/app/view-events.js';
 
 function event(overrides={}){return {key:'',isComposing:false,keyCode:0,repeat:false,prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;},...overrides};}
 
@@ -34,19 +33,6 @@ test('recovery banners expose only their three bounded actions',()=>{
   const calls=[],previous=globalThis.Recovery;globalThis.Recovery={reconnect:()=>calls.push('reconnect')};
   try{compileLegacyHandler('Recovery.reconnect()')({});assert.deepEqual(calls,['reconnect']);assert.throws(()=>compileLegacyHandler('Recovery.sessionExpired()'),/Unsupported Recovery handler/);}
   finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
-});
-
-test('every generated handler expression in the production UI fits the bounded grammar',()=>{
-  const source=['app.js','collaboration.js','uploads.js','file-views.js'].map((file)=>readFileSync(new URL('../../../views/'+file,import.meta.url),'utf8')).join('\n');
-  const names=new Set(viewEventAttributes),expressions=[];
-  for(const match of source.matchAll(/\b(on[a-z]+)="([^"]*)"/g))if(names.has(match[1]))expressions.push(match[2]);
-  assert.ok(expressions.length>0);
-  const failures=[];
-  for(const expression of new Set(expressions)){
-    const normalized=expression.replace(/\$\{!+[^}]+\}/g,'true').replace(/\$\{[^}]*indexOf[^}]*\}/g,'1').replace(/\$\{[^}]*\.i\}/g,'1').replace(/\$\{[^}]*\}/g,'x').replaceAll("\\'","'");
-    try{compileLegacyHandler(normalized,()=>({}));}catch(error){failures.push({expression,normalized,message:error.message});}
-  }
-  assert.deepEqual(failures,[]);
 });
 
 test('migrating refreshed handlers replaces the old listener and rejects stale fallback handlers',async()=>{
