@@ -174,7 +174,8 @@ folder of its backup, or `database in <data folder> is current (schema 5)` if
 there was nothing to do.
 
 Browser tabs that were open during the upgrade show **oneloop was updated**.
-Reloading the page loses unsaved text, so people can reload when they are ready.
+Reloading the page loses unsaved text, so people can reload when they are ready,
+or turn on [Reload after updates](user-guide.md#your-account).
 
 ### Choose a version
 

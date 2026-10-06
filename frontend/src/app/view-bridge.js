@@ -44,6 +44,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   let profileNameQueueScope='',avatarQueueScope='';
   const openPeek=app.openPeek.bind(app);
   const moveTaskOrder=app.moveTaskOrder.bind(app);
+  const nav=app.nav.bind(app);
 
   function fieldError(form,name,message){
     if(form&&typeof form.querySelector==='function'&&form.querySelector(`[name="${name}"]`)){
@@ -188,6 +189,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   // back when the same person signs in again; anyone else never sees them.
   const draftKey=(taskId,field)=>`${data.session?.userId??''}|${taskId}|${field}`;
   function pruneDrafts(){if(!data.session)return;const scope=`${data.session.userId}|`;for(const key of drafts.keys())if(!key.startsWith(scope))drafts.delete(key);}
+  /** Forget the drafts of a task the person deleted: they can't be saved, and Undo brings back the saved task. */
+  function dropDrafts(taskId){for(const [key,draft] of drafts)if(draft.taskId===taskId)drafts.delete(key);}
   // A save the end of a session cut off leaves its draft Not saved.
   function unsaved(draft){if(draft&&sessionScope()!==draft.scope)draft.unsaved=true;}
   const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
@@ -264,7 +267,11 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
    */
   function saveTaskField(item,field,value,{base}={}){
     const form=globalThis.document?.querySelector?.('.task-page');
-    if(field==='state')return fire(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    // A field without a draft, such as the deadline or the status, is refused at
+    // once when it can't be sent, so its caller keeps it unsaved. A title or
+    // description goes on: its draft keeps a refused value and sends it later.
+    if(field==='state'&&refusedAtOnce(null))return false;
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
     const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
@@ -280,8 +287,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(previous?.unsaved)base??=previous.base;
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
-    }
-    return fire(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    }else if(refusedAtOnce(form))return false;
+    return accepted(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -290,6 +297,30 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }
   }
   recovery?.whenOnline?.(retryDrafts);
+  // A draft lives in this tab only, so leaving oneloop before it saves loses it.
+  recovery?.trackUnsaved?.(()=>{pruneDrafts();return drafts.size>0;});
+
+  // Another page discards text typed into this one, so ask first. Drafts and
+  // saves that are running carry on, so they don't count.
+  const losesInput=()=>!!recovery?.hasUnsavedInput?.({leaving:false});
+  /** @param {()=>void} leave @param {()=>void} [stay] */
+  const askToDiscard=(leave,stay)=>app.askToDiscard(leave,stay);
+  /** Resolves whether the page may change. */
+  const mayLeavePage=()=>losesInput()?new Promise((resolve)=>askToDiscard(()=>resolve(true),()=>resolve(false))):Promise.resolve(true);
+  // A page change someone asks for, from the sidebar, a menu or a back button.
+  // One that must happen, such as leaving a project that is gone, passes
+  // `discard`; one that follows the person's own change, such as deleting a
+  // task, calls `nav` directly. Neither asks.
+  app.nav=(view,options)=>{
+    if(options?.discard||!losesInput())return nav(view);
+    askToDiscard(()=>nav(view));
+  };
+  globalThis.document?.addEventListener?.('click',(event)=>{
+    const link=/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]');
+    if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
+    event.preventDefault();
+    askToDiscard(()=>app.followAddress(link.getAttribute('href')));
+  },true);
 
   async function execute(operation, payload, entity, message, options = {}) {
     const record=options.create?null:recordOf(operation,payload);
@@ -409,13 +440,21 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   function fire(promise) { promise.catch(() => {}); return false; }
+  /**
+   * Resolves whether the server accepted a save: true once it went through, or
+   * had nothing to change; false when it failed or the session ended. A date
+   * field, for one, counts as saved only then.
+   */
+  function accepted(promise) { return promise.then((result) => !result?.stale, () => false); }
+  /** Whether a save can't start now: a retry the server asked to wait for, or no connection, which `ensureOnline` says. */
+  const refusedAtOnce = (form) => isFormRetryPending(form) || (recovery?.ensureOnline ? !recovery.ensureOnline() : false);
   function formValues(event) { event?.preventDefault?.(); return new FormData(event.target); }
 
   app.login = (event) => {
     const fields=formValues(event), form=event.target;
     return fire(auth.login({username:text(fields.get('username'),32).toLowerCase(),password:String(fields.get('password')||'')},form));
   };
-  app.logout = () => app.confirm({title:'Sign out?',text:'End your current browser session.',action:'Sign out',confirm:()=>fire(auth.logout().catch(report))});
+  app.logout = () => app.confirm({title:'Sign out?',text:app.signOutText(),action:'Sign out',confirm:()=>fire(auth.logout().catch(report))});
   app.setPassword = (event) => { event.preventDefault();if(recovery?.ensureOnline&&!recovery.ensureOnline())return false; return fire(auth.setTemporaryPassword(event.target).catch(error=>report(error,{form:event.target}))); };
   app.changePassword = (event) => { event.preventDefault();if(recovery?.ensureOnline&&!recovery.ensureOnline())return false; return fire(auth.changePassword(event.target).then((/** @type {boolean|undefined} */ ok)=>{if(ok)app.toast('Password changed. Other sessions and app access revoked');}).catch(error=>report(error,{form:event.target}))); };
   app.updMe = (value) => {
@@ -431,7 +470,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(context().view==='profile'){app.refresh();app.toast('Profile saved');}
       return response;
     });
-    profileNameQueue=request;return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
+    profileNameQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
   };
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
@@ -443,7 +482,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
       me.avatar=response.avatarUrl;if(context().view==='profile'){app.refresh();app.toast('Avatar updated');}return response;
     });
-    avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
   };
   app.removeAvatar=()=>{
     const me=data.users.find((item)=>item.id===data.session?.userId);if(!me)return false;
@@ -455,7 +494,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
         me.avatar=null;if(context().view==='profile'){app.refresh();app.toast('Avatar removed');}return {};
       });
-      avatarQueue=request;return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+      avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
     }});
   };
   app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(()=>loadProfileAccess()).catch(report))});
@@ -564,7 +603,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(!isFormRetryPending(form))buttons.forEach((button,index)=>button.disabled=disabled[index]);
     }));
   };
-  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>app.nav('board')}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
+  app.deleteTask = (id) => {const item=task(id);if(!item)return;app.confirm({title:'Delete task?',text:`${item.id} will be deleted with its comments and files. You can undo this right after.`,action:'Delete task',confirm:()=>fire(execute('task.delete',{id:item.internalId},item,null,{reload:true,onAccepted:()=>{dropDrafts(item.internalId);nav('board');}}).then((result)=>ifCurrent(result,()=>undoTaskDeletion(item,result))))});};
   // Undo restores the task at the revision its deletion left.
   function undoTaskDeletion(item,result){
     const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
@@ -641,7 +680,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
     // The new project opens only while its dialog is still the open one; a re-render keeps it open.
     const open=()=>completeForm(form,()=>{});
-    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)app.nav('roadmap');})));
+    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)nav('roadmap');})));
   };
   app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));
@@ -663,7 +702,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   };
   function showMemberOpenWork(project,userId,count=null){const user=data.users.find((item)=>item.id===userId),who=user?.name||userId;app.showBlocked?.('Member has open work',count?`Reassign ${count} unfinished task${count===1?'':'s'} before removing ${who} from this project.`:`Reassign this member’s unfinished tasks before removing ${who} from this project.`);}
   app.removeMember=(userId)=>{const project=data.projects.find((item)=>item.id===context().projectId),membership=project?.members.find((item)=>item.userId===userId);if(!membership)return;const assigned=data.tasks.filter((item)=>item.projectId===project.id&&item.state!=='done'&&(item.assignees||[]).includes(userId));if(assigned.length){showMemberOpenWork(project,userId,assigned.length);return false;}app.confirm({title:'Remove member?',text:'They will lose access to this project.',action:'Remove member',confirm:()=>fire(execute('membership.remove',{projectId:project.id,userId},membership,'Member removed',{handleError:(error)=>{if(!['member_has_open_tasks','precondition_failed'].includes(error?.code))return false;showMemberOpenWork(project,userId);return true;}}).catch(report))});};
-  app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>app.nav('roadmap'))).catch(report))});};
+  app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>nav('roadmap'))).catch(report))});};
 
   const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
   /**
@@ -776,6 +815,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(action==='pool.select')return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
       if(action==='workspace.select'){
+        if(!await mayLeavePage())return {stale:true};
         const generation=++projectGeneration,scope=sessionScope();
         routeGeneration++;
         const loaded=await reloadBootstrap({projectId:payload.projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});

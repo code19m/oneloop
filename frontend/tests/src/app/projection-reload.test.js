@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createProjectionReload,routeScope} from '../../../src/app/projection-reload.js';
+import {createProjectionReload,createSignInLoad,routeScope} from '../../../src/app/projection-reload.js';
 import {createBootstrapController} from '../../../src/data/bootstrap-controller.js';
 import {createReadController} from '../../../src/data/read-controller.js';
-import {createLegacyData,hydrateLegacyData} from '../../../src/data/projection-store.js';
+import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -17,13 +17,19 @@ const view=(id,projectId='p1')=>({id,projectId,epicId:'e1',taskKey:id.toUpperCas
 /** A page with held API calls and the real bootstrap and read controllers. */
 function page(context){
   const data=createLegacyData();hydrateLegacyData(data,projection(context.projectId));
-  const calls=[],held=name=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,options:args.at(-1),resolve,reject}));
-  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity')};
+  const calls=[],waiting=[];
+  const held=name=>(...args)=>new Promise((resolve,reject)=>{
+    calls.push({name,args,options:args.at(-1),resolve,reject});
+    for(const waiter of waiting.filter(item=>calls.length>=item.count)){waiting.splice(waiting.indexOf(waiter),1);waiter.resolve();}
+  });
+  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
   const app={context:()=>context,refresh(){},refreshCounts(){},refreshBackground(){},refreshRoadmap(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
   const reload=createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>null,getRecovery:()=>recovery,location:{get hash(){return context.hash??'#/roadmap';}}});
-  return {data,calls,bootstrap,reads,reload,next:name=>calls.find(call=>call.name===name&&!call.done&&(call.done=true))};
+  return {data,calls,bootstrap,reads,reload,next:name=>calls.find(call=>call.name===name&&!call.done&&(call.done=true)),
+    /** Resolves once the page has called the API `count` times. */
+    called:count=>calls.length>=count?Promise.resolve():new Promise(resolve=>waiting.push({count,resolve}))};
 }
 
 test('a live refresh lets the task someone is opening load, then refreshes it',async()=>{
@@ -106,4 +112,57 @@ test('an unavailable destination is reported to the caller instead of the page w
   assert.deepEqual(await reload({taskId:'gone',routeErrors:false}),{stale:false,unavailable:true});
   assert.deepEqual(routeErrors,[]);
   await reload({taskId:'gone'});assert.deepEqual(routeErrors,[missing]);
+});
+
+/** A sign-in on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
+function signInPage(context,answer=async()=>({stale:false})){
+  const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};
+  const signIn=createSignInLoad({bootstrap,getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
+  return {signIn,loads};
+}
+
+test('signing in again loads the project the tab showed when the session ended',async()=>{
+  const {signIn,loads}=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'});
+  signIn.sessionEnded();
+  await signIn.load();
+  assert.deepEqual(loads,[{projectId:'p2',view:'board'}],'the Board loads the project its switcher shows');
+});
+
+test('a first sign-in loads the default project',async()=>{
+  const {signIn,loads}=signInPage(null);
+  signIn.sessionEnded();
+  await signIn.load();
+  assert.deepEqual(loads,[{view:'board'}]);
+});
+
+test('a project the account can no longer open loads the default project, and a task only metadata',async()=>{
+  const gone=new ApiError('project not found',{status:404,code:'not_found'});
+  const board=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'},async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  board.signIn.sessionEnded();await board.signIn.load();
+  assert.deepEqual(board.loads,[{projectId:'p2',view:'board'},{view:'board'}]);
+  const task=signInPage({view:'task',projectId:'p2',taskId:'TWO-1',hash:'#/task/TWO-1'},async scope=>{if(scope.taskId)throw gone;return {stale:false};});
+  task.signIn.sessionEnded();await task.signIn.load();
+  assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
+});
+
+// Without the drawer read, the fourth call never comes and the test times out.
+test('a live task change re-reads the open epic drawer with the Roadmap, after a Load more someone started',{timeout:5_000},async()=>{
+  const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
+  mergeEpicTaskPage(t.data,'e1',[view('t1'),view('t2')],{nextCursor:'after-t2',total:3});
+  const more=t.reads.moreEpicTasks('e1');
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'t1'}]});
+  await tick();
+  const loading=t.next('epicTasks');assert.equal(loading.options.cursor,'after-t2');
+  assert.deepEqual(t.calls.map(call=>call.name),['epicTasks'],'the live read waits for Load more');
+  loading.resolve({items:[view('t3')],nextCursor:null,total:3});
+  assert.equal((await more).stale,false);assert.equal(loading.options.signal.aborted,false,'Load more is never cancelled');
+  await t.called(4);
+  assert.deepEqual(t.calls.map(call=>call.name).sort(),['epicActivity','epicTasks','epicTasks','roadmap'],'the Roadmap and the drawer are read again');
+  t.next('roadmap').resolve(projection('p1'));
+  const drawer=t.next('epicTasks');assert.equal(drawer.options.cursor,undefined,'the drawer reads its tasks again from the first');
+  drawer.resolve({items:[{...view('t1'),title:'Renamed by a teammate'},view('t2'),view('t3')],nextCursor:null,total:3});
+  t.next('epicActivity').resolve({items:[],nextCursor:null});
+  assert.equal((await live).stale,false);
+  assert.deepEqual(t.data.epicPageInfo.e1.taskIds,['t1','t2','t3'],'as many tasks as the drawer showed');
+  assert.equal(t.data.tasks.find(task=>task.internalId==='t1').title,'Renamed by a teammate');
 });

@@ -132,7 +132,7 @@
   const children=[...nextList.children].map((/** @type {HTMLElement} */ el)=>{const old=oldKeys.get(el.dataset.inboxKey);if(!old)return el;if(el.dataset.sig&&old.dataset.sig===el.dataset.sig)return old;old.className=el.className;if(el.dataset.sig||!sameMarkup(old,el))setHTML(old,el.innerHTML);if(el.dataset.sig)old.dataset.sig=el.dataset.sig;return old;});let cursor=list.firstElementChild;for(const child of children){if(child===cursor)cursor=cursor.nextElementSibling;else list.insertBefore(child,cursor);}while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}if(exiting.children.length){exiting.style.height=beforeHeight+'px';list.append(exiting);const animation=UIMotion.animate(exiting,[{opacity:1},{opacity:0}],140);if(animation)animation.finished.then(()=>exiting.remove(),()=>exiting.remove());else exiting.remove();}
   const controls=page.querySelector('.inbox-controls'),newControls=next.querySelector('.inbox-controls');
   for(const selector of ['.seg button','.inbox-unread-filter']){const old=[...controls.querySelectorAll(selector)];newControls.querySelectorAll(selector).forEach((el,i)=>{old[i].className=el.className;old[i].setAttribute('aria-pressed',el.getAttribute('aria-pressed'));const attribute=window.OneloopEventAttribute?.('onclick')||'onclick';old[i].setAttribute(attribute,el.getAttribute(attribute));});}
-  const project=controls.querySelector('[data-filter-key="inboxProjects"]'),newProject=newControls.querySelector('[data-filter-key="inboxProjects"]');setHTML(project,newProject.innerHTML);project.title=newProject.title;project.className=newProject.className;
+  const project=controls.querySelector('[data-filter-key="inboxProjects"]'),newProject=newControls.querySelector('[data-filter-key="inboxProjects"]');setHTML(project,newProject.innerHTML);project.dataset.tip=newProject.dataset.tip;project.className=newProject.className;
   const bulk=page.querySelector('.inbox-bulk'),nextBulk=next.querySelector('.inbox-bulk');if(!sameMarkup(bulk,nextBulk))setHTML(bulk,nextBulk.innerHTML);
   const oldMore=/** @type {HTMLButtonElement|null} */(page.querySelector('.inbox-load-more')),more=next.querySelector('.inbox-load-more');if(!sameMarkup(oldMore,more,true)){oldMore?.remove();if(more)page.append(more);}
   const oldNotice=page.querySelector('.inbox-refresh-notice'),newNotice=next.querySelector('.inbox-refresh-notice');if(!(oldNotice&&newNotice&&oldNotice.outerHTML===newNotice.outerHTML)){oldNotice?.remove();if(newNotice)list.before(newNotice);}
@@ -165,7 +165,8 @@
   page.querySelector('.inbox-refresh-notice')?.remove();badge();
  }
  function inboxWritable(){if(window.Recovery?.enforceSession()){hooks.refresh();return false;}return !window.Recovery||Recovery.ensureOnline();}
- function exactTimeAttributes(/** @type {number} */ value){const exact=esc(hooks.instant(value));return `aria-label="${exact}" title="${exact}"`;}
+ // The exact time shows as a tooltip on hover, focus and tap.
+ function exactTimeAttributes(/** @type {number} */ value){const exact=esc(hooks.instant(value));return `aria-label="${exact}" data-tip="${esc(hooks.instant(value))}"`;}
  const own=()=>me()?.active?(production?D.notifications:D.notifications.filter(n=>n.recipientId===me().id)):[];
  const unread=()=>production&&inboxMeta.unreadCount!==null?inboxMeta.unreadCount:own().filter(n=>!n.readAt&&!n.archivedAt).length;
  function badge(){const count=unread();document.querySelectorAll('[data-inbox-dot]').forEach(el=>el.hidden=!count);document.querySelectorAll('.inbox-nav').forEach(el=>{el.setAttribute('aria-label','Inbox'+(count?', '+count+' unread':''));el.title='Inbox'+(count?' · '+count+' unread':'');});}
@@ -206,7 +207,7 @@
  function feedHtml(task,limit=50){normalize();const allowed=canComment(task),roots=(task.comments||[]).filter(c=>!c.parentId),items=[...Activity.visible(task.activity).map(a=>({...a,kind:'activity'})),...roots.map(c=>({...c,kind:'comment'}))].sort(chronological),hasMore=production?taskPages.get(task.id)?.hasMore:items.length>limit;
   // A feed key keeps this button across timeline refreshes, so a click that spans a live update still lands.
   return (hasMore?`<button class="btn quiet" data-feed-key="load-older" onclick="App.loadOlderActivity('${UIArg(task.id)}')">Load older activity</button>`:'')+(production?items:items.slice(-limit)).map(item=>{
-   if(item.kind==='activity')return `<div class="tl-act${/^(attached |deleted attachment: |restored attachment: |made .+ (temporary|permanent)$|Temporary file removed during storage cleanup: )/.test(item.text)?' attachment-activity':''}" ${item.blockId?`data-block-id="${esc(item.blockId)}" tabindex="-1"`:''} data-feed-key="activity-${esc(item.id||item.ts+':'+item.who+':'+item.text)}">${hooks.avatar(item.who,16)}<span title="${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}"><b>${esc(userById(item.who)?.name||item.actorName||(item.who==='system'?'System':item.who))}</b> ${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span>${item.actorAppName?`<span class="act-time activity-source">via ${esc(item.actorAppName)}</span>`:''}<time class="act-time" datetime="${new Date(item.ts).toISOString()}" ${exactTimeAttributes(item.ts)}>· ${hooks.ago(item.ts)}</time></div>`;
+   if(item.kind==='activity')return `<div class="tl-act${/^(attached |deleted attachment: |restored attachment: |made .+ (temporary|permanent)$|Temporary file removed during storage cleanup: )/.test(item.text)?' attachment-activity':''}" ${item.blockId?`data-block-id="${esc(item.blockId)}" tabindex="-1"`:''} data-feed-key="activity-${esc(item.id||item.ts+':'+item.who+':'+item.text)}">${hooks.avatar(item.who,16)}<span data-tip="${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}" data-tip-overflow><b>${esc(userById(item.who)?.name||item.actorName||(item.who==='system'?'System':item.who))}</b> ${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span>${item.actorAppName?`<span class="act-time activity-source">via ${esc(item.actorAppName)}</span>`:''}<time class="act-time" datetime="${new Date(item.ts).toISOString()}" ${exactTimeAttributes(item.ts)}>· ${hooks.ago(item.ts)}</time></div>`;
    const replies=task.comments.filter(c=>c.parentId===item.id).sort(chronological),target=task.comments.find(c=>c.id===commentMode.target),replying=commentMode.mode==='reply'&&(target?.parentId||target?.id)===item.id,editingReply=allowed&&!target?.deleted&&(target?.who===me()?.id||me()?.admin)&&commentMode.mode==='edit'&&target?.parentId===item.id,open=expanded.has(item.id);
    return `<div class="comment-conversation" data-feed-key="comment-${esc(item.id)}">${commentRow(task,item,false,allowed)}${replies.length?`<button type="button" class="btn quiet reply-toggle" data-reply-root="${esc(item.id)}" aria-expanded="${open}" aria-controls="replies-${esc(item.id)}" ${editingReply?'disabled title="Save or cancel your edit before hiding replies"':''} onclick="App.toggleReplies('${UIArg(task.id)}','${UIArg(item.id)}')">${replySummary(task,item,replies,open)}</button><div class="comment-thread-wrap${open?' is-expanded':''}" id="replies-${esc(item.id)}" data-thread-root="${esc(item.id)}" aria-hidden="${!open}" ${open?'':'inert'}><div><div class="comment-thread">${replies.map(c=>commentRow(task,c,true,allowed)).join('')}</div></div></div>`:''}${replying?`<div class="thread-composer">${composerHtml(task,true)}</div>`:''}</div>`;
   }).join('');
@@ -260,7 +261,7 @@
   const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
   const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
   if(broadcast&&Date.now()-(broadcasts[rateKey]||0)<60000){feedback('Please wait a minute before mentioning everyone again.');return false;}
-  if(production&&productionApi){productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:d.interactionId});return false;}
+  if(production&&productionApi){const interaction=d.interactionId;sendingComments.add(interaction);Promise.resolve(productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;}
   const c=existing||{id:id('comment'),who:me().id,ts:Date.now(),parentId:target?(target.parentId||target.id):null,replyToId:target?.id||null,notifiedRecipients:[]};
   c.text=text;c.mentions=selected;if(existing){if(changed){c.editedAt=Date.now();hooks.log?.(task,'edited a comment',{field:'comment-content:'+c.id,before,after});}}else(task.comments ||= []).push(c);
   const recipients=new Map();if(broadcast){for(const uid of eligible)recipients.set(uid,'everyone');broadcasts[rateKey]=Date.now();c.broadcastSent=true;}if(target)recipients.set(target.who,'reply');for(const m of selected)if(changed&&m.id!=='everyone')recipients.set(m.id,'mention');
@@ -269,11 +270,18 @@
  }
  // A comment being written when the session ended, kept for the same person's next sign-in.
  let resumedComment=null;
+ // The texts being sent, by their interaction: typing more starts a new one.
+ const sendingComments=new Set();
+ /**
+  * The comment text the person typed and hasn't sent; an edit counts once it
+  * differs from the saved comment. `sending` says the text is on its way.
+  */
  function commentDraft(){
   capture();
   const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);
   if(!task||!commentEditor?.text.trim()||host.dataset.commentOwner!==me()?.id)return null;
-  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision};
+  if(commentMode.mode==='edit'&&commentEditor.text===task.comments?.find(c=>c.id===commentMode.target)?.text)return null;
+  return {userId:me()?.id,taskId:task.id,mode:commentMode.mode,target:commentMode.target,text:commentEditor.text,mentions:structured(commentEditor.mentions),revision:commentEditor.revision,sending:sendingComments.has(commentEditor.interactionId)};
  }
  // Put a kept comment back once its task page shows; a reply or an edit waits for
  // its comment, and becomes a new comment when that comment is gone. Only the

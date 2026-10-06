@@ -28,10 +28,46 @@ function controlKey(root, element) {
   return element.getAttribute('name') ? `[name="${CSS.escape(element.getAttribute('name') || '')}"]:${index}` : null;
 }
 
+/** A checkbox or a radio button, which changes by being ticked; its value stays the same. @param {Element} element */
+const isTick = (element) => element instanceof HTMLInputElement && (element.type==='checkbox' || element.type==='radio');
+
 /** @param {HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement} element */
 function changedControl(element) {
   if (element instanceof HTMLSelectElement) return [...element.options].some((option)=>option.selected!==option.defaultSelected);
-  return element.value!==element.defaultValue || (element instanceof HTMLInputElement && element.checked!==element.defaultChecked);
+  if (isTick(element)) return /** @type {HTMLInputElement} */ (element).checked!==/** @type {HTMLInputElement} */ (element).defaultChecked;
+  return element.value!==element.defaultValue;
+}
+
+/** Inputs that hold nothing to keep: passwords, files, buttons, hidden values and search boxes. */
+const NOT_TYPED = new Set(['password','file','submit','button','reset','image','hidden','search']);
+/** A field that saves itself when it loses focus, such as a task's title. */
+const AUTOSAVE = '[data-autosave]';
+/** Reload after updates, a choice each browser makes. */
+const AUTO_RELOAD = 'oneloop.autoReload';
+/** The versions a tab already reloaded itself for. */
+const RELOADED_FOR = 'oneloop.reloadedFor';
+const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
+
+/**
+ * Whether an open editor holds text the person typed and has not saved or
+ * sent: a changed field in a dialog, a drawer, the task page or a settings
+ * page. A field that saves itself counts only while it has focus with a value
+ * it has not saved yet; a checkbox that saves itself never counts, because it
+ * saves when it changes. `skip` leaves out controls that keep their own state;
+ * `roots` limits the check to some editors, such as one dialog.
+ * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
+ * @param {(element:Element)=>boolean} [skip] @param {Iterable<Element>} [roots]
+ */
+export function hasTypedInput(doc, committed, skip = () => false, roots = doc.querySelectorAll(EDITOR_ROOT)) {
+  const active=doc.activeElement;
+  for (const root of roots) for (const element of root.querySelectorAll('input,textarea,select')) {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) || element.disabled || skip(element)) continue;
+    if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
+    if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
+    if (isTick(element) || element instanceof HTMLSelectElement) continue;
+    if (element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
+  }
+  return false;
 }
 
 /**
@@ -61,6 +97,16 @@ export function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>f
   return {rootClass:[...root.classList],controls,activeKey,selection,scrollTop:root.scrollTop,revisions:[...(EDITOR_REVISIONS.get(root)?.entries?.()??[])]};
 }
 
+/** The control a `controlKey` names in `root`. @param {Element} root @param {string} key */
+function findControl(root, key) {
+  if(key.startsWith('#'))return root.querySelector(key);
+  const match=key.match(/^\[name="(.+)"\]:(\d+)$/);if(!match)return null;
+  return [...root.querySelectorAll(`[name="${match[1]}"]`)][Number(match[2])]??null;
+}
+
+/** The editor in `doc` of the same kind as one with these classes. @param {Document} doc @param {string[]} rootClass */
+const sameEditor = (doc, rootClass) => [...doc.querySelectorAll(EDITOR_ROOT)].find((candidate)=>rootClass.every((name)=>candidate.classList.contains(name)));
+
 /**
  * Put captured editor state back. With `notify`, a control whose value changes
  * reports an input event, so the page reacts as if the person typed it.
@@ -68,14 +114,10 @@ export function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>f
  */
 export function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
   if (!snapshot) return null;
-  const root=[...doc.querySelectorAll(EDITOR_ROOT)].find((candidate)=>snapshot.rootClass.every((name)=>candidate.classList.contains(name)));
+  const root=sameEditor(doc,snapshot.rootClass);
   if (!root) return null;
   if(snapshot.revisions?.length)EDITOR_REVISIONS.set(root,new Map(snapshot.revisions));
-  const find=(key)=>{
-    if(key.startsWith('#'))return root.querySelector(key);
-    const match=key.match(/^\[name="(.+)"\]:(\d+)$/);if(!match)return null;
-    return [...root.querySelectorAll(`[name="${match[1]}"]`)][Number(match[2])]??null;
-  };
+  const find=(key)=>findControl(root,key);
   for(const state of snapshot.controls){
     const element=find(state.key);
     if(!(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement||element instanceof HTMLSelectElement))continue;
@@ -95,10 +137,38 @@ export function restoreOpenEditor(snapshot, doc = document, {notify=false} = {})
   return active;
 }
 
-/** @param {{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean}} input */
-export function presentDomConflict({target,latestValue,myValue,isCurrent=()=>true,updateTarget=true}) {
+/**
+ * Finds a control again after a redraw replaced it: the control with its id
+ * or name in the editor of the same kind.
+ * @param {Element|null} element @returns {()=>Element|null}
+ */
+export function relocator(element) {
+  const root=element?.closest?.(EDITOR_ROOT),key=root?controlKey(root,element):null;
+  if(!key)return ()=>null;
+  const rootClass=[...root.classList];
+  return ()=>{const next=sameEditor(document,rootClass);return next?findControl(next,key):null;};
+}
+
+/** The place for a conflict prompt: beside its field, or else in the open form or page. @param {Element|null} field */
+const promptHost = (field) => field?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor,.collaboration-composer') ?? document.querySelector('.modal form') ?? document.querySelector('.pool-description-editor form') ?? document.querySelector('.task-page') ?? document.querySelector('.content');
+
+/** Conflict prompts waiting for an answer. @type {Set<{check:()=>boolean,cancel:()=>void}>} */
+const openPrompts = new Set();
+/** Put prompts that a redraw removed back beside their redrawn fields at once, before the page restores focus. */
+export function keepConflictPrompts() { for (const prompt of [...openPrompts]) prompt.check(); }
+
+/**
+ * Ask whether to use the latest saved value or keep the person's change. A
+ * redraw of the page, such as a live update, replaces the field: the prompt
+ * then moves beside the field `locate` finds, until the person answers. It
+ * closes without an answer when the page changes, when the field is gone or
+ * can no longer be edited, or when a newer prompt replaces it.
+ * @param {{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean}} input
+ */
+export function presentDomConflict({target,locate=()=>null,latestValue,myValue,isCurrent=()=>true,updateTarget=true}) {
   return new Promise((resolve)=>{
     if(!isCurrent()){resolve('cancelled');return;}
+    for(const prompt of [...openPrompts])prompt.cancel();
     document.querySelectorAll('.save-feedback[data-recovery-conflict]').forEach((element)=>element.remove());
     const box=document.createElement('div');box.className='save-feedback';box.dataset.recoveryConflict='true';box.setAttribute('role','alert');
     const message=document.createElement('span');
@@ -111,16 +181,28 @@ export function presentDomConflict({target,latestValue,myValue,isCurrent=()=>tru
     const latest=document.createElement('button');latest.type='button';latest.className='btn quiet';latest.textContent='Use latest';
     const mine=document.createElement('button');mine.type='button';mine.className='btn quiet';mine.textContent='Keep my changes';
     box.append(message,expand,latest,mine);
-    const parent=target?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor,.collaboration-composer') ?? document.querySelector('.modal form') ?? document.querySelector('.pool-description-editor form') ?? document.querySelector('.task-page') ?? document.querySelector('.content');
+    const parent=promptHost(target);
     parent?.append(box);
     if(!parent){resolve('cancelled');return;}
-    const check=()=>{if(!box.isConnected||!isCurrent()){box.remove();finish('cancelled');return false;}return true;};
+    let field=target,answered=false;
+    const check=()=>{
+      if(!isCurrent()){box.remove();finish('cancelled');return false;}
+      if(box.isConnected)return true;
+      // After Keep my changes, it shows the save until a redraw removes it.
+      if(answered){finish('cancelled');return false;}
+      const next=locate();
+      if(!next?.isConnected||'disabled' in next&&next.disabled||'readOnly' in next&&next.readOnly){finish('cancelled');return false;}
+      field=next;promptHost(next)?.append(box);
+      return true;
+    };
+    const prompt={check,cancel:()=>{box.remove();finish('cancelled');}};
     const observer=new document.defaultView.MutationObserver(check);
-    const finish=(choice)=>{if(choice!=='mine'){observer.disconnect();document.removeEventListener('input',check);}resolve(choice);};
+    const finish=(choice)=>{answered=true;if(choice!=='mine'){observer.disconnect();document.removeEventListener('input',check);openPrompts.delete(prompt);}resolve(choice);};
+    openPrompts.add(prompt);
     observer.observe(document.body,{childList:true,subtree:true});
     document.addEventListener('input',check);
-    latest.addEventListener('click',()=>{if(!check())return;if(updateTarget&&latestValue!==undefined&&target&&'value' in target){target.value=latestValue==null?'':String(latestValue);target.dispatchEvent(new Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
-    mine.addEventListener('click',()=>{if(!check())return;if(updateTarget&&myValue!==undefined&&target&&'value' in target)target.value=myValue==null?'':String(myValue);mine.disabled=true;latest.disabled=true;message.textContent='Saving your changes…';finish('mine');},{once:true});
+    latest.addEventListener('click',()=>{if(!check())return;if(updateTarget&&latestValue!==undefined&&field&&'value' in field){field.value=latestValue==null?'':String(latestValue);field.dispatchEvent(new Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
+    mine.addEventListener('click',()=>{if(!check())return;if(updateTarget&&myValue!==undefined&&field&&'value' in field)field.value=myValue==null?'':String(myValue);mine.disabled=true;latest.disabled=true;message.textContent='Saving your changes…';finish('mine');},{once:true});
   });
 }
 
@@ -128,16 +210,18 @@ export function presentDomConflict({target,latestValue,myValue,isCurrent=()=>tru
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
   reload = async (_scope={}) => ({}),
   presentConflict = presentDomConflict,
+  checkBuild = () => {},
   setTimer = globalThis.setTimeout.bind(globalThis),
   clearTimer = globalThis.clearTimeout.bind(globalThis),
   random = Math.random,
   online = () => globalThis.navigator?.onLine !== false,
+  now = () => Date.now(),
   windowObject = globalThis.window,
   documentObject = globalThis.document,
 }) {
@@ -153,6 +237,12 @@ export function createRecoveryController({
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
+  // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
+  /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
+  /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
+  let writes=0;
+  /** @type {{version:string,revision:string}|null} */ let newBuild=null;
+  let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now();
 
   function entityKey(entity){
     if(!entity)return null;
@@ -195,6 +285,88 @@ export function createRecoveryController({
   function finishRevision(entityOrKey){
     const key=typeof entityOrKey==='string'?entityOrKey:entityKey(entityOrKey);if(!key)return;
     for(const root of documentObject?.querySelectorAll?.(EDITOR_ROOT)??[])EDITOR_REVISIONS.get(root)?.delete(key);
+  }
+
+  /** @param {any} target a field, or anything else an event targets */
+  function rememberCommitted(target){
+    if(target?.matches?.(AUTOSAVE)&&typeof target.value==='string')committed.set(target,target.value);
+  }
+
+  /**
+   * Whether leaving now would lose text the person typed. Another page of
+   * oneloop loses only what open editors and the comment box hold; drafts and
+   * running saves carry on. Leaving oneloop (`leaving`) also loses drafts not
+   * saved yet, saves and uploads still running, and text kept for the next
+   * sign-in.
+   */
+  function hasUnsavedInput({leaving=true}={}){
+    // The comment box keeps its text across redraws, so it answers for itself.
+    if(documentObject&&hasTypedInput(documentObject,committed,(element)=>element.id==='cmtIn'))return true;
+    // A comment being sent is on its way; it counts again if the send fails.
+    const comment=getApp()?.commentDraft?.();
+    if(comment&&!comment.sending)return true;
+    return leaving&&(!!resume||writes>0||!!gateway?.hasPending?.()||[...unsavedChecks].some((check)=>check()));
+  }
+
+  function warnBeforeUnload(event){
+    if(!hasUnsavedInput())return;
+    // The browser shows its own prompt; returnValue is for older browsers.
+    event.preventDefault();event.returnValue=true;
+  }
+
+  /** Browser storage, which privacy settings can turn off. @param {'localStorage'|'sessionStorage'} kind */
+  function storage(kind){try{return windowObject?.[kind]??null;}catch{return null;}}
+  function autoReloadOn(){try{return storage('localStorage')?.getItem(AUTO_RELOAD)==='on';}catch{return false;}}
+  /** @returns {string[]} */
+  function reloadedFor(){try{const list=JSON.parse(storage('sessionStorage')?.getItem(RELOADED_FOR)??'[]');return Array.isArray(list)?list:[];}catch{return [];}}
+  const noteActivity=()=>{lastActivity=now();};
+
+  /**
+   * After an update, a browser with Reload after updates on reloads at the
+   * first moment nothing would be lost: no unsaved input, and the tab is
+   * hidden or the person has been idle for a minute. Until then it checks
+   * again every 30 seconds, when the tab hides and when a save settles. A tab
+   * reloads by itself once per page load and once per version, so servers
+   * that disagree about the version can't make it loop.
+   */
+  /**
+   * A hidden tab closes its live connection, whose opening is when a page
+   * compares its version with the server's. So with Reload after updates on,
+   * a hidden tab asks the server every minute instead, until it learns of an
+   * update.
+   */
+  function scheduleHiddenCheck(){
+    clearTimer(hiddenCheckTimer);hiddenCheckTimer=null;
+    const checking=()=>!disposed&&!updatedBuild&&autoReloadOn()&&documentObject?.visibilityState==='hidden';
+    if(!checking())return;
+    hiddenCheckTimer=setTimer(()=>{
+      hiddenCheckTimer=null;
+      if(checking())Promise.resolve().then(checkBuild).catch(()=>{}).finally(scheduleHiddenCheck);
+    },HIDDEN_BUILD_CHECK_MS);
+  }
+
+  /** Another tab of this browser changed Reload after updates, or cleared storage. @param {{key:string|null}} event */
+  function storageChanged(event){
+    if(event.key!==AUTO_RELOAD&&event.key!==null)return;
+    scheduleHiddenCheck();reloadWhenSafe();getApp()?.autoReloadChanged?.();
+  }
+
+  /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
+  function visibilityChanged(){
+    if(documentObject?.visibilityState!=='hidden')noteActivity();
+    scheduleHiddenCheck();reloadWhenSafe();
+  }
+
+  function reloadWhenSafe(){
+    clearTimer(autoReloadTimer);autoReloadTimer=null;
+    if(disposed||!updatedBuild||autoReloaded||!autoReloadOn())return;
+    const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
+    if(reloadedFor().includes(version))return;
+    const away=documentObject?.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
+    if(!away||hasUnsavedInput()){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
+    autoReloaded=true;
+    try{storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));}catch{}
+    controller.reloadClient();
   }
 
   const requestContext=()=>({sessionGeneration,connectivityGeneration,sessionId:data.session?.id??null,userId:data.session?.userId??null});
@@ -293,7 +465,7 @@ export function createRecoveryController({
     if(!pending){
       const state=pendingSaves.get(key);
       if(state){clearTimer(state.timer);getApp()?.clearTaskSaving?.(state.token);pendingSaves.delete(key);}
-      pendingEditors.delete(key);return;
+      pendingEditors.delete(key);reloadWhenSafe();return;
     }
     const snapshot=documentObject?captureOpenEditor(documentObject):null;
     if(snapshot)pendingEditors.set(key,snapshot);
@@ -449,7 +621,8 @@ export function createRecoveryController({
     const entity=latestEntity();
     if(!entity){pageError='404';renderPreservingEditor();return {handled:true,saved:false};}
     const latestValue=target?.latestValue?.(entity);
-    const chosen=await presentConflict({target:target?.element?.()??restored,latestValue,myValue:myValue??target?.myValue,snapshot,isCurrent:current,updateTarget:!target?.acceptLatest});
+    const field=target?.element?.()??restored;
+    const chosen=await presentConflict({target:field,locate:target?.element??relocator(field),latestValue,myValue:myValue??target?.myValue,snapshot,isCurrent:current,updateTarget:!target?.acceptLatest});
     if(chosen==='cancelled'||!current())return {handled:true,saved:false};
     if(chosen!=='mine'){
       await reloadLatest();
@@ -484,6 +657,7 @@ export function createRecoveryController({
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,
     errorHtml,
     captureEditor:()=>documentObject?captureOpenEditor(documentObject):null,
+    keepPrompts:keepConflictPrompts,
     restoreEditor:(snapshot)=>snapshot&&documentObject?restoreOpenEditor(snapshot,documentObject):null,
     revisionKey:entityKey,expectedRevision,finishRevision,
     interactionPending,refreshFailed,refreshSucceeded,isSavingTask:()=>pendingSaves.size>0,
@@ -494,7 +668,20 @@ export function createRecoveryController({
     activateNotice,
     /** Run `listener` each time saving works again after the connection was lost. */
     whenOnline(listener){onlineListeners.add(listener);return ()=>onlineListeners.delete(listener);},
-    buildChanged(){updatedBuild=true;updateNotice();},
+    hasUnsavedInput,
+    /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
+    markSaved(element){rememberCommitted(element);},
+    /** Whether one editor, such as a dialog, holds text the person typed. @param {Element} root */
+    hasTypedInputIn(root){return !!documentObject&&hasTypedInput(documentObject,committed,()=>false,[root]);},
+    /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
+    trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
+    /** Count a save or upload that is not a command until it settles. */
+    trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
+    /** The server runs another version than this page; `build` is that version. */
+    buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
+    /** Whether this browser reloads by itself after an update. */
+    get autoReload(){return autoReloadOn();},
+    setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}scheduleHiddenCheck();reloadWhenSafe();},
     reloadClient(){windowObject?.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
@@ -515,9 +702,9 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }
@@ -529,7 +716,8 @@ export function leaveUnavailableProject(data, app, previous, name) {
   if (!previous?.projectId || !['roadmap','board','task'].includes(previous.view)
       || data.projects.some((project) => project.id === previous.projectId)) return false;
   if(data.projects.length)app.selectProject(data.projects[0].id);
-  app.nav('board');
+  // Nothing typed there can be saved any more, so this never asks first.
+  app.nav('board',{discard:true});
   app.toast?.(name?`You no longer have access to ${name}.`:'You no longer have access to that project.','info');
   return true;
 }

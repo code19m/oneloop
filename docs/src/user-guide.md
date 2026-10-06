@@ -24,9 +24,12 @@ still comment. See [Permissions](admin-guide.md#permissions).
 The Roadmap shows epics and milestones on a timeline, with one row for each
 track. It is the first page you see after you sign in.
 
-- Scroll to move through time. To zoom, hold Ctrl (Cmd on macOS) while you
-  scroll, or pinch on a touchpad or touch screen. **Today** takes you back to
-  today.
+- Scroll to move through time. **Weeks**, **Months** and **Quarters** set the
+  scale, and so do the keys W, M and Q. A new scale keeps the epic you last
+  opened, or today, in view. To zoom freely, hold Ctrl (Cmd on macOS) while you
+  scroll, or pinch on a touchpad or touch screen. On a narrow screen, the scale
+  buttons make room for the others; pinch or use the keys instead. **Today**
+  takes you back to today.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
@@ -102,6 +105,10 @@ Click a card to open the task. Your changes save automatically.
   **Keep my changes**.
 - A title or description you change while offline stays on the page, marked
   **Not saved**, and saves when the connection returns.
+- oneloop asks before you go to another page, also with the browser's **Back**
+  and **Forward** buttons, while text you typed, such as a comment, isn't sent
+  or saved yet. Most browsers also ask before you reload or close the tab. A
+  dialog with text you typed asks before **Escape** closes it.
 - To delete a task, use the **⋯** menu at the top of the page.
 
 ### Blocking
@@ -218,7 +225,13 @@ restore individual items from **Archived** and use **Mark unread**. See
 ## Your account
 
 Click your name at the bottom of the sidebar. The menu has **Profile**,
-**Sign out**, and a switch between the light and dark theme.
+**Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
+default, follows your device's light or dark setting.
+
+When oneloop is upgraded, open tabs show **oneloop was updated**. With
+**Reload after updates** on, a tab reloads by itself once nothing you typed
+would be lost and the tab is hidden or you haven't used it for a minute. Both
+choices apply to this browser only.
 
 On your **Profile**:
 

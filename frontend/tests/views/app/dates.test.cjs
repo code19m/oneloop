@@ -28,16 +28,18 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       for (let step = 0; step < 20; step++) d.getElementById('rmScroll').dispatchEvent(new w.WheelEvent('wheel', { ctrlKey: true, deltaY: -10000, clientX: 500, bubbles: true, cancelable: true }));
       t.mock.timers.tick(180);
       t.mock.timers.reset();
-      const snapshot = [...d.querySelectorAll('.rm-month,[data-epic],[data-milestone]')].map(el => [el.className, el.getAttribute('style'), el.textContent]);
+      const snapshot = [...d.querySelectorAll('.rm-month,.rm-week,[data-epic],[data-milestone]')].map(el => [el.className, el.getAttribute('style'), el.textContent]);
       if (reference) assert.deepEqual(snapshot, reference, zone + ' has identical high-zoom geometry'); else reference = snapshot;
       const scroll = d.getElementById('rmScroll'), november = (Date.UTC(2026, 10, 1) - Number(scroll.dataset.rangeStart)) / 86400000;
       scroll.scrollLeft = november * 42;
       scroll.dispatchEvent(new w.Event('scroll'));
       await new Promise(resolve => w.requestAnimationFrame(resolve));
-      // A month cell is its first day and its length in days, which CSS multiplies by --ppd: November is 30 × 42 = 1260 px.
-      const months = d.querySelector('.rm-month-grid'), ppd = Number(months.style.getPropertyValue('--ppd'));
+      // Cells are day offsets, which CSS multiplies by --ppd. At 42 px a day the axis shows weeks:
+      // November's line is on its first day, and the week of Monday, November 2 starts a day later.
+      const months = d.querySelector('.rm-month-grid'), ppd = Number(months.style.getPropertyValue('--ppd')), at = el => Number(el.style.getPropertyValue('--d'));
       assert.equal(ppd, 42);
-      assert([...months.querySelectorAll('.rm-month')].some(el => el.textContent === 'Nov' && Number(el.style.getPropertyValue('--d')) === november && Number(el.style.getPropertyValue('--n')) * ppd === 1260));
+      assert([...d.querySelectorAll('.rm-month-line')].some(el => at(el) === november));
+      assert([...months.querySelectorAll('.rm-week')].some(el => el.textContent === 'Nov 2' && at(el) === november + 1));
       w.App.openModal('epic'); assert.equal(d.querySelector('[name="start"]').value, '2026-06-15', 'Today follows server time');
       const input = d.querySelector('.date-text'); input.value = '2011-12-30'; w.App.dateBlur({ target: input }, input.closest('[data-date-key]').dataset.dateKey);
       const trigger = input.parentElement.querySelector('.date-trigger'); w.App.popDate({ currentTarget: trigger, preventDefault() {}, stopPropagation() {} }, input.closest('[data-date-key]').dataset.dateKey);
@@ -67,13 +69,13 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
  }});
  assert.equal(t.w.OneloopTime.instant(instant),expected);
  assert.equal(t.d.querySelector('.task-created-at').textContent,expected);
- assert.equal(t.d.querySelector('.tl-cmt .act-time').title,expected);
- assert.equal(t.d.querySelector('.tl-act .act-time').title,expected);
+ assert.equal(t.d.querySelector('.tl-cmt .act-time').dataset.tip,expected);
+ assert.equal(t.d.querySelector('.tl-act .act-time').dataset.tip,expected);
  t.A.previewAttachment('BIR-079','utc-file');assert(t.d.querySelector('.file-info').textContent.includes(expected));
  t.A.nav('storage');assert.equal(t.d.querySelector('.storage-history time').textContent,expected);
  t.A.nav('profile');assert(t.d.querySelector('.profile-access').textContent.includes(expected));
  const board=boot('board',{prepare:D=>{D.timeZone='UTC';const task=D.tasks.find(item=>item.id==='BIR-079');task.block={id:'utc-block',reason:'UTC block',by:'robin',at:instant};}});
- assert(board.d.querySelector('.blocked-badge').title.endsWith(expected));
+ assert(board.d.querySelector('.blocked-badge').dataset.tip.endsWith(expected));
 });
 
 test('the instance time zone decides Today across the UTC day boundary', () => {
@@ -82,5 +84,6 @@ const t=boot('board',{prepare:(D,w)=>{const Native=w.Date,fixed=Native.parse('20
 
 test('compact Board creation dates use the instance time zone', () => {
  const t=boot('board',{prepare:D=>{D.timeZone='America/Los_Angeles';D.tasks.find(task=>task.id==='BIR-079').created=Date.parse('2026-01-01T01:00:00Z');}});
- assert.equal(t.d.querySelector('[data-task="BIR-079"] [title="created"]').textContent,'Dec 31');
+ const created=t.d.querySelector('[data-task="BIR-079"] .card-created');
+ assert.equal(created.textContent,'Dec 31');assert.equal(created.dataset.tip,'Created 2025-12-31 17:00:00');
 });

@@ -169,7 +169,7 @@ test('legacy bidirectional file names are isolated in rows and activity', () => 
   const legacy = { id: 'legacy-bidi', name: 'Invoice‮fdp.exe', size: 4, url: 'blob:legacy', state: 'available' };
   (task.attachments ||= []).push(legacy); (task.activity ||= []).push({ id: 'legacy-bidi-activity', who: 'taylorwu', ts: Date.now(), text: 'attached ' + legacy.name }); A.refresh();
   const row = d.querySelector('[data-attachment-id="legacy-bidi"]');
-  assert(row); assert.equal(row.querySelector('.attachment-title').title, 'Invoicefdp.exe'); assert(row.querySelector('bdi.attachment-name-base'));
+  assert(row); assert.equal(row.querySelector('.attachment-title').dataset.tip, 'Invoicefdp.exe'); assert(row.querySelector('bdi.attachment-name-base'));
   assert(!row.outerHTML.includes('‮')); assert(!d.querySelector('.timeline').textContent.includes('‮'));
 });
 

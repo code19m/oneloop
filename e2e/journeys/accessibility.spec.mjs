@@ -191,9 +191,71 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await field.fill('A title');
   await expect(field).toHaveAccessibleDescription('Existing help');
   await expect(field).not.toHaveAttribute('aria-invalid');
+  // The dialog holds typed text, so Escape asks first.
   await page.keyboard.press('Escape');
+  await page.getByRole('alertdialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard' }).click();
+  await expect(dialog).toHaveCount(0);
   await page.getByRole('button', { name: /^Pool(?: |$)/ }).click();
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
+});
+
+test('Blocked reasons and comment times add no Tab stops, and keep their details for every reader', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.block', { taskId: task.id, reason: 'Waiting for the API', mentions: [] }, task.revision);
+  await command(instance.api, 'discussion.comment.create', { taskId: task.id, content: 'A comment with a time', mentions: [] });
+  await openApp(page, instance, 'board');
+  const title = page.locator('.card-title-button'), tooltip = page.getByRole('tooltip');
+  await expect(title).toHaveAccessibleDescription(/Blocked: Waiting for the API — Smoke Owner · /);
+  await page.locator('.card .card-move').focus();
+  await page.keyboard.press('Shift+Tab');
+  expect(await page.evaluate(() => !!document.activeElement?.closest('.card')), 'the badge is no Tab stop').toBe(false);
+  await page.locator('.card .blocked-badge').hover();
+  await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
+  for (const theme of ['light', 'dark']) {
+    // Reduce motion still gives each color change 0.01ms, so scan once the new colors have painted.
+    await page.evaluate(value => { Theme.set(value); return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); }, theme);
+    await scan(page, `Blocked tooltip (${theme})`);
+  }
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toHaveCount(0);
+  // Keyboard users without a screen reader see the reason on the title instead.
+  await page.locator('.card .card-move').focus();
+  await page.keyboard.press('Tab');
+  await expect(title).toBeFocused();
+  await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
+  await expect(title).toHaveAccessibleDescription(/^[^]*Blocked: Waiting for the API[^]*$/);
+  expect((await title.getAttribute('aria-describedby')).split(' ')).not.toContain('app-tip');
+  await title.press('Enter');
+  const comment = page.locator('[data-comment]');
+  await expect(comment.getByRole('group')).toHaveAccessibleName(/^Smoke Owner \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  await comment.locator('.comment-menu-button').focus();
+  await page.keyboard.press('Shift+Tab');
+  expect(await page.evaluate(() => !!document.activeElement?.closest('.cmt-head')), 'the time is no Tab stop').toBe(false);
+});
+
+test('a focused file name keeps its tip while the task page scrolls, and the tip does not repeat the name', async ({ page, instance }) => {
+  await page.setViewportSize({ width: 1280, height: 560 });
+  const name = `quarterly-report-${'forecast-'.repeat(12)}.txt`;
+  const response = await instance.api.post(`/api/tasks/${instance.projects[0].task.id}/attachments`, {
+    headers: { 'Idempotency-Key': randomUUID(), 'X-File-Size': '12' },
+    multipart: { file: { name, mimeType: 'text/plain', buffer: Buffer.from('Hello world!') } },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  await openApp(page, instance);
+  const title = page.locator('.attachment-title'), tooltip = page.getByRole('tooltip');
+  // Keyboard focus: WebKit's Tab skips links, so a key press comes first.
+  await page.locator('.attachment-thumbnail').focus();
+  await page.keyboard.press('Shift');
+  await title.focus();
+  await expect(tooltip).toHaveText(name);
+  await expect(title).toHaveAccessibleName(name);
+  await expect(title).toHaveAccessibleDescription('');
+  const gap = async () => (await tooltip.boundingBox()).y - (await title.boundingBox()).y;
+  const [before, top] = [await gap(), (await title.boundingBox()).y];
+  await page.locator('.task-page').evaluate(element => element.scrollBy({ top: 40, behavior: 'instant' }));
+  await expect.poll(async () => (await title.boundingBox()).y, { message: 'the page scrolled' }).toBeLessThan(top - 20);
+  await expect.poll(async () => Math.abs(await gap() - before), { message: 'the tip moves with its link' }).toBeLessThanOrEqual(1);
 });
 
 test('a slow task load and a live update keep focus on the task heading', async ({ page, instance }) => {
@@ -331,7 +393,7 @@ for (const theme of ['light', 'dark']) {
       await expect(cards).toHaveCount(fileNames.length);
       for (let index = 0; index < fileNames.length; index += 1) {
         const card = cards.nth(index);
-        await expect(card.locator('.attachment-title')).toHaveAttribute('title', fileNames[index]);
+        await expect(card.locator('.attachment-title')).toHaveAttribute('data-tip', fileNames[index]);
         await expect(card.locator('.file-download')).toBeVisible();
         await expect(card.locator('.file-remove')).toBeVisible();
         await expect(card.locator('.retention-switch')).toBeVisible();
