@@ -55,8 +55,9 @@ const fn text_bytes(chars: usize) -> u64 {
 /// The part of a Markdown file that MCP reads for its title, headings and
 /// sections: as much as search reads, and ten times what a reply holds.
 const MARKDOWN_SOURCE_BYTES: u64 = INDEXED_FILE_BYTES as u64;
-/// How long a search waits for the one before it, like a database request.
-const SEARCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a search or a file read waits for the one before it, like a
+/// database request.
+const QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -653,7 +654,7 @@ impl KnowledgeService {
         // folder. It runs off the async workers, one at a time, so searches
         // can't slow other requests down; a search that waits too long is
         // told to try again.
-        let permit = tokio::time::timeout(SEARCH_WAIT, self.inner.searches.clone().acquire_owned())
+        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.searches.clone().acquire_owned())
             .await
             .map_err(|_| {
                 AppError::Unavailable("knowledge search is busy; try again shortly".into())
@@ -808,13 +809,13 @@ impl KnowledgeService {
             .map(str::to_owned);
         // Only the start of a file can be part of a reply, so only the start
         // is read. One file at a time is read and parsed, off the async
-        // workers, so many calls at once can't use up the memory.
-        let permit = self
-            .inner
-            .readers
-            .clone()
-            .acquire_owned()
+        // workers, so many calls at once can't use up the memory; a read
+        // that waits too long is told to try again.
+        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.readers.clone().acquire_owned())
             .await
+            .map_err(|_| {
+                AppError::Unavailable("knowledge reader is busy; try again shortly".into())
+            })?
             .map_err(|_| AppError::Unavailable("knowledge reader is shutting down".into()))?;
         let limit = if markdown_file {
             MARKDOWN_SOURCE_BYTES
@@ -1572,60 +1573,105 @@ fn cut(text: &str, limit: usize) -> (String, bool) {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
+    /// A project with a synced folder of Markdown `files`, and a signed-in
+    /// admin for each of `people`.
+    async fn synced_project(
+        files: Vec<(String, String)>,
+        people: &[&str],
+    ) -> (tempfile::TempDir, KnowledgeService, Vec<Actor>) {
         use crate::auth::{AuthService, LoginResult, NewUser, create_user};
-        // This test's runtime runs on this thread, so whatever a search scans
-        // and builds on the async worker counts against this thread's heap.
         let root = tempfile::tempdir_in("target").unwrap();
         crate::db::migrate(root.path(), None).unwrap();
         let db = Db::open(root.path()).unwrap();
         let password = "test-only-password-012345";
+        let usernames: Vec<String> = people.iter().map(|name| (*name).to_owned()).collect();
+        let names = usernames.clone();
         db.transaction(move |tx| {
-            let user = NewUser {
-                username: "admin".into(),
-                display_name: "Admin".into(),
-                password: password.into(),
-                is_admin: true,
-                must_change_password: false,
-            };
-            create_user(tx, user, unix_now()?)?;
+            for username in names {
+                let user = NewUser {
+                    display_name: username.clone(),
+                    username,
+                    password: password.into(),
+                    is_admin: true,
+                    must_change_password: false,
+                };
+                create_user(tx, user, unix_now()?)?;
+            }
             tx.execute_batch(
                 "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
                  INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,created_at,updated_at,generation)
                  VALUES('p','https://git.example.test/docs.git','main','','ready','c',1,1,'g');",
             )?;
-            for index in 0..300 {
-                let section = "## Shared steps\n\nShared words for every reader.\n\n";
-                let content = format!("# Note {index}\n\n{}", section.repeat(6));
+            for (path, content) in files {
                 tx.execute(
                     "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
                      VALUES('p',?1,?2,'text/plain','markdown',?3,1,?4)",
-                    params![format!("shared-{index}.md"), content.len() as i64, format!("sum-{index}"), content.into_bytes()],
+                    params![path, content.len() as i64, format!("sum-{path}"), content.into_bytes()],
                 )?;
             }
             Ok(())
         })
         .await
         .unwrap();
-        let login = AuthService::new(db.clone())
-            .login("admin", password, Default::default(), None)
-            .await
-            .unwrap();
-        let LoginResult::Authenticated(session) = login else {
-            panic!("the session limit can't be reached");
-        };
-        let service = KnowledgeService::new(db, 0);
+        let auth = AuthService::new(db.clone());
+        let mut actors = Vec::new();
+        for username in &usernames {
+            let login = auth
+                .login(username, password, Default::default(), None)
+                .await
+                .unwrap();
+            let LoginResult::Authenticated(session) = login else {
+                panic!("the session limit can't be reached");
+            };
+            actors.push(session.actor);
+        }
+        (root, KnowledgeService::new(db, 0), actors)
+    }
+
+    #[tokio::test]
+    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
+        // This test's runtime runs on this thread, so whatever a search scans
+        // and builds on the async worker counts against this thread's heap.
+        let section = "## Shared steps\n\nShared words for every reader.\n\n";
+        let files = (0..300)
+            .map(|index| {
+                let content = format!("# Note {index}\n\n{}", section.repeat(6));
+                (format!("shared-{index}.md"), content)
+            })
+            .collect();
+        let (_root, service, people) = synced_project(files, &["admin"]).await;
         // The first search builds the index.
-        service.search(&session.actor, "p", "shared").await.unwrap();
+        service.search(&people[0], "p", "shared").await.unwrap();
         let watch = crate::test_memory::Watch::start();
         let results = service
-            .search(&session.actor, "p", "shared words")
+            .search(&people[0], "p", "shared words")
             .await
             .unwrap();
         assert_eq!((results.file_count, results.hit_count), (0, 1800));
         assert_eq!(results.documents.len(), 50);
         assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
+    }
+
+    #[tokio::test]
+    async fn a_file_read_waits_at_most_five_seconds_for_the_one_before_it() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nWords.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        tokio::time::pause();
+        // Another read holds the one reader.
+        let held = service.inner.readers.clone().acquire_owned().await.unwrap();
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            service.read_text(&people[0], "p", "note.md", None),
+        )
+        .await
+        .expect("a read doesn't wait for long");
+        assert!(matches!(read, Err(AppError::Unavailable(_))), "{read:?}");
+        drop(held);
+        let read = service
+            .read_text(&people[0], "p", "note.md", None)
+            .await
+            .unwrap();
+        assert_eq!(read.content.as_deref(), Some("# Note\n\nWords.\n"));
     }
 
     #[test]

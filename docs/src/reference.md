@@ -242,7 +242,7 @@ Some emoji count as two characters.
 | Items per page | 50 (100 for comments, activity and the Inbox) |
 | Retry keys | Remembered for 24 hours |
 | Knowledge overview | 200 files, and 20,000 characters of the README |
-| Knowledge file | 100,000 characters. Headings and sections come from the first 1 MiB of a Markdown file, up to 5,000 sections |
+| Knowledge file | 100,000 characters. Headings and sections come from the first 1 MiB of a Markdown file, up to 5,000 sections. One file is read at a time; a read that waits 5 seconds gets "try again" |
 
 **Server**
 
