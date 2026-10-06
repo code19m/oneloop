@@ -78,6 +78,11 @@ for(const kind of ['markdown','text'])test(`a live Knowledge ${kind} refresh mar
   assert.equal(new Headers(refreshed.options.headers).get('X-Oneloop-Background'),'1');
 });
 
+test('a Knowledge file read names the person the page shows',async()=>{
+  const t=fixture({view:{...handbook(),files:[{path:'README.md',kind:'text',size:40,version:'first'}]}});await painted(t);
+  assert.equal(new Headers(t.state.textRequests[0].options.headers).get('X-Oneloop-User'),'u1');
+});
+
 test('reconnect refreshes visible Knowledge and invalidates other projects until their next visit',async()=>{
   const t=fixture();
   t.state.context.projectId='p2';t.controller.route('knowledge','p2');await painted(t);

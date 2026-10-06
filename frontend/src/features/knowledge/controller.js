@@ -414,7 +414,10 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   async function textOf(/** @type {string} */ projectId, /** @type {KnowledgeFile} */ file) {
     const key = `${projectId}:${file.path}:${file.version ?? ''}`, cached = texts.get(key);
     if (cached) return cached;
-    const response = await fetchImpl(fileUrl(projectId, 'text', file), { credentials: 'same-origin', cache: 'no-cache', redirect: 'error', headers: { 'X-Oneloop-Background': '1' } });
+    // Name the person the page shows, as API requests do, so a tab that still
+    // shows someone who signed out can't read as whoever signed in after them.
+    const person = runtime.data?.session?.userId;
+    const response = await fetchImpl(fileUrl(projectId, 'text', file), { credentials: 'same-origin', cache: 'no-cache', redirect: 'error', headers: { 'X-Oneloop-Background': '1', ...(person ? { 'X-Oneloop-User': person } : {}) } });
     if (!response.ok) throw new Error('Preview unavailable');
     const value = { text: new TextDecoder().decode(await response.arrayBuffer()), truncated: file.size > TEXT_LIMIT };
     if (texts.size > 64) texts.delete(texts.keys().next().value);

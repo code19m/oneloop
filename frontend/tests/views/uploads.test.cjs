@@ -523,3 +523,16 @@ test('a deleted file offers Undo, which restores it at the revision its deletion
   assert.deepEqual(restores, [['f1', 4, 'string']]);
   await waitFor(() => t.D.tasks.find(item => item.id === 'BIR-079').attachments?.[0]?.revision === 5, 'the list is read again');
 });
+
+test('a text preview read from the server names the person the page shows', async () => {
+  const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', sourceUrl: '/source', downloadUrl: '/download' };
+  const reads = [];
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+    w.fetch = async (url, options) => { reads.push([url, new w.Headers(options.headers).get('X-Oneloop-User')]); return { ok: true, arrayBuffer: async () => new TextEncoder().encode('notes').buffer }; };
+    w.OneloopTransport = { api: { attachments: async () => ({ items: [file] }), uploadAttachment() {} }, subscribe: () => () => {} };
+  } });
+  await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
+  t.A.previewAttachment('BIR-079', 'f1');
+  await waitFor(() => reads.length === 1, 'the preview reads the text');
+  assert.deepEqual(reads, [['/source', t.D.session.userId]]);
+});

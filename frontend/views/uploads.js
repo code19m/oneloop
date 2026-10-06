@@ -377,7 +377,9 @@
     const session=window.DATA.session?.id,controller=new AbortController();
     owner.sourceController=controller;owner.sourceTimeout=setTimeout(()=>controller.abort(),30000);
     try{
-      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
+      // Name the person the page shows, as API requests do.
+      const person=window.DATA.session?.userId;
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,headers:person?{'X-Oneloop-User':person}:{}});
       if(!response.ok)throw new Error('Preview unavailable.');
       const buffer=await response.arrayBuffer();
       if(controller.signal.aborted||!previewActive(owner,host)||window.DATA.session?.id!==session)throw new DOMException('Preview closed','AbortError');
