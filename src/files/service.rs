@@ -1326,15 +1326,21 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
 /// One image decode at a time, for avatar uploads and the thumbnail worker
 /// together, so their memory never adds up.
 static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+/// Avatar uploads that may wait for a decode at once; each keeps its image in
+/// memory while it waits. More are told to retry.
+static AVATAR_WAITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// How long an avatar upload waits for the decodes before it, thumbnails
+/// included. The slowest decode the limits allow takes about a second on a
+/// laptop, and a few seconds on a small server.
+const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        IMAGE_DECODE_PERMITS.acquire(),
-    )
-    .await
-    .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?
-    .map_err(|_| AppError::Unavailable("avatar worker is shutting down".into()))
+    let busy = || AppError::Unavailable("avatar processing is busy; retry shortly".into());
+    let _waiting = AVATAR_WAITS.try_acquire().map_err(|_| busy())?;
+    tokio::time::timeout(AVATAR_DECODE_WAIT, IMAGE_DECODE_PERMITS.acquire())
+        .await
+        .map_err(|_| busy())?
+        .map_err(|_| AppError::Unavailable("avatar worker is shutting down".into()))
 }
 
 struct DeletionJob {

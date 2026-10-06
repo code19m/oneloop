@@ -1,8 +1,8 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
-    // A thumbnail decode holds the only permit, so an avatar upload waits.
+    // A thumbnail decode holds the only permit, so avatar uploads wait.
     let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
     let root = tempfile::tempdir().unwrap();
     crate::db::migrate(root.path(), None).unwrap();
@@ -18,6 +18,30 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
             session_id: "test".into(),
         },
     };
+    let upload = || {
+        let (service, actor) = (service.clone(), actor.clone());
+        tokio::spawn(async move { service.upload_avatar(&actor, vec![1]).await })
+    };
+    let waiting = (0..4).map(|_| upload()).collect::<Vec<_>>();
+    // Only a few wait; holding their images in memory, more are turned away.
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        upload().await.unwrap(),
+        Err(AppError::Unavailable(_))
+    ));
+    // Those that wait outlast a slow decode, then decode their own image.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert!(waiting.iter().all(|upload| !upload.is_finished()));
+    drop(held);
+    for upload in waiting {
+        let result = upload.await.unwrap();
+        assert!(
+            matches!(result, Err(AppError::Validation { .. })),
+            "{result:?}"
+        );
+    }
+    // A decode that doesn't end turns an upload away after a while.
+    let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
     assert!(matches!(
         service.upload_avatar(&actor, vec![1]).await,
         Err(AppError::Unavailable(_))
