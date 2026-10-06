@@ -5,7 +5,7 @@ import { installTooltips } from '../../../src/app/tooltips.js';
 const { JSDOM, bootApp } = createRequire(import.meta.url)('../../support/dom.cjs');
 
 const page = `<main>
-  <div class="card" id="card" data-oneloop-onclick="App.openTask('BIR-079')">
+  <div class="card" id="card" data-action="openTask" data-args='["BIR-079"]'>
     <span class="blocked-badge" id="badge" data-tip-tap data-tip="Waiting for the API — Robin · 2026-10-05 14:03:22">Blocked</span>
     <div class="epic" id="epic" data-tip="Payment integration" data-tip-overflow>Payment integration</div>
   </div>

@@ -38,6 +38,18 @@ export function trustedHTML(source) {
   return /** @type {string} */ (policy ? policy.createHTML(source) : source);
 }
 
+/**
+ * Write the app's own markup into `element`, or into a template's content:
+ * parsed through the `oneloop` policy in an inert template, then moved in.
+ * The views reach it as `UIHTML`.
+ * @param {Element} element @param {string} source
+ */
+export function setTrustedHTML(element, source) {
+  const template = element.ownerDocument.createElement('template');
+  template.innerHTML = trustedHTML(source);
+  (element.tagName === 'TEMPLATE' ? /** @type {HTMLTemplateElement} */ (element).content : element).replaceChildren(template.content);
+}
+
 /** A script URL inside the app's own folders, ready for a script sink. @param {string} url */
 export function trustedScriptURL(url) {
   return /** @type {string} */ (policy ? policy.createScriptURL(url) : url);

@@ -10,7 +10,6 @@ import { createLegacyData } from '../data/projection-store.js';
 import { createAuthController } from '../auth/auth-controller.js';
 import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
-import { installViewEventOwner } from './view-events.js';
 import { installViewActions } from './view-actions.js';
 import { createRuntimeHooks } from './runtime-hooks.js';
 import { actionErrorFeedback } from './action-feedback.js';
@@ -21,10 +20,12 @@ import { installCollaborationController } from '../features/collaboration/contro
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
-import { installTrustedTypes, trustedScriptURL } from './trusted-types.js';
+import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
 import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
+// The views' one HTML sink, UIHTML, writes through the oneloop policy.
+globalThis.OneloopSetHTML = setTrustedHTML;
 // First, so actions run before the document's other listeners, as inline handlers did.
 installViewActions(document);
 
@@ -95,7 +96,6 @@ recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>a
 globalThis.OneloopRecovery=recovery;
 globalThis.Recovery=recovery;
 
-installViewEventOwner(document.documentElement);
 installTooltips(document);
 
 runtimeHooks.subscribe(change=>{

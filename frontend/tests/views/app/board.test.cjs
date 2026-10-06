@@ -90,8 +90,6 @@ for (const reduced of [false, true]) {
     t.D.boardPageInfo = { projectId, pages: { planning: { total: 100, nextCursor: 'next' } } }; t.A.refresh();
     const board = t.d.querySelector('.board'), card = board.querySelector('.card'), title = card.querySelector('.title'), more = board.querySelector('.board-load-more');
     const empty = [...board.querySelectorAll('.empty-note')]; assert.equal(empty.length, 3);
-    // Production removes inline handlers after installing their listeners.
-    for (const node of [board, ...board.querySelectorAll('*')]) for (const attr of [...node.attributes]) if (attr.name.startsWith('on')) node.removeAttribute(attr.name);
     title.focus();
     const mutations = new t.w.MutationObserver(() => {}); mutations.observe(board, { subtree: true, childList: true }); t.animations.length = 0;
     for (let i = 0; i < 3; i++) t.A.refreshBoard();

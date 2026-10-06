@@ -1,9 +1,6 @@
 /* Shared, interruptible presentation effects. Data changes never wait for motion. */
-// The production adapter prepares legacy events in inert markup before adoption.
 /** Escape text and quoted HTML attributes. @param {unknown} value */
 function UIEscape(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-/** Encode a single-quoted compatibility argument. @param {unknown} value */
-function UIArg(value) { return UIEscape(String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')); }
 /**
  * Attributes that run `App[method](...args)` on a click (src/app/view-actions.js).
  * UIAction.on(type, method, ...args) runs one for another event. UIAction.event,
@@ -17,7 +14,6 @@ UIAction.on = (type, method, ...args) => {
   return `data-action${suffix}="${UIEscape(method)}"${args.length ? ` data-args${suffix}="${UIEscape(JSON.stringify(args))}"` : ''}`;
 };
 for (const name of ['event', 'element', 'value', 'checked']) UIAction[name] = Object.freeze({ $: name });
-globalThis.UIArg=UIArg;
 globalThis.UIEscape=UIEscape;
 globalThis.UIAction=UIAction;
 window.UIHTML=(element,source)=>window.OneloopSetHTML?window.OneloopSetHTML(element,source):(element.innerHTML=source);

@@ -116,7 +116,7 @@
   const current=outer?old.outerHTML:old.innerHTML,expected=outer?next.outerHTML:next.innerHTML;
   if(current===expected)return true;
   const oldClone=old.cloneNode(true),nextClone=next.cloneNode(true);
-  for(const clone of [oldClone,nextClone])[clone,...clone.querySelectorAll('*')].forEach(node=>[...node.attributes].forEach(attr=>{if(attr.name.startsWith('on')||attr.name.startsWith('data-oneloop-on')||/^data-(?:action|args)\b/.test(attr.name))node.removeAttribute(attr.name);}));
+  for(const clone of [oldClone,nextClone])[clone,...clone.querySelectorAll('*')].forEach(node=>[...node.attributes].forEach(attr=>{if(attr.name.startsWith('on')||/^data-(?:action|args)\b/.test(attr.name))node.removeAttribute(attr.name);}));
   return (outer?oldClone.outerHTML:oldClone.innerHTML)===(outer?nextClone.outerHTML:nextClone.innerHTML);
  }
  /** @param {{append?:boolean,items?:any[]}} meta */

@@ -6,10 +6,9 @@
 (() => {
   const D = window.DATA;
   const collaboration=window.Collab;
-  const migrateEvents=window.OneloopMigrateEvents;
   const setHTML=UIHTML;
   const UIMotion=/** @type {Window & {UIMotion:{enter:(el:Element|null)=>void,fade:(el:Element|null)=>void,height:(el:Element|null,before:number)=>void,reduced:()=>boolean,rows:(host:Element,selector:string,key:string)=>Map<string,DOMRect>,reflow:(host:Element,selector:string,key:string,before:Map<string,DOMRect>)=>void,animate:(el:Element,frames:Keyframe[],duration?:number)=>Animation|null}}} */(/** @type {unknown} */(window)).UIMotion;
-  /** @type {Window & {ONELOOP_DEFER_BOOT_RENDER?:boolean,OneloopEventAttribute?:(name:string)=>string,OneloopRuntime?:{now?:()=>number,report:(error:unknown)=>void,invoke:(action:string,payload:object)=>Promise<unknown>}}} */
+  /** @type {Window & {ONELOOP_DEFER_BOOT_RENDER?:boolean,OneloopRuntime?:{now?:()=>number,report:(error:unknown)=>void,invoke:(action:string,payload:object)=>Promise<unknown>}}} */
   const bootWindow=window;
   const DAY = 86400000;
   const NO_ASSIGNEE = '__unassigned__';
@@ -2082,8 +2081,7 @@
   // identifying attributes so dismissing a dialog can focus its new counterpart.
   const overlayReturn = { modal:null, peek:null };
   // What a click on the element runs, which its redrawn copy runs too.
-  const legacyClick = () => bootWindow.OneloopEventAttribute?.('onclick') || 'onclick';
-  const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('data-action')} ${el.getAttribute('data-args') ?? ''}` : el.getAttribute(legacyClick());
+  const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('data-action')} ${el.getAttribute('data-args') ?? ''}` : null;
   function rememberOpener(element) {
     const el = element?.closest?.('button,a[href],[role="button"],input,textarea') || element;
     if (!el || el === document.body) return null;
@@ -2099,7 +2097,7 @@
     if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
     if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
     // A scrim and a close button can share an action; prefer the same kind of control in the same place.
-    if (!target && record?.action) { const attribute = legacyClick(); target = [...app.querySelectorAll(`${record.scope} [data-action],${record.scope} [${attribute}]`), ...app.querySelectorAll(`[data-action],[${attribute}]`)].find(el => el.tagName === record.tag && clickAction(el) === record.action); }
+    if (!target && record?.action) target = [...app.querySelectorAll(`${record.scope} [data-action]`), ...app.querySelectorAll('[data-action]')].find(el => el.tagName === record.tag && clickAction(el) === record.action);
     if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
     if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
     if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);
@@ -2258,7 +2256,6 @@
       window.Recovery?.keepPrompts?.();
       const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
       if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
-      migrateEvents?.();
       if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
         const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
         target?.focus({preventScroll:true});
@@ -2297,7 +2294,7 @@
     document.getElementById('app').classList.toggle('side-open',!!state.sideOpen);
     document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
     document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
-    migrateEvents?.();mountDescription();collaboration?.mount();
+    mountDescription();collaboration?.mount();
     finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
     paintedScope=renderScope();
   }
@@ -2390,7 +2387,6 @@
     }
 
     document.querySelectorAll('.timeline > [data-feed-key]').forEach(el=>feedRowMarkup.set(el,el.outerHTML));
-    migrateEvents?.();
     mountDescription();
     if (state.view === 'task') window.Uploads?.mount(state.taskId);
     if (state.view === 'roadmap' && !error) mountRoadmap();

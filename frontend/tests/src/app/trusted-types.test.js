@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {createRequire} from 'node:module';
 import {appScriptURL} from '../../../src/app/trusted-types.js';
+
+const {JSDOM}=createRequire(import.meta.url)('../../support/dom.cjs');
 
 const base='https://oneloop.example/#/task/WEB-1';
 
@@ -22,4 +25,19 @@ test('the policies are created once, and plain strings pass where Trusted Types 
   assert.equal(created.get('default').createScriptURL('/vendor/pdfjs/pdf.worker.mjs'),'https://oneloop.example/vendor/pdfjs/pdf.worker.mjs');
   assert.equal(created.get('default').createScriptURL('https://cdn.example/x.js'),null,'other scripts are refused');
   assert.equal(created.get('default').createHTML,undefined,'HTML strings get no default pass');
+});
+
+test('the views\' HTML sink writes markup through the oneloop policy as written, into an element or a template',async()=>{
+  const written=[];
+  const win={location:{href:base},trustedTypes:{createPolicy(name,rules){return {createHTML:source=>{written.push([name,source]);return rules.createHTML(source);},createScriptURL:value=>rules.createScriptURL(value)};}}};
+  const module=await import(`../../../src/app/trusted-types.js?sink=${Date.now()}`);
+  module.installTrustedTypes(win);
+  const d=new JSDOM('<div id="host"><b>Old</b></div><template id="template"></template>').window.document;
+  const button='<button data-action="openTask" data-args=\'["BIR-1"]\'>Open</button>';
+  module.setTrustedHTML(d.getElementById('host'),button);
+  module.setTrustedHTML(d.getElementById('template'),'<p>Inert</p>');
+  assert.deepEqual(written,[['oneloop',button],['oneloop','<p>Inert</p>']]);
+  assert.equal(d.getElementById('host').innerHTML,'<button data-action="openTask" data-args="[&quot;BIR-1&quot;]">Open</button>');
+  assert.equal(d.getElementById('template').content.firstElementChild.outerHTML,'<p>Inert</p>');
+  assert.equal(d.getElementById('template').childNodes.length,0);
 });

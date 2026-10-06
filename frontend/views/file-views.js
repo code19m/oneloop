@@ -272,7 +272,7 @@
       if(!text.trim()){UIHTML(ui.view,'<p class="preview-unavailable">This file is empty.</p>');return;}
       const scroll=ui.view.scrollTop;
       const fragment=DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover'],SANITIZE_NAMED_PROPS:true});
-      fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(attr.name.startsWith('data-oneloop-'))el.removeAttribute(attr.name);}));
+      fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(/^data-(?:action|args)\b/.test(attr.name))el.removeAttribute(attr.name);}));
       // Keep renderer classes, never application chrome supplied by an upload.
       fragment.querySelectorAll('[class]').forEach(el=>{
         const classes=[...el.classList].filter(name=>/^(?:language-[\w-]+|hljs[\w-]*|markdown-alert[\w-]*|task-list-[\w-]+|footnotes|sr-only|octicon[\w-]*)$/.test(name));

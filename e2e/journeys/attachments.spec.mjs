@@ -144,12 +144,12 @@ test('HTML previews run no scripts and load nothing from other sites, framed or 
 
 test('Markdown strips app actions and SVG navigation while keeping math, diagrams and footnotes', async ({ page, instance }) => {
   await openApp(page, instance);
-  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-oneloop-onclick="App.logout()">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nflowchart LR\n A-->B\n```';
+  const markdown = `# Safe reader\n\n$x^2$\n\nReference[^1]\n\n[^1]: Footnote\n\n<svg viewBox="0 0 100 20"><a href="https://example.invalid/svg"><path d="M0 0h100v20H0z"/></a></svg>\n<span tabindex="0" data-reorder-task="${instance.projects[0].task.taskKey}" data-reorder-file="anything" data-action="logout" data-action-keydown="logout" data-args="[]">Gadget</span>\n[External](https://example.invalid/)` + '\n\n```mermaid\nflowchart LR\n A-->B\n```';
   await attach(page, 'gadget.md', 'text/markdown', markdown);
   await page.locator('.attachment-title').filter({ hasText: 'gadget.md' }).click();
   const body = page.locator('.markdown-body');
   await expect(body.locator('h1')).toHaveText('Safe reader');
-  await expect(body.locator('[data-reorder-file],[data-reorder-task],[data-oneloop-onclick],[tabindex],svg a')).toHaveCount(0);
+  await expect(body.locator('[data-reorder-file],[data-reorder-task],[data-action],[data-action-keydown],[data-args],[tabindex],svg a')).toHaveCount(0);
   await expect(body.locator('.katex')).toBeVisible();
   await expect(body.locator('[data-footnote-ref]')).toBeVisible();
   const diagram = body.locator('.markdown-diagram img');
@@ -160,17 +160,19 @@ test('Markdown strips app actions and SVG navigation while keeping math, diagram
   page.on('request', r => { if (r.method() === 'POST') writes.push(r.url()); });
   await body.locator('svg').last().click();
   await page.keyboard.press('Home');
+  await body.getByText('Gadget').click();
+  await expect(page.locator('.confirmation-layer')).toHaveCount(0);
   expect(page.url()).toBe(url);
   expect(writes).toEqual([]);
 });
 
 test('Markdown keeps renderer formatting and cannot borrow dialog classes', async ({ page, instance }) => {
   await openApp(page, instance);
-  await attach(page, 'hostile.md', 'text/markdown', '<div data-oneloop-onclick="App.nav(&quot;users&quot;)" class="confirmation-layer scrim modal-wrap peek">Fake dialog</div>\n\n> [!NOTE]\n> Safe note\n\n```js\nconst value = 1;\n```');
+  await attach(page, 'hostile.md', 'text/markdown', '<div data-action="nav" data-args="[&quot;users&quot;]" class="confirmation-layer scrim modal-wrap peek">Fake dialog</div>\n\n> [!NOTE]\n> Safe note\n\n```js\nconst value = 1;\n```');
   await page.locator('.attachment-title').click();
   const body = page.locator('.markdown-body');
   await expect(body).toBeVisible();
-  await expect(body.locator('.confirmation-layer,.scrim,.modal-wrap,.peek,[data-oneloop-onclick]')).toHaveCount(0);
+  await expect(body.locator('.confirmation-layer,.scrim,.modal-wrap,.peek,[data-action],[data-args]')).toHaveCount(0);
   await expect(body.locator('.markdown-alert')).toHaveCount(1);
   await expect(body.locator('.hljs')).toHaveCount(1);
   await expect(page.locator('[data-file-close]')).toBeVisible();
