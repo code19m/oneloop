@@ -720,3 +720,71 @@ async fn failed_logout_revocation_remains_retryable() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn a_page_showing_another_person_neither_reads_nor_writes() {
+    let (_directory, db, app) = application();
+    seed_user(&db).await;
+    let response = app
+        .clone()
+        .oneshot(login_request(Some("https://tasks.example.test")))
+        .await
+        .unwrap();
+    let cookie = response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let login: serde_json::Value = body_json(response).await;
+    let person = login["user"]["id"].as_str().unwrap().to_owned();
+    // A tab names the person it shows; the browser's cookie now belongs to someone else.
+    let request = |method: &str, uri: &str, user: Option<&str>, body: &str| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ORIGIN, "https://tasks.example.test")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, &cookie);
+        if let Some(user) = user {
+            builder = builder.header("x-oneloop-user", user);
+        }
+        builder.body(Body::from(body.to_owned())).unwrap()
+    };
+    for uri in ["/api/bootstrap", "/api/auth/me"] {
+        let refused = app
+            .clone()
+            .oneshot(request("GET", uri, Some("someone-before"), ""))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        assert!(!refused.headers().contains_key(header::SET_COOKIE), "{uri}");
+        let own = app
+            .clone()
+            .oneshot(request("GET", uri, Some(&person), ""))
+            .await
+            .unwrap();
+        assert_eq!(own.status(), StatusCode::OK, "{uri}");
+    }
+    let rename = r#"{"displayName":"Renamed by an old page"}"#;
+    let refused = app
+        .clone()
+        .oneshot(request(
+            "PATCH",
+            "/api/auth/me",
+            Some("someone-before"),
+            rename,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    // Without the header, as from other clients, the cookie alone decides.
+    let current = app
+        .oneshot(request("GET", "/api/auth/me", None, ""))
+        .await
+        .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    let current: serde_json::Value = body_json(current).await;
+    assert_eq!(current["user"]["displayName"], "Person");
+}

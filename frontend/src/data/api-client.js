@@ -87,6 +87,11 @@ export function createApiClient({
     const sequence = ++requestSequence, sent = monotonicNow();
     const requestContext = getRequestContext();
     const context = requestContext === undefined ? {} : { requestContext };
+    // Name the person this page shows. Tabs share one session cookie, so after
+    // someone else signs in, the server refuses this page's requests instead of
+    // answering as that person.
+    const person = requestContext?.userId;
+    if (typeof person === 'string' && person) headers = { ...headers, 'X-Oneloop-User': person };
     const mutation = !['GET', 'HEAD'].includes(method);
     const deadline = requestDeadline(signal, timeoutMs);
     /** @type {Response | undefined} */

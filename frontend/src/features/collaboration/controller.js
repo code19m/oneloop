@@ -445,7 +445,11 @@ export function installCollaborationController({ transport, eventSourceFactory =
       source=eventSourceFactory('/api/events'+(initial&&data.syncCursor?`?cursor=${encodeURIComponent(data.syncCursor)}`:''));
       const activeSource=source;
       source.addEventListener?.('open',()=>{if(source!==activeSource)return;transport.publish?.({type:'live-open'});globalThis.OneloopRecovery?.liveConnected?.();});
-      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
+      const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}
+        // The first event names the person the stream is for: the one the
+        // browser's cookie names now. Someone else's stream ends this tab's session.
+        if(Object.hasOwn(payload,'userId')&&globalThis.OneloopRecovery?.ownsAnswer?.(payload.userId)===false){source?.close?.();source=null;return;}
+        const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
       source.addEventListener?.('error',()=>{
         if(source!==activeSource)return;
@@ -453,7 +457,9 @@ export function installCollaborationController({ transport, eventSourceFactory =
         globalThis.OneloopRecovery?.liveDisconnected?.(()=>startEvents());
         if(sessionCheck)return;
         const expectedSession=currentSession();
-        const check=transport.api.request('/api/auth/me',{background:true}).catch((error)=>{
+        const check=transport.api.request('/api/auth/me',{background:true}).then((answer)=>{
+          if(expectedSession===currentSession())globalThis.OneloopRecovery?.ownsAnswer?.(answer?.user?.id);
+        },(error)=>{
           if(expectedSession===currentSession()&&error?.status===401&&!globalThis.OneloopRecovery?.sessionExpired?.())globalThis.location?.reload?.();
         }).finally(()=>{if(sessionCheck===check)sessionCheck=null;});
         sessionCheck=check;

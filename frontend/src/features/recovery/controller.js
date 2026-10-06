@@ -512,11 +512,12 @@ export function createRecoveryController({
     const attempt=++reconnectGeneration;
     const context=requestContext();
     try{
-      await api.request('/api/auth/me',{background:true});
+      const answer=await api.request('/api/auth/me',{background:true});
       if(disposed||attempt!==reconnectGeneration||!currentSession(context)||!online())return;
       // The shared response observer may already have restored the connection.
       if(!currentConnection(context))return;
-      reconnectAttempt=0;setConnectivity(true);await reconcile();
+      reconnectAttempt=0;setConnectivity(true);
+      if(ownsAnswer(answer?.user?.id))await reconcile();
     }catch(error){
       if(disposed||attempt!==reconnectGeneration||!currentSession(context))return;
       if(error instanceof ApiError&&error.status===401){sessionExpired();return;}
@@ -530,6 +531,21 @@ export function createRecoveryController({
     clearTimer(reconnectTimer);
     const delay=Math.min(1000*(2**reconnectAttempt),30_000)*(0.9+random()*0.2);reconnectAttempt++;
     reconnectTimer=setTimer(()=>reconnect(false),delay);
+  }
+
+  /**
+   * The server answered for `userId`, the person the browser's session cookie
+   * names. Tabs share that cookie, so it changes when someone signs in in
+   * another tab. Whether the answer is for the person this tab shows: when it
+   * names someone else, this person's session has ended here, as after a 401,
+   * and nothing of the new person's comes into the tab. A tab where no one is
+   * signed in owns no answer.
+   * @param {unknown} userId
+   */
+  function ownsAnswer(userId){
+    if(!data?.session)return false;
+    if(typeof userId!=='string'||!userId||userId===data.session.userId)return true;
+    sessionExpired();return false;
   }
 
   function sessionExpired() {
@@ -654,7 +670,7 @@ export function createRecoveryController({
     /** Whether typed text waits for the person's next sign-in. */
     get keepsInput(){return !!resume;},
     resumeEditing,
-    requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,
+    requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,
     captureEditor:()=>documentObject?captureOpenEditor(documentObject):null,
     keepPrompts:keepConflictPrompts,

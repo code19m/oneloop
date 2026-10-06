@@ -56,7 +56,7 @@ const bootstrap = createBootstrapController({ api, data, onReady: (projection) =
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
-} });
+}, onForeign:(userId)=>recovery?.ownsAnswer(userId) });
 const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.userId??''}:${data.session?.id??''}`,onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});

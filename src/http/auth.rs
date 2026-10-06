@@ -124,7 +124,17 @@ pub async fn authenticate_headers(
             .get("x-oneloop-background")
             .and_then(|value| value.to_str().ok())
             != Some("1");
-    state.auth.authenticate_session(&token, meaningful).await
+    let actor = state.auth.authenticate_session(&token, meaningful).await?;
+    // The web client names the person its page shows. Tabs share the session
+    // cookie, so after someone else signs in, a page still showing the person
+    // before them must not read or write as the new person: its session ended.
+    if headers
+        .get("x-oneloop-user")
+        .is_some_and(|user| user.as_bytes() != actor.user_id.as_bytes())
+    {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(actor)
 }
 
 #[derive(Deserialize)]

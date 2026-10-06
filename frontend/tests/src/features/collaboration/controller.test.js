@@ -507,6 +507,50 @@ test('SSE open plus reconcile performs one reload after reconnect',async()=>{
   }finally{t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}
 });
 
+/** A page with streams that record their listeners, and the real recovery controller. */
+function streamingPage(overrides={}){
+  const sources=[],timers=[];let expires=0;
+  const t=fixture({...overrides,eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};sources.push(source);return source;}});
+  const previous=globalThis.OneloopRecovery;
+  const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{invalidate(){}},getApp:()=>t.app,getAuth:()=>({expire(){expires++;}}),reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
+  globalThis.OneloopRecovery=recovery;
+  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}};
+}
+
+test('a hidden tab whose stream comes back for someone who signed in elsewhere ends its session and reads nothing for them',async()=>{
+  useMockedClock();
+  const visibility=new EventTarget();visibility.visibilityState='hidden';
+  const t=streamingPage({visibility});
+  try{
+    visibility.visibilityState='visible';visibility.dispatchEvent(new Event('visibilitychange'));
+    t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',userId:'u2'})});
+    await delay(90);
+    assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);assert.equal(t.sources[0].closed,true);
+    assert.deepEqual(t.apiCalls,[],'nothing is read for the other person');
+  }finally{t.restore();}
+});
+
+test('a stream for the person the tab shows goes on, and so does one from a server that names no one',async()=>{
+  useMockedClock();
+  for(const named of [{userId:'u1'},{}]){
+    let reloads=0;
+    const t=streamingPage({app:{context:()=>({view:'board',projectId:'p1'})},transport:{reload:async()=>{reloads++;return {stale:false};}}});
+    try{
+      t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',...named})});
+      await delay(90);
+      assert.equal(t.expires,0);assert.equal(reloads,1);
+    }finally{t.restore();}
+  }
+});
+
+test('a lost stream that finds someone else signed in ends this tab\'s session',async()=>{
+  const t=streamingPage({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+  try{
+    t.sources[0].listeners.error();for(let turn=0;turn<5&&!t.expires;turn++)await tick();
+    assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);
+  }finally{t.restore();}
+});
+
 test('temporary sessions open no event stream until password completion',()=>{
   let streams=0;
   const t=fixture({data:{session:{id:'s1',userId:'u1',temporary:true}},eventSourceFactory:()=>{streams++;return {addEventListener(){},close(){}};}});
