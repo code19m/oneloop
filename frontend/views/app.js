@@ -1389,14 +1389,14 @@
     const keptInput = !!window.Recovery?.keepsInput;
     const inner = mode === 'change'
       ? `<h1 tabindex="-1">Set a new password</h1>
-        <form novalidate onsubmit="return App.setPassword(event)">
+        <form novalidate ${UIAction.on('submit', 'setPassword', UIAction.event)}>
           ${field('Current temporary password', `<input class="ctl" type="password" name="cur" autocomplete="current-password" autofocus>`)}
           ${field('New password', `<input class="ctl" type="password" name="pw" autocomplete="new-password">`)}
           ${field('Confirm', `<input class="ctl" type="password" name="pw2">`)}
-          <div class="modal-actions"><button class="btn danger" type="button" onclick="App.logout()">Sign out</button><button class="btn primary" type="submit">Save password</button></div>
+          <div class="modal-actions"><button class="btn danger" type="button" ${UIAction('logout')}>Sign out</button><button class="btn primary" type="submit">Save password</button></div>
         </form>`
       : `<h1 tabindex="-1">Sign in</h1>
-        <form novalidate onsubmit="return App.login(event)">
+        <form novalidate ${UIAction.on('submit', 'login', UIAction.event)}>
           ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username"${keptInput ? '' : ' autofocus'}>`)}
           ${field('Password', `<input class="ctl" type="password" name="password" autocomplete="current-password">`)}
           <div class="modal-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Sign in</button></div>
@@ -1483,13 +1483,13 @@
       <div class="access-session-main"><div class="access-session-title">${esc(item.device || 'Unknown device')}${item.id === current?.id ? '<span class="current-session">Current</span>' : ''}</div>
       ${item.browser ? `<div class="access-session-sub">${esc(item.browser)}</div>` : ''}
       <dl class="access-session-facts">${fact('IP address',item.ip || 'Unavailable')}${fact('Last active',item.id === current?.id ? 'Now' : item.lastActiveAt ? date(item.lastActiveAt) : 'Never')}</dl></div>
-      ${item.id !== current?.id ? `<button class="btn quiet danger" type="button" aria-label="Revoke ${esc(item.device)} session" onclick="App.revokeSession('${UIArg(item.id)}')">Revoke</button>` : ''}</div>`).join('');
+      ${item.id !== current?.id ? `<button class="btn quiet danger" type="button" aria-label="Revoke ${esc(item.device)} session" ${UIAction('revokeSession', item.id)}>Revoke</button>` : ''}</div>`).join('');
     const appRows = grants.map(item => `<div class="access-session-row" data-grant-id="${esc(item.id)}"><div class="access-session-main">
       <div class="access-session-title">${esc(item.clientName)}<span class="access-client-type">${esc(item.protocol)}</span></div>
       <div class="app-access-scopes">${(item.access || []).map(grant => `<div><span class="access-project">${esc(visibleProjects().find(p=>p.id===grant.projectId)?.name || 'Unavailable project')}</span><span>${esc(grant.permissions.map(permission=>permissions[permission] || permission).join(' · '))}</span></div>`).join('')}</div>
       <dl class="access-session-facts">${fact('Last used',item.lastUsedAt ? date(item.lastUsedAt) : 'Never')}${fact('Connected',date(item.authorizedAt))}${fact('Expires',item.expiresAt ? date(item.expiresAt) : 'No expiry')}</dl>
-      </div><button type="button" class="btn quiet danger" aria-label="Revoke ${esc(item.clientName)} access" onclick="App.revokeAppAccess('${UIArg(item.id)}')">Revoke</button></div>`).join('');
-    return `<section class="section"><div class="access-section-heading"><h2 tabindex="-1">Sessions</h2><button type="button" class="btn quiet danger" onclick="App.revokeOtherSessions()" ${sessions.some(item=>item.id!==current?.id) ? '' : 'disabled'}>Sign out other sessions</button></div><div class="access-session-list">${sessionRows || '<div class="access-empty">No active sessions</div>'}</div></section>
+      </div><button type="button" class="btn quiet danger" aria-label="Revoke ${esc(item.clientName)} access" ${UIAction('revokeAppAccess', item.id)}>Revoke</button></div>`).join('');
+    return `<section class="section"><div class="access-section-heading"><h2 tabindex="-1">Sessions</h2><button type="button" class="btn quiet danger" ${UIAction('revokeOtherSessions')} ${sessions.some(item=>item.id!==current?.id) ? '' : 'disabled'}>Sign out other sessions</button></div><div class="access-session-list">${sessionRows || '<div class="access-empty">No active sessions</div>'}</div></section>
       <section class="section"><h2 tabindex="-1">Connected apps</h2><div class="access-session-list">${appRows || '<div class="access-empty">No connected apps</div>'}</div></section>`;
   }
   function refreshProfileAccess(status = {}) {
@@ -1497,7 +1497,7 @@
     if (!host) return;
     const hadFocus = host.contains(document.activeElement);
     const before=host.getBoundingClientRect().height;
-    setHTML(host,renderProfileAccess() + (status.loading ? '<p class="access-note" role="status">Loading access…</p>' : status.error ? `<p class="access-note" role="alert">${esc(status.error)} <button type="button" class="btn quiet" onclick="App.retryProfileAccess()">Retry</button></p>` : ''));
+    setHTML(host,renderProfileAccess() + (status.loading ? '<p class="access-note" role="status">Loading access…</p>' : status.error ? `<p class="access-note" role="alert">${esc(status.error)} <button type="button" class="btn quiet" ${UIAction('retryProfileAccess')}>Retry</button></p>` : ''));
     fadeContent(host);UIMotion.height(host,before);
     if (hadFocus) (host.querySelector('button:not(:disabled)') || host.querySelector('h2'))?.focus({preventScroll:true});
   }
@@ -1509,17 +1509,17 @@
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
           ${avatarHtml(u.id, 56)}
           <div style="display:flex;gap:8px">
-            <input type="file" id="avIn" accept="image/*" style="display:none" onchange="App.setAvatar(this)">
-            <button class="btn" onclick="document.getElementById('avIn').click()">${u.avatar ? 'Change avatar' : 'Upload avatar'}</button>
-            ${u.avatar ? '<button class="btn" onclick="App.removeAvatar()">Remove</button>' : ''}
+            <input type="file" id="avIn" accept="image/*" style="display:none" ${UIAction.on('change', 'setAvatar', UIAction.element)}>
+            <button class="btn" ${UIAction('chooseAvatar')}>${u.avatar ? 'Change avatar' : 'Upload avatar'}</button>
+            ${u.avatar ? `<button class="btn" ${UIAction('removeAvatar')}>Remove</button>` : ''}
           </div>
         </div>
         ${field('Username', `<input class="ctl mono" value="${esc(userHandle(u))}" disabled>`)}
-        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave onblur="App.updMe(this.value)" onkeydown="if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229&&!event.repeat){event.preventDefault();this.blur()}">`)}
+        ${field('Full name', `<input class="ctl" name="name" value="${esc(u.name)}" maxlength="80" data-autosave ${UIAction.on('blur', 'updMe', UIAction.value)} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)}>`)}
       </div>
       <div class="section">
         <h2>Password</h2>
-        <form novalidate onsubmit="return App.changePassword(event)">
+        <form novalidate ${UIAction.on('submit', 'changePassword', UIAction.event)}>
           ${field('Current password', `<input class="ctl" type="password" name="cur" autocomplete="current-password">`)}
           <div class="field-row">
             ${field('New password', `<input class="ctl" type="password" name="pw" autocomplete="new-password">`)}
@@ -1703,8 +1703,8 @@
         <h2>Project</h2>
         <div class="project-fields">
           <div class="field-row">
-            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}
-            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave onblur="App.updateProjectField(this)" onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229 && !event.repeat){event.preventDefault();App.updateProjectField(this);this.blur()}">`)}</div>
+            ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}
+            <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}</div>
           </div>
         </div>
       </div>
@@ -1717,23 +1717,23 @@
               <div class="member-person">${avatarHtml(u.id, 24)}<span><b data-tip="${esc(u.name)}" data-tip-overflow>${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>
               <div class="member-grants">
                 ${u.admin ? '<span class="admin-access">Full access</span>' : `
-                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_roadmap',this.checked,this)"><span><b>Roadmap</b></span></label>
-                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} onchange="App.setMemberPermission('${UIArg(u.id)}','manage_board',this.checked,this)"><span><b>Board</b></span></label>`}
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Roadmap" ${(m.permissions || []).includes('manage_roadmap') ? 'checked' : ''} ${UIAction.on('change', 'setMemberPermission', u.id, 'manage_roadmap', UIAction.checked, UIAction.element)}><span><b>Roadmap</b></span></label>
+                  <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} ${UIAction.on('change', 'setMemberPermission', u.id, 'manage_board', UIAction.checked, UIAction.element)}><span><b>Board</b></span></label>`}
               </div>
-              <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" onclick="App.removeMember('${UIArg(u.id)}')">${I.close}</button>
+              <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" ${UIAction('removeMember', u.id)}>${I.close}</button>
             </div>`).join('') || `<div class="empty-note" style="border:0;text-align:left;padding:4px 0">${query?'No matching members':'No members yet'}</div>`}
         </div>
         ${matching.length>memberWindow.limit?'<button type="button" class="btn quiet" data-more-members>Load more members</button>':''}
         <div style="margin-top:12px;width:260px">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
           ? selectHtml('addMember', { label:'Add member', value: '', placeholder: 'Add member…', search: true, options: candidates.map((u) => ({ v: u.id, l: `${u.name} · ${userHandle(u)}` })), pick: (v) => App.addMember(v) })
           : D.adminUsers?.nextCursor ? '' : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
-        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users onclick="App.loadMoreUsers()" ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
-        ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
+        ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users ${UIAction('loadMoreUsers')} ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
+        ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
       </div>
       ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
       <div class="section" style="border-color:color-mix(in srgb,var(--err) 25%,transparent)">
         <h2 style="color:var(--err)">Danger zone</h2>
-        <button class="btn danger" onclick="App.deleteProject()">Delete project</button>
+        <button class="btn danger" ${UIAction('deleteProject')}>Delete project</button>
       </div>
     </div>`;
   }
@@ -1749,12 +1749,12 @@
     const hasMore=D.adminUsers?.loaded?!!D.adminUsers.nextCursor:D.users.length>state.usersLimit;
     return `<div class="settings">
       <div class="section">
-        ${awaiting ? '<p class="access-note" role="status">Loading users…</p>' : D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" onclick="App.retryUsers()">Retry</button></p>` : ''}
+        ${awaiting ? '<p class="access-note" role="status">Loading users…</p>' : D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
         ${listed.map((u) => `
-          <button type="button" class="user-row clickable ${u.active ? '' : 'off'}" data-user-id="${esc(u.id)}" onclick="App.openModal('user','${UIArg(u.id)}')">${avatarHtml(u.id, 22)}
+          <button type="button" class="user-row clickable ${u.active ? '' : 'off'}" data-user-id="${esc(u.id)}" ${UIAction('openModal', 'user', u.id)}>${avatarHtml(u.id, 22)}
             <span class="uname">${esc(u.name)}</span><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${esc(userHandle(u))}</span>
             ${u.active ? '' : '<span class="tag-off">deactivated</span>'}
-            ${u.mustChange ? '<span class="tag-off" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? '<button class="btn quiet" onclick="App.loadMoreUsers()">Load more users</button>' : ''}
+            ${u.mustChange ? '<span class="tag-off" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? `<button class="btn quiet" ${UIAction('loadMoreUsers')}>Load more users</button>` : ''}
       </div>
     </div>`;
   }
@@ -2209,7 +2209,7 @@
     if (state.view === 'storage') return '<h1>Storage</h1><span class="meta">All projects</span>';
     if (state.view === 'inbox') return '<h1>Inbox</h1>';
     if (state.view === 'profile') return `<h1>Profile</h1><span class="meta">${esc(userHandle(me()))}</span>`;
-    if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" onclick="App.openModal('user')">${I.plus} New user</button></div>`;
+    if (state.view === 'users') return `<h1>Users</h1><span class="meta users-count">${usersCountLabel()}</span><div class="right"><button class="btn primary" ${UIAction('openModal', 'user')}>${I.plus} New user</button></div>`;
     return `<h1>Settings</h1><span class="meta" data-tip="${esc(project().name)}" data-tip-overflow>${esc(project().name)}</span>`;
   }
 
@@ -2992,6 +2992,7 @@
       App.toast('Password changed. Other sessions and app access revoked'); render(); return false;
     },
     updMe(v) { const nv = cleanStr(v, 80); if (!nv) return failField(document.querySelector('.settings'), 'name', 'Enter your full name.'); me().name = nv; const chip = document.querySelector('.me-chip'); if (chip) { chip.title = nv; chip.querySelector('.uname').textContent = nv; } App.toast('Profile saved'); },
+    chooseAvatar() { document.getElementById('avIn')?.click(); },
     setAvatar(input) {
       const file = input.files[0]; if (!file) return;
       const r = new FileReader();
@@ -3542,6 +3543,8 @@
     },
 
     // CRUD — project
+    /** Enter saves a project field, then leaves it. */
+    leaveProjectField(event, input) { event.preventDefault(); App.updateProjectField(input); input.blur(); },
     updateProjectField(input) {
       if (!isAdmin() || !['name','key'].includes(input.name)) return false;
       const value = input.name === 'name' ? cleanStr(input.value, 60) : input.value.toUpperCase();

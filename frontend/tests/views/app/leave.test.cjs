@@ -25,8 +25,6 @@ function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gatew
     return { ...t, bridge, commands };
   } finally { globalThis.document = previous; }
 }
-/** Run the inline handler for `type` that a browser runs; jsdom runs none. */
-const handle = (element, type) => element.ownerDocument.defaultView.Function(element.getAttribute(`on${type}`)).call(element);
 const ask = t => t.d.querySelector('.confirmation-layer [role="alertdialog"]');
 
 test('an unsent comment makes leaving warn, and a clean page leaves quietly', () => {
@@ -55,13 +53,13 @@ test('search boxes and fields that saved when they lost focus never count', asyn
   const board = bootApp({ route: 'board' });
   type(board.d.querySelector('[data-board-search]'), 'payment');
   assert.equal(leaveWarns(board), false, 'the Board search');
-  const settings = withBridge(bootApp({ route: 'settings' }));
+  const settings = withBridge(bootApp({ route: 'settings', actions: true }));
   type(settings.d.getElementById('member-search'), 'robin');
   assert.equal(leaveWarns(settings), false, 'the member search');
   const name = settings.d.querySelector('.project-fields [name="name"]');
   type(name, 'Renamed project');
   assert.equal(leaveWarns(settings), true, 'a name still being typed');
-  name.blur(); handle(name, 'blur'); await settle();
+  name.blur(); await settle();
   assert.deepEqual(settings.commands.map(command => command.operation), ['project.update']);
   assert.equal(name.value, 'Renamed project');
   assert.equal(leaveWarns(settings), false, 'the name saved when it lost focus');
@@ -81,9 +79,9 @@ test('an untouched New user or Edit user dialog leaves quietly; a ticked checkbo
 });
 
 test('a permission checkbox saves when it changes, so it never counts, also while it has focus', async () => {
-  const t = withBridge(bootApp({ route: 'settings' }));
+  const t = withBridge(bootApp({ route: 'settings', actions: true }));
   const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]:not(:checked)');
-  box.focus(); box.click(); handle(box, 'change'); await settle();
+  box.focus(); box.click(); await settle();
   assert.deepEqual(t.commands.map(command => command.operation), ['membership.update']);
   assert.equal(t.d.activeElement, box);
   assert.equal(leaveWarns(t), false);

@@ -34,7 +34,7 @@ test('a member name with markup stays text in the Member has open work dialog',(
 });
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
+const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = {}) => bootApp({ route, stored, actions, prepare: (D, w) => {
   prepare?.(D, w);
   if (readOnly) D.users.find(u => u.id === D.session.userId).admin = false;
 } });
@@ -96,7 +96,7 @@ const {w,d,A}=boot('users',{prepare:D=>{D.users.find(u=>u.id===D.session.userId)
 });
 
 test('row actions open the right editor, Pool promotion keeps its title and navigation dismisses stale overlays', () => {
-const {w,d,A,D}=boot('roadmap');A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));w.eval(d.querySelector('.user-row').getAttribute('onclick'));assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');w.Function('event',d.querySelector('.pool-promote').getAttribute('onclick'))(new w.Event('click'));assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
+const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');w.Function('event',d.querySelector('.pool-promote').getAttribute('onclick'))(new w.Event('click'));assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
 });
 
 test('a reserved task prefix is rejected inline and a new prefix keeps the old one reserved', () => {
@@ -122,8 +122,18 @@ const t=boot('settings');
  assert(!t.d.querySelector('.reauth-layer'));assert(t.d.querySelector('#confirmation-match'));
 });
 
+test('Enter in a project field saves it and leaves it, but not while text is being composed', async () => {
+ const t=boot('settings',{actions:true}),commands=[];
+ installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ const name=t.d.querySelector('.project-fields [name="name"]'),enter=init=>{const event=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...init});name.dispatchEvent(event);return event;};
+ name.focus();name.value='Renamed project';
+ assert.equal(enter({isComposing:true}).defaultPrevented,false);assert.equal(t.d.activeElement,name);assert.deepEqual(commands,[]);
+ assert.equal(enter().defaultPrevented,true);await settle();
+ assert.notEqual(t.d.activeElement,name);assert(commands.length);for(const command of commands)assert.deepEqual(command,['project.update',{projectId:'p1',name:'Renamed project'}]);
+});
+
 test('Enter in the profile name saves through the blur path', () => {
- const t=boot('profile'),name=t.d.querySelector('input[name=name]');name.onblur=()=>t.A.updMe(name.value);name.focus();name.value='Taylor Updated';let prevented=false;t.w.Function('event',name.getAttribute('onkeydown')).call(name,{key:'Enter',preventDefault(){prevented=true;}});assert(prevented);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
+ const t=boot('profile',{actions:true}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
 });
 
 test('both password forms require five Unicode characters and accept spaces and long passwords', () => {
