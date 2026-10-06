@@ -779,6 +779,20 @@ async fn a_page_showing_another_person_neither_reads_nor_writes() {
         .await
         .unwrap();
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    // Sign out from such a page signs out only that page: the cookie stays,
+    // and so does the session of whoever signed in after.
+    let refused = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/auth/logout",
+            Some("someone-before"),
+            "",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    assert!(!refused.headers().contains_key(header::SET_COOKIE));
     // Without the header, as from other clients, the cookie alone decides.
     let current = app
         .oneshot(request("GET", "/api/auth/me", None, ""))
