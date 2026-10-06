@@ -1759,6 +1759,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reply_holds_only_the_start_of_each_long_heading() {
+        let long = "Long words ".repeat(10_000);
+        let mut content = format!("# {long}\n\nIntro.\n\n");
+        for _ in 0..10 {
+            content.push_str(&format!("## {long}\n\nText.\n\n"));
+        }
+        let files = vec![("long.md".to_owned(), content)];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        let read = service
+            .read_text(&people[0], "p", "long.md", None)
+            .await
+            .unwrap();
+        let title = read.title.unwrap();
+        assert!(title.starts_with("Long words Long"));
+        assert!(
+            title.len() <= markdown::HEADING_BYTES_MAX,
+            "{}",
+            title.len()
+        );
+        assert!(read.headings.len() > 1);
+        for heading in &read.headings {
+            assert!(heading.len() <= markdown::HEADING_BYTES_MAX + "## ".len());
+        }
+    }
+
+    #[tokio::test]
     async fn a_file_read_waits_at_most_five_seconds_for_the_one_before_it() {
         let files = vec![("note.md".to_owned(), "# Note\n\nWords.\n".to_owned())];
         let (_root, service, people) = synced_project(files, &["alice"]).await;

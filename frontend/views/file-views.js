@@ -127,6 +127,12 @@
   const isSpace=c=>/^\p{White_Space}$/u.test(c),isPunctuation=c=>/^[\p{P}\p{S}]$/u.test(c);
   const trimSpace=value=>value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu,''),trimEndSpace=value=>value.replace(/\p{White_Space}+$/u,'');
   const slug=text=>text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\p{White_Space}-]/gu,'').replace(/\p{White_Space}/gu,'-');
+  /** The start of a heading's source, as the server reads it: the characters that fit in 1 KiB of UTF-8. */
+  function headingSource(text){
+    let bytes=0,end=0;
+    for(const c of text){const code=c.codePointAt(0)??0,size=code<0x80?1:code<0x800?2:code<0x10000?3:4;if(bytes+size>1024)break;bytes+=size;end+=c.length;}
+    return text.slice(0,end);
+  }
   const ENTITIES={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'};
   /** A character reference at `start`, and its length. */
   function entity(chars,start){
@@ -182,7 +188,7 @@
     const rest=trimmed.slice(level);if(level<1||level>6||(rest&&!/^[ \t]/.test(rest)))return null;
     let text=trimSpace(rest);const withoutClosing=text.replace(/#+$/,'');
     if(withoutClosing.length!==text.length&&(!withoutClosing||/[ \t]$/.test(withoutClosing)))text=trimEndSpace(withoutClosing);
-    return {level,text:inlineText(text)};
+    return {level,text:inlineText(headingSource(text))};
   }
   function setextLevel(line,nextLine){
     const text=indent(line);if(text===null||!trimSpace(text)||/^[#>\-*+|`~<]/.test(text)||(/^[0-9]/.test(text)&&text.includes('. ')))return 0;
@@ -197,7 +203,7 @@
       if(fence){if(closesFence(line,fence))fence=null;index++;continue;}
       const opened=opensFence(line);if(opened){fence=opened;index++;continue;}
       const atx=atxHeading(line),setext=atx||index+1>=lines.length?0:setextLevel(line,lines[index+1]);
-      const heading=atx||(setext?{level:setext,text:inlineText(trimSpace(line))}:null);
+      const heading=atx||(setext?{level:setext,text:inlineText(headingSource(trimSpace(line)))}:null);
       if(heading)headings.push({...heading,line:index});
       index+=setext?2:1;
     }

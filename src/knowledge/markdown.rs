@@ -44,6 +44,20 @@ pub(crate) fn outline(source: &str) -> Vec<Section> {
 /// left out.
 const SECTIONS_MAX: usize = 5_000;
 
+/// Bytes of a heading that are read. Each mark in them costs memory while
+/// they are read, and headings go into search results and MCP replies, so a
+/// long heading line is read only up to here.
+pub(crate) const HEADING_BYTES_MAX: usize = 1_024;
+
+/// The start of a heading's source, cut at a character boundary.
+fn heading_source(text: &str) -> &str {
+    let mut end = text.len().min(HEADING_BYTES_MAX);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Reads the document a line at a time, so a long document costs memory for
 /// its sections, not for its lines.
 fn split(source: &str, with_text: bool) -> Vec<Section> {
@@ -76,7 +90,7 @@ fn split(source: &str, with_text: bool) -> Vec<Section> {
         let heading = atx.or_else(|| {
             setext.map(|level| Heading {
                 level,
-                text: inline_text(line.trim()),
+                text: inline_text(heading_source(line.trim())),
                 anchor: String::new(),
             })
         });
@@ -266,7 +280,7 @@ fn atx_heading(line: &str) -> Option<Heading> {
     }
     Some(Heading {
         level: level as u8,
-        text: inline_text(text),
+        text: inline_text(heading_source(text)),
         anchor: String::new(),
     })
 }
@@ -784,6 +798,23 @@ mod tests {
         assert_eq!(parsed[0].heading.as_ref().unwrap().text, "Title");
         assert!(parsed[0].text.is_empty());
         assert!(peak < 64 * 1024, "{peak} bytes for {}", document.len());
+    }
+
+    #[test]
+    fn a_long_heading_is_read_up_to_its_limit() {
+        use crate::test_memory::peak_heap;
+        // A megabyte of emphasis marks, each of which costs memory to pair.
+        let marks = "*a".repeat(512 * 1024);
+        for document in [format!("# {marks}\n\nText.\n"), format!("a{marks}\n===\n")] {
+            let (parsed, peak) = peak_heap(|| outline(&document));
+            let heading = parsed[0].heading.as_ref().unwrap();
+            assert!((1..=HEADING_BYTES_MAX).contains(&heading.text.len()));
+            assert!(peak < 128 * 1024, "{peak} bytes");
+        }
+        // A cut never splits a character.
+        let wide = format!("# a{}\n", "é".repeat(HEADING_BYTES_MAX));
+        let heading = outline(&wide).remove(0).heading.unwrap();
+        assert_eq!(heading.text.len(), HEADING_BYTES_MAX - 1);
     }
 
     #[test]
