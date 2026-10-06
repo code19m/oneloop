@@ -218,6 +218,13 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
   }
   await page.keyboard.press('Escape');
   await expect(tooltip).toHaveCount(0);
+  // Keyboard users without a screen reader see the reason on the title instead.
+  await page.locator('.card .card-move').focus();
+  await page.keyboard.press('Tab');
+  await expect(title).toBeFocused();
+  await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
+  await expect(title).toHaveAccessibleDescription(/^[^]*Blocked: Waiting for the API[^]*$/);
+  expect((await title.getAttribute('aria-describedby')).split(' ')).not.toContain('app-tip');
   await title.press('Enter');
   const comment = page.locator('[data-comment]');
   await expect(comment.getByRole('group')).toHaveAccessibleName(/^Smoke Owner \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);

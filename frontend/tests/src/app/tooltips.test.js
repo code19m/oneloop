@@ -145,6 +145,24 @@ test('times, Blocked badges and cut-off names carry their details as tips, witho
   assert.equal(task.d.querySelectorAll('[title]:not(button):not(a):not([role="button"]):not(.nav-item)').length, 0, 'no detail is left behind a hover-only title');
 });
 
+test('a blocked card\'s title shows the reason on keyboard focus only, without repeating its description', ctx => {
+  ctx.mock.timers.enable({ apis: ['setTimeout'] });
+  const board = bootApp({ route: 'board', prepare: D => { D.tasks.find(task => task.id === 'BIR-079').block = { id: 'b1', reason: 'Waiting for the API', by: 'robin', at: Date.now() }; } });
+  const matches = board.w.Element.prototype.matches;
+  board.w.Element.prototype.matches = function (selector) { return selector === ':focus-visible' ? board.d.activeElement === this : matches.call(this, selector); };
+  installTooltips(board.d);
+  const title = board.d.querySelector('[data-task="BIR-079"] .card-title-button'), tip = () => board.d.getElementById('app-tip');
+  title.dispatchEvent(new board.w.PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' })); ctx.mock.timers.tick(300);
+  assert.equal(tip(), null, 'a mouse on the title shows nothing; the badge has the tip');
+  title.focus();
+  assert.match(tip().textContent, /^Waiting for the API — /);
+  assert.equal(title.getAttribute('aria-describedby'), 'card-context-BIR-079', 'screen readers hear the reason once, from the card');
+  title.blur(); assert.equal(tip(), null);
+  const plain = board.d.querySelector('.card:not(.blocked) .card-title-button');
+  plain.focus(); assert.equal(tip(), null, 'a card that is not blocked has no tip');
+  ctx.mock.timers.reset();
+});
+
 test('a live Board update keeps a shown tip in the badge\'s description', async () => {
   const board = bootApp({ route: 'board', prepare: D => { D.tasks.find(task => task.id === 'BIR-079').block = { id: 'b1', reason: 'Waiting for the API', by: 'robin', at: Date.now() }; } });
   installTooltips(board.d);

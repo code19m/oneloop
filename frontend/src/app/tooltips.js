@@ -10,8 +10,10 @@
  * shows only while the element's text is cut off or hidden. A tap shows a tip
  * unless the element is a control, or sits inside one, so tapping a card still
  * opens it; a tip marked `data-tip-tap`, such as a Blocked badge, takes the
- * tap instead. Screen readers hear the tip as a description, unless it only
- * repeats the element's name.
+ * tap instead. A tip marked `data-tip-keyboard` shows on keyboard focus only,
+ * such as a Blocked reason on a card's title, for people who can't hover the
+ * badge. Screen readers hear the tip as a description, unless it only repeats
+ * the element's name or description.
  * @param {Document} [doc]
  * @param {{delay?:number,hideDelay?:number}} [options]
  */
@@ -64,8 +66,9 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     tip.textContent = text;
     if (!tip.isConnected) doc.body.append(tip);
     anchor = element;
-    // A cut-off name, or a tip that repeats the label, would be heard twice.
-    described = !element.hasAttribute('data-tip-overflow') && element.getAttribute('aria-label')?.trim() !== text.trim();
+    // A cut-off name, or a tip that repeats the label or the description, would be heard twice.
+    const description = (element.getAttribute('aria-describedby') ?? '').split(/\s+/).map((id) => id && doc.getElementById(id)?.textContent).join(' ');
+    described = !element.hasAttribute('data-tip-overflow') && element.getAttribute('aria-label')?.trim() !== text.trim() && !description.includes(text.trim());
     if (described) describe(element);
     place();
     observer.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-describedby'] });
@@ -102,7 +105,7 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
     if (event.pointerType !== 'mouse') return;
     const element = anchorOf(event.target);
     if (tip?.contains(/** @type {Node} */ (event.target))) { win.clearTimeout(hideTimer); return; }
-    if (!element) return;
+    if (!element || element.hasAttribute('data-tip-keyboard')) return;
     win.clearTimeout(hideTimer);
     if (element === anchor) return;
     win.clearTimeout(showTimer);
@@ -129,7 +132,7 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
   doc.addEventListener('click', (event) => {
     if (!touch) return;
     const element = anchorOf(event.target);
-    if (!element || element.matches(CONTROL)) return;
+    if (!element || element.matches(CONTROL) || element.hasAttribute('data-tip-keyboard')) return;
     const takesTap = element.hasAttribute('data-tip-tap');
     if (!takesTap && element.parentElement?.closest(CONTROL)) return;
     if (takesTap) { event.preventDefault(); event.stopPropagation(); }
