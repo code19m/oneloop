@@ -213,7 +213,8 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
   await page.locator('.card .blocked-badge').hover();
   await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
   for (const theme of ['light', 'dark']) {
-    await page.evaluate(value => Theme.set(value), theme);
+    // Reduce motion still gives each color change 0.01ms, so scan once the new colors have painted.
+    await page.evaluate(value => { Theme.set(value); return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); }, theme);
     await scan(page, `Blocked tooltip (${theme})`);
   }
   await page.keyboard.press('Escape');
