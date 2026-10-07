@@ -4,7 +4,7 @@ name: oneloop
 
 services:
   oneloop:
-    image: ghcr.io/code19m/oneloop:0.1.0-rc.3
+    image: ghcr.io/code19m/oneloop:0.1.0-rc.4
     restart: unless-stopped
     stop_grace_period: 35s
     ports:

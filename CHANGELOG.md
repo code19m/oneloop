@@ -6,9 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.1.0-rc.3] - 2026-10-07
+## [0.1.0-rc.4] - 2026-10-07
 
-The third release candidate. It adds Undo for deletions, image thumbnails,
+The fourth release candidate. 0.1.0-rc.3 was tagged but never published,
+because a browser test failed in its release checks; this release has
+everything it would have had. It adds Undo for deletions, image thumbnails,
 Roadmap scales, a system theme, optional password rules and more ways for AI
 assistants to connect. It also fixes many bugs and security problems, so read
 the upgrade notes before you upgrade.
@@ -344,10 +346,10 @@ the upgrade notes before you upgrade.
 
 ### Distribution
 
-- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.3`, for linux/amd64 and
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.4`, for linux/amd64 and
   linux/arm64
 - From source:
-  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.3 --locked`
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.4 --locked`
 
 ## [0.1.0-rc.2] - 2026-10-04
 
@@ -459,7 +461,7 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.3...HEAD
-[0.1.0-rc.3]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.2...v0.1.0-rc.3
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.4...HEAD
+[0.1.0-rc.4]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.2...v0.1.0-rc.4
 [0.1.0-rc.2]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.1...v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/code19m/oneloop/releases/tag/v0.1.0-rc.1
