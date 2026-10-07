@@ -260,7 +260,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | is_terminal_polyfill@1.70.2 | MIT OR Apache-2.0 |
 | itoa@1.0.18 | MIT OR Apache-2.0 |
 | jiff-core@0.1.1 | Unlicense OR MIT |
-| jiff-tzdb@0.1.8 | Unlicense OR MIT |
+| jiff-tzdb@0.1.9 | Unlicense OR MIT |
 | jiff@0.2.37 | Unlicense OR MIT |
 | js-sha256@1.0.0 | MIT |
 | katex@0.18.9 | MIT |
@@ -3304,7 +3304,7 @@ third-party/chromium/LICENSE.
 - is_terminal_polyfill@1.70.2: Copyright (c) Individual contributors
 - itoa@1.0.18
 - jiff-core@0.1.1: Copyright (c) 2015 Andrew Gallant
-- jiff-tzdb@0.1.8: Copyright (c) 2015 Andrew Gallant
+- jiff-tzdb@0.1.9: Copyright (c) 2015 Andrew Gallant
 - jiff@0.2.37: Copyright (c) 2015 Andrew Gallant
 - js-sha256@1.0.0: Copyright (c) 2014-2026 Chen, Yi-Cyuan
 - katex@0.18.9: Copyright (c) 2013-2020 Khan Academy and other contributors
@@ -4879,7 +4879,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 - aho-corasick@1.1.5
 - globset@0.4.18
 - jiff-core@0.1.1
-- jiff-tzdb@0.1.8
+- jiff-tzdb@0.1.9
 - jiff@0.2.37
 - memchr@2.8.3
 - same-file@1.0.6
@@ -5536,7 +5536,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 - byteorder-lite@0.1.0
 - globset@0.4.18
 - jiff-core@0.1.1
-- jiff-tzdb@0.1.8
+- jiff-tzdb@0.1.9
 - jiff@0.2.37
 - memchr@2.8.3
 - same-file@1.0.6

@@ -47,7 +47,7 @@ oneloop takes the rules for this name from the server's timezone database, in
 new as the copy built into oneloop. Otherwise it uses the built-in copy.
 Browsers show dates and times with their own copy of the rules. The server's
 clock settings and the `TZ` variable have no effect. `oneloop serve --check`
-prints the copy in use and its version, such as `2026c (built in)`.
+prints the copy in use and its version, such as `2026e (built in)`.
 
 If your region changes its clock rules, a newer `tzdata` package on the server
 brings them before a new oneloop release does; the Docker image includes the

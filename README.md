@@ -42,7 +42,7 @@ With Docker Compose:
 
 ```sh
 mkdir oneloop && cd oneloop
-curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.2/deploy/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.3/deploy/compose.yaml
 docker compose run --rm oneloop db migrate
 docker compose run --rm oneloop user add admin --admin
 docker compose up -d
