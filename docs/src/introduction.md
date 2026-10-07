@@ -36,7 +36,7 @@ oneloop stays small on purpose.
 
 ## Project status
 
-The current version is 0.1.0-rc.3, a release candidate. Small teams can use it,
+The current version is 0.1.0-rc.4, a release candidate. Small teams can use it,
 but expect some bugs. Read the [changelog](changelog.md) before you
 upgrade.
 

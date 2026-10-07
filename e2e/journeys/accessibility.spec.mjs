@@ -199,7 +199,9 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await expect(page.getByRole('dialog', { name: 'Pool', exact: true })).toBeVisible();
 });
 
-test('Blocked reasons and comment times add no Tab stops, and keep their details for every reader', async ({ page, instance }) => {
+test('Blocked reasons and comment times add no Tab stops, and keep their details for every reader', async ({ page, instance, browserName, allowedConsoleErrors }) => {
+  // WebKit reports Playwright's own injected stylesheet as a CSP refusal.
+  if (browserName === 'webkit') allowedConsoleErrors.push(/Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline'/);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { task } = instance.projects[0];
   await command(instance.api, 'task.block', { taskId: task.id, reason: 'Waiting for the API', mentions: [] }, task.revision);
@@ -213,8 +215,15 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
   await page.locator('.card .blocked-badge').hover();
   await expect(tooltip).toHaveText(/^Waiting for the API — Smoke Owner · /);
   for (const theme of ['light', 'dark']) {
-    // Reduce motion still gives each color change 0.01ms, so scan once the new colors have painted.
-    await page.evaluate(value => { Theme.set(value); return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); }, theme);
+    // Reduce motion still gives each color change 0.01ms, and WebKit can start
+    // those transitions a few frames late, so scan once every one has finished.
+    await page.evaluate(async value => {
+      Theme.set(value);
+      const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+      await frame(); await frame();
+      await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})));
+      await frame();
+    }, theme);
     await scan(page, `Blocked tooltip (${theme})`);
   }
   await page.keyboard.press('Escape');

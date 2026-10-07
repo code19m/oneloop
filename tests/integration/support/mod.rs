@@ -131,7 +131,7 @@ pub fn schema_two_database(root: &Path) -> rusqlite::Connection {
 }
 
 /// Creates `oneloop.sqlite3` in `root` at schema 3, the schema of `main`
-/// before 0.1.0-rc.3, and returns a connection for adding rows before an
+/// before 0.1.0-rc.4, and returns a connection for adding rows before an
 /// upgrade.
 pub fn schema_three_database(root: &Path) -> rusqlite::Connection {
     use sha2::{Digest, Sha256};
