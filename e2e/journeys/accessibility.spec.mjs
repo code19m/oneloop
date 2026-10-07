@@ -224,6 +224,16 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
       await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})));
       await frame();
     }, theme);
+    // WebKit on Linux can repaint the page heading a little later still: wait
+    // until it has the color a heading drawn now in this theme gets.
+    await expect.poll(() => page.evaluate(() => {
+      const heading = document.querySelector('h1'), probe = document.createElement('h1');
+      probe.className = heading.className;
+      heading.parentElement.append(probe);
+      const settled = getComputedStyle(heading).color === getComputedStyle(probe).color;
+      probe.remove();
+      return settled;
+    }), { timeout: 5_000 }).toBe(true);
     await scan(page, `Blocked tooltip (${theme})`);
   }
   await page.keyboard.press('Escape');
