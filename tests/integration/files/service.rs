@@ -1904,9 +1904,10 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
     let fixture = Fixture::new().await;
     let service = fixture.service(1);
     service.store().ensure_directories().await.unwrap();
-    // A valid large fixture spans tasks so the 25-attachment product limit holds.
+    // One file more than a claim batch of 200, spread over tasks so the
+    // 25-attachment product limit holds.
     let mut keys = Vec::new();
-    for _ in 0..425 {
+    for _ in 0..201 {
         let key = service.store().new_storage_key().unwrap();
         let path = service.store().file_path(&key).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1914,7 +1915,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
         keys.push(key);
     }
     fixture.db.transaction(move |tx| {
-        for i in 0..17 {
+        for i in 0..9 {
             tx.execute(
                 "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
                  VALUES(?1,'p1','epic',?2,?3,'Storage fixture','planning',?2,'manager',1,1)",
@@ -1936,12 +1937,10 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
         }
         Ok(())
     }).await.unwrap();
-    let start = std::time::Instant::now();
     let report = service.cleanup_to_low_watermark().await.unwrap();
-    eprintln!("425 files cleaned in {:?}", start.elapsed());
     assert_eq!(
         (report.temporary_files_cleaned, report.bytes_reclaimed),
-        (425, 42_500)
+        (201, 20_100)
     );
     let (cleaned, events, jobs): (i64, i64, i64) = fixture
         .db
@@ -1956,7 +1955,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
         })
         .await
         .unwrap();
-    assert_eq!((cleaned, events, jobs), (425, 425, 0));
+    assert_eq!((cleaned, events, jobs), (201, 201, 0));
     fixture.db.transaction(|tx| {
         tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
@@ -1974,7 +1973,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
             usage.recent_cleanup[0].file_count,
             usage.recent_cleanup[0].bytes
         ),
-        (425, 42_500)
+        (201, 20_100)
     );
     // A no-op pass must not invent another run.
     service.cleanup_to_low_watermark().await.unwrap();
@@ -2014,7 +2013,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
     assert_eq!(remaining, 0);
     assert_eq!(
         service.storage_usage(&admin).await.unwrap().recent_cleanup[0].file_count,
-        425
+        201
     );
 }
 
@@ -2157,8 +2156,9 @@ async fn high_watermark_admission_does_not_walk_originals() {
 async fn deletion_backlog_drains_in_multiple_bounded_batches_per_pass() {
     let f = Fixture::new().await;
     let store = oneloop::files::FileStore::new(f.db.layout().clone());
+    // One file more than a deletion batch of 200.
     let mut keys = Vec::new();
-    for _ in 0..650 {
+    for _ in 0..201 {
         let key = store.new_storage_key().unwrap();
         let path = store.file_path(&key).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2183,7 +2183,7 @@ async fn deletion_backlog_drains_in_multiple_bounded_batches_per_pass() {
     for _ in 0..4 {
         completed += service.reconcile().await.unwrap().deletion_jobs_completed;
     }
-    assert_eq!(completed, 650);
+    assert_eq!(completed, 201);
     assert_eq!(stored_file_count(&f.db.layout().files()), 0);
 }
 

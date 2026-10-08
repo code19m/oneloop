@@ -87,6 +87,9 @@ Run one integration area with `cargo test --locked --test integration files::`.
 Name a test after the behavior it checks, for example
 `revoked_session_cannot_open_event_stream`, and check one behavior per test.
 Tests must not depend on sleeps, the wall clock, the host time zone or locale.
+Use the smallest input that exercises the logic, such as one item more than a
+batch. Scale and speed belong in `benches/workload.rs`, which CI runs in full
+every week.
 
 Keep the suites fast. Warm `cargo test` should finish in under 60 seconds on a
 10-core laptop, frontend unit tests in under 10 seconds, the end-to-end smoke
