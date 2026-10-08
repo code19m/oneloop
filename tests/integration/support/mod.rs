@@ -1,12 +1,17 @@
 //! The only helpers shared between areas: data directories, accounts, actors,
-//! a seeded project, test configuration, HTTP helpers and waiting.
+//! a seeded project, test configuration, HTTP helpers and waiting. The first
+//! scratch directory turns off SQLite's disk flushes in the process, and
+//! `with_instant_busy_timeout` runs a test that waits for SQLite's busy
+//! timeout without the wait; see `sqlite`.
 //!
 //! Accounts that sign in are created through the application's own account
-//! and session services. Seeded projects insert rows directly for speed; their
-//! users cannot sign in.
+//! and session services, then keep a cheap hash of their password; see
+//! `add_user`. Seeded projects insert rows directly for speed; their users
+//! cannot sign in.
 
 pub mod http;
 mod project;
+mod sqlite;
 
 use std::{
     io::Write,
@@ -27,6 +32,7 @@ use oneloop::{
 use tempfile::TempDir;
 
 pub use project::{SeededProject, seeded_project};
+pub use sqlite::with_instant_busy_timeout;
 
 const PASSWORD: &str = "test-only-password-012345";
 
@@ -37,6 +43,7 @@ pub fn now() -> i64 {
 
 /// An empty private directory under Cargo's scratch directory for integration tests.
 pub fn scratch_dir() -> TempDir {
+    sqlite::skip_disk_flushes();
     let mut builder = tempfile::Builder::new();
     builder.prefix("oneloop-");
     #[cfg(unix)]
@@ -219,6 +226,13 @@ pub fn browser_actor(
 }
 
 /// Creates an account whose display name is its username, then signs it in.
+///
+/// The account gets the real rules and password hash. Then the hash is
+/// replaced with an Argon2id hash of the same password at the lowest cost.
+/// Sign-in reads the cost from the stored hash, so each sign-in to a fixture
+/// account takes microseconds, not a full hash in the four password workers
+/// that all tests share. The `auth` tests create their own accounts, and a
+/// changed password gets the real cost again.
 pub async fn add_user(db: &Db, username: &str, admin: bool) -> IssuedSession {
     let input = NewUser {
         display_name: username.to_owned(),
@@ -227,9 +241,16 @@ pub async fn add_user(db: &Db, username: &str, admin: bool) -> IssuedSession {
         is_admin: admin,
         must_change_password: false,
     };
-    db.transaction(move |tx| create_user(tx, input, now()))
-        .await
-        .unwrap();
+    db.transaction(move |tx| {
+        let user = create_user(tx, input, now())?;
+        tx.execute(
+            "UPDATE users SET password_hash=?1 WHERE id=?2",
+            rusqlite::params![low_cost_hash(PASSWORD), user.id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
     match AuthService::new(db.clone())
         .login(username, PASSWORD, Default::default(), None)
         .await
@@ -238,6 +259,16 @@ pub async fn add_user(db: &Db, username: &str, admin: bool) -> IssuedSession {
         LoginResult::Authenticated(session) => session,
         LoginResult::SessionLimit { .. } => panic!("fixture reached the session limit"),
     }
+}
+
+/// `password` as an Argon2id hash at the lowest cost Argon2 allows.
+fn low_cost_hash(password: &str) -> String {
+    use argon2::{Algorithm, Argon2, Params, Version, password_hash::PasswordHasher};
+    let params = Params::new(Params::MIN_M_COST, Params::MIN_T_COST, 1, None).unwrap();
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string()
 }
 
 /// A migrated instance with one signed-in administrator named `owner`.

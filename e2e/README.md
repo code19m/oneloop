@@ -4,7 +4,7 @@ Playwright journeys that drive the real `oneloop` binary in Chromium, Firefox
 and WebKit.
 
 ```sh
-cargo build --locked                  # or: cargo build --locked --release
+cargo build --locked                  # cargo test builds it too
 npm --prefix e2e ci
 npm --prefix e2e exec -- playwright install chromium firefox webkit
 npm --prefix e2e run test:smoke       # @smoke journeys in Chromium, under 2 minutes
@@ -16,10 +16,12 @@ The Knowledge journeys also need `git` 2.31 or later and `openssl` on your
 
 The harness runs `target/debug/oneloop` by default. A debug build serves the
 frontend from disk, so frontend edits need no rebuild. Set `ONELOOP_TEST_BINARY`
-to test another build, such as the release binary CI uses:
+to test another build, such as the one CI uses. Like a release build, it embeds
+the frontend in the binary:
 
 ```sh
-ONELOOP_TEST_BINARY=target/release/oneloop npm --prefix e2e test
+cargo build --locked --profile ci
+ONELOOP_TEST_BINARY=target/ci/oneloop npm --prefix e2e test
 ```
 
 A relative path is resolved from the directory you run the command in. Set
@@ -67,6 +69,8 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
 - `failUntilRetry(page, pattern, failure)` fails reads until the user presses
   Retry, so background refreshes cannot remove the Retry button first.
 - `command(api, operation, payload, revision)` sends one domain command.
+- `scan(page, label)` runs every axe rule on the page and fails on serious or
+  critical violations.
 
 ## Writing reliable journeys
 

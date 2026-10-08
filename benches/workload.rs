@@ -9,7 +9,8 @@
 //! notifications, and how long other writes wait meanwhile.
 //!
 //! `cargo test` runs the small fixtures as a quick harness check that every
-//! operation succeeds; it does not enforce latency budgets.
+//! operation succeeds; it does not enforce latency budgets or pause between a
+//! client's requests.
 
 use std::{
     collections::BTreeMap,
@@ -133,13 +134,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --burst deliberately removes pacing to diagnose overload separately.
     let requests = Arc::new(tokio::sync::Semaphore::new(if burst { clients } else { 4 }));
     let ordering = Arc::new(tokio::sync::Semaphore::new(if burst { clients } else { 1 }));
+    // A measured client pauses between its requests. The harness check skips
+    // the pauses, which were most of its time.
+    let think_time = if measure {
+        Duration::from_millis(100)
+    } else {
+        Duration::ZERO
+    };
     let mut workers = JoinSet::new();
     let start = Instant::now();
     for client in 0..clients {
         let router = app.router.clone();
         let requests = requests.clone();
         let ordering = ordering.clone();
-        workers.spawn(async move { exercise(router, client, rounds, requests, ordering).await });
+        workers.spawn(async move {
+            exercise(router, client, rounds, think_time, requests, ordering).await
+        });
     }
     let mut samples: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut failures = Vec::new();
@@ -470,6 +480,7 @@ async fn exercise(
     router: Router,
     client: usize,
     rounds: usize,
+    think_time: Duration,
     requests: Arc<tokio::sync::Semaphore>,
     ordering: Arc<tokio::sync::Semaphore>,
 ) -> Vec<(&'static str, f64, Option<String>, usize)> {
@@ -592,7 +603,9 @@ async fn exercise(
         ));
         drop(request_permit);
         drop(ordering_permit);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        if !think_time.is_zero() {
+            tokio::time::sleep(think_time).await;
+        }
     }
     records
 }

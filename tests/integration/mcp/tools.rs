@@ -1238,71 +1238,75 @@ async fn mcp_reads_and_unknown_oauth_tokens_do_not_wait_for_the_writer() {
     }
 }
 
-#[tokio::test]
-async fn refresh_token_revocation_during_writer_contention_is_retryable() {
-    let grant = contended_grant().await;
-    let (db, app, writer) = (&grant.db, &grant.app, &grant.writer);
-    let (access, refresh) = (grant.access.as_str(), grant.refresh.as_str());
-    // Waits for SQLite's five-second busy timeout.
-    let response = app
-        .clone()
-        .oneshot(form("/oauth/revoke", &[("token", refresh)]))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
-    assert_eq!(
-        body_json(response).await["error"],
-        "temporarily_unavailable"
-    );
-    assert!(
-        AuthService::new(db.clone())
-            .authenticate_mcp_access_token(access)
-            .await
-            .is_ok()
-    );
-    writer.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(
-        app.clone()
+#[test]
+fn refresh_token_revocation_during_writer_contention_is_retryable() {
+    support::with_instant_busy_timeout(async {
+        let grant = contended_grant().await;
+        let (db, app, writer) = (&grant.db, &grant.app, &grant.writer);
+        let (access, refresh) = (grant.access.as_str(), grant.refresh.as_str());
+        // SQLite's five-second busy timeout runs out at once.
+        let response = app
+            .clone()
             .oneshot(form("/oauth/revoke", &[("token", refresh)]))
             .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
-    assert!(
-        AuthService::new(db.clone())
-            .authenticate_mcp_access_token(access)
-            .await
-            .is_err()
-    );
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        assert_eq!(
+            body_json(response).await["error"],
+            "temporarily_unavailable"
+        );
+        assert!(
+            AuthService::new(db.clone())
+                .authenticate_mcp_access_token(access)
+                .await
+                .is_ok()
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            app.clone()
+                .oneshot(form("/oauth/revoke", &[("token", refresh)]))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert!(
+            AuthService::new(db.clone())
+                .authenticate_mcp_access_token(access)
+                .await
+                .is_err()
+        );
+    })
 }
 
-#[tokio::test]
-async fn lost_membership_during_writer_contention_is_retryable_not_a_new_login() {
-    let grant = contended_grant().await;
-    let (db, app, writer, access) = (&grant.db, &grant.app, &grant.writer, &grant.access);
-    writer.execute_batch("ROLLBACK").unwrap();
-    db.transaction(|tx| {
-        tx.execute("DELETE FROM project_memberships", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
-    // Waits for SQLite's five-second busy timeout.
-    let response = app
-        .clone()
-        .oneshot(mcp_request(
-            access,
-            None,
-            json!({"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}),
-        ))
+#[test]
+fn lost_membership_during_writer_contention_is_retryable_not_a_new_login() {
+    support::with_instant_busy_timeout(async {
+        let grant = contended_grant().await;
+        let (db, app, writer, access) = (&grant.db, &grant.app, &grant.writer, &grant.access);
+        writer.execute_batch("ROLLBACK").unwrap();
+        db.transaction(|tx| {
+            tx.execute("DELETE FROM project_memberships", [])?;
+            Ok(())
+        })
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
-    assert!(!response.headers().contains_key(header::WWW_AUTHENTICATE));
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        // SQLite's five-second busy timeout runs out at once.
+        let response = app
+            .clone()
+            .oneshot(mcp_request(
+                access,
+                None,
+                json!({"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        assert!(!response.headers().contains_key(header::WWW_AUTHENTICATE));
+    })
 }
 
 #[tokio::test]

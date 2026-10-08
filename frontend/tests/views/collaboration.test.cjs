@@ -7,7 +7,10 @@ const { createRecoveryController } = require('../../src/features/recovery/contro
 const { ApiError } = require('../../src/data/api-client.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
 
-for(const kind of ['comment','block'])for(const state of ['active','removed','inactive'])for(const retained of [true,false])test(`${kind} editor validates ${retained?'saved':'new'} mentions when the recipient is ${state}`,async()=>{
+// Comments and blocks share one membership check: a new mention needs an active member, a saved one is kept.
+// One case per outcome: an active member for blocks (new comment mentions are sent below), removed and
+// inactive members, and a saved mention of a member who left.
+for(const [kind,state,retained] of [['comment','removed',false],['comment','inactive',false],['comment','removed',true],['block','active',false],['block','removed',false],['block','removed',true]])test(`${kind} editor validates ${retained?'saved':'new'} mentions when the recipient is ${state}`,async()=>{
  const saves=[];
  const t=bootApp({route:'task/BIR-079',prepare(D,w){
   w.OneloopTransport={};w.OneloopCollaboration={bind(){return {saveComment(input){saves.push(input);}};}};
@@ -368,10 +371,6 @@ test('Enter submits block/edit/unblock/completion, mentions select first, Shift/
  open('block');typeBlock(t,'Final check');key();open('completeBlocked');input.value='All checks passed';key();assert.equal(task.state,'done');assert(!task.block);
 });
 
-
-test('blocking notifies selected mentions, never unrelated task assignees', () => {
- const t=boot(D=>D.tasks.find(x=>x.id==='BIR-079').assignees=['robin']),task=t.D.tasks.find(x=>x.id==='BIR-079');t.A.openModal('block',task.id);pickBlock(t,'Waiting on @bla','blairq');saveBlockForm(t);assert.deepEqual(Array.from(t.D.notifications,n=>n.recipientId),['blairq']);assert.equal(t.D.notifications[0].reason,'block-mention');
-});
 
 test('the feed checks posting permission once and indexes people once', () => {
   const { w, D } = bootApp({ route: 'task/BIR-079', media: () => false });

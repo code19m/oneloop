@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect } from '@playwright/test';
 
 /** Fill and submit the sign-in form that is already on screen. */
@@ -106,4 +107,19 @@ export async function holdResponses(page, pattern) {
       await Promise.allSettled([...pending]);
     },
   };
+}
+
+/**
+ * Scan the entire page with axe, including contrast and landmarks, and fail on
+ * serious or critical violations. Do not suppress rules. By default AxeBuilder
+ * runs axe in each frame and merges the results in an extra blank page. A page
+ * without frames needs only one run in the page itself (legacy mode), which
+ * gives the same results in about half the time.
+ */
+export async function scan(page, label) {
+  const builder = new AxeBuilder({ page });
+  if (page.frames().length === 1) builder.setLegacyMode();
+  const result = await builder.analyze();
+  const failures = result.violations.filter(item => ['serious', 'critical'].includes(item.impact));
+  expect(failures.map(item => ({ id: item.id, impact: item.impact, nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary })) })), label).toEqual([]);
 }
