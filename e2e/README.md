@@ -69,6 +69,8 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
 - `failUntilRetry(page, pattern, failure)` fails reads until the user presses
   Retry, so background refreshes cannot remove the Retry button first.
 - `command(api, operation, payload, revision)` sends one domain command.
+- `scan(page, label)` runs every axe rule on the page and fails on serious or
+  critical violations.
 
 ## Writing reliable journeys
 
