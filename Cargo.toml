@@ -88,6 +88,17 @@ codegen-units = 1
 lto = "thin"
 strip = "symbols"
 
+# What CI tests in browsers and in the pull request image check. Without debug
+# assertions the binary embeds the web client as a release does, but it skips
+# the release optimization: with cached dependencies that took about nine times
+# the CPU, mostly on one core.
+[profile.ci]
+inherits = "dev"
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
+
 # Keep application code easy to debug while accelerating password, image and
 # SQLite work. Bundled SQLite at opt-level 0 made SQL-heavy tests about twice
 # as slow and cost a fifth more test CPU time.
@@ -97,6 +108,13 @@ blake2 = { opt-level = 2 }
 sha2 = { opt-level = 2 }
 image = { opt-level = 2 }
 png = { opt-level = 2 }
+# PNG's compression and checksums. Unoptimized, they made a decoder test that
+# packs 44 MiB of colour profiles take 2.2 seconds of CPU instead of 0.1.
+fdeflate = { opt-level = 2 }
+flate2 = { opt-level = 2 }
+miniz_oxide = { opt-level = 2 }
+simd-adler32 = { opt-level = 2 }
+crc32fast = { opt-level = 2 }
 zune-jpeg = { opt-level = 2 }
 image-webp = { opt-level = 2 }
 libsqlite3-sys = { opt-level = 2 }

@@ -55,7 +55,6 @@ cargo test --locked --all-targets
 npm --prefix frontend run typecheck
 npm --prefix frontend run lint
 npm --prefix frontend test
-cargo build --locked
 npm --prefix e2e run test:smoke
 
 # If you changed repository scripts:
@@ -67,6 +66,11 @@ node scripts/vendor-verify.mjs --local
 mdbook build docs
 node scripts/check-doc-links.mjs
 ```
+
+The smoke tests run the `target/debug/oneloop` that `cargo test` builds, so
+don't run `cargo build` as well. Tests turn on extra Tokio and SQLite
+features, so `cargo build` compiles many dependencies and oneloop a second
+time.
 
 CI runs all of these, plus a dependency audit, a Docker build, the full
 end-to-end suite on `main` and the tests on macOS. If you change something on a
