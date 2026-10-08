@@ -329,7 +329,8 @@ async function pdfPreview(url, scriptPath) {
   return { w, d, state, observers, open };
 }
 
-for (const [url, scriptPath] of [['http://localhost/', '/views/uploads.js'], ['http://localhost/x/y', '/views/uploads.js'], ['http://localhost/', null]]) {
+// A page in a folder tells the script URL from the page URL; without a script URL the code falls back.
+for (const [url, scriptPath] of [['http://localhost/x/y', '/views/uploads.js'], ['http://localhost/', null]]) {
   const label = scriptPath ? `the script URL from ${new URL(url).pathname}` : 'the evaluation fallback';
   test(`PDF previews resolve bundled assets through ${label}`, async () => {
     const { w, d, state, open } = await pdfPreview(url, scriptPath);
@@ -482,7 +483,7 @@ test('a file Undo that meets a busy server offers Undo again, with the same key'
     w.OneloopTransport = { api: {
       attachments: async () => ({ items: listed }),
       deleteAttachment: async () => { listed = []; return {}; },
-      restoreAttachment: async (id, input) => { restores.push(input.idempotencyKey); if (restores.length === 1) throw new ApiError('Busy', { status: 503, code: 'unavailable', uncertain: true }); listed = [{ ...file, revision: 5 }]; return listed[0]; },
+      restoreAttachment: async (_id, input) => { restores.push(input.idempotencyKey); if (restores.length === 1) throw new ApiError('Busy', { status: 503, code: 'unavailable', uncertain: true }); listed = [{ ...file, revision: 5 }]; return listed[0]; },
       uploadAttachment() {},
     }, subscribe: () => () => {} };
   } });

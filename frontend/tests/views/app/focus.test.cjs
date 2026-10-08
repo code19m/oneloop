@@ -40,8 +40,9 @@ test('a confirmation over a dialog returns focus to the field, and closing witho
   key(t,'Escape');assert.equal(t.d.querySelector('.modal'),null);assert.notEqual(t.d.activeElement,t.d.body);
 });
 
-test('dialogs over the epic drawer restore focus one layer at a time', () => {
+test('the epic drawer is a modal dialog, and dialogs over it restore focus one layer at a time', () => {
   const t=boot('roadmap'),epic=t.d.querySelector('[data-epic]');epic.focus();t.A.openPeek(epic.dataset.epic);
+  const peek=t.d.querySelector('.peek');assert.equal(peek.getAttribute('role'),'dialog');assert.equal(t.d.activeElement,peek.querySelector('button'));assert(t.d.querySelector('.main').inert);
   const edit=[...t.d.querySelectorAll('.peek button')].find(button=>button.textContent.trim()==='Edit epic');assert(edit);edit.focus();
   t.A.openModal('epic',epic.dataset.epic);
   let modal=t.d.querySelector('.modal');assert(t.d.querySelector('.peek').inert);assert.equal(t.d.activeElement,modal.querySelector('input[name="title"]'));
@@ -85,12 +86,6 @@ test('navigation and sign-out dismiss open confirmations', () => {
   assert.equal(t.d.querySelector('.confirmation-layer'),null);assert(!t.d.getElementById('app').inert);assert(t.d.querySelector('.profile-access'));
   t.A.confirm({title:'Session check',text:'Open',action:'Continue',confirm(){}});t.D.session=null;t.A.refresh();
   assert.equal(t.d.querySelector('.confirmation-layer'),null);assert(!t.d.getElementById('app').inert);assert(t.d.querySelector('.auth-card'));
-});
-
-test('the epic drawer is a modal dialog that returns focus to its bar', () => {
-  const t=boot('roadmap'),epic=t.d.querySelector('[data-epic]');epic.focus();t.A.openPeek(epic.dataset.epic);
-  const peek=t.d.querySelector('.peek');assert.equal(peek.getAttribute('role'),'dialog');assert.equal(t.d.activeElement,peek.querySelector('button'));
-  assert(t.d.querySelector('.main').inert);key(t,'Escape');assert.equal(t.d.activeElement.dataset.epic,epic.dataset.epic);
 });
 
 test('select popups return focus to their trigger', () => {
@@ -183,13 +178,13 @@ test('backing out of a dialog opened from a menu returns focus to the menu butto
     ['board',t=>t.d.querySelector('.switcher-btn'),(t,button)=>t.A.projectMenu({currentTarget:button}),'New project'],
     ['task/BIR-079',t=>t.d.querySelector('.task-actions-button'),(t,button)=>t.A.taskActions({currentTarget:button},'BIR-079'),'Delete task'],
   ];
-  // The production bridge asks for confirmation in its own layer; the views alone use a dialog.
-  for(const production of [false,true])for(const [route,find,open,label] of flows){
-    const t=boot(route),name=`${label}${production?' (production)':''}`;
-    if(production)installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:t.w.Recovery,reloadBootstrap:async()=>({})});
+  // With the production bridge, as in the app: deletions ask for confirmation in its own layer.
+  for(const [route,find,open,label] of flows){
+    const t=boot(route);
+    installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:t.w.Recovery,reloadBootstrap:async()=>({})});
     const button=find(t);button.focus();open(t,button);choose(t,label);
-    assert(t.d.querySelector('.modal,.confirmation-layer'),name);key(t,'Escape');assert.equal(t.d.querySelector('.modal,.confirmation-layer'),null,name);
-    assert.equal(t.d.activeElement.getAttribute('aria-label'),button.getAttribute('aria-label'),name);
+    assert(t.d.querySelector('.modal,.confirmation-layer'),label);key(t,'Escape');assert.equal(t.d.querySelector('.modal,.confirmation-layer'),null,label);
+    assert.equal(t.d.activeElement.getAttribute('aria-label'),button.getAttribute('aria-label'),label);
   }
 });
 

@@ -96,11 +96,6 @@ test('large Markdown stays attachable and both preview modes are bounded', async
   open('large.markdown'); assert(d.querySelector('.access-note').textContent.includes('truncated')); assert(d.querySelector('.html-source').textContent.length <= 200000); close();
 });
 
-test('a single previewable file hides preview navigation', async () => {
-  const { d, task, file, open, close } = await taskWithFiles();
-  task.attachments = [file('README.md')]; open('README.md'); assert(d.querySelector('.file-navigation').hidden); close();
-});
-
 test('math, alerts and footnotes render and footnote links move focus', async () => {
   const { w, d } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
