@@ -120,26 +120,27 @@ test('the Inbox page shows load states and updates in place without losing focus
   t.w.testFacade.inboxPage({...loaded,filteredCount:1,unreadCount:0});assert.equal(t.d.activeElement,t.d.querySelector('.inbox-open'));
 });
 
-test('large Inbox appends retain rows/focus without clones or row layout; reconciliation changes only affected rows', () => {
-  // Noon in the fixture's Asia/Tashkent zone keeps all 1,050 notices, one a second, on one day.
+test('Inbox appends retain rows/focus without clones or row layout; reconciliation changes only affected rows', () => {
+  // Noon in the fixture's Asia/Tashkent zone keeps all notices, one a second, on one day. 25 rows are
+  // enough: cloning or measuring each row would break the counts below as it would with 1,000.
   const fixtureNow=Date.UTC(2026,0,15,7);
   const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopTransport={};w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};});
   const notice=(index)=>({id:'scale-'+index,actorId:'robin',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:fixtureNow-index*1000,readAt:null,archivedAt:null,destinationAvailable:true});
-  t.D.notifications=Array.from({length:1000},(_,index)=>notice(index));
-  t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'more',filteredCount:1050,unreadCount:1050});
+  t.D.notifications=Array.from({length:20},(_,index)=>notice(index));
+  t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'more',filteredCount:25,unreadCount:25});
   const first=t.d.querySelector('[data-notification-id]'),open=first.querySelector('.inbox-open');
   open.focus();let clones=0,rects=0;
   const clone=t.w.Element.prototype.cloneNode,rect=t.w.Element.prototype.getBoundingClientRect;
   t.w.Element.prototype.cloneNode=function(...args){clones++;return clone.apply(this,args);};
   t.w.Element.prototype.getBoundingClientRect=function(){if(this.matches('.inbox-row'))rects++;return rect.call(this);};
   const more=t.d.querySelector('.inbox-load-more');t.w.testFacade.inboxBusy(true);assert.equal(more.disabled,true);
-  const items=Array.from({length:50},(_,index)=>notice(index+1000));t.D.notifications.push(...items);
-  t.w.testFacade.inboxPage({loaded:true,loading:false,append:true,items,nextCursor:'last',filteredCount:1050,unreadCount:1050});
-  assert.equal(t.d.querySelectorAll('.inbox-row').length,1050);assert.equal(t.d.querySelectorAll('.inbox-group-heading').length,1);
+  const items=Array.from({length:5},(_,index)=>notice(index+20));t.D.notifications.push(...items);
+  t.w.testFacade.inboxPage({loaded:true,loading:false,append:true,items,nextCursor:'last',filteredCount:25,unreadCount:25});
+  assert.equal(t.d.querySelectorAll('.inbox-row').length,25);assert.equal(t.d.querySelectorAll('.inbox-group-heading').length,1);
   assert.equal(t.d.querySelector('[data-notification-id]'),first);assert.equal(t.d.activeElement,open);
   assert.equal(clones,0);assert.equal(rects,0);assert.equal(more.disabled,false);
-  const unchanged=t.d.querySelectorAll('.inbox-row')[500],unchangedOpen=unchanged.querySelector('.inbox-open');
-  t.D.notifications[0].readAt=fixtureNow;t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:1050,unreadCount:1049});
-  assert.equal(t.d.querySelectorAll('.inbox-row')[500],unchanged);assert.equal(unchanged.querySelector('.inbox-open'),unchangedOpen);
+  const unchanged=t.d.querySelectorAll('.inbox-row')[12],unchangedOpen=unchanged.querySelector('.inbox-open');
+  t.D.notifications[0].readAt=fixtureNow;t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'last',filteredCount:25,unreadCount:24});
+  assert.equal(t.d.querySelectorAll('.inbox-row')[12],unchanged);assert.equal(unchanged.querySelector('.inbox-open'),unchangedOpen);
   assert.ok(first.classList.contains('read'));assert.equal(rects,0);assert.ok(clones<10,'no per-row clones on a single-row state update');
 });

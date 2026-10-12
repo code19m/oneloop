@@ -1,14 +1,6 @@
 // Accessibility: automated scans, keyboard focus, announcements and layouts.
-import AxeBuilder from '@axe-core/playwright';
 import { randomUUID } from 'node:crypto';
-import { test, expect, openApp, command, useTheme, holdResponses } from '../support/test.mjs';
-
-// Scan the entire page, including contrast and landmarks. Do not suppress rules.
-async function scan(page, label) {
-  const result = await new AxeBuilder({ page }).analyze();
-  const failures = result.violations.filter(item => ['serious', 'critical'].includes(item.impact));
-  expect(failures.map(item => ({ id: item.id, impact: item.impact, nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary })) })), label).toEqual([]);
-}
+import { test, expect, openApp, command, useTheme, holdResponses, scan } from '../support/test.mjs';
 
 for (const theme of ['light', 'dark']) {
   test(`views and open controls have no serious accessibility violations (${theme})`, { tag: theme === 'light' ? '@smoke' : [] }, async ({ page, instance }) => {

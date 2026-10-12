@@ -5,12 +5,16 @@ FROM rust:1.92.0-bookworm AS builder
 RUN cargo install cargo-auditable --locked --version 0.7.6
 ARG SOURCE_REVISION=unknown
 ENV SOURCE_REVISION=$SOURCE_REVISION
+# Release images use the release profile. CI checks pull requests with the
+# faster ci profile from Cargo.toml.
+ARG BUILD_PROFILE=release
 WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs THIRD_PARTY_NOTICES.md ./
 COPY src ./src
 COPY migrations ./migrations
 COPY frontend ./frontend
-RUN cargo auditable build --locked --release --bin oneloop
+RUN cargo auditable build --locked --profile "$BUILD_PROFILE" --bin oneloop \
+    && mv "target/$BUILD_PROFILE/oneloop" /build/oneloop
 
 FROM debian:bookworm-slim AS runtime
 LABEL org.opencontainers.image.title="oneloop" \
@@ -25,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && groupadd --gid 10001 oneloop \
     && useradd --uid 10001 --gid oneloop --no-create-home --home-dir /data oneloop \
     && install -d -m 0700 -o oneloop -g oneloop /data
-COPY --from=builder /build/target/release/oneloop /usr/local/bin/oneloop
+COPY --from=builder /build/oneloop /usr/local/bin/oneloop
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/oneloop/
 ENV ONELOOP_DATA_DIR=/data ONELOOP_LISTEN=0.0.0.0:8080
 USER 10001:10001

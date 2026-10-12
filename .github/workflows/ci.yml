@@ -19,6 +19,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Test builds keep file and line numbers for backtraces, but no other debug
+  # information, which CI never reads. Building the tests then takes about a
+  # tenth less CPU time, and the Rust cache is about a quarter smaller.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   TZ: UTC
 
 jobs:
@@ -90,13 +94,13 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
-    # Budget: @smoke under 2 minutes; the full suite takes about 12 on two workers, after the release build.
+    # Budget: @smoke under 2 minutes; the full suite takes about 12 on two workers, after the build.
     timeout-minutes: 30
     env:
       # Pull requests run the @smoke subset in Chromium; main, releases and
       # scheduled runs run every journey in Chromium, Firefox and WebKit.
       E2E_SCOPE: ${{ github.event_name == 'pull_request' && 'smoke' || 'full' }}
-      ONELOOP_TEST_BINARY: target/release/oneloop
+      ONELOOP_TEST_BINARY: target/ci/oneloop
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,19 +109,20 @@ jobs:
         run: rustup toolchain install 1.92.0 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: release
+          shared-key: ci-profile
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: e2e/package-lock.json
-      - name: Release build
-        run: cargo build --locked --release
+      # Embeds the web client as a release does; see the ci profile in Cargo.toml.
+      - name: Build
+        run: cargo build --locked --profile ci
       - name: Verify the systemd template and report sandbox exposure
         run: |
           mkdir -p target/service-check
-          sed "s|ExecStart=/usr/local/bin/oneloop serve|ExecStart=$PWD/target/release/oneloop serve|" deploy/systemd/oneloop.service.example > target/service-check/oneloop.service
+          sed "s|ExecStart=/usr/local/bin/oneloop serve|ExecStart=$PWD/$ONELOOP_TEST_BINARY serve|" deploy/systemd/oneloop.service.example > target/service-check/oneloop.service
           systemd-analyze verify target/service-check/oneloop.service
           systemd-analyze security --offline=yes target/service-check/oneloop.service
       - name: Browser test dependencies
@@ -151,7 +156,10 @@ jobs:
       - name: Build the image without publishing
         env:
           SOURCE_REVISION: ${{ github.sha }}
-        run: docker build --build-arg SOURCE_REVISION="$SOURCE_REVISION" -t oneloop:check .
+          # Pull requests build oneloop with the faster ci profile. Main,
+          # releases and scheduled runs build it as releases do.
+          BUILD_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || 'release' }}
+        run: docker build --build-arg SOURCE_REVISION="$SOURCE_REVISION" --build-arg BUILD_PROFILE="$BUILD_PROFILE" -t oneloop:check .
       - name: Run the documented quick start against the image
         run: scripts/check-quickstart.sh oneloop:check
 

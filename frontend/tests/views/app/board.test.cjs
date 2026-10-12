@@ -82,32 +82,31 @@ function recordingBoard(reduced) {
   return { ...t, animations };
 }
 
-for (const reduced of [false, true]) {
-  test(`an unchanged Board refresh keeps cards, empty states, focus and Load more without motion (${reduced ? 'reduced motion' : 'motion'})`, () => {
-    const t = recordingBoard(reduced);
-    const projectId = t.A.context().projectId;
-    t.D.tasks.forEach(task => task.state = 'planning');
-    t.D.boardPageInfo = { projectId, pages: { planning: { total: 100, nextCursor: 'next' } } }; t.A.refresh();
-    const board = t.d.querySelector('.board'), card = board.querySelector('.card'), title = card.querySelector('.title'), more = board.querySelector('.board-load-more');
-    const empty = [...board.querySelectorAll('.empty-note')]; assert.equal(empty.length, 3);
-    title.focus();
-    const mutations = new t.w.MutationObserver(() => {}); mutations.observe(board, { subtree: true, childList: true }); t.animations.length = 0;
-    for (let i = 0; i < 3; i++) t.A.refreshBoard();
-    assert.deepEqual([...board.querySelectorAll('.empty-note')], empty);
-    assert.equal(board.querySelector('.card'), card); assert.equal(board.querySelector('.board-load-more'), more);
-    assert.equal(t.d.activeElement, title); assert.equal(mutations.takeRecords().length, 0); assert.equal(t.animations.length, 0);
-    const task = t.D.tasks.find(item => item.id === card.dataset.task); task.title = 'Updated from another client';
-    t.A.refreshBoard(); assert.equal(card.querySelector('.title'), title); assert.equal(title.textContent, task.title); assert.equal(t.d.activeElement, title);
-    task.state = 'review'; t.A.refreshBoard(); assert.equal(board.querySelector('[data-col="review"] .card'), card);
-    assert.equal(board.querySelector('[data-col="done"] .empty-note'), empty[2]);
-    const user = t.D.users.find(item => item.id === t.D.session.userId); user.admin = false;
-    t.D.projects.find(project => project.id === projectId).members.find(member => member.userId === user.id).permissions = [];
-    t.A.refreshBoard(); assert(!board.querySelector('[data-reorderable]')); assert(!board.querySelector('.card-move'));
-    t.D.tasks = []; t.A.refreshBoard(); const page = t.d.querySelector('.board-empty'); assert(page); t.animations.length = 0;
-    t.A.refreshBoard(); assert.equal(t.d.querySelector('.board-empty'), page); assert.equal(t.animations.length, 0);
-    mutations.disconnect();
-  });
-}
+// With motion on, so no animation proves the refresh changed nothing; reduced motion only turns animation off.
+test('an unchanged Board refresh keeps cards, empty states, focus and Load more without motion', () => {
+  const t = recordingBoard(false);
+  const projectId = t.A.context().projectId;
+  t.D.tasks.forEach(task => task.state = 'planning');
+  t.D.boardPageInfo = { projectId, pages: { planning: { total: 100, nextCursor: 'next' } } }; t.A.refresh();
+  const board = t.d.querySelector('.board'), card = board.querySelector('.card'), title = card.querySelector('.title'), more = board.querySelector('.board-load-more');
+  const empty = [...board.querySelectorAll('.empty-note')]; assert.equal(empty.length, 3);
+  title.focus();
+  const mutations = new t.w.MutationObserver(() => {}); mutations.observe(board, { subtree: true, childList: true }); t.animations.length = 0;
+  for (let i = 0; i < 3; i++) t.A.refreshBoard();
+  assert.deepEqual([...board.querySelectorAll('.empty-note')], empty);
+  assert.equal(board.querySelector('.card'), card); assert.equal(board.querySelector('.board-load-more'), more);
+  assert.equal(t.d.activeElement, title); assert.equal(mutations.takeRecords().length, 0); assert.equal(t.animations.length, 0);
+  const task = t.D.tasks.find(item => item.id === card.dataset.task); task.title = 'Updated from another client';
+  t.A.refreshBoard(); assert.equal(card.querySelector('.title'), title); assert.equal(title.textContent, task.title); assert.equal(t.d.activeElement, title);
+  task.state = 'review'; t.A.refreshBoard(); assert.equal(board.querySelector('[data-col="review"] .card'), card);
+  assert.equal(board.querySelector('[data-col="done"] .empty-note'), empty[2]);
+  const user = t.D.users.find(item => item.id === t.D.session.userId); user.admin = false;
+  t.D.projects.find(project => project.id === projectId).members.find(member => member.userId === user.id).permissions = [];
+  t.A.refreshBoard(); assert(!board.querySelector('[data-reorderable]')); assert(!board.querySelector('.card-move'));
+  t.D.tasks = []; t.A.refreshBoard(); const page = t.d.querySelector('.board-empty'); assert(page); t.animations.length = 0;
+  t.A.refreshBoard(); assert.equal(t.d.querySelector('.board-empty'), page); assert.equal(t.animations.length, 0);
+  mutations.disconnect();
+});
 
 test('Board text search coalesces typing, respects composition, flushes Enter or clear and cancels on navigation', t => {
   const board = recordingBoard(true), calls = [];
@@ -314,14 +313,14 @@ test('Move to a column that does not show its end puts the card at its top, in v
 });
 
 test('Move to a column that shows its end puts the card last and draws it', () => {
-  for (const count of [3, 50]) {
-    const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
-    const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-    t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-    assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
-    assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
-    assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);
-  }
+  // 50 cards fill the first page exactly, so the column shows its end at the boundary.
+  const count = 50;
+  const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
+  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
+  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
+  assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
+  assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
+  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);
 });
 
 test('a card dropped below a long column follows its last shown card and stays drawn', () => {

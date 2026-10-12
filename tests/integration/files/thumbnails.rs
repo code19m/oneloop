@@ -521,16 +521,18 @@ async fn a_retry_that_ends_the_process_too_leaves_the_original_for_good() {
     std::fs::write(&marker, b"").unwrap();
     let pipe = fixture.pipe_original(&attachment);
     let worker = fixture.start_worker();
+    // The decode can't open the pipe before the writer below does, so a
+    // marker that appears first was written before the decode. Other
+    // programs, such as a file indexer, may open the pipe too, so its readers
+    // don't show how far the worker got.
+    let marked = within_seconds(|| std::fs::metadata(&marker).is_ok_and(|m| m.len() > 0)).await;
     // The retry decodes, and the process ends meanwhile: nothing after the
     // decode runs.
     let writer = reading(&pipe).await;
     worker.abort();
     let _ = worker.await;
     drop(writer);
-    assert!(
-        std::fs::metadata(&marker).unwrap().len() > 0,
-        "the retry is marked first"
-    );
+    assert!(marked, "the retry is marked first");
     std::fs::remove_file(&pipe).unwrap();
     std::fs::write(&pipe, &original).unwrap();
     // Views show the original, and the image is never decoded again.

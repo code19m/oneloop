@@ -10,7 +10,9 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
   const originalZone = process.env.TZ;
   let reference;
   try {
-    for (const zone of ['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Pacific/Apia']) {
+    // New York is behind UTC and has daylight saving time inside the Roadmap range. Apia is far
+    // enough ahead that its date differs at 12:00 UTC, and it skipped 2011-12-30.
+    for (const zone of ['America/New_York', 'Pacific/Apia']) {
       process.env.TZ = zone;
       let now = Date.parse('2026-06-15T12:00:00Z'), rollover;
       const { w, d } = bootApp({
@@ -46,7 +48,7 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       const skipped = d.querySelector('[data-d="2011-12-30"]'); assert(skipped); assert.equal(skipped.textContent, '30'); assert.match(skipped.getAttribute('aria-label'), /Dec 30, 2011/);
       skipped.click(); assert.equal(input.value, '2011-12-30');
       w.App.closeOverlays(); w.App.nav('board'); const board = d.querySelector('.board');
-      process.env.TZ = zone === 'UTC' ? 'Pacific/Apia' : 'UTC'; rollover(); assert.equal(d.querySelector('.board'), board, 'OS zone changes alone do not roll over Today');
+      process.env.TZ = zone === 'Pacific/Apia' ? 'UTC' : 'Pacific/Apia'; rollover(); assert.equal(d.querySelector('.board'), board, 'OS zone changes alone do not roll over Today');
       assert(!d.querySelector('[data-task="BIR-079"] .dl').classList.contains('late'));
       now += 86400000; rollover(); assert(d.querySelector('[data-task="BIR-079"] .dl').classList.contains('late'));
       w.App.openModal('epic'); assert.equal(d.querySelector('[name="start"]').value, '2026-06-16');

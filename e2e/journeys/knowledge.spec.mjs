@@ -1,11 +1,10 @@
 // Knowledge: one folder of a Git repository, synced over HTTPS from a local Git
 // host by the real `git` program, then read, searched and previewed.
-import AxeBuilder from '@axe-core/playwright';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { test as base, expect, openApp, command } from '../support/test.mjs';
+import { test as base, expect, openApp, command, scan } from '../support/test.mjs';
 import { startGitServer } from '../support/git-server.mjs';
 
 const png = readFileSync(new URL('../../frontend/icons/icon-192.png', import.meta.url));
@@ -32,12 +31,6 @@ const test = base.extend({
   // The server trusts the Git host's certificate as it would a private authority's.
   instanceEnvironment: async ({ gitHost }, use) => use({ GIT_SSL_CAINFO: gitHost.caFile }),
 });
-
-async function scan(page, label) {
-  const result = await new AxeBuilder({ page }).analyze();
-  const failures = result.violations.filter(item => ['serious', 'critical'].includes(item.impact));
-  expect(failures.map(item => ({ id: item.id, nodes: item.nodes.map(node => node.target) })), label).toEqual([]);
-}
 
 /** Connect through the API and wait for the first sync. */
 async function connected(instance, gitHost, files = handbook) {

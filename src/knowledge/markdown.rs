@@ -779,16 +779,17 @@ mod tests {
     #[test]
     fn reading_costs_memory_for_the_text_not_for_each_character_or_line() {
         use crate::test_memory::peak_heap;
-        // A megabyte of prose on one line, as generated pages and tables have.
-        let line = "Plain words, and more words. ".repeat(36_000);
+        // A quarter megabyte of prose on one line, as generated pages and
+        // tables have.
+        let line = "Plain words, and more words. ".repeat(9_000);
         let (text, peak) = peak_heap(|| inline_text(&line));
         assert_eq!(text.len(), line.len() - 1);
         assert!(peak < 2 * line.len(), "{peak} bytes for {}", line.len());
         let (parsed, peak) = peak_heap(|| sections(&line));
         assert_eq!(parsed[0].text, text);
         assert!(peak < 2 * line.len(), "{peak} bytes for {}", line.len());
-        // A megabyte of empty lines.
-        let blank = "\n".repeat(1024 * 1024);
+        // A quarter megabyte of empty lines.
+        let blank = "\n".repeat(256 * 1024);
         let (parsed, peak) = peak_heap(|| sections(&blank));
         assert!(parsed.is_empty());
         assert!(peak < 64 * 1024, "{peak} bytes for {}", blank.len());

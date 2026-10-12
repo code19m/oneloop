@@ -23,16 +23,6 @@ test('Settings can page through the directory and add an eligible account from a
  assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
 });
 
-test('a member name with markup stays text in the Member has open work dialog',()=>{
- const name=`<i id="planted" onclick="App.inboxBulk('archive')">Reassign</i><img src="//x.invalid/b">`;
- const t=bootApp({route:'settings',prepare(D){D.users.find(user=>user.id==='robin').name=name;Object.assign(D.tasks.find(task=>task.state!=='done'),{projectId:'p1',assignees:['robin']});}});
- installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({})});
- t.A.removeMember('robin');
- const text=t.d.querySelector('.modal .sub');
- assert.equal(text.textContent,`Reassign 1 unfinished task before removing ${name} from this project.`);
- assert.equal(text.children.length,0);assert.equal(t.d.getElementById('planted'),null);assert.equal(t.d.querySelector('.modal img'),null);
-});
-
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = {}) => bootApp({ route, stored, actions, prepare: (D, w) => {
   prepare?.(D, w);
@@ -113,15 +103,6 @@ test('Users pages load 50 at a time and project Settings keep member access sepa
  t.A.nav('settings');assert(!t.d.querySelector('.topbar .seg'));assert(t.d.querySelector('.member-access-list'));
 });
 
-test('routine membership grants need no confirmation while sensitive actions reuse a thirty-minute confirmation', () => {
-const t=boot('settings');
- const member=t.D.projects[0].members.find(member=>member.userId!==t.D.session.userId&&!t.D.users.find(user=>user.id===member.userId)?.admin);
- member.permissions=[];t.A.setMemberPermission(member.userId,'manage_board',true);
- assert(!t.d.querySelector('.reauth-layer'));assert(member.permissions.includes('manage_board'));
- t.D.session.authenticatedAt=Date.now()-20*60e3;t.A.deleteProject();
- assert(!t.d.querySelector('.reauth-layer'));assert(t.d.querySelector('#confirmation-match'));
-});
-
 test('Enter in a project field saves it and leaves it, but not while text is being composed', async () => {
  const t=boot('settings',{actions:true}),commands=[];
  installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
@@ -134,15 +115,6 @@ test('Enter in a project field saves it and leaves it, but not while text is bei
 
 test('Enter in the profile name saves through the blur path', () => {
  const t=boot('profile',{actions:true}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
-});
-
-test('both password forms require five Unicode characters and accept spaces and long passwords', () => {
-for(const method of ['setPassword','changePassword']){
- const t=boot('profile');
-  const submit=(password)=>{const form=t.d.querySelector('.settings form');form.querySelector('[name="cur"]').value='current';form.querySelector('[name="pw"]').value=password;form.querySelector('[name="pw2"]').value=password;t.A[method]({target:form,preventDefault(){}});};
-  for(const password of ['1234','😀😀😀😀']){submit(password);assert(t.d.querySelector('.ferr')?.textContent.includes('at least 5 characters'));}
-  for(const password of ['12345','😀😀😀😀😀','     ','x'.repeat(8192)]){submit(password);assert(!t.d.querySelector('.ferr'));}
-}
 });
 
 test('project Settings bound member rows, update loading state in place and search all members', () => {

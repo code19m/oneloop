@@ -35,24 +35,11 @@ async fn fixture_with_trusted_proxies(
 async fn fixture_with(
     settings: &[(&str, &str)],
 ) -> (tempfile::TempDir, Db, Router, String, String) {
-    // These independent fixtures share the process-wide password workers. Bound
-    // setup hashing so a parallel test run does not test overload accidentally.
-    static SETUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-    let _setup = SETUP.acquire().await.unwrap();
     let (dir, db) = support::database();
-    let user=db.transaction(|tx|{let user=create_user(tx,NewUser{username:"owner".into(),display_name:"Owner".into(),password:"test-only-password-012345".into(),is_admin:false,must_change_password:false},unix_now()?)?;tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-1','Project','PRJ',1,1)",[])?;tx.execute("INSERT INTO project_sequences(project_id,next_task_number) VALUES('project-1',1)",[])?;tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,1,1,1,1)",[&user.id])?;Ok(user.id)}).await.unwrap();
-    let LoginResult::Authenticated(session) = AuthService::new(db.clone())
-        .login(
-            "owner",
-            "test-only-password-012345",
-            SessionMetadata::default(),
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!()
-    };
+    let session = support::add_user(&db, "owner", false).await;
+    let user = session.actor.user_id.clone();
+    let member = user.clone();
+    db.transaction(move |tx|{tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-1','Project','PRJ',1,1)",[])?;tx.execute("INSERT INTO project_sequences(project_id,next_task_number) VALUES('project-1',1)",[])?;tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,1,1,1,1)",[&member])?;Ok(())}).await.unwrap();
     let config = support::config(dir.path(), "http://127.0.0.1:8080", settings);
     (
         dir,
