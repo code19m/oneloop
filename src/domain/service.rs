@@ -1,4 +1,5 @@
-//! Shared command transaction, authorization, idempotency and audit envelope.
+//! Domain commands: one handler per operation, run once inside the shared
+//! command envelope, and the row helpers the handlers share.
 mod project;
 use project::*;
 mod membership;
@@ -16,11 +17,6 @@ use pool::*;
 mod validation;
 use validation::*;
 
-use crate::{
-    clock::unix_now,
-    idempotency::{Envelope, Mutation},
-    text,
-};
 use std::collections::{BTreeSet, HashSet};
 
 use chrono::NaiveDate;
@@ -33,12 +29,15 @@ use crate::{
     Db,
     access::{Need, require_project, validate_mentions},
     auth::Actor,
+    clock::unix_now,
     collaboration::{
         ActivityInput, NotificationInput,
         mentions::{self, MentionNotice, Mentioned},
         record_activity_tx, snapshot_notification_tx,
     },
     error::{AppError, AppResult},
+    idempotency::{Envelope, Mutation},
+    text,
     timezone::TimeZone,
 };
 
