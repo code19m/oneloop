@@ -144,6 +144,16 @@ pub(crate) struct Snapshot {
     pub(crate) skipped: usize,
 }
 
+/// A regular file that a snapshot reads.
+#[derive(Debug, PartialEq, Eq)]
+struct Selected {
+    /// As the history names it.
+    repository_path: String,
+    /// Relative to the folder.
+    path: String,
+    blob: String,
+}
+
 pub(crate) struct SnapshotFile {
     /// Relative to the folder.
     pub(crate) path: String,
@@ -175,6 +185,8 @@ struct Counts {
 struct Session<'a> {
     disk: Option<DiskReservation>,
     root: PathBuf,
+    /// Where a snapshot clones the branch, as a Git argument.
+    repository: String,
     home: PathBuf,
     global_config: PathBuf,
     hooks: PathBuf,
@@ -196,31 +208,38 @@ impl Drop for Session<'_> {
         }
         let disk = self.disk.take();
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn_blocking(move || {
-                let _disk = disk;
-                std::fs::remove_dir_all(root)
-            })),
-            Err(_) => drop(std::fs::remove_dir_all(root)),
+            Ok(runtime) => drop(runtime.spawn_blocking(move || remove_working_copy(root, disk))),
+            Err(_) => drop(remove_working_copy(root, disk)),
         }
     }
 }
 
 impl Session<'_> {
     async fn cleanup(mut self) -> Result<(), SyncError> {
-        let root = self.root.clone();
-        let disk = self.disk.clone();
-        tokio::task::spawn_blocking(move || {
-            let _disk = disk;
-            std::fs::remove_dir_all(root)
-        })
-        .await
-        .map_err(|error| SyncError::new(Failure::Failed, format!("remove working copy: {error}")))?
-        .map_err(|error| {
-            SyncError::new(Failure::Failed, format!("remove working copy: {error}"))
-        })?;
+        let (root, disk) = (self.root.clone(), self.disk.clone());
+        tokio::task::spawn_blocking(move || remove_working_copy(root, disk))
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(std::convert::identity)
+            .map_err(|error| {
+                SyncError::new(Failure::Failed, format!("remove working copy: {error}"))
+            })?;
         self.root.clear();
         Ok(())
     }
+
+    /// `arguments` for Git in the clone.
+    fn in_clone<'s>(&'s self, arguments: &[&'s str]) -> Vec<&'s str> {
+        let mut all = vec!["-C", self.repository.as_str()];
+        all.extend_from_slice(arguments);
+        all
+    }
+}
+
+/// The disk reservation of a working copy lasts until its bytes are gone.
+fn remove_working_copy(root: PathBuf, disk: Option<DiskReservation>) -> std::io::Result<()> {
+    let _disk = disk;
+    std::fs::remove_dir_all(root)
 }
 
 struct Output {
@@ -338,8 +357,6 @@ impl Git {
         let deadline = Instant::now() + SYNC_TIMEOUT;
         let session = self.session(url, credentials, Some(reservation))?;
         self.require_version(&session, deadline).await?;
-        let repository = session.root.join("repository");
-        let repository_arg = repository.to_string_lossy().into_owned();
         let budget = limits.max_download_bytes;
         self.within(
             &session.root,
@@ -358,7 +375,7 @@ impl Git {
                     branch,
                     "--",
                     &url.fetch_url(),
-                    &repository_arg,
+                    &session.repository,
                 ],
                 deadline,
             ),
@@ -368,7 +385,7 @@ impl Git {
         let tip = self
             .run(
                 &session,
-                &in_repository(&repository_arg, &["log", "-1", "--format=%H %ct", "HEAD"]),
+                &session.in_clone(&["log", "-1", "--format=%H %ct", "HEAD"]),
                 deadline,
             )
             .await?;
@@ -383,10 +400,7 @@ impl Git {
             let listing = self
                 .run(
                     &session,
-                    &in_repository(
-                        &repository_arg,
-                        &["ls-tree", "-d", "--name-only", "HEAD", "--", folder],
-                    ),
+                    &session.in_clone(&["ls-tree", "-d", "--name-only", "HEAD", "--", folder]),
                     deadline,
                 )
                 .await?;
@@ -401,10 +415,7 @@ impl Git {
         let listing = self
             .run(
                 &session,
-                &in_repository(
-                    &repository_arg,
-                    &["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", pathspec],
-                ),
+                &session.in_clone(&["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", pathspec]),
                 deadline,
             )
             .await?;
@@ -416,7 +427,7 @@ impl Git {
         } else {
             format!("/{}/\n", escape_pattern(folder))
         };
-        let info = repository.join(".git").join("info");
+        let info = Path::new(&session.repository).join(".git").join("info");
         crate::db::create_private_directories(&info)
             .and_then(|()| std::fs::write(info.join("sparse-checkout"), pattern))
             .map_err(|error| {
@@ -427,7 +438,7 @@ impl Git {
             budget,
             self.run(
                 &session,
-                &in_repository(&repository_arg, &["reset", "--quiet", "--hard", "HEAD"]),
+                &session.in_clone(&["reset", "--quiet", "--hard", "HEAD"]),
                 deadline,
             ),
         )
@@ -436,10 +447,7 @@ impl Git {
         let partial = self
             .output(
                 &session,
-                &in_repository(
-                    &repository_arg,
-                    &["config", "--get", "remote.origin.promisor"],
-                ),
+                &session.in_clone(&["config", "--get", "remote.origin.promisor"]),
                 deadline,
             )
             .await?
@@ -454,7 +462,7 @@ impl Git {
                     budget,
                     self.output(
                         &session,
-                        &in_repository(&repository_arg, &["fetch", "--quiet", &deepen, "origin"]),
+                        &session.in_clone(&["fetch", "--quiet", &deepen, "origin"]),
                         history_deadline,
                     ),
                 )
@@ -465,17 +473,14 @@ impl Git {
             }
         };
         let mut changed_at = HashMap::new();
-        if deepened || history_depth <= 1 {
-            let wanted = selected.iter().map(|(path, ..)| path.as_str()).collect();
+        if deepened {
+            let wanted = selected
+                .iter()
+                .map(|file| file.repository_path.as_str())
+                .collect();
             let history_deadline = deadline.min(Instant::now() + HISTORY_TIMEOUT);
             changed_at = self
-                .change_times(
-                    &session,
-                    &repository_arg,
-                    pathspec,
-                    &wanted,
-                    history_deadline,
-                )
+                .change_times(&session, pathspec, &wanted, history_deadline)
                 .await;
         }
 
@@ -483,7 +488,7 @@ impl Git {
             .within(
                 &session.root,
                 budget,
-                self.read_blobs(&session, &repository_arg, selected, limits, deadline),
+                self.read_blobs(&session, selected, limits, deadline),
             )
             .await?;
         let prefix = folder_prefix(folder);
@@ -508,7 +513,6 @@ impl Git {
     async fn change_times(
         &self,
         session: &Session<'_>,
-        repository: &str,
         pathspec: &str,
         wanted: &HashSet<&str>,
         deadline: Instant,
@@ -516,19 +520,16 @@ impl Git {
         if wanted.is_empty() {
             return HashMap::new();
         }
-        let arguments = in_repository(
-            repository,
-            &[
-                "log",
-                "-z",
-                "--format=%x00%x1e%ct",
-                "--name-only",
-                "--no-renames",
-                "HEAD",
-                "--",
-                pathspec,
-            ],
-        );
+        let arguments = session.in_clone(&[
+            "log",
+            "-z",
+            "--format=%x00%x1e%ct",
+            "--name-only",
+            "--no-renames",
+            "HEAD",
+            "--",
+            pathspec,
+        ]);
         let Ok(mut child) = self.spawn(session, &arguments, Stdio::null(), Stdio::null()) else {
             return HashMap::new();
         };
@@ -574,6 +575,7 @@ impl Git {
             hooks: root.join("hooks"),
             templates: root.join("templates"),
             ssh_key: matches!(credentials, Credentials::DeployKey(_)).then(|| root.join("id")),
+            repository: root.join("repository").to_string_lossy().into_owned(),
             root,
             credentials,
             origin: url.origin(),
@@ -714,14 +716,13 @@ impl Git {
     async fn read_blobs(
         &self,
         session: &Session<'_>,
-        repository: &str,
-        selected: Vec<(String, String, String)>,
+        selected: Vec<Selected>,
         limits: Limits,
         deadline: Instant,
     ) -> Result<(Vec<SnapshotFile>, usize), SyncError> {
         let mut child = self.spawn(
             session,
-            &in_repository(repository, &["cat-file", "--batch"]),
+            &session.in_clone(&["cat-file", "--batch"]),
             Stdio::piped(),
             Stdio::piped(),
         )?;
@@ -732,8 +733,8 @@ impl Git {
         // Queue the bounded list while draining output. Waiting for a response
         // before sending each ID would add one pipe round trip per file.
         let mut requests = Vec::with_capacity(selected.len() * 65);
-        for (_, _, blob) in &selected {
-            requests.extend_from_slice(blob.as_bytes());
+        for file in &selected {
+            requests.extend_from_slice(file.blob.as_bytes());
             requests.push(b'\n');
         }
         let send = async {
@@ -836,19 +837,20 @@ impl Git {
                 }
             }
         };
+        let too_large = |size| {
+            SyncError::new(
+                Failure::TooLarge,
+                format!("the download reached {size} bytes; the limit is {budget}"),
+            )
+        };
         tokio::select! {
             result = work => {
                 #[cfg(test)]
                 self.counts.phase_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let size = measure_working_copy(root.to_path_buf()).await?;
-                if size > budget {
-                    Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
-                } else { result }
+                if size > budget { Err(too_large(size)) } else { result }
             },
-            size = watch => {
-                let size = size?;
-                Err(SyncError::new(Failure::TooLarge, format!("the download reached {size} bytes; the limit is {budget}")))
-            },
+            size = watch => Err(too_large(size?)),
         }
     }
 }
@@ -866,7 +868,7 @@ async fn drain_output(mut pipe: impl AsyncRead + Unpin, limit: u64) -> std::io::
 /// contents are bounded, and an oversized blob is read past without being kept.
 async fn read_batch(
     mut output: impl AsyncBufRead + Unpin,
-    selected: Vec<(String, String, String)>,
+    selected: Vec<Selected>,
     limits: Limits,
 ) -> Result<(Vec<SnapshotFile>, usize), SyncError> {
     let mut files = Vec::with_capacity(selected.len());
@@ -874,7 +876,7 @@ async fn read_batch(
     let mut received = 0u64;
     let mut stored = 0u64;
     let mut skipped = 0;
-    for (_, path, blob) in selected {
+    for Selected { path, blob, .. } in selected {
         header.clear();
         (&mut output)
             .take(128)
@@ -957,20 +959,10 @@ fn tree_size(root: &Path) -> u64 {
         .sum()
 }
 
-fn in_repository<'a>(repository: &'a str, arguments: &[&'a str]) -> Vec<&'a str> {
-    let mut all = vec!["-C", repository];
-    all.extend_from_slice(arguments);
-    all
-}
-
 /// Regular files from `git ls-tree -r -z`, as repository and folder-relative
 /// paths. Links, submodules and names that are not plain UTF-8 are left out,
 /// but the checkout still creates their folders, so those count too.
-fn select_files(
-    listing: &[u8],
-    folder: &str,
-    limits: Limits,
-) -> Result<Vec<(String, String, String)>, SyncError> {
+fn select_files(listing: &[u8], folder: &str, limits: Limits) -> Result<Vec<Selected>, SyncError> {
     let prefix = folder_prefix(folder);
     let mut files = Vec::new();
     let mut folders = HashSet::new();
@@ -1019,11 +1011,11 @@ fn select_files(
                 "the folder has more files than the limit",
             ));
         }
-        files.push((
-            format!("{prefix}{relative}"),
-            relative.to_owned(),
-            blob.to_owned(),
-        ));
+        files.push(Selected {
+            repository_path: format!("{prefix}{relative}"),
+            path: relative.to_owned(),
+            blob: blob.to_owned(),
+        });
     }
     Ok(files)
 }
@@ -1370,7 +1362,11 @@ pub(super) mod tests {
         let id = |n: u8| format!("{n:040x}");
         let requests = || {
             (0..3)
-                .map(|n| (format!("{n}.md"), format!("{n}.md"), id(n)))
+                .map(|n| Selected {
+                    repository_path: format!("{n}.md"),
+                    path: format!("{n}.md"),
+                    blob: id(n),
+                })
                 .collect::<Vec<_>>()
         };
         let blob = |n: u8, content: &[u8]| {
@@ -1582,19 +1578,16 @@ pub(super) mod tests {
             limits(10, 10),
         )
         .unwrap();
+        let file = |repository_path: &str, path: &str| Selected {
+            repository_path: repository_path.to_owned(),
+            path: path.to_owned(),
+            blob: format!("{:040x}", 1),
+        };
         assert_eq!(
             selected,
             [
-                (
-                    "docs/README.md".to_owned(),
-                    "README.md".to_owned(),
-                    format!("{:040x}", 1)
-                ),
-                (
-                    "docs/tools/run.sh".to_owned(),
-                    "tools/run.sh".to_owned(),
-                    format!("{:040x}", 1)
-                )
+                file("docs/README.md", "README.md"),
+                file("docs/tools/run.sh", "tools/run.sh")
             ]
         );
     }
