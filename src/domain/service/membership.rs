@@ -79,7 +79,7 @@ pub(super) fn update_membership(
     actor.require_admin()?;
     let before: (bool, bool, i64) = tx
         .query_row(
-            SELECT_PROJECT_MEMBERSHIPS_SQL,
+            MEMBERSHIP_PERMISSIONS_SQL,
             params![input.project_id, input.user_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -155,7 +155,7 @@ pub(super) fn remove_membership(
         .ok_or_else(|| not_found("membership"))?;
     ensure_revision(revision, expected)?;
     let unfinished: bool = tx.query_row(
-        SELECT_TASK_ASSIGNEES_SQL,
+        HAS_OPEN_ASSIGNMENTS_SQL,
         params![input.user_id, input.project_id],
         |row| row.get(0),
     )?;

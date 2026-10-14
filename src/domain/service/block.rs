@@ -102,11 +102,7 @@ pub(super) fn update_block_reason(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = tx
-        .query_row(
-            SELECT_TASK_BLOCKS_SQL,
-            [&input.block_id],
-            BlockRow::from_row,
-        )
+        .query_row(ACTIVE_BLOCK_SQL, [&input.block_id], BlockRow::from_row)
         .optional()?
         .ok_or_else(|| not_found("active task block"))?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
@@ -213,11 +209,11 @@ pub(super) fn unblock_task(
         params![actor.user_id, now, resolution, block_id, block_revision],
     )?;
     if complete {
+        // A blocked task is never Done yet, so this always completes it.
         let position = task_append_position(tx, &task.project_id, "done")?;
         tx.execute(
-            "UPDATE tasks SET status='done',position=?1,completed_at=?2,completion_order=(SELECT COALESCE(MAX(completion_order),0)+1
-             FROM tasks WHERE completion_order>0),updated_at=?2,revision=revision+1 WHERE id=?3 AND revision=?4",
-            params![position, now, input.task_id, expected],
+            MOVE_TASK_SQL,
+            params!["done", position, Some(now), now, input.task_id, expected],
         )?;
     } else {
         tx.execute(

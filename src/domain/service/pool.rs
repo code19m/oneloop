@@ -66,7 +66,7 @@ pub(super) fn update_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let before: (String, String, Option<String>, String, String, i64) = tx
-        .query_row(SELECT_POOL_ITEMS_SQL, [&input.pool_item_id], |row| {
+        .query_row(POOL_ITEM_SQL, [&input.pool_item_id], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -221,7 +221,7 @@ pub(super) fn promote_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let item: (String, String, Option<String>, String, String, i64) = tx
-        .query_row(SELECT_POOL_ITEMS_SQL, [&input.pool_item_id], |row| {
+        .query_row(POOL_ITEM_SQL, [&input.pool_item_id], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,

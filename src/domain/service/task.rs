@@ -32,7 +32,7 @@ pub(super) fn create_task(
     let position = task_append_position(tx, &input.project_id, "planning")?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
-        INSERT_TASKS_SQL,
+        INSERT_TASK_SQL,
         params![
             id,
             input.project_id,
@@ -347,7 +347,7 @@ pub(super) fn move_task(
     let stored_position =
         task_insert_position(tx, &before.project_id, status, &input.task_id, position)?;
     tx.execute(
-        UPDATE_TASKS_SQL,
+        MOVE_TASK_SQL,
         params![
             status,
             stored_position,

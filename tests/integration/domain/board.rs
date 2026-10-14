@@ -497,13 +497,21 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
         )
         .await
         .unwrap();
+    // Both count as completed, in the order they reached Done.
     let rows =
         f.db.run(|connection| {
-            let mut statement = connection
-                .prepare("SELECT id,position FROM tasks WHERE status='done' ORDER BY position")?;
+            let mut statement = connection.prepare(
+                "SELECT id,position,completed_at IS NOT NULL,completion_order FROM tasks
+                 WHERE status='done' ORDER BY position",
+            )?;
             Ok(statement
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?)
         })
@@ -511,7 +519,10 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
         .unwrap();
     assert_eq!(
         rows,
-        vec![("order-4".into(), 1024), ("order-1".into(), 2048)]
+        vec![
+            ("order-4".into(), 1024, true, 1),
+            ("order-1".into(), 2048, true, 2)
+        ]
     );
 }
 

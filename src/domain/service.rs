@@ -403,8 +403,9 @@ fn validate_assignees(
         if !unique.insert(id.clone()) {
             continue;
         }
-        let valid: bool =
-            tx.query_row(SELECT_USERS_SQL, params![id, project_id], |row| row.get(0))?;
+        let valid: bool = tx.query_row(IS_ACTIVE_MEMBER_SQL, params![id, project_id], |row| {
+            row.get(0)
+        })?;
         if !valid {
             return Err(AppError::validation(
                 "assigneeIds",
@@ -490,32 +491,33 @@ fn activate_epic_for_work(
 }
 
 // SQL is kept outside calls so rustfmt can format the surrounding control flow.
-const SELECT_PROJECT_MEMBERSHIPS_SQL: &str = "SELECT manage_roadmap,manage_board,revision FROM project_memberships WHERE project_id=?1 \
+const MEMBERSHIP_PERMISSIONS_SQL: &str = "SELECT manage_roadmap,manage_board,revision FROM project_memberships WHERE project_id=?1 \
                      AND user_id=?2";
-const SELECT_TASK_ASSIGNEES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assignees a JOIN tasks t ON t.id=a.task_id WHERE \
+const HAS_OPEN_ASSIGNMENTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assignees a JOIN tasks t ON t.id=a.task_id WHERE \
                      a.user_id=?1 AND t.project_id=?2 AND t.deleted_at IS NULL AND t.status<>'done')";
-const SELECT_TRACKS_SQL: &str =
+const NEXT_TRACK_POSITION_SQL: &str =
     "SELECT COALESCE(MAX(position),-1)+1 FROM tracks WHERE project_id=?1 AND deleted_at IS NULL";
-const INSERT_EPICS_SQL: &str = "INSERT INTO epics (id,project_id,track_id,title,description,start_date,end_date,state,\
+const INSERT_EPIC_SQL: &str = "INSERT INTO epics (id,project_id,track_id,title,description,start_date,end_date,state,\
                      position,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'planning',?8,?9,?10,?10)";
-const SELECT_EPICS_SQL: &str = "SELECT project_id,track_id,title,description,start_date,end_date,state,position,revision \
+const EPIC_ROW_SQL: &str = "SELECT project_id,track_id,title,description,start_date,end_date,state,position,revision \
                      FROM epics WHERE id=?1 AND deleted_at IS NULL";
-const UPDATE_EPICS_SQL: &str = "UPDATE epics SET state=?1,completed_at=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6";
-const SELECT_MILESTONES_SQL: &str = "SELECT project_id,title,description,milestone_date,revision FROM milestones WHERE id=?1 \
+const SET_EPIC_STATE_SQL: &str = "UPDATE epics SET state=?1,completed_at=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6";
+const MILESTONE_ROW_SQL: &str = "SELECT project_id,title,description,milestone_date,revision FROM milestones WHERE id=?1 \
                      AND deleted_at IS NULL";
-const INSERT_TASKS_SQL: &str = "INSERT INTO tasks (id,project_id,epic_id,task_number,task_key,title,description,status,\
+const INSERT_TASK_SQL: &str = "INSERT INTO tasks (id,project_id,epic_id,task_number,task_key,title,description,status,\
                      position,deadline,created_by,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,\
                      'planning',?8,?9,?10,?11,?11)";
-const UPDATE_TASKS_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
+/// Moves a task, and gives it the next completion order when it enters Done.
+const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at=CASE WHEN status=?1 THEN completed_at ELSE ?3 END,\
                      completion_order=CASE WHEN status=?1 THEN completion_order WHEN ?1='done' THEN (SELECT \
                      COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,updated_at=?4,\
                      revision=revision+1 WHERE id=?5 AND revision=?6";
 
-const SELECT_USERS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
+const IS_ACTIVE_MEMBER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
                      u.id=?1 AND u.is_active=1 AND m.project_id=?2)";
-const SELECT_TASK_BLOCKS_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
+const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
-const SELECT_POOL_ITEMS_SQL: &str =
+const POOL_ITEM_SQL: &str =
     "SELECT project_id,scope,owner_user_id,title,description,revision FROM pool_items WHERE id=?1";
 
 struct TrackRow {

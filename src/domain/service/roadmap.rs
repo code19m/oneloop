@@ -10,7 +10,9 @@ pub(super) fn create_track(
     require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     let name = text::single_line(&input.name, "name", NAME_MAX)?;
     let description = text::optional(&input.description, "description", TRACK_DESCRIPTION_MAX)?;
-    let position: i64 = tx.query_row(SELECT_TRACKS_SQL, [&input.project_id], |row| row.get(0))?;
+    let position: i64 = tx.query_row(NEXT_TRACK_POSITION_SQL, [&input.project_id], |row| {
+        row.get(0)
+    })?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
         "INSERT INTO tracks (id,project_id,name,description,position,created_by,created_at,\
@@ -258,7 +260,7 @@ pub(super) fn create_epic(
     )?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
-        INSERT_EPICS_SQL,
+        INSERT_EPIC_SQL,
         params![
             id,
             input.project_id,
@@ -330,7 +332,7 @@ pub(super) fn update_epic(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = tx
-        .query_row(SELECT_EPICS_SQL, [&input.epic_id], EpicRow::from_row)
+        .query_row(EPIC_ROW_SQL, [&input.epic_id], EpicRow::from_row)
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
@@ -507,7 +509,7 @@ pub(super) fn set_epic_state(
     }
     let next = expected + 1;
     tx.execute(
-        UPDATE_EPICS_SQL,
+        SET_EPIC_STATE_SQL,
         params![
             state,
             if state == "done" { Some(now) } else { None },
@@ -655,7 +657,7 @@ pub(super) fn update_milestone(
 ) -> AppResult<Mutation> {
     let before = tx
         .query_row(
-            SELECT_MILESTONES_SQL,
+            MILESTONE_ROW_SQL,
             [&input.milestone_id],
             MilestoneRow::from_row,
         )

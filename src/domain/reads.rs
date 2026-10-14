@@ -1762,7 +1762,5 @@ fn bootstrap_snapshot(
     Ok(result)
 }
 
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
-
 #[cfg(test)]
 mod tests;
