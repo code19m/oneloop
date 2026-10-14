@@ -905,6 +905,56 @@ async fn structural_commands_enforce_permissions_revisions_replay_and_audit() {
 }
 
 #[tokio::test]
+async fn a_retry_needs_the_access_of_its_first_run() {
+    use DomainOperation::*;
+    let cases = [
+        (
+            AddMembership,
+            json!({"projectId":"p2","userId":"u2"}),
+            "UPDATE users SET is_admin=1 WHERE id='u3'; UPDATE users SET is_admin=0 WHERE id='admin';",
+            Some("forbidden"),
+        ),
+        (
+            CreateTrack,
+            json!({"projectId":"p1","name":"Retried"}),
+            "UPDATE project_memberships SET manage_roadmap=0 WHERE project_id='p1';",
+            Some("forbidden"),
+        ),
+        (
+            CreateTask,
+            json!({"projectId":"p1","epicId":"e1","title":"Retried"}),
+            "UPDATE project_memberships SET manage_board=0 WHERE project_id='p1';",
+            Some("forbidden"),
+        ),
+        // A personal Pool item never needed the Board permission.
+        (
+            CreatePoolItem,
+            json!({"projectId":"p1","scope":"personal","title":"Retried"}),
+            "UPDATE project_memberships SET manage_board=0 WHERE project_id='p1';",
+            None,
+        ),
+    ];
+    for (operation, payload, revoke, expected) in cases {
+        let f = fixture().await;
+        let actor = if operation == AddMembership {
+            f.admin.clone()
+        } else {
+            f.manager.clone()
+        };
+        let request = command(operation, payload, "retried", None);
+        f.service.execute(&actor, request.clone()).await.unwrap();
+        f.db.run(move |connection| Ok(connection.execute_batch(revoke)?))
+            .await
+            .unwrap();
+        let retry = f.service.execute(&actor, request).await;
+        match expected {
+            Some(code) => assert_eq!(retry.unwrap_err().code(), code, "{operation:?}"),
+            None => assert!(retry.unwrap().replayed, "{operation:?}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn structural_deletion_requires_empty_parents() {
     let f = fixture().await;
     seed_ordering_column(&f, 1).await;

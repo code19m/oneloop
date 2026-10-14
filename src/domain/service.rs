@@ -19,7 +19,7 @@ use validation::*;
 use crate::access::validate_mentions_retaining as validate_mentions;
 use crate::{
     clock::unix_now,
-    idempotency::{Envelope, Mutation, RevisionRule},
+    idempotency::{Envelope, Mutation},
 };
 use std::collections::{BTreeSet, HashSet};
 
@@ -41,11 +41,11 @@ use crate::{
 };
 
 use super::{
-    BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation, EntityId,
-    EpicCreate, EpicUpdate, MembershipCreate, MembershipDelete, MembershipUpdate, MentionInput,
-    MentionKind, MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote, PoolItemUpdate,
-    PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove,
-    TaskStatus, TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate,
+    Access, BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation,
+    EntityId, EpicCreate, EpicUpdate, MembershipCreate, MembershipDelete, MembershipUpdate,
+    MentionInput, MentionKind, MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote,
+    PoolItemUpdate, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate,
+    TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate,
     require_undo_window,
 };
 
@@ -95,7 +95,7 @@ impl DomainService {
             &command.payload,
             &command.idempotency_key,
             command.expected_revision,
-            revision_rule(operation),
+            operation.revision_rule(),
         )?;
         let actor = actor.clone();
         self.db
@@ -105,7 +105,7 @@ impl DomainService {
                     tx,
                     &actor,
                     now,
-                    |actor, replay| authorize_replay(tx, actor, &command, replay, now),
+                    |actor, replay| authorize_replay(tx, actor, operation, replay, now),
                     |actor| dispatch(tx, actor, &command, now),
                 )
             })
@@ -197,134 +197,53 @@ fn dispatch(
     }
 }
 
-fn revision_rule(operation: DomainOperation) -> RevisionRule {
-    if matches!(
-        operation,
-        DomainOperation::CreateProject
-            | DomainOperation::AddMembership
-            | DomainOperation::CreateTrack
-            | DomainOperation::CreateEpic
-            | DomainOperation::CreateMilestone
-            | DomainOperation::CreateTask
-            | DomainOperation::CreatePoolItem
-    ) {
-        RevisionRule::Create
-    } else {
-        RevisionRule::Existing
-    }
-}
-
 /// Deleting a project also needs a recent sign-in.
 fn require_sensitive_admin(actor: &Actor, now: i64) -> AppResult<()> {
     actor.require_admin()?;
     actor.require_recent_auth(now)
 }
 
+/// A retry needs the access its first run needed, checked against today's
+/// data in the project the stored result names.
 fn authorize_replay(
     tx: &Transaction<'_>,
     actor: &Actor,
-    command: &CommandEnvelope,
+    operation: DomainOperation,
     replay: &CommandResult,
     now: i64,
 ) -> AppResult<()> {
-    if matches!(
-        command.operation,
-        DomainOperation::CreateProject
-            | DomainOperation::UpdateProject
-            | DomainOperation::DeleteProject
-            | DomainOperation::AddMembership
-            | DomainOperation::UpdateMembership
-            | DomainOperation::RemoveMembership
-    ) {
-        return if matches!(command.operation, DomainOperation::DeleteProject) {
-            require_sensitive_admin(actor, now)
-        } else {
-            actor.require_admin()
-        };
-    }
-    let ledger_project: Option<String> = tx.query_row(
-        &format!(
-            "SELECT project_id FROM idempotency_keys WHERE {}",
-            crate::idempotency::key_predicate(actor)
-        ),
-        params![actor.user_id, command.idempotency_key, actor.mcp_grant_id()],
-        |row| row.get(0),
-    )?;
-    let project_id = ledger_project.as_deref().or_else(|| {
-        replay
-            .entities
-            .iter()
-            .find_map(|entity| entity.get("projectId").and_then(Value::as_str))
-    });
-    let Some(project_id) = project_id else {
-        return Err(AppError::Forbidden);
+    let (need, destructive) = match operation.access() {
+        Access::Admin => return actor.require_admin(),
+        Access::SensitiveAdmin => return require_sensitive_admin(actor, now),
+        Access::Project { need, destructive } => (need, destructive),
     };
-    if matches!(
-        command.operation,
-        DomainOperation::CreatePoolItem
-            | DomainOperation::UpdatePoolItem
-            | DomainOperation::DeletePoolItem
-    ) && replay.entities.iter().any(|entity| {
+    // Its receipt recorded the same project, from the same events.
+    let project_id = replay
+        .events
+        .iter()
+        .find_map(|event| event.project_id.as_deref())
+        .or_else(|| {
+            replay
+                .entities
+                .iter()
+                .find_map(|entity| entity.get("projectId").and_then(Value::as_str))
+        })
+        .ok_or(AppError::Forbidden)?;
+    let personal = replay.entities.iter().any(|entity| {
         entity.get("entityType").and_then(Value::as_str) == Some("poolItem")
             && entity.get("scope").and_then(Value::as_str) == Some("personal")
-    }) {
-        return require_pool_scope(
-            tx,
-            actor,
-            project_id,
-            &PoolScope::Personal,
-            command.operation == DomainOperation::DeletePoolItem,
-        );
+    });
+    if personal
+        && matches!(
+            operation,
+            DomainOperation::CreatePoolItem
+                | DomainOperation::UpdatePoolItem
+                | DomainOperation::DeletePoolItem
+        )
+    {
+        return require_pool_scope(tx, actor, project_id, &PoolScope::Personal, destructive);
     }
-    let (permission, destructive) = operation_permission(command.operation);
-    require_project(tx, actor, project_id, permission, destructive)
-}
-
-fn operation_permission(operation: DomainOperation) -> (Need, bool) {
-    match operation {
-        DomainOperation::CreateTrack
-        | DomainOperation::UpdateTrack
-        | DomainOperation::ReorderTrack
-        | DomainOperation::DeleteTrack
-        | DomainOperation::CreateEpic
-        | DomainOperation::UpdateEpic
-        | DomainOperation::CompleteEpic
-        | DomainOperation::ReopenEpic
-        | DomainOperation::DeleteEpic
-        | DomainOperation::CreateMilestone
-        | DomainOperation::UpdateMilestone
-        | DomainOperation::DeleteMilestone => (
-            Need::Roadmap,
-            matches!(
-                operation,
-                DomainOperation::DeleteTrack
-                    | DomainOperation::DeleteEpic
-                    | DomainOperation::DeleteMilestone
-            ),
-        ),
-        DomainOperation::CreateTask
-        | DomainOperation::UpdateTask
-        | DomainOperation::MoveTask
-        | DomainOperation::DeleteTask
-        | DomainOperation::RestoreTask
-        | DomainOperation::BlockTask
-        | DomainOperation::UpdateBlockReason
-        | DomainOperation::UnblockTask
-        | DomainOperation::UnblockAndCompleteTask
-        | DomainOperation::CreatePoolItem
-        | DomainOperation::UpdatePoolItem
-        | DomainOperation::DeletePoolItem
-        | DomainOperation::PromotePoolItem => (
-            Need::Board,
-            matches!(
-                operation,
-                DomainOperation::DeleteTask
-                    | DomainOperation::RestoreTask
-                    | DomainOperation::DeletePoolItem
-            ),
-        ),
-        _ => (Need::Read, false),
-    }
+    require_project(tx, actor, project_id, need, destructive)
 }
 
 fn is_constraint(error: &rusqlite::Error) -> bool {

@@ -1275,10 +1275,7 @@ fn command_variants(tool: &str) -> Vec<Value> {
     use crate::domain::*;
     let mut variants = Vec::new();
     if matches!(tool, "execute_work_command" | "execute_destructive_command") {
-        let operations = schemars::schema_for!(DomainOperation);
-        for value in operations.get("enum").unwrap().as_array().unwrap() {
-            let operation: DomainOperation =
-                serde_json::from_value(value.clone()).expect("operation");
+        for &operation in DomainOperation::ALL {
             if operation.mcp_tool() != Some(tool) {
                 continue;
             }
@@ -1379,17 +1376,10 @@ fn strip_numeric_formats(value: &mut Value) {
 }
 
 fn domain_operations(tool: &str) -> String {
-    let schema = schemars::schema_for!(DomainOperation);
-    schema
-        .get("enum")
-        .and_then(Value::as_array)
-        .expect("operation enum schema")
+    DomainOperation::ALL
         .iter()
-        .filter_map(|value| {
-            let operation: DomainOperation =
-                serde_json::from_value(value.clone()).expect("operation schema value");
-            (operation.mcp_tool() == Some(tool)).then_some(operation.as_str())
-        })
+        .filter(|operation| operation.mcp_tool() == Some(tool))
+        .map(|operation| operation.as_str())
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -1705,11 +1695,8 @@ mod error_tests {
                 assert_eq!(schema.get("type"), Some(&json!("object")));
             }
         }
-        let schema = schemars::schema_for!(DomainOperation);
-        for value in schema.get("enum").unwrap().as_array().unwrap() {
-            let operation: DomainOperation = serde_json::from_value(value.clone()).unwrap();
-            let name = value.as_str().unwrap();
-            assert_eq!(operation.as_str(), name);
+        for &operation in DomainOperation::ALL {
+            let name = operation.as_str();
             for tool in ["execute_work_command", "execute_destructive_command"] {
                 let description = router.map[tool].attr.description.as_ref().unwrap();
                 assert_eq!(
