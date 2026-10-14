@@ -453,22 +453,7 @@ pub(super) fn restore_task(
             "SELECT project_id,epic_id,task_key,title,description,status,deadline,revision,position,deleted_at
              FROM tasks WHERE id=?1",
             [&input.id],
-            |row| {
-                Ok((
-                    TaskRow {
-                        project_id: row.get(0)?,
-                        epic_id: row.get(1)?,
-                        task_key: row.get(2)?,
-                        title: row.get(3)?,
-                        description: row.get(4)?,
-                        status: row.get(5)?,
-                        deadline: row.get(6)?,
-                        revision: row.get(7)?,
-                        position: row.get(8)?,
-                    },
-                    row.get::<_, Option<i64>>(9)?,
-                ))
-            },
+            |row| Ok((TaskRow::from_row(row)?, row.get::<_, Option<i64>>(9)?)),
         )
         .optional()?
         .ok_or_else(|| not_found("task"))?;

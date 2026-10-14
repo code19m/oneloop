@@ -243,7 +243,7 @@ fn authorize_replay(
                 | DomainOperation::DeletePoolItem
         )
     {
-        return require_pool_scope(tx, actor, project_id, &PoolScope::Personal, destructive);
+        return require_pool_scope(tx, actor, project_id, PoolScope::Personal, destructive);
     }
     require_project(tx, actor, project_id, need, destructive)
 }
@@ -316,24 +316,29 @@ struct TaskRow {
     position: i64,
 }
 
+impl TaskRow {
+    /// Reads the columns of `task_row`'s query, in its order.
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            project_id: row.get(0)?,
+            epic_id: row.get(1)?,
+            task_key: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            status: row.get(5)?,
+            deadline: row.get(6)?,
+            revision: row.get(7)?,
+            position: row.get(8)?,
+        })
+    }
+}
+
 fn task_row(tx: &Transaction<'_>, id: &str) -> AppResult<TaskRow> {
     tx.query_row(
         "SELECT project_id,epic_id,task_key,title,description,status,deadline,revision,position FROM tasks \
                      WHERE id=?1 AND deleted_at IS NULL",
         [id],
-        |row| {
-            Ok(TaskRow {
-                project_id: row.get(0)?,
-                epic_id: row.get(1)?,
-                task_key: row.get(2)?,
-                title: row.get(3)?,
-                description: row.get(4)?,
-                status: row.get(5)?,
-                deadline: row.get(6)?,
-                revision: row.get(7)?,
-                position: row.get(8)?,
-            })
-        },
+        TaskRow::from_row,
     )
     .optional()?
     .ok_or_else(|| not_found("task"))
@@ -517,8 +522,8 @@ const IS_ACTIVE_MEMBER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN pro
                      u.id=?1 AND u.is_active=1 AND m.project_id=?2)";
 const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
-const POOL_ITEM_SQL: &str =
-    "SELECT project_id,scope,owner_user_id,title,description,revision FROM pool_items WHERE id=?1";
+const POOL_ITEM_SQL: &str = "SELECT project_id,scope,owner_user_id,title,description,created_at,revision \
+                     FROM pool_items WHERE id=?1";
 
 struct TrackRow {
     project_id: String,
