@@ -139,13 +139,8 @@ impl AuthService {
         let supplied = supplied.to_owned();
         let valid = password_work(permit, move || verify_password(&supplied, &hash)).await?;
         if !valid {
-            self.record_login_failure(
-                throttle_key,
-                unix_now()?,
-                LOGIN_FAILURES_BEFORE_DELAY,
-                LOGIN_FAILURE_WINDOW_SECONDS,
-            )
-            .await?;
+            self.record_login_failure(throttle_key, unix_now()?, &PASSWORD_CONFIRMATION_RULE)
+                .await?;
             return Err(AppError::IncorrectPassword { field });
         }
         self.db

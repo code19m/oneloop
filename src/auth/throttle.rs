@@ -1,5 +1,46 @@
-//! Login delay bookkeeping combines account, address and pair buckets without blocking async workers.
+//! Delays after failed sign-ins, counted per account, per address and per
+//! account and address together.
 use super::*;
+
+/// Failures count toward a delay for 15 minutes after the first one.
+const FAILURE_WINDOW_SECONDS: i64 = 15 * 60;
+
+/// When failed attempts in one bucket start to delay the next ones, and how
+/// long a delay can grow.
+pub(super) struct ThrottleRule {
+    /// Failures within the window before the first delay.
+    threshold: i64,
+    /// The longest delay, in seconds.
+    max_delay: i64,
+    /// Whether the start of the delay is logged.
+    log_start: bool,
+}
+
+/// One account from one address.
+pub(super) const PAIR_RULE: ThrottleRule = ThrottleRule {
+    threshold: 5,
+    max_delay: 15 * 60,
+    log_start: false,
+};
+/// One address, across accounts.
+pub(super) const ADDRESS_RULE: ThrottleRule = ThrottleRule {
+    threshold: 20,
+    max_delay: 15 * 60,
+    log_start: false,
+};
+/// One account, across addresses. Its short delay keeps an attacker from
+/// locking the owner out for long.
+pub(super) const ACCOUNT_RULE: ThrottleRule = ThrottleRule {
+    threshold: 15,
+    max_delay: 60,
+    log_start: true,
+};
+/// The current password, asked again before sensitive changes.
+pub(super) const PASSWORD_CONFIRMATION_RULE: ThrottleRule = ThrottleRule {
+    threshold: 5,
+    max_delay: 15 * 60,
+    log_start: false,
+};
 
 impl AuthService {
     pub(super) async fn check_login_throttle(&self, key: &str, now: i64) -> AppResult<()> {
@@ -29,37 +70,54 @@ impl AuthService {
         &self,
         key: String,
         now: i64,
-        threshold: i64,
-        cap: i64,
+        rule: &'static ThrottleRule,
     ) -> AppResult<()> {
-        self.db.transaction(move |tx| {
-            // Keep cleanup proportional to hostile traffic as well as running
-            // periodically: address rotation must not outrun the timer's batch.
-            crate::retention::prune_login_throttles_connection(tx, now, 100)?;
-            let existing=tx.query_row(
-                "SELECT failure_count,window_started_at FROM login_throttles WHERE key=?1",[&key],
-                |row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)),
-            ).optional()?;
-            let (failure_count,window_started_at)=match existing {
-                Some((count,start)) if now-start<LOGIN_FAILURE_WINDOW_SECONDS=>(count+1,start),
-                _=>(1,now),
-            };
-            if cap == ACCOUNT_DELAY_CAP_SECONDS && failure_count == threshold {
-                tracing::warn!(target: "oneloop::auth", account_key = %key, "account login delay started");
-            }
-            let blocked_until=if failure_count>=threshold {
-                let exponent=(failure_count-threshold).min(5) as u32;
-                now+30_i64.saturating_mul(2_i64.pow(exponent)).min(cap)
-            } else { now };
-            tx.execute(
-                "INSERT INTO login_throttles
-                 (key,failure_count,window_started_at,last_failed_at,blocked_until)
-                 VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET
-                 failure_count=excluded.failure_count,window_started_at=excluded.window_started_at,
-                 last_failed_at=excluded.last_failed_at,blocked_until=excluded.blocked_until",
-                rusqlite::params![key,failure_count,window_started_at,now,blocked_until],
-            )?;
-            Ok(())
-        }).await
+        self.db
+            .transaction(move |tx| {
+                // Keep cleanup proportional to hostile traffic as well as running
+                // periodically: address rotation must not outrun the timer's batch.
+                crate::retention::prune_login_throttles_connection(tx, now, 100)?;
+                let existing = tx
+                    .query_row(
+                        "SELECT failure_count,window_started_at FROM login_throttles WHERE key=?1",
+                        [&key],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let (failure_count, window_started_at) = match existing {
+                    Some((count, start)) if now - start < FAILURE_WINDOW_SECONDS => {
+                        (count + 1, start)
+                    }
+                    _ => (1, now),
+                };
+                if rule.log_start && failure_count == rule.threshold {
+                    tracing::warn!(
+                        target: "oneloop::auth",
+                        account_key = %key,
+                        "account login delay started"
+                    );
+                }
+                // 30 seconds at the threshold, doubling with each failure after it.
+                let blocked_until = if failure_count >= rule.threshold {
+                    let exponent = (failure_count - rule.threshold).min(5) as u32;
+                    now + 30_i64
+                        .saturating_mul(2_i64.pow(exponent))
+                        .min(rule.max_delay)
+                } else {
+                    now
+                };
+                tx.execute(
+                    "INSERT INTO login_throttles
+                     (key,failure_count,window_started_at,last_failed_at,blocked_until)
+                     VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET
+                       failure_count=excluded.failure_count,
+                       window_started_at=excluded.window_started_at,
+                       last_failed_at=excluded.last_failed_at,
+                       blocked_until=excluded.blocked_until",
+                    rusqlite::params![key, failure_count, window_started_at, now, blocked_until],
+                )?;
+                Ok(())
+            })
+            .await
     }
 }

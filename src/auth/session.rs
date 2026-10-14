@@ -108,29 +108,13 @@ impl AuthService {
             if user.as_ref().is_some_and(|user| !user.user.is_active) {
                 *failure_outcome = "inactive";
             }
-            self.record_login_failure(
-                throttle_key,
-                now,
-                LOGIN_FAILURES_BEFORE_DELAY,
-                LOGIN_FAILURE_WINDOW_SECONDS,
-            )
-            .await?;
-            if let Some(key) = ip_throttle_key {
-                self.record_login_failure(
-                    key,
-                    now,
-                    IP_FAILURES_BEFORE_DELAY,
-                    LOGIN_FAILURE_WINDOW_SECONDS,
-                )
+            self.record_login_failure(throttle_key, now, &PAIR_RULE)
                 .await?;
+            if let Some(key) = ip_throttle_key {
+                self.record_login_failure(key, now, &ADDRESS_RULE).await?;
             }
-            self.record_login_failure(
-                account_key,
-                now,
-                ACCOUNT_FAILURES_BEFORE_DELAY,
-                ACCOUNT_DELAY_CAP_SECONDS,
-            )
-            .await?;
+            self.record_login_failure(account_key, now, &ACCOUNT_RULE)
+                .await?;
             return Err(AppError::InvalidCredentials);
         }
 

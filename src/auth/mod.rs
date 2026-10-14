@@ -28,6 +28,7 @@ use crate::{
 };
 
 use password::{PasswordPolicy, hash_password, verify_password};
+use throttle::{ACCOUNT_RULE, ADDRESS_RULE, PAIR_RULE, PASSWORD_CONFIRMATION_RULE};
 
 const ACCOUNT_PAGE_SIZE: usize = 50;
 
@@ -35,11 +36,6 @@ pub const SESSION_IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 pub const SESSION_ABSOLUTE_SECONDS: i64 = 30 * 24 * 60 * 60;
 pub const RECENT_AUTH_SECONDS: i64 = 30 * 60;
 pub const MAX_BROWSER_SESSIONS: i64 = 10;
-const LOGIN_FAILURE_WINDOW_SECONDS: i64 = 15 * 60;
-const LOGIN_FAILURES_BEFORE_DELAY: i64 = 5;
-const IP_FAILURES_BEFORE_DELAY: i64 = 20;
-const ACCOUNT_FAILURES_BEFORE_DELAY: i64 = 15;
-const ACCOUNT_DELAY_CAP_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
