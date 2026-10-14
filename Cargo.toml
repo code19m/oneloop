@@ -61,9 +61,6 @@ zeroize = "1"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", features = ["fs", "process", "system"] }
 
-[build-dependencies]
-sha2 = "0.10"
-
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"

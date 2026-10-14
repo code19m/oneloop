@@ -25,16 +25,6 @@ fn metadata_watches_existing_git_paths_and_honors_source_revision() {
     use std::{fs, os::unix::fs::PermissionsExt, process::Command};
     let root = crate::support::scratch_dir();
     let root = root.path().canonicalize().unwrap();
-    for directory in [
-        "frontend/src",
-        "frontend/views",
-        "frontend/styles",
-        "frontend/icons",
-        "frontend/vendor",
-    ] {
-        fs::create_dir_all(root.join(directory)).unwrap();
-        fs::write(root.join(directory).join("fixture.js"), "fixture").unwrap();
-    }
     let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
     let git = bin.join("git");
@@ -98,7 +88,8 @@ esac
     ] {
         assert!(output.contains(&format!("cargo:rerun-if-changed={path}\n")));
     }
-    assert!(!output.contains("index"));
+    // Git's index file; frontend/index.html is watched.
+    assert!(!output.contains("index\n"));
     assert!(metadata.contains("123456789abc"));
     let (output, _) = run(None, true);
     assert!(!output.contains("shared/refs/heads/lane"));
@@ -112,16 +103,6 @@ esac
     let (output, metadata) = run(Some("release-revision-dirty"), false);
     assert!(!output.contains("worktree/") && !output.contains("shared/"));
     assert!(metadata.contains("release-revision-dirty"));
-    // Package exclusions must not alter the public cache identity. Production
-    // bytes still invalidate it even when a source revision is supplied.
-    fs::write(root.join("frontend/package.json"), "{}").unwrap();
-    fs::write(root.join("frontend/vendor/audit.json"), "{}").unwrap();
-    fs::write(root.join("frontend/views/README.md"), "Developer notes").unwrap();
-    let (_, same_assets) = run(Some("release-revision-dirty"), false);
-    assert_eq!(metadata, same_assets);
-    fs::write(root.join("frontend/styles/fixture.js"), "changed bytes").unwrap();
-    let (_, changed_assets) = run(Some("release-revision-dirty"), false);
-    assert_ne!(metadata, changed_assets);
     // Source archives: Git may exist but fail, or be unavailable altogether.
     fs::write(&git, "#!/bin/sh\nexit 1\n").unwrap();
     for remove_git in [false, true] {
