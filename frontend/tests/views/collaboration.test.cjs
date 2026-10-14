@@ -455,3 +455,10 @@ test('a tab whose live updates a newer tab took says so, and Resume takes them b
  t.events[1].emit('open');
  assert.equal(notice(),null);
 });
+
+test('a block reason with extra spaces keeps its mention where the reason shows it', () => {
+ const t=boot(),task=t.D.tasks.find(x=>x.id==='BIR-079');t.A.openModal('block',task.id);
+ const input=pickBlock(t,'  Waiting    for @rob','robin');typeBlock(t,input.value+'to approve.  ');saveBlockForm(t);
+ const {reason,mentions}=t.commands[0].payload;assert.equal(reason,'Waiting    for @robin to approve.');
+ assert.deepEqual(mentions,[{kind:'user',userId:'robin',startOffset:15,endOffset:21,label:'@robin'}]);
+});

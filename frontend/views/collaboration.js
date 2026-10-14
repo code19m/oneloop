@@ -53,7 +53,8 @@
  function blockHint(t){const el=document.querySelector('.block-mention-hint');if(el)el.textContent=blockInputState(t).mentions.some(m=>m.id==='everyone')?`Notify ${members(projectOf(t)).filter(u=>u.id!==me()?.id).length} project members`:'';}
  function blockFeedback(message){const el=document.querySelector('.block-mention-feedback');if(el)el.textContent=message;}
  function prepareBlock(t,raw,reason){const d=updateText(t,raw,'block'),eligible=new Set(members(projectOf(t)).map(u=>u.id));
-  const selected=validTokens(raw,d.mentions).map(m=>{const start=hooks.clean(raw.slice(0,m.start)+'X',Number.MAX_SAFE_INTEGER).length-1;return {...m,start,end:start+m.label.length+1};});
+  // The saved reason is the typed text with its ends trimmed, so mentions move left by the leading space only.
+  const lead=raw.length-raw.trimStart().length,selected=validTokens(raw,d.mentions).map(m=>({...m,start:m.start-lead,end:m.end-lead}));
   const mentions=validTokens(reason,selected);if(hasInvalidMention(mentions,eligible,t.block?.mentions)){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
   return {mentions:wireMentions(reason,mentions)};
  }

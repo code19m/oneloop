@@ -47,6 +47,8 @@ All notable changes to oneloop are recorded here. The format follows
   link to the page you are on no longer asks to discard your changes.
 - Choosing **Done** in the Status of a blocked task now asks you to unblock and
   complete it, as the Board does. Before, the change failed with an error.
+- A block reason with several spaces in a row before a mention keeps the
+  mention. Before, the mention was dropped and the person was not notified.
 
 ### Security
 
