@@ -151,6 +151,7 @@ impl CollaborationRuntime {
             .expect("SSE authorization lane stays open")
     }
 
+    /// How many live-update receivers are subscribed. For tests.
     #[doc(hidden)]
     pub fn receiver_count(&self) -> usize {
         self.inner.hints.receiver_count()
@@ -321,9 +322,7 @@ impl OutboxWorker {
     /// transaction (see `BATCH_MESSAGES`), then sends one hint for each, in
     /// the same order. A message that fails rolls back alone and is retried
     /// later with a backoff. Returns whether anything was delivered; when
-    /// nothing was and a message failed, returns that failure. Exposed for
-    /// deterministic tests and service supervisors that prefer their own
-    /// scheduling loop.
+    /// nothing was and a message failed, returns that failure.
     pub async fn run_once(&self) -> AppResult<bool> {
         let now = unix_now()?;
         // A WAL read does not compete for the serialized writer while idle.

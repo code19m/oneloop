@@ -74,13 +74,6 @@ impl DomainService {
         Self { db, time_zone }
     }
 
-    pub fn db(&self) -> &Db {
-        &self.db
-    }
-    pub fn time_zone(&self) -> &str {
-        self.time_zone.name()
-    }
-
     /// Execute a logical write exactly once for an authenticated actor.
     ///
     /// The same method is used by browser and MCP adapters. The actor always

@@ -69,10 +69,6 @@ impl CollaborationService {
         Self { db }
     }
 
-    pub fn db(&self) -> &Db {
-        &self.db
-    }
-
     /// Rechecks an SSE principal without extending browser idle expiry.
     pub async fn actor_is_current(&self, actor: &Actor) -> AppResult<bool> {
         let actor = actor.clone();

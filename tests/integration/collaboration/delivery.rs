@@ -841,7 +841,7 @@ async fn activity_uses_a_fixed_window_and_projects_before_cursor_pagination() {
         })
         .await
         .unwrap();
-    let service = CollaborationService::new(db);
+    let service = CollaborationService::new(db.clone());
     let page = service
         .activity(&bob, "p1", Some("task"), None, Some(2))
         .await
@@ -863,8 +863,7 @@ async fn activity_uses_a_fixed_window_and_projects_before_cursor_pagination() {
     assert_eq!(older.items[0].before, Some(json!("a")));
     assert_eq!(older.items[0].after, Some(json!("c")));
     assert_eq!(older.items[0].created_at, base + 200);
-    let counts: (i64, i64) = service
-        .db()
+    let counts: (i64, i64) = db
         .run(|connection| {
             Ok((
                 connection
