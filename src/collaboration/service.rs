@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    auth::{Actor, ActorSource},
+    access::{self, Need, require_project},
+    auth::{Actor, refresh_actor_connection},
 };
 
 use super::{
@@ -86,9 +87,7 @@ impl CollaborationService {
     pub async fn actor_is_current(&self, actor: &Actor) -> AppResult<bool> {
         let actor = actor.clone();
         self.db
-            .run(move |connection| {
-                authorization_decision(authorize_actor_connection(connection, &actor, unix_now()?))
-            })
+            .run(move |connection| access::allowed(refresh_actor_connection(connection, &actor)))
             .await
     }
 
@@ -103,18 +102,16 @@ impl CollaborationService {
         let project_id = project_id.map(str::to_owned);
         self.db
             .run(move |connection| {
-                if !authorization_decision(authorize_actor_connection(
-                    connection,
-                    &actor,
-                    unix_now()?,
-                ))? {
+                if !access::allowed(refresh_actor_connection(connection, &actor))? {
                     return Ok(false);
                 }
                 match project_id {
-                    Some(project_id) => authorization_decision(require_project_read_connection(
+                    Some(project_id) => access::allowed(require_project(
                         connection,
                         &actor,
                         &project_id,
+                        Need::Read,
+                        false,
                     )),
                     None => Ok(true),
                 }
@@ -173,12 +170,12 @@ impl CollaborationService {
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
         self.db.snapshot(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
                 [&task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -209,12 +206,12 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
         self.db.snapshot(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
                 [&task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -236,13 +233,13 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let block_id = block_id.to_owned();
         self.db.run(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
                  WHERE b.id=?1 AND b.task_id=?2 AND t.deleted_at IS NULL",
                 params![block_id, task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task block" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let columns = "id,project_id,entity_type,entity_id,task_id,actor_user_id,actor_name_snapshot,
                 event_type,field_key,before_json,after_json,metadata_json,entity_revision,latest_at";
             let mut statement = connection.prepare(&format!(
@@ -278,8 +275,8 @@ impl CollaborationService {
         let limit = page_limit(limit);
         self.db
             .run(move |connection| {
-                authorize_actor_connection(connection, &actor, unix_now()?)?;
-                require_project_read_connection(connection, &actor, &project_id)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 let mut visible = activity_projection_stream(
                     connection,
                     &project_id,
@@ -330,8 +327,8 @@ impl CollaborationService {
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
         self.db.run(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
-            require_mcp_scope_connection(connection, &actor, "inbox_private", None)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
+            access::require_scope(connection, &actor, "inbox_private", None)?;
             validate_inbox_projects(connection, &actor, &filter.project_ids)?;
             let unread_count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM notification_recipients r
@@ -339,7 +336,7 @@ impl CollaborationService {
                  WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL AND r.read_at IS NULL AND r.archived_at IS NULL
                  AND (?2 IS NULL OR n.project_id IN
                    (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?2))",
-                params![actor.user_id, inbox_grant_id(&actor)], |row| row.get(0),
+                params![actor.user_id, actor.mcp_grant_id()], |row| row.get(0),
             )?;
             let cutoff = unix_now()?.saturating_sub(ARCHIVE_RETENTION_SECONDS);
             let project_ids = serde_json::to_string(&filter.project_ids)
@@ -350,7 +347,7 @@ impl CollaborationService {
                     JOIN notification_events n ON n.id=r.notification_id
                     {INBOX_FILTER_SQL}"),
                 params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), inbox_grant_id(&actor)],
+                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id()],
                 |row| row.get(0),
             )?;
             let mut statement = connection.prepare(&format!(
@@ -386,7 +383,7 @@ impl CollaborationService {
             let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
             let rows = statement.query_map(
                 params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), inbox_grant_id(&actor), cursor_time, cursor_id,
+                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id(), cursor_time, cursor_id,
                     (limit + 1) as i64],
                 inbox_row,
             )?;
@@ -455,7 +452,7 @@ fn dispatch(
 ) -> AppResult<Mutation> {
     use CollaborationOperation::*;
     if operation.is_inbox() {
-        require_mcp_scope_connection(tx, actor, "inbox_private", None)?;
+        access::require_scope(tx, actor, "inbox_private", None)?;
     }
     let payload = &command.payload;
     // The revision rule has required one for every operation that takes it.
@@ -686,73 +683,13 @@ fn truncate_excerpt(value: &str, max: usize) -> String {
     result
 }
 
-fn require_participation(tx: &Transaction<'_>, actor: &Actor, project_id: &str) -> AppResult<()> {
-    crate::access::require_project(
-        tx,
-        actor,
-        project_id,
-        crate::access::Need::Discussion,
-        false,
-    )
-}
-
-fn require_comment_owner_or_admin(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    author_id: &str,
-) -> AppResult<()> {
+/// Connected apps manage comments only as their author: moderation is an
+/// account-administration power, which stays in the browser.
+fn require_comment_owner_or_admin(actor: &Actor, author_id: &str) -> AppResult<()> {
     if actor.user_id == author_id {
         return Ok(());
     }
-    // Connected apps may manage comments only as their author. Moderation is
-    // an account-administration power and remains browser-only.
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
-    let is_admin: bool = tx
-        .query_row(
-            "SELECT is_admin FROM users WHERE id=?1 AND is_active=1",
-            [&actor.user_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if is_admin {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden)
-    }
-}
-
-fn authorize_actor_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    _now: i64,
-) -> AppResult<()> {
-    crate::auth::refresh_actor_connection(connection, actor).map(|_| ())
-}
-
-fn require_project_read_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    project_id: &str,
-) -> AppResult<()> {
-    crate::access::require_project(
-        connection,
-        actor,
-        project_id,
-        crate::access::Need::Read,
-        false,
-    )
-}
-
-fn require_mcp_scope_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    scope: &str,
-    project_id: Option<&str>,
-) -> AppResult<()> {
-    crate::access::require_scope(connection, actor, scope, project_id)
+    actor.require_admin()
 }
 
 fn validate_inbox_projects(
@@ -761,7 +698,7 @@ fn validate_inbox_projects(
     project_ids: &BTreeSet<String>,
 ) -> AppResult<()> {
     for project_id in project_ids {
-        require_project_read_connection(connection, actor, project_id)?;
+        require_project(connection, actor, project_id, Need::Read, false)?;
     }
     Ok(())
 }
@@ -784,7 +721,7 @@ fn authorize_replay(
                 )
                 .optional()?
                 .ok_or(AppError::NotFound { resource: "task" })?;
-            require_participation(tx, actor, &project_id)
+            require_project(tx, actor, &project_id, Need::Discussion, false)
         }
         EditComment | DeleteComment | RestoreComment => {
             let comment_id = payload
@@ -801,14 +738,14 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound {
                     resource: "comment",
                 })?;
-            require_participation(tx, actor, &project_id)?;
+            require_project(tx, actor, &project_id, Need::Discussion, false)?;
             if operation != EditComment {
-                require_mcp_scope_connection(tx, actor, "destructive", Some(&project_id))?;
+                access::require_scope(tx, actor, "destructive", Some(&project_id))?;
             }
-            require_comment_owner_or_admin(tx, actor, &author_id)
+            require_comment_owner_or_admin(actor, &author_id)
         }
         MarkRead | MarkUnread | Archive | RestoreArchived | BulkMarkRead | BulkArchive => {
-            require_mcp_scope_connection(tx, actor, "inbox_private", None)
+            access::require_scope(tx, actor, "inbox_private", None)
         }
     }
 }
@@ -1043,14 +980,6 @@ fn decode_cursor(value: &str) -> AppResult<Cursor> {
         .decode(value)
         .map_err(|_| AppError::validation("cursor", "is invalid"))?;
     serde_json::from_slice(&bytes).map_err(|_| AppError::validation("cursor", "is invalid"))
-}
-
-fn authorization_decision(result: AppResult<()>) -> AppResult<bool> {
-    match result {
-        Ok(()) => Ok(true),
-        Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
-        Err(error) => Err(error),
-    }
 }
 
 #[cfg(test)]

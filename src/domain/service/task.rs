@@ -4,19 +4,11 @@ use super::*;
 pub(super) fn create_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TaskCreate,
     now: i64,
     source_pool: Option<&str>,
 ) -> AppResult<Mutation> {
-    require_project(
-        tx,
-        actor,
-        stored,
-        &input.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &input.project_id, Need::Board, false)?;
     ensure_open_epic(tx, &input.epic_id, &input.project_id)?;
     let title = text(&input.title, "title", TASK_TITLE_MAX)?;
     let description = optional_text(&input.description, "description", TASK_DESCRIPTION_MAX)?;
@@ -95,20 +87,12 @@ pub(super) fn create_task(
 pub(super) fn update_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TaskUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Board, false)?;
     ensure_revision(before.revision, expected)?;
     let epic_id = input.epic_id.unwrap_or(before.epic_id.clone());
     if epic_id != before.epic_id {
@@ -287,20 +271,12 @@ pub(super) fn update_task(
 pub(super) fn move_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TaskMove,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Board, false)?;
     ensure_revision(before.revision, expected)?;
     let status = input.status.as_str();
     if status == "done" {
@@ -434,20 +410,12 @@ pub(super) fn move_task(
 pub(super) fn delete_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.id)?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Board,
-        true,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Board, true)?;
     ensure_revision(before.revision, expected)?;
     tx.execute("UPDATE tasks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = json!({"entityType":"task","id":input.id,"projectId":before.project_id,"deleted":true,"revision":expected+1});
@@ -476,7 +444,6 @@ pub(super) fn delete_task(
 pub(super) fn restore_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -505,14 +472,7 @@ pub(super) fn restore_task(
         )
         .optional()?
         .ok_or_else(|| not_found("task"))?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Board,
-        true,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Board, true)?;
     let Some(deleted_at) = deleted_at else {
         return Err(AppError::Conflict("the task is not deleted".into()));
     };

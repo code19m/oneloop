@@ -1,6 +1,6 @@
-//! Shared authorization and mention policy. Reload current identities and project access; private scopes never inherit administrator visibility.
-
-//! Shared current-actor and project policy for all product services.
+//! The one project access policy, shared by every service. Each check reads
+//! the current identity and access; private scopes never inherit
+//! administrator visibility. It also validates mentions.
 use crate::collaboration::{MentionKind, MentionToken};
 use crate::{
     AppError, AppResult,
@@ -34,6 +34,15 @@ pub(crate) fn require_scope(
         Ok(())
     } else {
         Err(AppError::Forbidden)
+    }
+}
+
+/// Turns an access check into a yes or no. Other errors stay errors.
+pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 

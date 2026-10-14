@@ -4,20 +4,12 @@ use super::*;
 pub(super) fn block_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TaskBlock,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &task.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &task.project_id, Need::Board, false)?;
     ensure_revision(task.revision, expected)?;
     if task.status == "done" {
         return Err(AppError::PreconditionFailed(
@@ -129,7 +121,6 @@ pub(super) fn block_task(
 pub(super) fn update_block_reason(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: BlockReasonUpdate,
     expected: i64,
     now: i64,
@@ -142,14 +133,7 @@ pub(super) fn update_block_reason(
         )
         .optional()?
         .ok_or_else(|| not_found("active task block"))?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Board, false)?;
     ensure_revision(before.revision, expected)?;
     let reason = mention_text(&input.reason)?;
     let old_mentions = load_block_mentions(tx, &input.block_id)?;
@@ -273,21 +257,13 @@ pub(super) fn update_block_reason(
 pub(super) fn unblock_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TaskUnblock,
     expected: i64,
     complete: bool,
     now: i64,
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &task.project_id,
-        Permission::Board,
-        false,
-    )?;
+    require_project(tx, actor, &task.project_id, Need::Board, false)?;
     ensure_revision(task.revision, expected)?;
     let (block_id, block_revision, block_reason): (String, i64, String) = tx
         .query_row(

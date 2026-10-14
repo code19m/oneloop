@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    auth::{Actor, ActorSource},
+    access::{Need, require_project},
+    auth::{Actor, ActorSource, refresh_actor_connection},
     collaboration::{ActivityEvent, ActivityPage},
     error::{AppError, AppResult},
     timezone::TimeZone,
@@ -140,7 +141,7 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                ensure_current_actor(connection, &actor)?;
+                refresh_actor_connection(connection, &actor)?;
                 snapshot_cursor(connection)
             })
             .await
@@ -151,7 +152,7 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
                 board_page_connection(connection, &actor, &query)
             })
             .await
@@ -164,8 +165,8 @@ impl DomainService {
             .run(move |connection| {
                 let transaction =
                     connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let actor = ensure_current_actor(&transaction, &actor)?;
-                require_read(&transaction, &actor, &query.project_id)?;
+                let actor = refresh_actor_connection(&transaction, &actor)?;
+                require_project(&transaction, &actor, &query.project_id, Need::Read, false)?;
                 let counts = board_counts_connection(&transaction, &query.project_id)?;
                 let unfiltered = query
                     .search
@@ -222,8 +223,8 @@ impl DomainService {
             .run(move |connection| {
                 let transaction =
                     connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let actor = ensure_current_actor(&transaction, &actor)?;
-                require_read(&transaction, &actor, &project_id)?;
+                let actor = refresh_actor_connection(&transaction, &actor)?;
+                require_project(&transaction, &actor, &project_id, Need::Read, false)?;
                 let counts = board_counts_connection(&transaction, &project_id)?;
                 transaction.commit()?;
                 Ok(counts)
@@ -237,8 +238,8 @@ impl DomainService {
         let time_zone = self.time_zone.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
-                require_read(connection, &actor, &project_id)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 Ok(json!({
                 "projectId":project_id,
                 "tracks":tracks(connection,&project_id)?,
@@ -258,7 +259,7 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
                 pool_page_connection(
                     connection,
                     &actor,
@@ -276,7 +277,7 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
                 let id = resolve_task_id(connection, &task_id)?
                     .ok_or(AppError::NotFound { resource: "task" })?;
                 let project_id: String = connection
@@ -287,7 +288,7 @@ impl DomainService {
                     )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "task" })?;
-                require_read(connection, &actor, &project_id)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 task_view(connection, &id)
             })
             .await
@@ -303,9 +304,9 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
                 let project_id = epic_project(connection, &epic_id)?;
-                require_read(connection, &actor, &project_id)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 epic_task_page_connection(
                     connection,
                     &epic_id,
@@ -326,9 +327,9 @@ impl DomainService {
         let actor = actor.clone();
         self.db
             .snapshot(move |connection| {
-                let actor = ensure_current_actor(connection, &actor)?;
+                let actor = refresh_actor_connection(connection, &actor)?;
                 let project_id = epic_project(connection, &epic_id)?;
-                require_read(connection, &actor, &project_id)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 epic_activity_page_connection(
                     connection,
                     &epic_id,
@@ -349,33 +350,6 @@ fn epic_project(connection: &rusqlite::Connection, epic_id: &str) -> AppResult<S
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "epic" })
-}
-
-fn ensure_current_actor(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Actor> {
-    crate::auth::refresh_actor_connection(connection, actor)
-}
-
-fn require_read(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    project_id: &str,
-) -> AppResult<()> {
-    crate::access::require_project(
-        connection,
-        actor,
-        project_id,
-        crate::access::Need::Read,
-        false,
-    )
-    .map_err(|error| {
-        if matches!(error, AppError::Forbidden) {
-            AppError::NotFound {
-                resource: "project",
-            }
-        } else {
-            error
-        }
-    })
 }
 
 fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<ProjectView>> {
@@ -705,7 +679,7 @@ fn board_page_with_total(
     q: &BoardQuery,
     total: Option<i64>,
 ) -> AppResult<Page<TaskView>> {
-    require_read(connection, actor, &q.project_id)?;
+    require_project(connection, actor, &q.project_id, Need::Read, false)?;
     let limit = page_limit(q.limit);
     let generation = task_page_generation(connection, &q.project_id)?;
     // Only Done has a newest-first order; other columns ignore the choice.
@@ -1378,7 +1352,7 @@ fn pool_page_connection(
     cursor: Option<&str>,
     limit: usize,
 ) -> AppResult<Page<PoolItemView>> {
-    require_read(connection, actor, project_id)?;
+    require_project(connection, actor, project_id, Need::Read, false)?;
     if scope.is_some_and(|s| s != "personal" && s != "team") {
         return Err(AppError::validation("scope", "must be personal or team"));
     }
@@ -1654,7 +1628,7 @@ fn bootstrap_snapshot(
     query: BootstrapQuery,
     time_zone: &TimeZone,
 ) -> AppResult<BootstrapView> {
-    let actor = ensure_current_actor(connection, actor)?;
+    let actor = refresh_actor_connection(connection, actor)?;
     let projects = projects(connection, &actor)?;
     let direct_task = match query.task_id.as_deref() {
         Some(id) => {

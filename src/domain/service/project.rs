@@ -4,14 +4,10 @@ use super::*;
 pub(super) fn create_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
+    actor.require_admin()?;
     let name = text(&input.name, "name", NAME_MAX)?;
     let prefix = normalize_prefix(&input.task_prefix)?;
     let reserved: bool = tx.query_row(
@@ -63,15 +59,11 @@ pub(super) fn create_project(
 pub(super) fn update_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
+    actor.require_admin()?;
     let before: (String, String, i64) = tx
         .query_row(
             "SELECT name,task_prefix,revision FROM projects WHERE id=?1 AND deleted_at IS NULL",
@@ -154,12 +146,11 @@ pub(super) fn update_project(
 pub(super) fn delete_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectDelete,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_sensitive_admin(actor, stored, now)?;
+    require_sensitive_admin(actor, now)?;
     let (name, revision): (String, i64) = tx
         .query_row(
             "SELECT name,revision FROM projects WHERE id=?1 AND deleted_at IS NULL",

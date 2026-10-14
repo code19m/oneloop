@@ -4,11 +4,10 @@ use super::*;
 pub(super) fn create_pool_item(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: PoolItemCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_pool_scope(tx, actor, stored, &input.project_id, &input.scope, false)?;
+    require_pool_scope(tx, actor, &input.project_id, &input.scope, false)?;
     let title = text(&input.title, "title", TASK_TITLE_MAX)?;
     let description = optional_text(&input.description, "description", POOL_DESCRIPTION_MAX)?;
     let id = Uuid::now_v7().to_string();
@@ -61,7 +60,6 @@ pub(super) fn create_pool_item(
 pub(super) fn update_pool_item(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: PoolItemUpdate,
     expected: i64,
     now: i64,
@@ -84,7 +82,7 @@ pub(super) fn update_pool_item(
     } else {
         PoolScope::Team
     };
-    require_pool_scope(tx, actor, stored, &before.0, &scope, false)?;
+    require_pool_scope(tx, actor, &before.0, &scope, false)?;
     if matches!(scope, PoolScope::Personal) && before.2.as_deref() != Some(&actor.user_id) {
         return Err(not_found("pool item"));
     }
@@ -158,7 +156,6 @@ pub(super) fn update_pool_item(
 pub(super) fn delete_pool_item(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -184,7 +181,7 @@ pub(super) fn delete_pool_item(
     } else {
         PoolScope::Team
     };
-    require_pool_scope(tx, actor, stored, &before.0, &scope, true)?;
+    require_pool_scope(tx, actor, &before.0, &scope, true)?;
     if matches!(scope, PoolScope::Personal) && before.2.as_deref() != Some(&actor.user_id) {
         return Err(not_found("pool item"));
     }
@@ -217,7 +214,6 @@ pub(super) fn delete_pool_item(
 pub(super) fn promote_pool_item(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: PoolItemPromote,
     expected: i64,
     now: i64,
@@ -240,13 +236,13 @@ pub(super) fn promote_pool_item(
     } else {
         PoolScope::Team
     };
-    require_pool_scope(tx, actor, stored, &item.0, &scope, false)?;
+    require_pool_scope(tx, actor, &item.0, &scope, false)?;
     if matches!(scope, PoolScope::Personal) && item.2.as_deref() != Some(&actor.user_id) {
         return Err(not_found("pool item"));
     }
     ensure_revision(item.5, expected)?;
     // Promotion creates shared project work, so personal ownership alone is insufficient.
-    require_project(tx, actor, stored, &item.0, Permission::Board, false)?;
+    require_project(tx, actor, &item.0, Need::Board, false)?;
     let task = TaskCreate {
         project_id: item.0.clone(),
         epic_id: input.epic_id,
@@ -255,7 +251,7 @@ pub(super) fn promote_pool_item(
         deadline: input.deadline,
         assignee_ids: input.assignee_ids,
     };
-    let mut mutation = create_task(tx, actor, stored, task, now, Some(&input.pool_item_id))?;
+    let mut mutation = create_task(tx, actor, task, now, Some(&input.pool_item_id))?;
     tx.execute(
         "DELETE FROM pool_items WHERE id=?1 AND revision=?2",
         params![input.pool_item_id, expected],
@@ -297,22 +293,14 @@ pub(super) fn promote_pool_item(
 pub(super) fn require_pool_scope(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     project_id: &str,
     scope: &PoolScope,
     destructive: bool,
 ) -> AppResult<()> {
     match scope {
-        PoolScope::Team => require_project(
-            tx,
-            actor,
-            stored,
-            project_id,
-            Permission::Board,
-            destructive,
-        ),
+        PoolScope::Team => require_project(tx, actor, project_id, Need::Board, destructive),
         PoolScope::Personal => {
-            require_project(tx, actor, stored, project_id, Permission::Read, destructive)?;
+            require_project(tx, actor, project_id, Need::Read, destructive)?;
             if !crate::auth::can_read_private_pool(tx, actor)? {
                 return Err(AppError::Forbidden);
             }

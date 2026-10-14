@@ -4,10 +4,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{
-    AppError, AppResult,
-    auth::{Actor, ActorSource},
-};
+use crate::{AppError, AppResult, auth::Actor};
 
 #[derive(Clone, Debug)]
 pub struct NotificationInput<'a> {
@@ -71,10 +68,6 @@ pub fn snapshot_notification_tx(
         return Ok(None);
     }
     let notification_id = Uuid::now_v7().to_string();
-    let grant_id = match &actor.source {
-        ActorSource::McpGrant { grant_id } => Some(grant_id.as_str()),
-        ActorSource::BrowserSession { .. } => None,
-    };
     tx.execute(
         "INSERT INTO notification_events
          (id,project_id,actor_user_id,actor_mcp_grant_id,event_type,task_id,comment_id,block_id,payload_json,created_at)
@@ -83,7 +76,7 @@ pub fn snapshot_notification_tx(
             notification_id,
             input.project_id,
             actor.user_id,
-            grant_id,
+            actor.mcp_grant_id(),
             input.event_type,
             input.task_id,
             input.comment_id,

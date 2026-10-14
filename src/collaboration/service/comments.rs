@@ -16,7 +16,7 @@ pub(super) fn create_comment(
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "task" })?;
-    require_participation(tx, actor, &project_id)?;
+    require_project(tx, actor, &project_id, Need::Discussion, false)?;
     let mentions = validate_mentions(tx, &project_id, &content, input.mentions)?;
     let id = Uuid::now_v7().to_string();
     let (root_id, reply_author) = match input.reply_to_id.as_deref() {
@@ -105,8 +105,8 @@ pub(super) fn edit_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict(
             "deleted comments cannot be edited".into(),
@@ -205,9 +205,9 @@ pub(super) fn delete_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict("comment is already deleted".into()));
     }
@@ -263,9 +263,9 @@ pub(super) fn restore_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     let Some(deleted_at) = before.deleted_at else {
         return Err(AppError::Conflict("the comment is not deleted".into()));
     };

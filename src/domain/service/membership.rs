@@ -4,11 +4,10 @@ use super::*;
 pub(super) fn add_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     ensure_project_and_active_user(tx, &input.project_id, &input.user_id)?;
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
     // Raw membership history is permanent, including removals. Reuse its
@@ -73,12 +72,11 @@ pub(super) fn add_membership(
 pub(super) fn update_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     let before: (bool, bool, i64) = tx
         .query_row(
             SELECT_PROJECT_MEMBERSHIPS_SQL,
@@ -142,12 +140,11 @@ pub(super) fn update_membership(
 pub(super) fn remove_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipDelete,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     let revision: i64 = tx
         .query_row(
             "SELECT revision FROM project_memberships WHERE project_id=?1 AND user_id=?2",

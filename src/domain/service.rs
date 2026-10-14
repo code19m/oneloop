@@ -31,7 +31,8 @@ use uuid::Uuid;
 
 use crate::{
     Db,
-    auth::{Actor, ActorSource},
+    access::{Need, require_project},
+    auth::Actor,
     collaboration::{
         ActivityInput, NotificationInput, record_activity_tx, snapshot_notification_tx,
     },
@@ -104,39 +105,17 @@ impl DomainService {
                     tx,
                     &actor,
                     now,
-                    |actor, replay| {
-                        let stored = StoredActor {
-                            is_admin: actor.is_admin,
-                        };
-                        authorize_replay(tx, actor, &stored, &command, replay, now)
-                    },
-                    |actor| {
-                        let stored = StoredActor {
-                            is_admin: actor.is_admin,
-                        };
-                        dispatch(tx, actor, &stored, &command, now)
-                    },
+                    |actor, replay| authorize_replay(tx, actor, &command, replay, now),
+                    |actor| dispatch(tx, actor, &command, now),
                 )
             })
             .await
     }
 }
 
-#[derive(Clone, Copy)]
-enum Permission {
-    Read,
-    Board,
-    Roadmap,
-}
-
-pub(super) struct StoredActor {
-    pub(super) is_admin: bool,
-}
-
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     command: &CommandEnvelope,
     now: i64,
 ) -> AppResult<Mutation> {
@@ -148,111 +127,72 @@ fn dispatch(
     // The revision rule has required one for every operation that takes it.
     let expected = command.expected_revision.unwrap_or_default();
     match command.operation {
-        DomainOperation::CreateProject => {
-            create_project(tx, actor, stored, payload!(ProjectCreate), now)
-        }
+        DomainOperation::CreateProject => create_project(tx, actor, payload!(ProjectCreate), now),
         DomainOperation::UpdateProject => {
-            update_project(tx, actor, stored, payload!(ProjectUpdate), expected, now)
+            update_project(tx, actor, payload!(ProjectUpdate), expected, now)
         }
         DomainOperation::DeleteProject => {
-            delete_project(tx, actor, stored, payload!(ProjectDelete), expected, now)
+            delete_project(tx, actor, payload!(ProjectDelete), expected, now)
         }
         DomainOperation::AddMembership => {
-            add_membership(tx, actor, stored, payload!(MembershipCreate), now)
+            add_membership(tx, actor, payload!(MembershipCreate), now)
         }
         DomainOperation::UpdateMembership => {
-            update_membership(tx, actor, stored, payload!(MembershipUpdate), expected, now)
+            update_membership(tx, actor, payload!(MembershipUpdate), expected, now)
         }
         DomainOperation::RemoveMembership => {
-            remove_membership(tx, actor, stored, payload!(MembershipDelete), expected, now)
+            remove_membership(tx, actor, payload!(MembershipDelete), expected, now)
         }
-        DomainOperation::CreateTrack => create_track(tx, actor, stored, payload!(TrackCreate), now),
+        DomainOperation::CreateTrack => create_track(tx, actor, payload!(TrackCreate), now),
         DomainOperation::UpdateTrack => {
-            update_track(tx, actor, stored, payload!(TrackUpdate), expected, now)
+            update_track(tx, actor, payload!(TrackUpdate), expected, now)
         }
         DomainOperation::ReorderTrack => {
-            reorder_track(tx, actor, stored, payload!(TrackReorder), expected, now)
+            reorder_track(tx, actor, payload!(TrackReorder), expected, now)
         }
-        DomainOperation::DeleteTrack => {
-            delete_track(tx, actor, stored, payload!(EntityId), expected, now)
-        }
-        DomainOperation::CreateEpic => create_epic(tx, actor, stored, payload!(EpicCreate), now),
-        DomainOperation::UpdateEpic => {
-            update_epic(tx, actor, stored, payload!(EpicUpdate), expected, now)
-        }
+        DomainOperation::DeleteTrack => delete_track(tx, actor, payload!(EntityId), expected, now),
+        DomainOperation::CreateEpic => create_epic(tx, actor, payload!(EpicCreate), now),
+        DomainOperation::UpdateEpic => update_epic(tx, actor, payload!(EpicUpdate), expected, now),
         DomainOperation::CompleteEpic => {
-            complete_epic(tx, actor, stored, payload!(EntityId), expected, now)
+            complete_epic(tx, actor, payload!(EntityId), expected, now)
         }
-        DomainOperation::ReopenEpic => {
-            reopen_epic(tx, actor, stored, payload!(EntityId), expected, now)
-        }
-        DomainOperation::DeleteEpic => {
-            delete_epic(tx, actor, stored, payload!(EntityId), expected, now)
-        }
+        DomainOperation::ReopenEpic => reopen_epic(tx, actor, payload!(EntityId), expected, now),
+        DomainOperation::DeleteEpic => delete_epic(tx, actor, payload!(EntityId), expected, now),
         DomainOperation::CreateMilestone => {
-            create_milestone(tx, actor, stored, payload!(MilestoneCreate), now)
+            create_milestone(tx, actor, payload!(MilestoneCreate), now)
         }
         DomainOperation::UpdateMilestone => {
-            update_milestone(tx, actor, stored, payload!(MilestoneUpdate), expected, now)
+            update_milestone(tx, actor, payload!(MilestoneUpdate), expected, now)
         }
         DomainOperation::DeleteMilestone => {
-            delete_milestone(tx, actor, stored, payload!(EntityId), expected, now)
+            delete_milestone(tx, actor, payload!(EntityId), expected, now)
         }
-        DomainOperation::CreateTask => {
-            create_task(tx, actor, stored, payload!(TaskCreate), now, None)
+        DomainOperation::CreateTask => create_task(tx, actor, payload!(TaskCreate), now, None),
+        DomainOperation::UpdateTask => update_task(tx, actor, payload!(TaskUpdate), expected, now),
+        DomainOperation::MoveTask => move_task(tx, actor, payload!(TaskMove), expected, now),
+        DomainOperation::DeleteTask => delete_task(tx, actor, payload!(EntityId), expected, now),
+        DomainOperation::RestoreTask => restore_task(tx, actor, payload!(EntityId), expected, now),
+        DomainOperation::BlockTask => block_task(tx, actor, payload!(TaskBlock), expected, now),
+        DomainOperation::UpdateBlockReason => {
+            update_block_reason(tx, actor, payload!(BlockReasonUpdate), expected, now)
         }
-        DomainOperation::UpdateTask => {
-            update_task(tx, actor, stored, payload!(TaskUpdate), expected, now)
+        DomainOperation::UnblockTask => {
+            unblock_task(tx, actor, payload!(TaskUnblock), expected, false, now)
         }
-        DomainOperation::MoveTask => {
-            move_task(tx, actor, stored, payload!(TaskMove), expected, now)
+        DomainOperation::UnblockAndCompleteTask => {
+            unblock_task(tx, actor, payload!(TaskUnblock), expected, true, now)
         }
-        DomainOperation::DeleteTask => {
-            delete_task(tx, actor, stored, payload!(EntityId), expected, now)
-        }
-        DomainOperation::RestoreTask => {
-            restore_task(tx, actor, stored, payload!(EntityId), expected, now)
-        }
-        DomainOperation::BlockTask => {
-            block_task(tx, actor, stored, payload!(TaskBlock), expected, now)
-        }
-        DomainOperation::UpdateBlockReason => update_block_reason(
-            tx,
-            actor,
-            stored,
-            payload!(BlockReasonUpdate),
-            expected,
-            now,
-        ),
-        DomainOperation::UnblockTask => unblock_task(
-            tx,
-            actor,
-            stored,
-            payload!(TaskUnblock),
-            expected,
-            false,
-            now,
-        ),
-        DomainOperation::UnblockAndCompleteTask => unblock_task(
-            tx,
-            actor,
-            stored,
-            payload!(TaskUnblock),
-            expected,
-            true,
-            now,
-        ),
         DomainOperation::CreatePoolItem => {
-            create_pool_item(tx, actor, stored, payload!(PoolItemCreate), now)
+            create_pool_item(tx, actor, payload!(PoolItemCreate), now)
         }
         DomainOperation::UpdatePoolItem => {
-            update_pool_item(tx, actor, stored, payload!(PoolItemUpdate), expected, now)
+            update_pool_item(tx, actor, payload!(PoolItemUpdate), expected, now)
         }
         DomainOperation::DeletePoolItem => {
-            delete_pool_item(tx, actor, stored, payload!(EntityId), expected, now)
+            delete_pool_item(tx, actor, payload!(EntityId), expected, now)
         }
         DomainOperation::PromotePoolItem => {
-            promote_pool_item(tx, actor, stored, payload!(PoolItemPromote), expected, now)
+            promote_pool_item(tx, actor, payload!(PoolItemPromote), expected, now)
         }
     }
 }
@@ -274,38 +214,15 @@ fn revision_rule(operation: DomainOperation) -> RevisionRule {
     }
 }
 
-fn require_admin(actor: &Actor, stored: &StoredActor) -> AppResult<()> {
-    if !stored.is_admin || !matches!(actor.source, ActorSource::BrowserSession { .. }) {
-        return Err(AppError::Forbidden);
-    }
-    Ok(())
-}
-
-fn require_sensitive_admin(actor: &Actor, stored: &StoredActor, now: i64) -> AppResult<()> {
-    require_admin(actor, stored)?;
+/// Deleting a project also needs a recent sign-in.
+fn require_sensitive_admin(actor: &Actor, now: i64) -> AppResult<()> {
+    actor.require_admin()?;
     actor.require_recent_auth(now)
-}
-
-fn require_project(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    _stored: &StoredActor,
-    project_id: &str,
-    permission: Permission,
-    destructive: bool,
-) -> AppResult<()> {
-    let need = match permission {
-        Permission::Read => crate::access::Need::Read,
-        Permission::Board => crate::access::Need::Board,
-        Permission::Roadmap => crate::access::Need::Roadmap,
-    };
-    crate::access::require_project(tx, actor, project_id, need, destructive)
 }
 
 fn authorize_replay(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     command: &CommandEnvelope,
     replay: &CommandResult,
     now: i64,
@@ -320,9 +237,9 @@ fn authorize_replay(
             | DomainOperation::RemoveMembership
     ) {
         return if matches!(command.operation, DomainOperation::DeleteProject) {
-            require_sensitive_admin(actor, stored, now)
+            require_sensitive_admin(actor, now)
         } else {
-            require_admin(actor, stored)
+            actor.require_admin()
         };
     }
     let ledger_project: Option<String> = tx.query_row(
@@ -354,17 +271,16 @@ fn authorize_replay(
         return require_pool_scope(
             tx,
             actor,
-            stored,
             project_id,
             &PoolScope::Personal,
             command.operation == DomainOperation::DeletePoolItem,
         );
     }
     let (permission, destructive) = operation_permission(command.operation);
-    require_project(tx, actor, stored, project_id, permission, destructive)
+    require_project(tx, actor, project_id, permission, destructive)
 }
 
-fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
+fn operation_permission(operation: DomainOperation) -> (Need, bool) {
     match operation {
         DomainOperation::CreateTrack
         | DomainOperation::UpdateTrack
@@ -378,7 +294,7 @@ fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
         | DomainOperation::CreateMilestone
         | DomainOperation::UpdateMilestone
         | DomainOperation::DeleteMilestone => (
-            Permission::Roadmap,
+            Need::Roadmap,
             matches!(
                 operation,
                 DomainOperation::DeleteTrack
@@ -399,7 +315,7 @@ fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
         | DomainOperation::UpdatePoolItem
         | DomainOperation::DeletePoolItem
         | DomainOperation::PromotePoolItem => (
-            Permission::Board,
+            Need::Board,
             matches!(
                 operation,
                 DomainOperation::DeleteTask
@@ -407,7 +323,7 @@ fn operation_permission(operation: DomainOperation) -> (Permission, bool) {
                     | DomainOperation::DeletePoolItem
             ),
         ),
-        _ => (Permission::Read, false),
+        _ => (Need::Read, false),
     }
 }
 

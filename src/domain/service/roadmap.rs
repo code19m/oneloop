@@ -4,18 +4,10 @@ use super::*;
 pub(super) fn create_track(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TrackCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_project(
-        tx,
-        actor,
-        stored,
-        &input.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     let name = text(&input.name, "name", NAME_MAX)?;
     let description = optional_text(&input.description, "description", TRACK_DESCRIPTION_MAX)?;
     let position: i64 = tx.query_row(SELECT_TRACKS_SQL, [&input.project_id], |row| row.get(0))?;
@@ -65,7 +57,6 @@ pub(super) fn create_track(
 pub(super) fn update_track(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TrackUpdate,
     expected: i64,
     now: i64,
@@ -79,14 +70,7 @@ pub(super) fn update_track(
         )
         .optional()?
         .ok_or_else(|| not_found("track"))?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
     ensure_revision(before.revision, expected)?;
     let name = input
         .name
@@ -137,7 +121,6 @@ pub(super) fn update_track(
 pub(super) fn reorder_track(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: TrackReorder,
     expected: i64,
     now: i64,
@@ -150,7 +133,7 @@ pub(super) fn reorder_track(
         )
         .optional()?
         .ok_or_else(|| not_found("track"))?;
-    require_project(tx, actor, stored, &project_id, Permission::Roadmap, false)?;
+    require_project(tx, actor, &project_id, Need::Roadmap, false)?;
     ensure_revision(revision, expected)?;
     let mut ids = active_ids(tx, "tracks", "project_id", &project_id, None)?;
     let old = ids
@@ -203,7 +186,6 @@ pub(super) fn reorder_track(
 pub(super) fn delete_track(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -216,7 +198,7 @@ pub(super) fn delete_track(
         )
         .optional()?
         .ok_or_else(|| not_found("track"))?;
-    require_project(tx, actor, stored, &project_id, Permission::Roadmap, true)?;
+    require_project(tx, actor, &project_id, Need::Roadmap, true)?;
     ensure_revision(revision, expected)?;
     let has_children: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL)",
@@ -254,18 +236,10 @@ pub(super) fn delete_track(
 pub(super) fn create_epic(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EpicCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_project(
-        tx,
-        actor,
-        stored,
-        &input.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     ensure_track_project(tx, &input.track_id, &input.project_id)?;
     let title = text(&input.title, "title", EPIC_TITLE_MAX)?;
     let description = optional_text(&input.description, "description", EPIC_DESCRIPTION_MAX)?;
@@ -348,7 +322,6 @@ pub(super) fn create_epic(
 pub(super) fn update_epic(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EpicUpdate,
     expected: i64,
     now: i64,
@@ -357,14 +330,7 @@ pub(super) fn update_epic(
         .query_row(SELECT_EPICS_SQL, [&input.epic_id], EpicRow::from_row)
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
     ensure_revision(before.revision, expected)?;
     let track_id = input.track_id.unwrap_or(before.track_id.clone());
     ensure_track_project(tx, &track_id, &before.project_id)?;
@@ -481,18 +447,16 @@ pub(super) fn update_epic(
 pub(super) fn complete_epic(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    set_epic_state(tx, actor, stored, &input.id, expected, "done", now)
+    set_epic_state(tx, actor, &input.id, expected, "done", now)
 }
 
 pub(super) fn reopen_epic(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -506,7 +470,6 @@ pub(super) fn reopen_epic(
     set_epic_state(
         tx,
         actor,
-        stored,
         &input.id,
         expected,
         if work { "active" } else { "planning" },
@@ -517,7 +480,6 @@ pub(super) fn reopen_epic(
 pub(super) fn set_epic_state(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     id: &str,
     expected: i64,
     state: &str,
@@ -531,7 +493,7 @@ pub(super) fn set_epic_state(
         )
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
-    require_project(tx, actor, stored, &project_id, Permission::Roadmap, false)?;
+    require_project(tx, actor, &project_id, Need::Roadmap, false)?;
     ensure_revision(revision, expected)?;
     if before == state {
         return Err(AppError::validation(
@@ -585,7 +547,6 @@ pub(super) fn set_epic_state(
 pub(super) fn delete_epic(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -598,7 +559,7 @@ pub(super) fn delete_epic(
         )
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
-    require_project(tx, actor, stored, &project_id, Permission::Roadmap, true)?;
+    require_project(tx, actor, &project_id, Need::Roadmap, true)?;
     ensure_revision(revision, expected)?;
     let tasks: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE epic_id=?1 AND deleted_at IS NULL)",
@@ -636,18 +597,10 @@ pub(super) fn delete_epic(
 pub(super) fn create_milestone(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MilestoneCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_project(
-        tx,
-        actor,
-        stored,
-        &input.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     let title = text(&input.title, "title", NAME_MAX)?;
     let description = optional_text(&input.description, "description", MILESTONE_DESCRIPTION_MAX)?;
     let milestone_date = date(&input.milestone_date, "milestoneDate")?;
@@ -697,7 +650,6 @@ pub(super) fn create_milestone(
 pub(super) fn update_milestone(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MilestoneUpdate,
     expected: i64,
     now: i64,
@@ -710,14 +662,7 @@ pub(super) fn update_milestone(
         )
         .optional()?
         .ok_or_else(|| not_found("milestone"))?;
-    require_project(
-        tx,
-        actor,
-        stored,
-        &before.project_id,
-        Permission::Roadmap,
-        false,
-    )?;
+    require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
     ensure_revision(before.revision, expected)?;
     let title = input
         .title
@@ -799,7 +744,6 @@ pub(super) fn update_milestone(
 pub(super) fn delete_milestone(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: EntityId,
     expected: i64,
     now: i64,
@@ -812,7 +756,7 @@ pub(super) fn delete_milestone(
         )
         .optional()?
         .ok_or_else(|| not_found("milestone"))?;
-    require_project(tx, actor, stored, &project_id, Permission::Roadmap, true)?;
+    require_project(tx, actor, &project_id, Need::Roadmap, true)?;
     ensure_revision(revision, expected)?;
     tx.execute("UPDATE milestones SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = json!({"entityType":"milestone","id":input.id,"projectId":project_id,"deleted":true,"revision":revision+1});
