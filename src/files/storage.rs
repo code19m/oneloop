@@ -1,3 +1,6 @@
+//! Where file bytes live in the data directory. Paths come from generated
+//! keys, never from file names, and no level of them may be a link.
+
 use std::{
     fs,
     path::{Component, Path, PathBuf},

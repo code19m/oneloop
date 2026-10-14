@@ -53,7 +53,8 @@ small hints over SSE, and clients then fetch what changed.
 - `config.rs`: `Config` (everything `serve` needs) and `DataConfig` (only the
   data directory, for maintenance commands), read from `ONELOOP_*` variables.
 - `db/`: `Db` runs SQLite on a fixed pool of blocking workers behind a single
-  writer permit. `DataLayout` knows the paths and lock files of a data
+  writer permit, and keeps the disk reservations that uploads and Knowledge
+  syncs share. `DataLayout` knows the paths and lock files of a data
   directory. `migration` applies migrations; `backup` creates and restores
   backups.
 - `access.rs`: the one project access policy. It combines account status,
@@ -101,6 +102,9 @@ small hints over SSE, and clients then fetch what changed.
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
   transient rows and worker supervision.
+- `blocking.rs`: lanes that bound blocking work, such as file scans, image
+  decodes and Knowledge searches. `disk.rs`: admission of new bytes against
+  the free-space floor.
 - `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
   timezone, with rules from the server's zoneinfo when it is at least as new as
   the IANA database built into oneloop.

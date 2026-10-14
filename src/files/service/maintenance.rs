@@ -1,4 +1,5 @@
-//! Crash recovery, capacity admission and idempotent leased deletion; full reconciliation remains supported.
+//! Upkeep of stored files: recovery after a crash, room for new files, and
+//! deletion jobs that are safe to run twice.
 use super::*;
 
 impl FileService {

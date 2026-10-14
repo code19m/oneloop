@@ -1,5 +1,5 @@
 //! Thumbnails of image attachments. Requests only queue work; one background
-//! job at a time decodes within the avatar limits and shares their permits.
+//! job at a time decodes within the avatar limits and shares their decode lane.
 use super::*;
 use std::{collections::VecDeque, sync::Mutex};
 

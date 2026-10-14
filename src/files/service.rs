@@ -1,4 +1,6 @@
-//! File lifecycle coordination. Authentication, DB metadata and leases protect every byte path; durable jobs make filesystem changes recoverable.
+//! The file service: commands, reads and upkeep of attachments and avatars.
+//! Each file operation checks access and metadata in SQLite first, and
+//! durable jobs make the changes on disk recoverable.
 
 mod detect;
 use detect::preview_kind_from_metadata;
@@ -1284,6 +1286,10 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
             record_system_cleanup(tx, &attachment, size, now)?;
         }
     } else if let Some((attachment, actor)) = completion.activity {
+        // Only jobs that 0.1.0-rc.2 or earlier queued name an attachment:
+        // migration 0003 filled it in, and since Undo the deletion itself
+        // records the activity. Remove this branch when upgrades from rc.2
+        // end.
         record_attachment_deletion(tx, &attachment, actor.as_ref(), now)?;
         tx.execute("UPDATE idempotency_keys SET state='succeeded',response_status=204,updated_at=?1 WHERE \
                      operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",params![now,attachment.id])?;
