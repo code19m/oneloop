@@ -59,21 +59,6 @@
       }
     },
     {
-      "directory": "js-sha256",
-      "source": "https://registry.npmjs.org/js-sha256/-/js-sha256-1.0.0.tgz",
-      "integrity": "sha512-Bqxf6ENUzYIMzuELCmRNrJOVbjKH1oMgbfYJBKVr/W1Xf9fazpahqCbb24v1pR7XV1isuqhM+w9KWpK7zCyUQw==",
-      "files": {
-        "LICENSE.txt": {
-          "src": "package/LICENSE.txt",
-          "sha256": "2153bd2978793748fbe0eb8f838ae2ae19f03f9d4ee5473dd1628a0c0790e4ab"
-        },
-        "sha256.js": {
-          "src": "package/build/sha256.min.js",
-          "sha256": "a050d794e170699bd1a69d33908d0942c68901cb88347016064b60b240f0067e"
-        }
-      }
-    },
-    {
       "directory": "katex",
       "source": "https://registry.npmjs.org/katex/-/katex-0.18.9.tgz",
       "integrity": "sha512-8ad9RyoKsb/g8/yLFE+KAlP+DhbCTRUNi/V9XGsxn0R+trJJltNwzcDNo0q/DEkOy5fQUQTAQyCXCYSE+OakTQ==",

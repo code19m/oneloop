@@ -293,7 +293,7 @@ async function pdfPreview(url, scriptPath) {
   const pdf = { id: 'pdf', name: 'test.pdf', size: 9, mediaType: 'application/pdf', previewKind: 'pdf', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content/pdf', downloadUrl: '/download/pdf' };
   // uploads.js and app.js load below, with the page's script URL and a PDF.js double.
   const t = bootApp({
-    url: url + '#/task/BIR-079', media: () => false, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', 'collaboration'],
+    url: url + '#/task/BIR-079', media: () => false, scripts: ['theme', 'data', 'motion', 'recovery', 'collaboration'],
     api: { attachments: async () => ({ items: [pdf] }) },
     setup: w => {
       w.URL.createObjectURL = () => 'blob:pdf'; w.HTMLCanvasElement.prototype.getContext = () => ({});

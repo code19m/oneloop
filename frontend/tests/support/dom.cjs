@@ -106,7 +106,7 @@ function source(name) {
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
 /** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const appScripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {

@@ -30,7 +30,7 @@ const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = 
 
 /** A projection with a second project the viewer cannot access. */
 function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}, options = {}) {
-  return bootApp({ ...options, route, media: () => true, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
+  return bootApp({ ...options, route, media: () => true, scripts: ['theme', 'data', 'motion', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
     D.session.userId = user; const p = D.projects.find(item => item.id === 'p2'); p.name = 'Secret project'; p.members = [];
     D.tracks.push({ id: 'secret-track', projectId: p.id, name: 'Secret track', order: 1 }); D.epics.push({ id: 'secret-epic', trackId: 'secret-track', title: 'Secret epic', state: 'active', start: '2026-01-01', end: '2026-12-01', done: 0, total: 1 });
     D.tasks.push({ id: 'SEC-001', epicId: 'secret-epic', title: 'Secret task', state: 'planning', created: Date.now(), attachments: [{ id: 'secret-file', name: 'private.png', size: 10, previewKind: 'image', url: 'blob:private' }] });

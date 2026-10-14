@@ -125,7 +125,7 @@ try {
 
 async function loadViewDependencies() {
   await Promise.all([
-    '/views/motion.js','/vendor/js-sha256/sha256.js',
+    '/views/motion.js',
     '/views/file-views.js','/views/uploads.js','/views/collaboration.js',
   ].map(loadClassic));
 }
