@@ -20,7 +20,7 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use super::source::{GitUrl, folder_prefix};
-use crate::files::disk::DiskReservation;
+use crate::disk::DiskReservation;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const SYNC_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1317,7 +1317,7 @@ pub(super) mod tests {
             max_total_bytes: 100 * 1024 * 1024,
             max_download_bytes: 300 * 1024 * 1024,
         };
-        let reservation = crate::files::disk::DiskAdmission::new(root.path(), 0)
+        let reservation = crate::disk::DiskAdmission::new(root.path(), 0, Default::default())
             .reserve(400 * 1024 * 1024)
             .unwrap();
         let snapshot = git

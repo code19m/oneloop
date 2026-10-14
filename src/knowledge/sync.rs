@@ -23,7 +23,7 @@ use crate::{
     AppResult,
     auth::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
-    files::disk::DiskReservation,
+    disk::DiskReservation,
 };
 
 use super::{

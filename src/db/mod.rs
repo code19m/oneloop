@@ -249,6 +249,7 @@ pub struct DataLease {
 
 struct DbInner {
     layout: DataLayout,
+    reservations: crate::disk::Reservations,
     _instance_lock: File,
     connections: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
@@ -303,6 +304,7 @@ impl Db {
         Ok(Self {
             inner: Arc::new(DbInner {
                 layout,
+                reservations: Default::default(),
                 _instance_lock: instance_lock,
                 connections: Mutex::new(vec![connection]),
                 permits: Arc::new(Semaphore::new(max_connections)),
@@ -316,6 +318,16 @@ impl Db {
 
     pub fn layout(&self) -> &DataLayout {
         &self.inner.layout
+    }
+
+    /// Disk admission with its own free-space floor. The admissions of one
+    /// data directory count each other's reservations.
+    pub(crate) fn disk_admission(&self, floor: u64) -> crate::disk::DiskAdmission {
+        crate::disk::DiskAdmission::new(
+            self.inner.layout.root(),
+            floor,
+            self.inner.reservations.clone(),
+        )
     }
 
     /// Waits up to five seconds while a backup or another command holds the

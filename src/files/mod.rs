@@ -4,7 +4,6 @@
 //! the configured data directory.  Callers never construct storage paths from
 //! user supplied names.
 
-pub(crate) mod disk;
 mod models;
 mod service;
 mod storage;

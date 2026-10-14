@@ -15,7 +15,7 @@ mod upload;
 pub use upload::PendingAttachmentUpload;
 
 use super::BlobState;
-use super::disk::{DiskAdmission, DiskReservation};
+use crate::disk::{DiskAdmission, DiskReservation};
 use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
 use std::{
     collections::{HashMap, HashSet},
@@ -230,7 +230,7 @@ impl CapacityUsage {
 impl FileService {
     pub fn new(db: Db, storage_limit_bytes: u64, disk_min_free_bytes: u64) -> Self {
         let store = FileStore::new(db.layout().clone());
-        let disk = DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
+        let disk = db.disk_admission(disk_min_free_bytes);
         Self {
             db,
             store,
