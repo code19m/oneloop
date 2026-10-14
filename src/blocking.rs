@@ -94,6 +94,8 @@ mod tests {
         assert!(request.await.unwrap_err().is_cancelled());
         assert_eq!(lane.turns.available_permits(), 0, "the job still runs");
         release_tx.send(()).unwrap();
-        lane.turn().await;
+        tokio::time::timeout(Duration::from_secs(5), lane.turn())
+            .await
+            .expect("the turn comes back when the job ends");
     }
 }
