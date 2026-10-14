@@ -62,6 +62,21 @@ usernames, IP addresses and file paths, so keep them private.
 | Uploads fail with "There is not enough storage for this file", and the **Storage** page shows **Within capacity** | The server's disk is nearly full: the upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`. | Free disk space on the server, or lower `ONELOOP_DISK_MIN_FREE`. |
 | An admin forgot their password | No other admin can reset it. | Run `oneloop user passwd <username>` on the server. Sign in with that temporary password, then choose a new one. |
 
+## Stopped backups
+
+A backup builds its copy in a hidden folder next to the destination, and
+renames the folder when the copy is complete and verified. oneloop removes the
+hidden folder of a stopped backup only when it can tell that the backup has
+ended: the backup ran on the same computer, and its process no longer runs.
+Otherwise oneloop prints the folder's path. Delete the folder yourself once you
+are sure that no backup is running. oneloop tells computers apart by their host
+name, so don't share a backup folder between computers that have the same host
+name.
+
+While it copies the files, a backup also keeps links to them in the hidden
+folder `.oneloop-backup-pins` inside the data directory. If the backup stops
+halfway, the server removes that folder within a minute.
+
 ## Knowledge sync
 
 When a sync fails, the project's **Settings** shows the reason under

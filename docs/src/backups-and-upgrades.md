@@ -37,20 +37,12 @@ oneloop backup create /var/backups/oneloop/2026-09-28
 The destination folder must not exist yet, but its parent folder must. It must
 be outside the data directory.
 
-A backup builds its copy in a hidden folder next to the destination, such as
-`.2026-09-28.partial-…`, and renames it when the copy is complete and verified.
-If a backup stops halfway, for example because the server restarted, the next
-backup into the same folder removes that hidden folder; `db migrate` does the
-same in its backup folder. oneloop removes it only when it can tell that the
-backup that wrote it has ended: the backup ran on the same computer, and its
-process no longer runs. Otherwise oneloop prints the folder's path. Delete it
-yourself once you are sure that no backup is running. oneloop tells computers
-apart by their host name, so don't share a backup folder between computers
-that have the same host name.
-
-While it copies the files, a backup also keeps links to them in the hidden
-folder `.oneloop-backup-pins` inside the data directory. If the backup stops
-halfway, the server removes that folder within a minute.
+A backup that stops halfway, for example because the server restarted, leaves
+a hidden folder next to the destination, such as `.2026-09-28.partial-…`. The
+next backup into the same folder removes it, and so does `db migrate` in its
+backup folder. If oneloop can't tell that the stopped backup has ended, it
+prints the folder's path instead, and you delete the folder; see
+[Stopped backups](troubleshooting.md#stopped-backups).
 
 With Docker, first create a backup folder that the container can write to. The
 container runs as user 10001:
