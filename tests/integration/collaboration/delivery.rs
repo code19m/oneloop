@@ -585,6 +585,97 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
 }
 
 #[tokio::test]
+async fn inbox_counts_and_page_come_from_one_snapshot() {
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+    type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+    // Holds the page query, after both counts, until the test has written.
+    fn trace(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event
+            && sql.contains("WITH page AS")
+            && let Some((entered, release)) = GATE.lock().unwrap().take()
+        {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    let SeededProject {
+        root,
+        db,
+        alice,
+        bob,
+    } = seeded_project().await;
+    let first = db
+        .transaction(move |tx| {
+            let mut ids = Vec::new();
+            for excerpt in ["first", "second"] {
+                ids.push(snapshot_notification_tx(
+                    tx,
+                    &alice,
+                    NotificationInput {
+                        project_id: "p1",
+                        event_type: "test",
+                        task_id: None,
+                        comment_id: None,
+                        block_id: None,
+                        excerpt: Some(excerpt),
+                        broadcast: false,
+                    },
+                    vec!["bob".into()],
+                    now(),
+                )?);
+            }
+            Ok(ids[0].clone().unwrap())
+        })
+        .await
+        .unwrap();
+    db.run(move |connection| {
+        connection.execute(
+            "UPDATE notification_recipients SET delivered_at=1 WHERE notification_id=?1",
+            [first],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let reader = oneloop::Db::open_with_pool_size(root.path(), 1).unwrap();
+    reader
+        .run(|connection| {
+            connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    *GATE.lock().unwrap() = Some((entered_tx, release_rx));
+    let read = tokio::spawn(async move {
+        CollaborationService::new(reader)
+            .inbox(&bob, InboxFilter::default(), None, None)
+            .await
+    });
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(10)).unwrap())
+        .await
+        .unwrap();
+    // The second notification is delivered while the Inbox is being read.
+    db.run(|connection| {
+        connection.execute(
+            "UPDATE notification_recipients SET delivered_at=1 WHERE delivered_at IS NULL",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    release_tx.send(()).unwrap();
+    let page = read.await.unwrap().unwrap();
+    assert_eq!(page.items.len() as u64, page.filtered_count);
+    assert_eq!(page.items.len() as u64, page.unread_count);
+}
+
+#[tokio::test]
 async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
     let SeededProject {
         root: _root,
