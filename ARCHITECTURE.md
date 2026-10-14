@@ -83,11 +83,12 @@ small hints over SSE, and clients then fetch what changed.
   helpers. `search` and `markdown` index Markdown sections for search and MCP,
   and `secrets` encrypts access tokens and deploy keys.
 - `http/`: thin axum adapters. `commands` is `POST /api/commands`, the one
-  endpoint for every browser write. `domain`, `collaboration`, `files`,
-  `knowledge` and `auth` serve reads and file transfers. `security` checks host
-  and origin, resolves client addresses through trusted proxies and sets
-  headers. `assets` serves the embedded client. `server` bounds connections and
-  shutdown.
+  endpoint for domain, comment, Inbox and Knowledge writes. `auth` (accounts
+  and sessions) and `files` (uploads, file changes, previews and storage) have
+  their own REST routes for reads and writes. `domain`, `collaboration` and
+  `knowledge` serve reads. `security` checks host and origin, resolves client
+  addresses through trusted proxies and sets headers. `assets` serves the
+  embedded client. `server` bounds connections and shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, `client_metadata` fetches client
   ID metadata documents from public addresses only, `cors` answers clients
@@ -95,6 +96,8 @@ small hints over SSE, and clients then fetch what changed.
   endpoints.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes.
 - `text.rs`: validation for display text such as titles and comments.
+- `legacy_values.rs`: maps values stored under an old name, such as the task
+  status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
   transient rows and worker supervision.
 - `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
@@ -129,18 +132,17 @@ them as the baseline in one transaction. Nothing else uses it; never edit it.
 
 ### `tests/` and `e2e/`
 
-`tests/integration/` is one Rust integration test crate (`main.rs`), with a
-module per area and shared helpers in `support/`. It starts the real
-application against a temporary data directory and drives it over HTTP, MCP
-and the CLI. Unit tests sit next to the code, in `#[cfg(test)]` modules or
-sibling `tests.rs` files. `e2e/journeys/` holds Playwright journeys that run
-the built binary in Chromium, Firefox and WebKit. Frontend unit tests live in
-`frontend/tests/`.
+The integration tests in `tests/integration/` start the real application on a
+temporary data directory and drive it over HTTP, MCP and the CLI.
+[CONTRIBUTING.md](CONTRIBUTING.md#tests) lists every kind of test, where it
+lives and when to add one.
 
 ### Elsewhere
 
-`docs/` is the documentation site (mdBook). `deploy/` has example Compose,
-service-manager and reverse proxy configurations. `scripts/` holds the Node
+`build.rs` records the version, the Git revision and `ASSET_VERSION`, the hash
+of the web client's files in its `/v/<hash>/` URLs. `docs/` is the
+documentation site (mdBook). `deploy/` has example Compose, service-manager
+and reverse proxy configurations. `scripts/` holds the Node
 scripts that CI and releases run. `benches/` has a workload benchmark against a
 disposable database.
 
