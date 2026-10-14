@@ -17,9 +17,8 @@ use crate::{
     error::AppResult,
 };
 
-/// Read routes owned by the core domain. The application composition layer owns
-/// the single `/api/commands` dispatcher because collaboration and files add
-/// their own operation families.
+/// Read routes of the core domain. Its writes go through `/api/commands`, which
+/// `commands` shares with discussions, the Inbox and Knowledge.
 pub fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/bootstrap", get(bootstrap))

@@ -1,4 +1,5 @@
-//! Accounts, browser sessions and app grants share current-actor checks. Password content is preserved; grants never elevate current permissions.
+//! Accounts, password hashes, browser sessions, sign-in delays and connected
+//! apps. `Actor` is whoever makes a request, through a session or an app.
 
 mod accounts;
 mod grants;

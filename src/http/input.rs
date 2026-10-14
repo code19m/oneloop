@@ -1,4 +1,5 @@
-//! Field-aware browser extraction with stable errors and no echoed input values.
+//! Extractors for browser JSON and query input. An error names the field and
+//! never repeats the value.
 use crate::{AppError, AppResult};
 use axum::{
     body::Bytes,

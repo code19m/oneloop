@@ -1,4 +1,5 @@
-//! Browser authentication retains fixed session caps, idle/absolute expiry and explicit revocation.
+//! Browser sign-in and sessions: the limit per person, idle and absolute
+//! expiry, sign-out and revocation.
 use super::*;
 
 impl AuthService {

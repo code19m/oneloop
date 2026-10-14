@@ -1,4 +1,5 @@
-//! Account/profile/password changes preserve recent-authentication and last-administrator guards.
+//! Changes to accounts: a person's own profile and password, and the
+//! administration of other accounts.
 use super::*;
 
 impl AuthService {
