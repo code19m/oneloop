@@ -380,26 +380,10 @@ pub(crate) fn key_predicate(actor: &Actor) -> &'static str {
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum IdempotencyState {
+enum IdempotencyState {
     Running,
     Succeeded,
     Failed,
-}
-impl IdempotencyState {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-        }
-    }
-}
-impl rusqlite::types::ToSql for IdempotencyState {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(self.as_str().into())
-    }
 }
 
 impl rusqlite::types::FromSql for IdempotencyState {
