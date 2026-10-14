@@ -24,16 +24,15 @@ test('production controller implements the complete legacy recovery facade',()=>
   for(const name of ['errorHtml','connectionHtml','ensureOnline','enforceSession','sessionActive','loginAtLimit','recentAuth','retryLoad','reconnect','clearPageError','consumeReturn','copyReference','blockDrag','bind'])assert.equal(typeof state.controller[name],'function',name);
 });
 
-test('recognizes only actionable revision conflicts',()=>{
-  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),true);
-  assert.equal(isRevisionConflict(new ApiError('user is already a member',{status:409,code:'conflict'})),false);
-  assert.equal(isRevisionConflict(new ApiError('record changed',{status:400,code:'conflict'})),false);
+test('recognizes revision conflicts by their code, not their wording',()=>{
+  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);
+  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),false);
 });
 
 test('conflict review can use latest without writing or retry mine at the latest revision',async()=>{
   let latest={revision:4,title:'Latest'},retried=null;
   const first=fixture({presentConflict:async()=> 'latest'});
-  const error=new ApiError('record changed; latest revision is 4',{status:409,code:'conflict'});
+  const error=new ApiError('record changed; latest revision is 4',{status:409,code:'revision_conflict'});
   const accepted=await first.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
   assert.deepEqual(accepted,{handled:true,saved:false,latest,choice:'latest'});assert.equal(retried,null);
 

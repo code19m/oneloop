@@ -2,15 +2,12 @@
 
 import { ApiError } from '../../data/api-client.js';
 
-const REVISION_CONFLICT = /(?:record|attachment|comment|user).*(?:changed|latest revision)|latest revision/i;
 const EDITOR_ROOT = '.modal,.task-page,.peek,.settings,.workspace-page';
 const EDITOR_REVISIONS = new WeakMap();
 
 /** @param {unknown} error */
 export function isRevisionConflict(error) {
-  return error instanceof ApiError
-    && error.status === 409
-    && (error.code === 'revision_conflict' || (error.code === 'conflict' && REVISION_CONFLICT.test(error.message)));
+  return error instanceof ApiError && error.code === 'revision_conflict';
 }
 
 /** @param {unknown} value */

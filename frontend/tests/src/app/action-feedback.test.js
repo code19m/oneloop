@@ -44,21 +44,12 @@ test('server validation becomes concise field feedback with structured and legac
   assert.equal(formFieldName('taskPrefix'),'key');
 });
 
-test('known no-change and unfinished-member errors receive intentional treatment',()=>{
-  assert.equal(actionErrorFeedback(new ApiError('invalid payload: no task fields changed',{code:'validation_failed'})).silent,true);
-  assert.equal(
-    actionErrorFeedback(new ApiError("reassign the member's unfinished tasks before removal",{code:'precondition_failed'})).message,
-    'This member still has unfinished tasks. Reassign them before removing the member.',
-  );
-});
 
-test('credential and prefix failures point to the field that can be corrected',()=>{
+test('credential failures point to the field that can be corrected',()=>{
   assert.deepEqual(actionErrorFeedback(new ApiError('authentication is required',{status:401,code:'invalid_credentials'})),
     {silent:false,field:'password',message:'Incorrect username or password.'});
   assert.deepEqual(actionErrorFeedback(new ApiError('Incorrect current password.',{status:400,code:'incorrect_password',details:{field:'currentPassword'}})),
     {silent:false,field:'currentPassword',message:'Incorrect current password.'});
-  assert.deepEqual(actionErrorFeedback(new ApiError('task prefix is reserved by another project or its history',{status:409,code:'conflict'})),
-    {silent:false,field:'taskPrefix',message:'This task prefix is already in use. Choose another.'});
   assert.equal(formFieldName('currentPassword'),'cur');
 });
 
@@ -105,15 +96,13 @@ test('date validation rejects partial and impossible calendar dates',()=>{
 test('product constraints retain actionable reasons and intentional cancellation stays quiet',()=>{
   assert.match(actionErrorFeedback({code:'precondition_failed',message:'the last project cannot be deleted'}).message,/last project cannot be deleted/);
   assert.match(actionErrorFeedback({code:'precondition_failed',message:'@everyone can be used once per project per minute'}).message,/once per project per minute/);
-  assert.match(actionErrorFeedback({status:503,code:'unavailable',message:'attachment storage capacity is exhausted'}).message,/Free up space/);
   for(const code of ['aborted','reauth_cancelled','stale_session'])assert.equal(actionErrorFeedback({code}).silent,true);
 });
 
 
-test('duplicate usernames and protected administrator constraints are corrective, not revision conflicts',()=>{
-  assert.deepEqual(actionErrorFeedback(new ApiError('username is already in use',{status:409,code:'conflict'})),{silent:false,field:'username',message:'This username is already in use. Choose another.'});
-  assert.match(actionErrorFeedback(new ApiError('the last active administrator cannot be deactivated or demoted',{status:409,code:'conflict'})).message,/Keep at least one active administrator/);
-  assert.match(actionErrorFeedback(new ApiError('user was changed by another request',{status:409,code:'conflict'})).message,/This item changed/);
+test('a revision conflict says the item changed elsewhere, and another conflict asks for a review',()=>{
+  assert.equal(actionErrorFeedback(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})).message,'This item changed elsewhere. Review the latest version before saving again.');
+  assert.equal(actionErrorFeedback(new ApiError('comment is already deleted',{status:409,code:'conflict'})).message,'This item changed. Review the latest version and try again.');
 });
 
 test('specific server codes work independently of server wording', () => {
@@ -139,7 +128,11 @@ test('task insertion indices are not compared with gapped ordering keys',()=>{
   const task={state:'planning',order:1024};
   assert.equal(commandIsUnchanged('task.move',{status:'planning',position:1024},task),false);
   assert.equal(commandIsUnchanged('task.move',{status:'planning'},task),true);
-  assert.equal(actionErrorFeedback({code:'validation_failed',message:'invalid position: task is already at that position'}).silent,true);
+});
+
+test('a save the server says changes nothing stays quiet',()=>{
+  for(const message of ['invalid payload: no task fields changed','invalid position: task is already at that position','invalid position: track is already at that position'])
+    assert.equal(actionErrorFeedback(new ApiError(message,{status:400,code:'validation_failed'})).silent,true,message);
 });
 
 test('membership changes for two people are separate interactions with readable pending feedback',()=>{

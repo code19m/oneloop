@@ -168,8 +168,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function failureMessage(error){
     return error instanceof ApiError && error.uncertain
       ? 'The save result is unknown. Try the same action again to reconcile it safely.'
-      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
-      ? 'This item changed elsewhere. Review the latest version before saving again.'
       : actionErrorFeedback(error).message;
   }
 

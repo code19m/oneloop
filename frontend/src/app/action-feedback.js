@@ -181,10 +181,11 @@ export function actionErrorFeedback(error) {
   const raw = String(value?.message ?? 'The change could not be saved.');
   const code = value?.code;
   const status = value?.status;
-  if (value?.code === 'validation_failed' && /no .+ fields changed|task is already at that position/i.test(raw)) {
+  // A save that would change nothing; the server has no code of its own for it yet.
+  if (code === 'validation_failed' && /no .+ fields changed|(?:task|track) is already at that position/i.test(raw)) {
     return { silent:true, field:null, message:'' };
   }
-  if (code === 'member_has_open_tasks' || (code === 'precondition_failed' && /unfinished tasks before removal/i.test(raw))) {
+  if (code === 'member_has_open_tasks') {
     return { silent:false, field:null, message:'This member still has unfinished tasks. Reassign them before removing the member.' };
   }
   if (code === 'validation_failed') {
@@ -200,11 +201,9 @@ export function actionErrorFeedback(error) {
     const field = ['currentPassword','password'].includes(value?.details?.field) ? value.details.field : 'currentPassword';
     return {silent:false,field,message:'Incorrect current password.'};
   }
-  if (code === 'prefix_reserved' || ((code === 'conflict' || status === 409) && /task prefix is reserved/i.test(raw))) {
-    return {silent:false,field:'taskPrefix',message:'This task prefix is already in use. Choose another.'};
-  }
-  if (code === 'username_taken' || ((code === 'conflict' || status === 409) && /username is already in use/i.test(raw))) return {silent:false,field:'username',message:'This username is already in use. Choose another.'};
-  if (code === 'last_admin' || ((code === 'conflict' || status === 409) && /last active administrator cannot be deactivated or demoted/i.test(raw))) return {silent:false,field:null,message:'Keep at least one active administrator. Add another administrator before removing this access.'};
+  if (code === 'prefix_reserved') return {silent:false,field:'taskPrefix',message:'This task prefix is already in use. Choose another.'};
+  if (code === 'username_taken') return {silent:false,field:'username',message:'This username is already in use. Choose another.'};
+  if (code === 'last_admin') return {silent:false,field:null,message:'Keep at least one active administrator. Add another administrator before removing this access.'};
   if (code === 'broadcast_cooldown') return {silent:false,field:null,message:'Wait one minute before mentioning everyone again.'};
   if (code === 'recent_auth_required') return {silent:false,field:null,message:'Confirm your password to continue.'};
   if (code === 'interaction_pending') return {silent:false,field:null,message:'Another change is still being saved. Wait a moment and try again.'};
@@ -213,11 +212,12 @@ export function actionErrorFeedback(error) {
   if (code === 'forbidden' || status === 403) return {silent:false,field:null,message:'You do not have permission to make this change.'};
   if (code === 'not_found' || status === 404) return {silent:false,field:null,message:'This item is no longer available. Refresh to continue.'};
   if (code === 'unauthorized' || status === 401) return {silent:false,field:null,message:'Your session has ended. Sign in again.'};
-  if(code==='storage_full'||(code==='unavailable'&&/storage safety floor|storage capacity is exhausted/i.test(raw)))return {silent:false,field:null,message:'There is not enough storage for this file. Free up space or contact an administrator.'};
+  if (code === 'storage_full') return {silent:false,field:null,message:'There is not enough storage for this file. Free up space or contact an administrator.'};
   if (code === 'rate_limited' || status === 429 || code === 'unavailable' || status === 503) {
     return {silent:false,field:null,message:retryMessage(value, retryDelayMs(value))};
   }
-  if(code==='already_member'||(code==='conflict'&&/already a project member/i.test(raw)))return {silent:false,field:null,message:'This person is already a project member.'};
+  if (code === 'already_member') return {silent:false,field:null,message:'This person is already a project member.'};
+  if (code === 'revision_conflict') return {silent:false,field:null,message:'This item changed elsewhere. Review the latest version before saving again.'};
   if (code === 'conflict' || status === 409) return {silent:false,field:null,message:'This item changed. Review the latest version and try again.'};
   if (code === 'precondition_failed') {
     // These are safe, explicit product constraints from the server, not internal diagnostics.
@@ -228,12 +228,8 @@ export function actionErrorFeedback(error) {
   if(code==='aborted'||code==='reauth_cancelled'||code==='stale_session')return {silent:true,field:null,message:''};
   if (code === 'timeout') return {silent:false,field:null,message:'The request took too long. Check the latest state before trying again.'};
   if (code === 'network_error') return {silent:false,field:null,message:'Connection lost. Check your connection and try again.'};
-  if (code === 'validation_error') {
-    const message = /at least 5 characters/i.test(raw) ? 'Use at least 5 characters.'
-      : /passwords do not match/i.test(raw) ? 'Passwords do not match.'
-      : 'Check the form and try again.';
-    return {silent:false,field:null,message};
-  }
+  // The page's own check of a form, worded for people already.
+  if (code === 'validation_error') return {silent:false,field:null,message:raw};
   const reference = safeReference(value);
   return {silent:false,field:null,message:`The request could not be completed.${reference ? ` Reference: ${reference}.` : ''}`};
 }

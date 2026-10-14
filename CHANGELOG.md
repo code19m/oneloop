@@ -30,6 +30,8 @@ All notable changes to oneloop are recorded here. The format follows
   the Status icon and **Block task** now change at once. Before, they changed
   only after you left the task's fields. **Overdue** also follows a changed
   deadline at once.
+- Dropping a track back in its own place on the Roadmap no longer shows an
+  error.
 
 ### Security
 

@@ -144,7 +144,7 @@ test('an edited-comment conflict reviews the canonical value before an explicit 
     t.data.tasks[0].comments=[{id:'c1',who:'u1',text:'Old',revision:1,ts:20_000}];
     t.transport.commands.execute=async(_operation,_payload,options)=>{
       commandCalls++;
-      if(options.expectedRevision===1)throw Object.assign(new Error('record changed; latest revision is 3'),{status:409,code:'conflict'});
+      if(options.expectedRevision===1)throw Object.assign(new Error('record changed; latest revision is 3'),{status:409,code:'revision_conflict'});
       assert.equal(options.expectedRevision,3);
       return {entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Keep mine',mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:4}],events:[{id:'a4'}]};
     };

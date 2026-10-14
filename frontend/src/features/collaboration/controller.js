@@ -94,7 +94,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
   const report=(error,inline)=>{
     if(error?.status===401)return;
     const feedback=actionErrorFeedback(error);if(feedback.silent)return;
-    const message=error?.code==='revision_conflict'?'This item changed elsewhere. Review the latest version before saving again.':feedback.message||'The change could not be saved.';
+    const message=feedback.message||'The change could not be saved.';
     if(inline)facade?.feedback?.(message);app?.toast?.(message,'error');
   };
 
