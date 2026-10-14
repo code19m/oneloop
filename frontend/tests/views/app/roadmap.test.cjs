@@ -199,6 +199,15 @@ test('an ongoing epic that starts after every other date stays on the timeline',
   assert(rail + parseFloat(bar.style.left) + 60 <= parseFloat(d.querySelector('.rm-canvas').style.width), 'the bar starts with room for its minimum width');
 });
 
+test('a completed open-ended epic reads as complete, also without tasks', () => {
+  // e11 has no end date. Done by hand with no tasks, it is complete, not a quiet ongoing bar.
+  const { d } = boot('roadmap', { prepare: D => Object.assign(D.epics.find(epic => epic.id === 'e11'), { state: 'done', total: 0, done: 0 }) });
+  const bar = d.querySelector('[data-epic="e11"].bar'), meta = bar.querySelector('.m').textContent;
+  assert(bar.classList.contains('done'));
+  assert(!bar.classList.contains('quiet'));
+  assert(meta.includes('complete') && !meta.includes('ongoing'), meta);
+});
+
 test('milestone details stay readable for viewers, show safe full text and dismiss, while managers can edit', () => {
  const t=boot('roadmap',{readOnly:true,prepare:D=>{D.milestones[1].name='A very long milestone name '.repeat(6);D.milestones[1].desc='<img src=x onerror=alert(1)>\nFull description';}});
  const card=t.d.querySelector('[data-milestone="m2"]');assert.equal(card.tagName,'BUTTON');
