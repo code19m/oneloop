@@ -1,10 +1,12 @@
-//! Connected apps: OAuth grants, their tokens and the rule for when a grant still works.
+//! Connected apps: how OAuth grants and their tokens are issued, rotated and
+//! revoked, and when a grant still works.
 use super::*;
 
 /// An access token works for 15 minutes; the app refreshes it after that.
 pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
-/// A grant that no app used for 30 days stops working. `src/retention.rs`
-/// repeats the value as a literal, because its index expression must match.
+/// A refresh token unused for 30 days stops working, and so does its grant.
+/// `src/retention.rs` repeats the value as a literal, because its index
+/// expression must match.
 pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// A grant stops working 90 days after consent, however often it is used.
 const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
