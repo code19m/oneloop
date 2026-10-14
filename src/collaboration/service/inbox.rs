@@ -110,7 +110,7 @@ pub(super) fn inbox_bulk_change(
     Ok(Mutation {
         entities: vec![entity],
         events: Vec::new(),
-        resource_type: Some("inbox".into()),
+        resource_type: "inbox",
         resource_id: None,
     })
 }

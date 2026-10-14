@@ -180,13 +180,7 @@ pub struct CommandEnvelope {
     pub expected_revision: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandResult {
-    pub entities: Vec<Value>,
-    pub events: Vec<DomainEvent>,
-    pub replayed: bool,
-}
+pub use crate::idempotency::CommandResult;
 
 pub type DomainEvent = crate::collaboration::ActivityEvent;
 

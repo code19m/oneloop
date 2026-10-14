@@ -1,6 +1,8 @@
 //! Extractors for browser JSON and query input. An error names the field and
 //! never repeats the value.
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, input::field_error};
+// Knowledge commands still read their payload through this module.
+pub(crate) use crate::input::parse_payload;
 use axum::{
     body::Bytes,
     extract::{FromRequest, FromRequestParts, Request},
@@ -8,7 +10,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::Value;
 
 pub(crate) struct ApiJson<T>(pub T);
 pub(crate) struct ApiQuery<T>(pub T);
@@ -41,7 +42,7 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for ApiQuery<T> {
         ));
         serde_path_to_error::deserialize(deserializer)
             .map(Self)
-            .map_err(|error| input_error(error, "query"))
+            .map_err(|error| field_error(error, "query"))
     }
 }
 
@@ -71,48 +72,11 @@ pub(crate) fn parse_json<T: DeserializeOwned>(bytes: &[u8]) -> AppResult<T> {
     }
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let result = serde_path_to_error::deserialize(&mut deserializer)
-        .map_err(|error| input_error(error, "body"))?;
+        .map_err(|error| field_error(error, "body"))?;
     deserializer
         .end()
         .map_err(|_| AppError::validation("body", "must contain one JSON object"))?;
     Ok(result)
-}
-
-pub(crate) fn parse_payload<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    if !value.is_object() {
-        return Err(AppError::validation("payload", "must be an object"));
-    }
-    serde_path_to_error::deserialize(value).map_err(|error| input_error(error, "payload"))
-}
-
-fn input_error<E: std::fmt::Display>(
-    error: serde_path_to_error::Error<E>,
-    fallback: &str,
-) -> AppError {
-    let path = error.path().to_string();
-    let message = error.inner().to_string();
-    let (field, description) = if let Some(rest) = message.strip_prefix("missing field `") {
-        (rest.split('`').next(), "is required")
-    } else if let Some(rest) = message.strip_prefix("duplicate field `") {
-        (rest.split('`').next(), "must occur only once")
-    } else if let Some(rest) = message.strip_prefix("unknown field `") {
-        (rest.split('`').next(), "is not supported")
-    } else {
-        (None, "has an invalid value or format")
-    };
-    let path = path.trim_matches('.');
-    let field = match (path.is_empty(), field) {
-        (true, Some(field)) => field.to_owned(),
-        (false, Some(field))
-            if message.starts_with("unknown field `") && path.rsplit('.').next() == Some(field) =>
-        {
-            path.to_owned()
-        }
-        (false, Some(field)) => format!("{path}.{field}"),
-        (false, None) => path.to_owned(),
-        (true, None) => fallback.to_owned(),
-    };
-    AppError::validation(field, description)
 }
 
 /// Preserve raw payload until the envelope has been validated; serde then

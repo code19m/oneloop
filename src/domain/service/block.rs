@@ -121,7 +121,7 @@ pub(super) fn block_task(
     Ok(Mutation {
         entities: vec![task_entity, block],
         events: vec![event],
-        resource_type: Some("taskBlock".into()),
+        resource_type: "taskBlock",
         resource_id: Some(block_id),
     })
 }
@@ -371,7 +371,7 @@ pub(super) fn unblock_task(
     Ok(Mutation {
         entities: vec![task_entity, block],
         events: vec![event],
-        resource_type: Some("taskBlock".into()),
+        resource_type: "taskBlock",
         resource_id: Some(block_id),
     })
 }

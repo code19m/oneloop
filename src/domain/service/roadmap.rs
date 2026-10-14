@@ -473,7 +473,7 @@ pub(super) fn update_epic(
     Ok(Mutation {
         entities: vec![entity],
         events,
-        resource_type: Some("epic".into()),
+        resource_type: "epic",
         resource_id: Some(input.epic_id),
     })
 }

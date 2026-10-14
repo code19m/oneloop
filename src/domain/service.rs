@@ -17,12 +17,15 @@ mod validation;
 use validation::*;
 
 use crate::access::validate_mentions_retaining as validate_mentions;
-use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
+use crate::{
+    clock::unix_now,
+    idempotency::{Envelope, Mutation, RevisionRule},
+};
 use std::collections::{BTreeSet, HashSet};
 
 use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -85,75 +88,37 @@ impl DomainService {
         command: CommandEnvelope,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        validate_idempotency_key(&command.idempotency_key)?;
-        validate_revision_contract(&command)?;
+        let operation = command.operation;
+        let envelope = Envelope::new(
+            operation.as_str(),
+            &command.payload,
+            &command.idempotency_key,
+            command.expected_revision,
+            revision_rule(operation),
+        )?;
         let actor = actor.clone();
-        let request_hash = request_hash(&command)?;
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let stored_actor = authorize_actor(tx, &actor, now)?;
-
-                if let Some(mut replay) = replay_result(tx, &actor, &command, &request_hash)? {
-                    authorize_replay(tx, &actor, &stored_actor, &command, &replay, now)?;
-                    replay.replayed = true;
-                    return Ok(replay);
-                }
-
-                let idempotency_id = crate::idempotency::start(
+                envelope.run(
                     tx,
                     &actor,
-                    &Uuid::now_v7().to_string(),
-                    &command.idempotency_key,
-                    command.operation.as_str(),
-                    &request_hash,
                     now,
-                )?;
-                let mutation = dispatch(tx, &actor, &stored_actor, &command, now)?;
-                let result = CommandResult {
-                    entities: mutation.entities,
-                    events: mutation.events,
-                    replayed: false,
-                };
-                let response_json = serde_json::to_string(&result).map_err(|error| {
-                    AppError::internal(format!("serialize command response: {error}"))
-                })?;
-                crate::idempotency::succeed(
-                    tx,
-                    &idempotency_id,
-                    crate::idempotency::Receipt {
-                        status: 200,
-                        response: &response_json,
-                        resource_type: mutation.resource_type.as_deref(),
-                        resource_id: mutation.resource_id.as_deref(),
-                        project_id: result
-                            .events
-                            .iter()
-                            .find_map(|event| event.project_id.as_deref()),
+                    |actor, replay| {
+                        let stored = StoredActor {
+                            is_admin: actor.is_admin,
+                        };
+                        authorize_replay(tx, actor, &stored, &command, replay, now)
                     },
-                    now,
-                )?;
-                Ok(result)
+                    |actor| {
+                        let stored = StoredActor {
+                            is_admin: actor.is_admin,
+                        };
+                        dispatch(tx, actor, &stored, &command, now)
+                    },
+                )
             })
             .await
-    }
-}
-
-struct Mutation {
-    entities: Vec<Value>,
-    events: Vec<DomainEvent>,
-    resource_type: Option<String>,
-    resource_id: Option<String>,
-}
-
-impl Mutation {
-    fn one(entity: Value, event: DomainEvent, resource_type: &str, resource_id: &str) -> Self {
-        Self {
-            entities: vec![entity],
-            events: vec![event],
-            resource_type: Some(resource_type.into()),
-            resource_id: Some(resource_id.into()),
-        }
     }
 }
 
@@ -177,179 +142,86 @@ fn dispatch(
 ) -> AppResult<Mutation> {
     macro_rules! payload {
         ($ty:ty) => {
-            parse_payload::<$ty>(&command.payload)?
+            crate::input::parse_payload::<$ty>(&command.payload)?
         };
     }
-    let expected_revision = || {
-        command.expected_revision.ok_or_else(|| {
-            AppError::validation("expectedRevision", "is required for this operation")
-        })
-    };
+    // The revision rule has required one for every operation that takes it.
+    let expected = command.expected_revision.unwrap_or_default();
     match command.operation {
         DomainOperation::CreateProject => {
             create_project(tx, actor, stored, payload!(ProjectCreate), now)
         }
-        DomainOperation::UpdateProject => update_project(
-            tx,
-            actor,
-            stored,
-            payload!(ProjectUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeleteProject => delete_project(
-            tx,
-            actor,
-            stored,
-            payload!(ProjectDelete),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateProject => {
+            update_project(tx, actor, stored, payload!(ProjectUpdate), expected, now)
+        }
+        DomainOperation::DeleteProject => {
+            delete_project(tx, actor, stored, payload!(ProjectDelete), expected, now)
+        }
         DomainOperation::AddMembership => {
             add_membership(tx, actor, stored, payload!(MembershipCreate), now)
         }
-        DomainOperation::UpdateMembership => update_membership(
-            tx,
-            actor,
-            stored,
-            payload!(MembershipUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::RemoveMembership => remove_membership(
-            tx,
-            actor,
-            stored,
-            payload!(MembershipDelete),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateMembership => {
+            update_membership(tx, actor, stored, payload!(MembershipUpdate), expected, now)
+        }
+        DomainOperation::RemoveMembership => {
+            remove_membership(tx, actor, stored, payload!(MembershipDelete), expected, now)
+        }
         DomainOperation::CreateTrack => create_track(tx, actor, stored, payload!(TrackCreate), now),
-        DomainOperation::UpdateTrack => update_track(
-            tx,
-            actor,
-            stored,
-            payload!(TrackUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::ReorderTrack => reorder_track(
-            tx,
-            actor,
-            stored,
-            payload!(TrackReorder),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeleteTrack => delete_track(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateTrack => {
+            update_track(tx, actor, stored, payload!(TrackUpdate), expected, now)
+        }
+        DomainOperation::ReorderTrack => {
+            reorder_track(tx, actor, stored, payload!(TrackReorder), expected, now)
+        }
+        DomainOperation::DeleteTrack => {
+            delete_track(tx, actor, stored, payload!(EntityId), expected, now)
+        }
         DomainOperation::CreateEpic => create_epic(tx, actor, stored, payload!(EpicCreate), now),
-        DomainOperation::UpdateEpic => update_epic(
-            tx,
-            actor,
-            stored,
-            payload!(EpicUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::CompleteEpic => complete_epic(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::ReopenEpic => reopen_epic(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeleteEpic => delete_epic(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateEpic => {
+            update_epic(tx, actor, stored, payload!(EpicUpdate), expected, now)
+        }
+        DomainOperation::CompleteEpic => {
+            complete_epic(tx, actor, stored, payload!(EntityId), expected, now)
+        }
+        DomainOperation::ReopenEpic => {
+            reopen_epic(tx, actor, stored, payload!(EntityId), expected, now)
+        }
+        DomainOperation::DeleteEpic => {
+            delete_epic(tx, actor, stored, payload!(EntityId), expected, now)
+        }
         DomainOperation::CreateMilestone => {
             create_milestone(tx, actor, stored, payload!(MilestoneCreate), now)
         }
-        DomainOperation::UpdateMilestone => update_milestone(
-            tx,
-            actor,
-            stored,
-            payload!(MilestoneUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeleteMilestone => delete_milestone(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateMilestone => {
+            update_milestone(tx, actor, stored, payload!(MilestoneUpdate), expected, now)
+        }
+        DomainOperation::DeleteMilestone => {
+            delete_milestone(tx, actor, stored, payload!(EntityId), expected, now)
+        }
         DomainOperation::CreateTask => {
             create_task(tx, actor, stored, payload!(TaskCreate), now, None)
         }
-        DomainOperation::UpdateTask => update_task(
-            tx,
-            actor,
-            stored,
-            payload!(TaskUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::MoveTask => move_task(
-            tx,
-            actor,
-            stored,
-            payload!(TaskMove),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeleteTask => delete_task(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::RestoreTask => restore_task(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::BlockTask => block_task(
-            tx,
-            actor,
-            stored,
-            payload!(TaskBlock),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdateTask => {
+            update_task(tx, actor, stored, payload!(TaskUpdate), expected, now)
+        }
+        DomainOperation::MoveTask => {
+            move_task(tx, actor, stored, payload!(TaskMove), expected, now)
+        }
+        DomainOperation::DeleteTask => {
+            delete_task(tx, actor, stored, payload!(EntityId), expected, now)
+        }
+        DomainOperation::RestoreTask => {
+            restore_task(tx, actor, stored, payload!(EntityId), expected, now)
+        }
+        DomainOperation::BlockTask => {
+            block_task(tx, actor, stored, payload!(TaskBlock), expected, now)
+        }
         DomainOperation::UpdateBlockReason => update_block_reason(
             tx,
             actor,
             stored,
             payload!(BlockReasonUpdate),
-            expected_revision()?,
+            expected,
             now,
         ),
         DomainOperation::UnblockTask => unblock_task(
@@ -357,7 +229,7 @@ fn dispatch(
             actor,
             stored,
             payload!(TaskUnblock),
-            expected_revision()?,
+            expected,
             false,
             now,
         ),
@@ -366,47 +238,28 @@ fn dispatch(
             actor,
             stored,
             payload!(TaskUnblock),
-            expected_revision()?,
+            expected,
             true,
             now,
         ),
         DomainOperation::CreatePoolItem => {
             create_pool_item(tx, actor, stored, payload!(PoolItemCreate), now)
         }
-        DomainOperation::UpdatePoolItem => update_pool_item(
-            tx,
-            actor,
-            stored,
-            payload!(PoolItemUpdate),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::DeletePoolItem => delete_pool_item(
-            tx,
-            actor,
-            stored,
-            payload!(EntityId),
-            expected_revision()?,
-            now,
-        ),
-        DomainOperation::PromotePoolItem => promote_pool_item(
-            tx,
-            actor,
-            stored,
-            payload!(PoolItemPromote),
-            expected_revision()?,
-            now,
-        ),
+        DomainOperation::UpdatePoolItem => {
+            update_pool_item(tx, actor, stored, payload!(PoolItemUpdate), expected, now)
+        }
+        DomainOperation::DeletePoolItem => {
+            delete_pool_item(tx, actor, stored, payload!(EntityId), expected, now)
+        }
+        DomainOperation::PromotePoolItem => {
+            promote_pool_item(tx, actor, stored, payload!(PoolItemPromote), expected, now)
+        }
     }
 }
 
-fn parse_payload<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    crate::http::input::parse_payload(value)
-}
-
-fn validate_revision_contract(command: &CommandEnvelope) -> AppResult<()> {
-    let creates_new = matches!(
-        command.operation,
+fn revision_rule(operation: DomainOperation) -> RevisionRule {
+    if matches!(
+        operation,
         DomainOperation::CreateProject
             | DomainOperation::AddMembership
             | DomainOperation::CreateTrack
@@ -414,57 +267,11 @@ fn validate_revision_contract(command: &CommandEnvelope) -> AppResult<()> {
             | DomainOperation::CreateMilestone
             | DomainOperation::CreateTask
             | DomainOperation::CreatePoolItem
-    );
-    if !creates_new && command.expected_revision.is_none() {
-        return Err(AppError::PreconditionFailed(
-            "expectedRevision is required for changes to existing records".into(),
-        ));
+    ) {
+        RevisionRule::Create
+    } else {
+        RevisionRule::Existing
     }
-    if creates_new && command.expected_revision.is_some() {
-        return Err(AppError::validation(
-            "expectedRevision",
-            "must be omitted when creating a new record",
-        ));
-    }
-    if command.expected_revision.is_some_and(|value| value < 1) {
-        return Err(AppError::validation(
-            "expectedRevision",
-            "must be a positive integer",
-        ));
-    }
-    Ok(())
-}
-
-fn request_hash(command: &CommandEnvelope) -> AppResult<String> {
-    crate::idempotency::request_hash(
-        &json!({"operation":command.operation,"payload":command.payload,"expectedRevision":command.expected_revision}),
-    )
-}
-
-fn replay_result(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    command: &CommandEnvelope,
-    hash: &str,
-) -> AppResult<Option<CommandResult>> {
-    crate::idempotency::replay(
-        tx,
-        actor,
-        &command.idempotency_key,
-        command.operation.as_str(),
-        hash,
-    )
-}
-
-pub(super) fn authorize_actor(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    _now: i64,
-) -> AppResult<StoredActor> {
-    let actor = crate::auth::refresh_actor_connection(tx, actor)?;
-    Ok(StoredActor {
-        is_admin: actor.is_admin,
-    })
 }
 
 fn require_admin(actor: &Actor, stored: &StoredActor) -> AppResult<()> {

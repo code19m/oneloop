@@ -1,16 +1,220 @@
-//! Retry receipts bind actor scope, operation and canonical request hash. Replay still requires current resource authorization.
-
-//! One retry ledger for browser and MCP writes. A key belongs to its actor/grant
-//! and exact operation/hash for 24 hours. Failed attempts may restart with the
-//! same request; running attempts conflict; successful receipts replay only
-//! after the calling service rechecks current access.
-use crate::{AppError, AppResult, auth::Actor};
+//! One retry ledger for browser and MCP writes, and the command envelope around
+//! it. A key belongs to its actor or grant and to one exact request for 24
+//! hours. A failed attempt may run again, a running one conflicts, and a
+//! retry of a successful one returns its stored result after the service
+//! rechecks current access.
+use crate::{
+    AppError, AppResult,
+    auth::{Actor, refresh_actor_connection},
+    collaboration::ActivityEvent,
+};
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 pub(crate) const TTL_SECONDS: i64 = 24 * 60 * 60;
+
+/// Declares the operations of one command family: an enum whose variants carry
+/// their wire names, with `ALL`, `as_str` and `parse`, so each name is written
+/// once.
+macro_rules! operations {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($variant:ident = $wire:literal,)+
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+        $vis enum $name {
+            $(#[serde(rename = $wire)] $variant,)+
+        }
+
+        impl $name {
+            /// Every operation, in declaration order.
+            $vis const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            $vis fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire,)+
+                }
+            }
+
+            $vis fn parse(name: &str) -> Option<Self> {
+                Self::ALL.iter().copied().find(|operation| operation.as_str() == name)
+            }
+        }
+    };
+}
+pub(crate) use operations;
+
+/// What a command says about `expectedRevision`.
+#[derive(Clone, Copy)]
+pub(crate) enum RevisionRule {
+    /// It creates a record, so a revision is refused.
+    Create,
+    /// It changes a record, so a revision is required. A missing one fails the
+    /// precondition (412).
+    Existing,
+    /// Like `Existing`, but a missing revision is invalid input (400), which
+    /// discussion commands have always answered.
+    ExistingInput,
+    /// A revision is optional.
+    Optional,
+}
+
+impl RevisionRule {
+    fn check(self, revision: Option<i64>) -> AppResult<()> {
+        match (self, revision) {
+            (Self::Existing, None) => Err(AppError::PreconditionFailed(
+                "expectedRevision is required for changes to existing records".into(),
+            )),
+            (Self::ExistingInput, None) => {
+                Err(AppError::validation("expectedRevision", "is required"))
+            }
+            (Self::Create, Some(_)) => Err(AppError::validation(
+                "expectedRevision",
+                "must be omitted when creating a new record",
+            )),
+            (_, Some(value)) if value < 1 => Err(AppError::validation(
+                "expectedRevision",
+                "must be a positive integer",
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The response of every command. A retry returns the stored one, with
+/// `replayed` set.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResult {
+    pub entities: Vec<Value>,
+    pub events: Vec<ActivityEvent>,
+    pub replayed: bool,
+}
+
+/// What a command changed, and the record its receipt names.
+pub(crate) struct Mutation {
+    pub(crate) entities: Vec<Value>,
+    pub(crate) events: Vec<ActivityEvent>,
+    pub(crate) resource_type: &'static str,
+    pub(crate) resource_id: Option<String>,
+}
+
+impl Mutation {
+    pub(crate) fn new(
+        entity: Value,
+        events: Vec<ActivityEvent>,
+        resource_type: &'static str,
+        resource_id: &str,
+    ) -> Self {
+        Self {
+            entities: vec![entity],
+            events,
+            resource_type,
+            resource_id: Some(resource_id.to_owned()),
+        }
+    }
+
+    pub(crate) fn one(
+        entity: Value,
+        event: ActivityEvent,
+        resource_type: &'static str,
+        resource_id: &str,
+    ) -> Self {
+        Self::new(entity, vec![event], resource_type, resource_id)
+    }
+}
+
+/// A command whose key and revision are checked and whose request is hashed
+/// before it waits for the database.
+pub(crate) struct Envelope {
+    operation: &'static str,
+    key: String,
+    hash: String,
+}
+
+impl Envelope {
+    pub(crate) fn new(
+        operation: &'static str,
+        payload: &Value,
+        key: &str,
+        expected_revision: Option<i64>,
+        rule: RevisionRule,
+    ) -> AppResult<Self> {
+        validate_key(key)?;
+        rule.check(expected_revision)?;
+        let hash = request_hash(&json!({
+            "operation": operation,
+            "payload": payload,
+            "expectedRevision": expected_revision,
+        }))?;
+        Ok(Self {
+            operation,
+            key: key.to_owned(),
+            hash,
+        })
+    }
+
+    /// Runs the command once in `tx`, for the actor as the database knows it
+    /// now. A retry of a finished command gets its stored result after
+    /// `replay` rechecks today's access (and may bring the result up to date).
+    /// Otherwise `apply` makes the change, and its result becomes the receipt.
+    pub(crate) fn run(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &Actor,
+        now: i64,
+        replay: impl FnOnce(&Actor, &mut CommandResult) -> AppResult<()>,
+        apply: impl FnOnce(&Actor) -> AppResult<Mutation>,
+    ) -> AppResult<CommandResult> {
+        let actor = refresh_actor_connection(tx, actor)?;
+        if let Some(mut stored) =
+            self::replay::<CommandResult>(tx, &actor, &self.key, self.operation, &self.hash)?
+        {
+            replay(&actor, &mut stored)?;
+            stored.replayed = true;
+            return Ok(stored);
+        }
+        let id = start(
+            tx,
+            &actor,
+            &Uuid::now_v7().to_string(),
+            &self.key,
+            self.operation,
+            &self.hash,
+            now,
+        )?;
+        let mutation = apply(&actor)?;
+        let result = CommandResult {
+            entities: mutation.entities,
+            events: mutation.events,
+            replayed: false,
+        };
+        let response = serde_json::to_string(&result)
+            .map_err(|error| AppError::internal(format!("serialize command response: {error}")))?;
+        succeed(
+            tx,
+            &id,
+            Receipt {
+                response: &response,
+                status: 200,
+                resource_type: Some(mutation.resource_type),
+                resource_id: mutation.resource_id.as_deref(),
+                project_id: result
+                    .events
+                    .iter()
+                    .find_map(|event| event.project_id.as_deref()),
+            },
+            now,
+        )?;
+        Ok(result)
+    }
+}
 
 pub(crate) fn validate_key(value: &str) -> AppResult<()> {
     if value.is_empty() || value.len() > 128 || !value.bytes().all(|b| b.is_ascii_graphic()) {
@@ -52,7 +256,7 @@ pub(crate) fn replay<T: DeserializeOwned>(
     operation: &str,
     hash: &str,
 ) -> AppResult<Option<T>> {
-    let now = crate::auth::unix_now()?;
+    let now = crate::clock::unix_now()?;
     tx.execute("DELETE FROM idempotency_keys WHERE expires_at<=?1", [now])?;
     let row = tx
         .query_row(
@@ -197,6 +401,7 @@ impl rusqlite::types::ToSql for IdempotencyState {
         Ok(self.as_str().into())
     }
 }
+
 impl rusqlite::types::FromSql for IdempotencyState {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         match value.as_str()? {

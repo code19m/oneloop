@@ -6,12 +6,16 @@ mod inbox;
 pub(crate) use inbox::enqueue_inbox_change_tx;
 use inbox::*;
 
-use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
+use crate::{
+    clock::unix_now,
+    idempotency::{CommandResult, Envelope, Mutation},
+    input::parse_payload,
+};
 use std::collections::BTreeSet;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -22,7 +26,7 @@ use crate::{
 };
 
 use super::{
-    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationCommandResult,
+    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationOperation,
     CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
     InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionKind,
     MentionToken, NotificationInput, record_activity_tx, snapshot_notification_tx,
@@ -119,100 +123,39 @@ impl CollaborationService {
     }
 
     pub fn supports(operation: &str) -> bool {
-        matches!(
-            operation,
-            "discussion.comment.create"
-                | "discussion.comment.edit"
-                | "discussion.comment.delete"
-                | "discussion.comment.restore"
-                | "inbox.markRead"
-                | "inbox.markUnread"
-                | "inbox.archive"
-                | "inbox.restore"
-                | "inbox.bulkMarkRead"
-                | "inbox.bulkArchive"
-        )
+        CollaborationOperation::parse(operation).is_some()
     }
 
     pub async fn execute(
         &self,
         actor: &Actor,
         command: CollaborationCommand,
-    ) -> AppResult<CollaborationCommandResult> {
+    ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        if !Self::supports(&command.operation) {
-            return Err(AppError::validation(
-                "operation",
-                "unsupported collaboration operation",
-            ));
-        }
-        validate_idempotency_key(&command.idempotency_key)?;
-        validate_revision_contract(&command)?;
-        let request_hash = request_hash(&command)?;
+        let operation = CollaborationOperation::parse(&command.operation).ok_or_else(|| {
+            AppError::validation("operation", "unsupported collaboration operation")
+        })?;
+        let envelope = Envelope::new(
+            operation.as_str(),
+            &command.payload,
+            &command.idempotency_key,
+            command.expected_revision,
+            operation.revision_rule(),
+        )?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                authorize_actor_connection(tx, &actor, now)?;
-                if let Some(mut result) = replay(tx, &actor, &command, &request_hash)? {
-                    authorize_replay(tx, &actor, &command)?;
-                    if matches!(
-                        command.operation.as_str(),
-                        "discussion.comment.create" | "discussion.comment.edit"
-                    ) && let Some(comment_id) = result
-                        .entities
-                        .first()
-                        .and_then(|entity| entity.get("id"))
-                        .and_then(Value::as_str)
-                    {
-                        let canonical = comment_view_tx(tx, comment_id)?;
-                        if canonical.deleted_at.is_some() {
-                            // Older databases may still hold a live-looking response from
-                            // before deletion began scrubbing cached receipts.
-                            tombstone_comment_replays(tx, &canonical)?;
-                            result =
-                                replay(tx, &actor, &command, &request_hash)?.ok_or_else(|| {
-                                    AppError::internal("comment retry receipt disappeared")
-                                })?;
-                        }
-                    }
-                    result.replayed = true;
-                    return Ok(result);
-                }
-                let idempotency_id = crate::idempotency::start(
+                envelope.run(
                     tx,
                     &actor,
-                    &Uuid::now_v7().to_string(),
-                    &command.idempotency_key,
-                    &command.operation,
-                    &request_hash,
                     now,
-                )?;
-                let mutation = dispatch(tx, &actor, &command, now)?;
-                let result = CollaborationCommandResult {
-                    entities: mutation.entities,
-                    events: mutation.events,
-                    replayed: false,
-                };
-                let response = serde_json::to_string(&result).map_err(|error| {
-                    AppError::internal(format!("serialize collaboration response: {error}"))
-                })?;
-                crate::idempotency::succeed(
-                    tx,
-                    &idempotency_id,
-                    crate::idempotency::Receipt {
-                        status: 200,
-                        response: &response,
-                        resource_type: mutation.resource_type.as_deref(),
-                        resource_id: mutation.resource_id.as_deref(),
-                        project_id: result
-                            .events
-                            .iter()
-                            .find_map(|event| event.project_id.as_deref()),
+                    |actor, replay| {
+                        authorize_replay(tx, actor, operation, &command.payload)?;
+                        show_deleted_comment(tx, operation, replay)
                     },
-                    now,
-                )?;
-                Ok(result)
+                    |actor| dispatch(tx, actor, operation, &command, now),
+                )
             })
             .await
     }
@@ -503,101 +446,45 @@ impl CollaborationService {
     }
 }
 
-struct Mutation {
-    entities: Vec<Value>,
-    events: Vec<ActivityEvent>,
-    resource_type: Option<String>,
-    resource_id: Option<String>,
-}
-
-impl Mutation {
-    fn new(
-        entity: Value,
-        events: Vec<ActivityEvent>,
-        resource_type: &str,
-        resource_id: &str,
-    ) -> Self {
-        Self {
-            entities: vec![entity],
-            events,
-            resource_type: Some(resource_type.to_owned()),
-            resource_id: Some(resource_id.to_owned()),
-        }
-    }
-}
-
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
+    operation: CollaborationOperation,
     command: &CollaborationCommand,
     now: i64,
 ) -> AppResult<Mutation> {
-    if command.operation.starts_with("inbox.") {
+    use CollaborationOperation::*;
+    if operation.is_inbox() {
         require_mcp_scope_connection(tx, actor, "inbox_private", None)?;
     }
-    match command.operation.as_str() {
-        "discussion.comment.create" => {
-            create_comment(tx, actor, parse_payload(&command.payload)?, now)
+    let payload = &command.payload;
+    // The revision rule has required one for every operation that takes it.
+    let expected = command.expected_revision.unwrap_or_default();
+    match operation {
+        CreateComment => create_comment(tx, actor, parse_payload(payload)?, now),
+        EditComment => edit_comment(tx, actor, parse_payload(payload)?, expected, now),
+        DeleteComment => delete_comment(tx, actor, parse_payload(payload)?, expected, now),
+        RestoreComment => restore_comment(tx, actor, parse_payload(payload)?, expected, now),
+        MarkRead => inbox_item_change(tx, actor, parse_payload(payload)?, InboxChange::Read, now),
+        MarkUnread => {
+            inbox_item_change(tx, actor, parse_payload(payload)?, InboxChange::Unread, now)
         }
-        "discussion.comment.edit" => edit_comment(
+        Archive => inbox_item_change(
             tx,
             actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "discussion.comment.delete" => delete_comment(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "discussion.comment.restore" => restore_comment(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "inbox.markRead" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            InboxChange::Read,
-            now,
-        ),
-        "inbox.markUnread" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            InboxChange::Unread,
-            now,
-        ),
-        "inbox.archive" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
+            parse_payload(payload)?,
             InboxChange::Archive,
             now,
         ),
-        "inbox.restore" => inbox_item_change(
+        RestoreArchived => inbox_item_change(
             tx,
             actor,
-            parse_payload(&command.payload)?,
+            parse_payload(payload)?,
             InboxChange::Restore,
             now,
         ),
-        "inbox.bulkMarkRead" => {
-            inbox_bulk_change(tx, actor, parse_payload(&command.payload)?, false, now)
-        }
-        "inbox.bulkArchive" => {
-            inbox_bulk_change(tx, actor, parse_payload(&command.payload)?, true, now)
-        }
-        _ => Err(AppError::validation(
-            "operation",
-            "unsupported collaboration operation",
-        )),
+        BulkMarkRead => inbox_bulk_change(tx, actor, parse_payload(payload)?, false, now),
+        BulkArchive => inbox_bulk_change(tx, actor, parse_payload(payload)?, true, now),
     }
 }
 
@@ -882,11 +769,13 @@ fn validate_inbox_projects(
 fn authorize_replay(
     tx: &Transaction<'_>,
     actor: &Actor,
-    command: &CollaborationCommand,
+    operation: CollaborationOperation,
+    payload: &Value,
 ) -> AppResult<()> {
-    match command.operation.as_str() {
-        "discussion.comment.create" => {
-            let input: CommentCreate = parse_payload(&command.payload)?;
+    use CollaborationOperation::*;
+    match operation {
+        CreateComment => {
+            let input: CommentCreate = parse_payload(payload)?;
             let project_id: String = tx
                 .query_row(
                     "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
@@ -897,9 +786,8 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound { resource: "task" })?;
             require_participation(tx, actor, &project_id)
         }
-        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore" => {
-            let comment_id = command
-                .payload
+        EditComment | DeleteComment | RestoreComment => {
+            let comment_id = payload
                 .get("commentId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::validation("payload", "commentId is required"))?;
@@ -914,16 +802,45 @@ fn authorize_replay(
                     resource: "comment",
                 })?;
             require_participation(tx, actor, &project_id)?;
-            if command.operation != "discussion.comment.edit" {
+            if operation != EditComment {
                 require_mcp_scope_connection(tx, actor, "destructive", Some(&project_id))?;
             }
             require_comment_owner_or_admin(tx, actor, &author_id)
         }
-        operation if operation.starts_with("inbox.") => {
+        MarkRead | MarkUnread | Archive | RestoreArchived | BulkMarkRead | BulkArchive => {
             require_mcp_scope_connection(tx, actor, "inbox_private", None)
         }
-        _ => Err(AppError::Forbidden),
     }
+}
+
+/// A retry of a comment's creation or edit shows the comment as it is now
+/// when it has been deleted since. Older databases may still hold a
+/// live-looking result from before deletion began updating stored results.
+fn show_deleted_comment(
+    tx: &Transaction<'_>,
+    operation: CollaborationOperation,
+    replay: &mut CommandResult,
+) -> AppResult<()> {
+    if !matches!(
+        operation,
+        CollaborationOperation::CreateComment | CollaborationOperation::EditComment
+    ) {
+        return Ok(());
+    }
+    let Some(comment_id) = replay
+        .entities
+        .first()
+        .and_then(|entity| entity.get("id"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let current = comment_view_tx(tx, comment_id)?;
+    if current.deleted_at.is_some() {
+        tombstone_comment_replays(tx, &current)?;
+        replace_comment(replay, &current)?;
+    }
+    Ok(())
 }
 
 fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
@@ -1093,60 +1010,12 @@ fn activity_projection_stream(
     Ok(result)
 }
 
-fn parse_payload<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    crate::http::input::parse_payload(value)
-}
-
-fn required_revision(command: &CollaborationCommand) -> AppResult<i64> {
-    command
-        .expected_revision
-        .ok_or_else(|| AppError::validation("expectedRevision", "is required"))
-}
-
-fn validate_revision_contract(command: &CollaborationCommand) -> AppResult<()> {
-    let needs_revision = matches!(
-        command.operation.as_str(),
-        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore"
-    );
-    if needs_revision && command.expected_revision.is_none() {
-        return Err(AppError::validation("expectedRevision", "is required"));
-    }
-    if command.expected_revision.is_some_and(|value| value < 1) {
-        return Err(AppError::validation(
-            "expectedRevision",
-            "must be a positive integer",
-        ));
-    }
-    Ok(())
-}
-
 fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
     if actual == expected {
         Ok(())
     } else {
         Err(AppError::revision(expected, actual))
     }
-}
-
-fn request_hash(command: &CollaborationCommand) -> AppResult<String> {
-    crate::idempotency::request_hash(
-        &json!({"operation":command.operation,"payload":command.payload,"expectedRevision":command.expected_revision}),
-    )
-}
-
-fn replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    command: &CollaborationCommand,
-    hash: &str,
-) -> AppResult<Option<CollaborationCommandResult>> {
-    crate::idempotency::replay(
-        tx,
-        actor,
-        &command.idempotency_key,
-        &command.operation,
-        hash,
-    )
 }
 
 fn page_limit(limit: Option<usize>) -> usize {

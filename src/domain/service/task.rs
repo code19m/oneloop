@@ -279,7 +279,7 @@ pub(super) fn update_task(
     Ok(Mutation {
         entities,
         events,
-        resource_type: Some("task".into()),
+        resource_type: "task",
         resource_id: Some(input.task_id),
     })
 }
@@ -426,7 +426,7 @@ pub(super) fn move_task(
     Ok(Mutation {
         entities,
         events,
-        resource_type: Some("task".into()),
+        resource_type: "task",
         resource_id: Some(input.task_id),
     })
 }
@@ -629,7 +629,7 @@ pub(super) fn restore_task(
     Ok(Mutation {
         entities,
         events,
-        resource_type: Some("task".into()),
+        resource_type: "task",
         resource_id: Some(input.id),
     })
 }

@@ -16,6 +16,7 @@ pub mod error;
 pub mod files;
 pub mod http;
 mod idempotency;
+mod input;
 pub mod knowledge;
 mod legacy_values;
 pub mod mcp;

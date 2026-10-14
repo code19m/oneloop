@@ -337,16 +337,10 @@ pub(super) fn tombstone_comment_replays(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    let tombstone = serde_json::to_value(comment)
-        .map_err(|error| AppError::internal(format!("serialize deleted comment: {error}")))?;
     for (id, response) in rows {
-        let mut result: CollaborationCommandResult = serde_json::from_str(&response)
+        let mut result: CommandResult = serde_json::from_str(&response)
             .map_err(|error| AppError::internal(format!("read comment retry response: {error}")))?;
-        for entity in &mut result.entities {
-            if entity.get("id").and_then(Value::as_str) == Some(comment.id.as_str()) {
-                *entity = tombstone.clone();
-            }
-        }
+        replace_comment(&mut result, comment)?;
         tx.execute(
             "UPDATE idempotency_keys SET response_json=?1 WHERE id=?2",
             params![
@@ -356,6 +350,18 @@ pub(super) fn tombstone_comment_replays(
                 id
             ],
         )?;
+    }
+    Ok(())
+}
+
+/// Puts `comment` in place of the same comment among a result's entities.
+pub(super) fn replace_comment(result: &mut CommandResult, comment: &CommentView) -> AppResult<()> {
+    let value = serde_json::to_value(comment)
+        .map_err(|error| AppError::internal(format!("serialize comment: {error}")))?;
+    for entity in &mut result.entities {
+        if entity.get("id").and_then(Value::as_str) == Some(comment.id.as_str()) {
+            *entity = value.clone();
+        }
     }
     Ok(())
 }

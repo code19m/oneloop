@@ -619,8 +619,18 @@ async fn assignee_activity_consolidates_both_membership_directions_without_rewri
 #[tokio::test]
 async fn membership_management_needs_admin_access_but_not_a_fresh_password() {
     let f = fixture().await;
-    let mut admin = f.admin.clone();
-    admin.authenticated_at = now() - 3600;
+    let admin = f.admin.clone();
+    // The service reads the sign-in time from the session, as for any request.
+    let signed_in = |at: i64| {
+        f.db.run(move |connection| {
+            connection.execute(
+                "UPDATE sessions SET authenticated_at=?1 WHERE id='s-admin'",
+                [at],
+            )?;
+            Ok(())
+        })
+    };
+    signed_in(now() - 3600).await.unwrap();
     let add = command(
         DomainOperation::AddMembership,
         json!({"projectId":"p2","userId":"u2","manageBoard":false,"manageRoadmap":false}),
@@ -670,7 +680,7 @@ async fn membership_management_needs_admin_access_but_not_a_fresh_password() {
             ..
         })
     ));
-    admin.authenticated_at = now() - 20 * 60;
+    signed_in(now() - 20 * 60).await.unwrap();
     f.service.execute(&admin, delete).await.unwrap();
 }
 
