@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vendorPackages } from './vendor-packages.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -72,12 +73,11 @@ const browserLicenses = {
   mermaid: 'MIT',
   pdfjs: 'Apache-2.0; bundled fonts and CMaps under their own licenses',
 };
-const vendor = JSON.parse(read('frontend/vendor/vendor.json'));
-for (const pkg of vendor.packages) {
-  const [, name, version] = pkg.source.match(/^https:\/\/registry\.npmjs\.org\/(.+)\/-\/[^/]+-(\d[^/]*)\.tgz$/);
-  const license = browserLicenses[pkg.directory];
-  if (!license) throw new Error(`Review the license of frontend/vendor/${pkg.directory} and add it to browserLicenses.`);
-  const files = licenseFiles(join('frontend/vendor', pkg.directory), true).filter(path => !path.endsWith('.json'));
+const vendor = vendorPackages();
+for (const { directory, name, version } of vendor) {
+  const license = browserLicenses[directory];
+  if (!license) throw new Error(`Review the license of frontend/vendor/${directory} and add it to browserLicenses.`);
+  const files = licenseFiles(join('frontend/vendor', directory), true).filter(path => !path.endsWith('.json'));
   addComponent(name, version, license, files.map(read), 'frontend/vendor');
 }
 
@@ -191,7 +191,7 @@ it by hand. It covers ${components.size} components:
 - ${crateCount} Rust crates: the normal and build dependencies in \`Cargo.lock\` for
   Linux x86_64, Linux arm64 and macOS arm64. Build-only crates are included
   conservatively.
-- ${vendor.packages.length} browser libraries vendored in \`frontend/vendor/\`.
+- ${vendor.length} browser libraries vendored in \`frontend/vendor/\`.
 - ${mermaidCount} packages bundled into the rebuilt Mermaid.
 
 Each license text appears once, followed by the components it covers and their
