@@ -1,10 +1,10 @@
 use super::input::{ApiJson, ApiQuery};
-use std::{convert::Infallible, net::SocketAddr};
+use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, Extension, FromRequestParts, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -165,14 +165,18 @@ struct LoginRequest {
 
 async fn login(
     State(state): State<AppState>,
-    OptionalPeer(peer): OptionalPeer,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> AppResult<Response> {
     let metadata = SessionMetadata {
         client_name: clean_metadata(request.client_name, 100),
-        client_ip: client_ip(peer, &headers, &state.config.trusted_proxies)
-            .map(|value| value.to_string()),
+        client_ip: client_ip(
+            peer.map(|Extension(ConnectInfo(address))| address),
+            &headers,
+            &state.config.trusted_proxies,
+        )
+        .map(|value| value.to_string()),
         user_agent: clean_metadata(
             headers
                 .get(header::USER_AGENT)
@@ -385,20 +389,8 @@ struct AuthUserResponse {
 }
 
 async fn auth_response(state: &AppState, actor: &Actor) -> AppResult<AuthResponse> {
-    let user_id = actor.user_id.clone();
-    let avatar = state
-        .db
-        .run(move |connection| {
-            let blob: Option<String> = connection.query_row(
-                "SELECT avatar_blob_id FROM users WHERE id=?1",
-                [&user_id],
-                |row| row.get(0),
-            )?;
-            Ok(blob.map(|blob| format!("/api/users/{user_id}/avatar?v={blob}")))
-        })
-        .await?;
     let mut response = AuthResponse::from(actor);
-    response.user.avatar_url = avatar;
+    response.user.avatar_url = state.auth.avatar_url(&actor.user_id).await?;
     Ok(response)
 }
 
@@ -561,22 +553,4 @@ fn clean_metadata(value: Option<String>, max_chars: usize) -> Option<String> {
         let value = value.trim();
         (!value.is_empty()).then(|| value.chars().take(max_chars).collect())
     })
-}
-
-struct OptionalPeer(Option<SocketAddr>);
-
-impl<S: Send + Sync> FromRequestParts<S> for OptionalPeer {
-    type Rejection = Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|value| value.0),
-        ))
-    }
 }

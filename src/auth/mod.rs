@@ -603,7 +603,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary>
     let id: String = row.get(0)?;
     let avatar_blob: Option<String> = row.get(7)?;
     Ok(AccountSummary {
-        avatar_url: avatar_blob.map(|blob| format!("/api/users/{id}/avatar?v={blob}")),
+        avatar_url: avatar_blob.map(|blob| avatar_url(&id, &blob)),
         id,
         username: row.get(1)?,
         display_name: row.get(2)?,
@@ -612,6 +612,11 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary>
         must_change_password: row.get(5)?,
         revision: row.get(6)?,
     })
+}
+
+/// The address of a person's avatar; the blob ID keeps a cached copy current.
+fn avatar_url(user_id: &str, blob_id: &str) -> String {
+    format!("/api/users/{user_id}/avatar?v={blob_id}")
 }
 
 fn account_from_user(user: User) -> AccountSummary {

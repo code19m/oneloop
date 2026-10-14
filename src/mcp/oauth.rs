@@ -3,11 +3,11 @@
 use crate::auth::token::hash as hash_token;
 use crate::auth::token::random_token;
 use crate::clock::unix_now;
-use std::{collections::BTreeSet, convert::Infallible, net::SocketAddr};
+use std::{collections::BTreeSet, net::SocketAddr};
 
 use axum::{
     Form, Json, Router,
-    extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Query, RawForm, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Query, RawForm, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
@@ -30,9 +30,10 @@ use crate::{
         ACCESS_TOKEN_SECONDS, Actor, GRANT_ABSOLUTE_SECONDS, REFRESH_IDLE_SECONDS, revoke_grant,
         revoke_unless_current,
     },
+    config::is_loopback,
     http::{
         auth::authenticate_headers,
-        security::{client_ip, require_canonical_origin},
+        security::{client_ip, escape_html, require_canonical_origin},
     },
 };
 
@@ -165,27 +166,9 @@ struct RegistrationResponse {
     response_types: [&'static str; 1],
 }
 
-struct OptionalPeer(Option<SocketAddr>);
-
-impl<S: Send + Sync> FromRequestParts<S> for OptionalPeer {
-    type Rejection = Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|peer| peer.0),
-        ))
-    }
-}
-
 async fn register_client_inner(
     State(state): State<AppState>,
-    OptionalPeer(peer): OptionalPeer,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(mut request): Json<ClientMetadata>,
 ) -> AppResult<(StatusCode, Json<RegistrationResponse>)> {
@@ -208,6 +191,7 @@ async fn register_client_inner(
         .map_err(|error| AppError::internal(format!("serialize redirect URIs: {error}")))?;
     let stored_client_uri = client_uri.clone();
     let now = unix_now()?;
+    let peer = peer.map(|Extension(ConnectInfo(address))| address);
     let caller = client_ip(peer, &headers, &state.config.trusted_proxies)
         .map(crate::http::security::throttle_bucket)
         .unwrap_or_else(|| "unknown".to_owned());
@@ -1299,15 +1283,6 @@ async fn client_name(state: &AppState, id: &str) -> AppResult<String> {
         .await
 }
 
-fn loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
-    }
-}
-
 fn redirect_matches(registered: &str, requested: &str) -> bool {
     let (Ok(mut registered), Ok(mut requested)) = (Url::parse(registered), Url::parse(requested))
     else {
@@ -1315,8 +1290,8 @@ fn redirect_matches(registered: &str, requested: &str) -> bool {
     };
     if registered.scheme() == "http"
         && requested.scheme() == "http"
-        && loopback(&registered)
-        && loopback(&requested)
+        && is_loopback(&registered)
+        && is_loopback(&requested)
     {
         let _ = registered.set_port(None);
         let _ = requested.set_port(None);
@@ -1343,7 +1318,7 @@ pub(super) fn validate_redirect_uri(value: &str, schemes: &[String]) -> AppResul
     }
     let safe = match url.scheme() {
         "https" => url.host_str().is_some(),
-        "http" => loopback(&url),
+        "http" => is_loopback(&url),
         scheme => !url.cannot_be_a_base() && schemes.iter().any(|listed| listed == scheme),
     };
     if !safe {
@@ -1434,7 +1409,7 @@ fn oauth_redirect<const N: usize>(
         }
     }
     if matches!(url.host(), Some(url::Host::Ipv6(_))) {
-        let target = escape(url.as_str());
+        let target = escape_html(url.as_str());
         return Ok(Html(format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url={target}\"><title>Continue to app</title></head><body><a href=\"{target}\">Continue to app</a></body></html>"
         )).into_response());
@@ -1442,12 +1417,7 @@ fn oauth_redirect<const N: usize>(
     Ok(Redirect::to(url.as_str()).into_response())
 }
 fn issuer(state: &AppState) -> String {
-    state
-        .config
-        .public_url
-        .as_str()
-        .trim_end_matches('/')
-        .to_owned()
+    state.config.base_url().to_owned()
 }
 fn resource_url(state: &AppState) -> String {
     format!("{}/mcp", issuer(state))
@@ -1463,14 +1433,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     d == 0
 }
 
-fn escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
 struct ConsentPresentation<'a> {
     client_id: &'a str,
     redirect: &'a str,
@@ -1504,7 +1466,7 @@ fn consent_html(
         .map(|(id, name)| {
             format!(
                 "<label><input type=checkbox name=project value=\"{}\"{}> <span>{}</span></label>",
-                escape(id),
+                escape_html(id),
                 if presentation
                     .retry
                     .is_some_and(|(form, _)| form.project.contains(id))
@@ -1513,7 +1475,7 @@ fn consent_html(
                 } else {
                     ""
                 },
-                escape(name)
+                escape_html(name)
             )
         })
         .collect::<String>();
@@ -1533,9 +1495,9 @@ fn consent_html(
             let checked = if selected { " checked" } else { "" };
             format!(
                 "<label><input type=checkbox name=scope value=\"{}\"{}> <span>{}</span></label>",
-                escape(scope),
+                escape_html(scope),
                 checked,
-                escape(scope_label(scope))
+                escape_html(scope_label(scope))
             )
         })
         .collect::<String>();
@@ -1543,7 +1505,7 @@ fn consent_html(
     let destination = callback
         .as_ref()
         .map(|url| match url.scheme() {
-            "http" if loopback(url) => format!(
+            "http" if is_loopback(url) => format!(
                 "An app on this computer ({})",
                 &url[url::Position::BeforeHost..url::Position::AfterPort]
             ),
@@ -1554,7 +1516,7 @@ fn consent_html(
             scheme => format!("An app on this computer that opens {scheme}: links ({url})"),
         })
         .unwrap_or_else(|| presentation.redirect.to_owned());
-    let destination = escape(&destination);
+    let destination = escape_html(&destination);
     let returns_to_this_computer = callback.as_ref().is_some_and(|url| url.scheme() != "https");
     // The whole address: one host can serve documents for many authors.
     let client_source = match client_metadata::document_url(presentation.client_id) {
@@ -1566,19 +1528,19 @@ fn consent_html(
     };
     let error = presentation
         .retry
-        .map(|(_, error)| format!("<p class=warning role=alert>{}</p>", escape(error)))
+        .map(|(_, error)| format!("<p class=warning role=alert>{}</p>", escape_html(error)))
         .unwrap_or_default();
     format!(
         include_str!("consent/page.html"),
         destination = destination,
-        client_source = escape(&client_source),
+        client_source = escape_html(&client_source),
         error = error,
         project_rows = project_rows,
         scope_rows = scope_rows,
-        client = escape(client),
-        display_name = escape(display_name),
-        username = escape(username),
-        request_id = escape(request_id)
+        client = escape_html(client),
+        display_name = escape_html(display_name),
+        username = escape_html(username),
+        request_id = escape_html(request_id)
     )
 }
 
@@ -1647,7 +1609,7 @@ impl OAuthError {
     fn page(self) -> Response {
         let page = Html(format!(
             "<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>",
-            escape(&self.description)
+            escape_html(&self.description)
         ));
         self.respond(page)
     }
@@ -1677,7 +1639,7 @@ impl IntoResponse for OAuthError {
 }
 async fn register_client(
     State(state): State<AppState>,
-    peer: OptionalPeer,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     request: Result<Json<ClientMetadata>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, OAuthError> {

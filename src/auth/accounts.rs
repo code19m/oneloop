@@ -178,6 +178,21 @@ impl AuthService {
         Ok(updated)
     }
 
+    /// The address of a person's avatar, if they set one.
+    pub async fn avatar_url(&self, user_id: &str) -> AppResult<Option<String>> {
+        let user_id = user_id.to_owned();
+        self.db
+            .run(move |connection| {
+                let blob: Option<String> = connection.query_row(
+                    "SELECT avatar_blob_id FROM users WHERE id=?1",
+                    [&user_id],
+                    |row| row.get(0),
+                )?;
+                Ok(blob.map(|blob| avatar_url(&user_id, &blob)))
+            })
+            .await
+    }
+
     pub(super) async fn password_hash_for_session(&self, actor: &Actor) -> AppResult<String> {
         let user_id = actor.user_id.clone();
         let session_id = actor.session_id().ok_or(AppError::Forbidden)?.to_owned();

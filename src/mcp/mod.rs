@@ -117,7 +117,7 @@ async fn require_mcp_actor(
 fn unauthorized(state: &AppState, token_presented: bool) -> Response {
     let metadata = format!(
         "{}/.well-known/oauth-protected-resource/mcp",
-        state.config.public_url.as_str().trim_end_matches('/')
+        state.config.base_url()
     );
     let mut response = (StatusCode::UNAUTHORIZED, "authentication is required").into_response();
     let error = if token_presented {

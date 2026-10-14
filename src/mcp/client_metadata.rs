@@ -373,16 +373,10 @@ fn check_response(status: StatusCode, headers: &HeaderMap) -> AppResult<Duration
     if status != StatusCode::OK {
         return Err(refused(&format!("answered HTTP {}", status.as_u16())));
     }
-    let media_type = headers
+    let json = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .map(|value| value.trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    let json = media_type == "application/json"
-        || media_type
-            .strip_prefix("application/")
-            .is_some_and(|subtype| subtype.ends_with("+json"));
+        .is_some_and(crate::http::input::is_json_media_type);
     if !json {
         return Err(refused("is not JSON"));
     }

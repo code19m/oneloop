@@ -1608,10 +1608,7 @@ async fn create_transfer(
         })
         .await?;
     Ok(TransferTicket {
-        url: format!(
-            "{}/mcp/files/upload",
-            state.config.public_url.as_str().trim_end_matches('/')
-        ),
+        url: format!("{}/mcp/files/upload", state.config.base_url()),
         method: "PUT".into(),
         authorization: format!("Bearer {token}"),
         expires_in: 300,
@@ -1680,10 +1677,7 @@ async fn create_download_transfer(
         })
         .await?;
     Ok(TransferTicket {
-        url: format!(
-            "{}/mcp/files/download",
-            state.config.public_url.as_str().trim_end_matches('/')
-        ),
+        url: format!("{}/mcp/files/download", state.config.base_url()),
         method: "GET".into(),
         authorization: format!("Bearer {token}"),
         expires_in: 300,

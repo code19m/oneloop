@@ -18,14 +18,8 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
         let json = request
             .headers()
             .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(';').next())
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .is_some_and(|v| {
-                v.eq_ignore_ascii_case("application/json")
-                    || (v.starts_with("application/") && v.ends_with("+json"))
-            });
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(is_json_media_type);
         if !json {
             return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response());
         }
@@ -48,6 +42,21 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for ApiQuery<T> {
             .map(Self)
             .map_err(|error| input_error(error, "query"))
     }
+}
+
+/// Whether a Content-Type names JSON: `application/json` or a
+/// `application/*+json` type, with any parameters.
+pub(crate) fn is_json_media_type(content_type: &str) -> bool {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "application/json"
+        || media_type
+            .strip_prefix("application/")
+            .is_some_and(|subtype| subtype.ends_with("+json"))
 }
 
 pub(crate) fn parse_json<T: DeserializeOwned>(bytes: &[u8]) -> AppResult<T> {
