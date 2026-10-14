@@ -25,15 +25,8 @@ impl FileService {
             .await?
             .run(move || normalize_avatar(&bytes))
             .await??;
-        self.store.ensure_directories().await?;
-        let mut capacity = self.prepare_capacity().await?;
         let normalized_size = normalized.len() as u64;
-        let deficit = self.disk.deficit(normalized_size)?;
-        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
-            capacity = self.capacity_usage().await?;
-        }
-
-        let non_database_bytes = capacity.non_database_bytes();
+        let non_database_bytes = self.admit(normalized_size).await?;
         let _lease = self.db.acquire_data_lease().await?;
         let maintenance_gate = self.acquire_file_maintenance_gate().await?;
         let disk = self.disk.reserve(normalized_size)?;
@@ -48,17 +41,7 @@ impl FileService {
             .transaction(move |tx| {
                 let now = unix_now()?;
                 require_actor_identity_raw(tx, &actor_tx, now)?;
-                let used: i64 = tx.query_row(SELECT_FILE_BLOBS_3_SQL, [now], |row| row.get(0))?;
-                if (used.max(0) as u64)
-                    .saturating_add(non_database_bytes)
-                    .saturating_add(normalized_size)
-                    > storage_limit
-                {
-                    return Err(AppError::rule(
-                        crate::error::RuleKind::StorageFull,
-                        "attachment storage capacity is exhausted",
-                    ));
-                }
+                require_capacity(tx, now, non_database_bytes, normalized_size, storage_limit)?;
                 tx.execute(
                     INSERT_FILE_BLOBS_SQL,
                     params![

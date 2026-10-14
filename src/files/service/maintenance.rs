@@ -216,14 +216,20 @@ impl FileService {
         Ok(true)
     }
 
-    pub(super) async fn prepare_capacity(&self) -> AppResult<CapacityUsage> {
-        let usage = self.capacity_usage().await?;
-        let report = self.cleanup_for_usage(&usage).await?;
-        if report.bytes_reclaimed > 0 {
-            self.capacity_usage().await
-        } else {
-            Ok(usage)
+    /// Makes room before `size` new bytes are written: cleanup runs when
+    /// usage passed the high watermark, or when the disk is short of space.
+    /// Returns the bytes outside the database, for `require_capacity`.
+    pub(super) async fn admit(&self, size: u64) -> AppResult<u64> {
+        self.store.ensure_directories().await?;
+        let mut usage = self.capacity_usage().await?;
+        if self.cleanup_for_usage(&usage).await?.bytes_reclaimed > 0 {
+            usage = self.capacity_usage().await?;
         }
+        let deficit = self.disk.deficit(size)?;
+        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
+            usage = self.capacity_usage().await?;
+        }
+        Ok(usage.non_database_bytes())
     }
 
     pub async fn cleanup_if_needed(&self) -> AppResult<FileRuntimeReport> {
@@ -348,11 +354,7 @@ impl FileService {
     }
 
     pub async fn cleanup_to_low_watermark(&self) -> AppResult<FileRuntimeReport> {
-        self.cleanup_to_target(self.storage_limit_bytes.saturating_mul(CLEANUP_LOW_PERCENT) / 100)
-            .await
-    }
-
-    pub(super) async fn cleanup_to_target(&self, target: u64) -> AppResult<FileRuntimeReport> {
+        let target = self.storage_limit_bytes.saturating_mul(CLEANUP_LOW_PERCENT) / 100;
         self.cleanup_files(Some(target), 0).await
     }
 
@@ -901,6 +903,36 @@ impl FileService {
             unreserved_staging_bytes,
         })
     }
+}
+
+/// Fails when `size` more bytes would take file storage past `limit`.
+pub(super) fn require_capacity(
+    tx: &Transaction<'_>,
+    now: i64,
+    non_database_bytes: u64,
+    size: u64,
+    limit: u64,
+) -> AppResult<()> {
+    let used: i64 = tx.query_row(
+        "SELECT
+           coalesce((SELECT sum(size_bytes) FROM file_blobs
+                     WHERE state IN ('pending','available','deleting')),0) +
+           coalesce((SELECT sum(size_bytes) FROM upload_reservations
+                     WHERE committed_at IS NULL AND expires_at>?1),0)",
+        [now],
+        |row| row.get(0),
+    )?;
+    if (used.max(0) as u64)
+        .saturating_add(non_database_bytes)
+        .saturating_add(size)
+        > limit
+    {
+        return Err(AppError::rule(
+            crate::error::RuleKind::StorageFull,
+            "attachment storage capacity is exhausted",
+        ));
+    }
+    Ok(())
 }
 
 fn release_upload_rows(

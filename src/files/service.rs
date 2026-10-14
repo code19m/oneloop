@@ -6,6 +6,7 @@ pub(crate) use detect::validate_original_name;
 mod avatar;
 mod decode;
 mod maintenance;
+use maintenance::require_capacity;
 mod read;
 pub use read::ReadMode;
 mod thumbnail;
@@ -1397,10 +1398,6 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
 }
 
 // SQL is kept outside calls so rustfmt can format the surrounding control flow.
-const SELECT_FILE_BLOBS_SQL: &str = "SELECT
-                       coalesce((SELECT sum(size_bytes) FROM file_blobs WHERE state IN ('pending','available','deleting')),0) +
-                       coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                                 WHERE committed_at IS NULL AND expires_at>?1),0)";
 const SELECT_PROJECT_MEMBERSHIPS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM project_memberships a JOIN project_memberships b ON \
                      b.project_id=a.project_id JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL \
                      WHERE a.user_id=?1 AND b.user_id=?2)";
@@ -1444,11 +1441,6 @@ const SELECT_TASK_ATTACHMENTS_5_SQL: &str = "SELECT a.id,b.size_bytes FROM task_
 const INSERT_ATTACHMENT_BLOB_SQL: &str = "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,\
                      created_at) VALUES(?1,?2,?3,?4,?5,'available',?6)";
 
-const SELECT_FILE_BLOBS_3_SQL: &str = "SELECT
-                       coalesce((SELECT sum(size_bytes) FROM file_blobs
-                                 WHERE state IN ('pending','available','deleting')),0) +
-                       coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                                 WHERE committed_at IS NULL AND expires_at>?1),0)";
 const INSERT_FILE_BLOBS_SQL: &str = "INSERT INTO file_blobs
                      (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
                      VALUES(?1,?2,?3,?4,'image/png','pending',?5)";

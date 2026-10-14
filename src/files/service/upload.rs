@@ -47,14 +47,7 @@ impl FileService {
             return Ok(UploadStart::Replayed(Box::new(existing)));
         }
 
-        self.store.ensure_directories().await?;
-        let mut capacity = self.prepare_capacity().await?;
-        let deficit = self.disk.deficit(claimed_size)?;
-        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
-            capacity = self.capacity_usage().await?;
-        }
-
-        let non_database_bytes = capacity.non_database_bytes();
+        let non_database_bytes = self.admit(claimed_size).await?;
         let reservation_id = Uuid::now_v7().to_string();
         let idempotency_id = Uuid::now_v7().to_string();
         let staging_key = self.store.new_staging_key()?;
@@ -109,17 +102,7 @@ impl FileService {
                         ));
                     }
 
-                    let used: i64 = tx.query_row(SELECT_FILE_BLOBS_SQL, [now], |row| row.get(0))?;
-                    if (used.max(0) as u64)
-                        .saturating_add(non_database_bytes)
-                        .saturating_add(claimed_size)
-                        > limit
-                    {
-                        return Err(AppError::rule(
-                            crate::error::RuleKind::StorageFull,
-                            "attachment storage capacity is exhausted",
-                        ));
-                    }
+                    require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
                     let actual_idempotency_id = upsert_running_idempotency(
                         tx,
