@@ -69,7 +69,6 @@ pub(super) struct Inner {
     pub(super) git: Git,
     pub(super) keys: PathBuf,
     pub(super) allow_file: bool,
-    pub(super) disk_min_free_bytes: u64,
     pub(super) disk: crate::files::disk::DiskAdmission,
     pub(super) limits: Limits,
     pub(super) wake: Notify,
@@ -373,10 +372,10 @@ impl KnowledgeService {
         Self::build(db, disk_min_free_bytes, false)
     }
 
-    /// The same service that also accepts `file://` repositories. For tests.
+    /// A service that also accepts `file://` repositories. For tests.
     #[doc(hidden)]
-    pub fn allowing_local_repositories(&self) -> Self {
-        Self::build(self.inner.db.clone(), self.inner.disk_min_free_bytes, true)
+    pub fn with_local_repositories(db: Db, disk_min_free_bytes: u64) -> Self {
+        Self::build(db, disk_min_free_bytes, true)
     }
 
     fn build(db: Db, disk_min_free_bytes: u64, allow_file: bool) -> Self {
@@ -393,7 +392,6 @@ impl KnowledgeService {
                 git,
                 keys,
                 allow_file,
-                disk_min_free_bytes,
                 disk,
                 limits: Limits {
                     max_files: MAX_FILES,

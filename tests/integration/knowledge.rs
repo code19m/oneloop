@@ -14,7 +14,7 @@ use axum::{
     response::Response,
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now};
+use oneloop::{AppState, Db, application, auth::unix_now, knowledge::KnowledgeService};
 use rusqlite::params;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -210,7 +210,7 @@ impl Fixture {
         let mut config = support::config(directory.path(), ORIGIN, &[]);
         config.disk_min_free_bytes = 0;
         let mut state = AppState::new(config, db.clone());
-        state.knowledge = state.knowledge.allowing_local_repositories();
+        state.knowledge = KnowledgeService::with_local_repositories(db.clone(), 0);
         Self {
             _directory: directory,
             app: application(state.clone()).router,

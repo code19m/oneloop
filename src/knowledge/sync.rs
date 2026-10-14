@@ -161,46 +161,39 @@ impl KnowledgeService {
         if free == 0 {
             return;
         }
-        let due = match self.due_projects().await {
-            Ok(due) => due,
-            Err(error) => {
-                tracing::warn!(%error, "could not list knowledge sources to sync");
-                return;
-            }
-        };
-        for claim in due
-            .iter()
-            .filter(|project_id| !self.inner.is_waiting(project_id))
-            .filter_map(|project_id| Running::claim(&self.inner, project_id))
-            .take(free)
-        {
+        let due = self.due_or_log().await;
+        for claim in self.claims(&due).take(free) {
             let service = self.clone();
             running.spawn(async move { service.sync_project(claim).await });
         }
     }
 
-    /// Syncs every source that is due and not waiting after a failure, and
-    /// returns how many ran. Exposed for deterministic tests.
+    /// Syncs every source that is due and not waiting after a failure, one
+    /// after the other, and returns how many ran. For deterministic tests.
     #[doc(hidden)]
     pub async fn sync_due(&self) -> usize {
-        let due = match self.due_projects().await {
-            Ok(due) => due,
-            Err(error) => {
-                tracing::warn!(%error, "could not list knowledge sources to sync");
-                return 0;
-            }
-        };
+        let due = self.due_or_log().await;
         let mut finished = 0;
-        for project_id in due {
-            if self.inner.is_waiting(&project_id) {
-                continue;
-            }
-            if let Some(claim) = Running::claim(&self.inner, &project_id) {
-                self.sync_project(claim).await;
-                finished += 1;
-            }
+        for claim in self.claims(&due) {
+            self.sync_project(claim).await;
+            finished += 1;
         }
         finished
+    }
+
+    /// The `due` projects that don't wait after a failure, each claimed as
+    /// it is taken.
+    fn claims<'a>(&'a self, due: &'a [String]) -> impl Iterator<Item = Running> + 'a {
+        due.iter()
+            .filter(|project_id| !self.inner.is_waiting(project_id))
+            .filter_map(|project_id| Running::claim(&self.inner, project_id))
+    }
+
+    async fn due_or_log(&self) -> Vec<String> {
+        self.due_projects().await.unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not list knowledge sources to sync");
+            Vec::new()
+        })
     }
 
     async fn due_projects(&self) -> AppResult<Vec<String>> {
@@ -681,7 +674,7 @@ mod tests {
         .await
         .unwrap();
         // No download fits above this floor.
-        let service = KnowledgeService::new(db.clone(), u64::MAX).allowing_local_repositories();
+        let service = KnowledgeService::with_local_repositories(db.clone(), u64::MAX);
         assert_eq!(service.sync_due().await, 4);
         let sources: Vec<(String, String, Option<String>)> = db
             .run(|c| {
@@ -747,7 +740,7 @@ mod tests {
             Ok(())
         }).await.unwrap();
         let free = fs4::available_space(db.layout().root()).unwrap();
-        let mut service = KnowledgeService::new(db.clone(), 0).allowing_local_repositories();
+        let mut service = KnowledgeService::with_local_repositories(db.clone(), 0);
         let inner = Arc::get_mut(&mut service.inner).unwrap();
         inner.limits.max_download_bytes = free / 4 * 3 - inner.limits.max_total_bytes;
         // Large margins tolerate unrelated disk activity. The upload service
@@ -902,7 +895,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let service = KnowledgeService::new(db.clone(), 0).allowing_local_repositories();
+        let service = KnowledgeService::with_local_repositories(db.clone(), 0);
         assert_eq!(service.sync_due().await, 1);
         assert_eq!(service.sync_due().await, 0, "the source waits");
         // An administrator's retry still syncs at once.
