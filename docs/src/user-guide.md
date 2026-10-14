@@ -157,8 +157,9 @@ restored.
 
 Deleted files and comment text stay on the server for the
 [Undo window](reference.md#limits), so that Undo can work. Soon after that,
-oneloop removes them for good, together with the files of a deleted task. A deleted task's own text and its comments stay in the database; only its
-files are removed.
+oneloop removes them for good, together with the files of a deleted task. A
+deleted task's own text and its comments stay in the database; only its files
+are removed.
 
 ## Knowledge
 

@@ -187,7 +187,7 @@ or turn on [Reload after updates](user-guide.md#your-account).
 
 ### Choose a version
 
-Stable versions look like `0.1.0`. Release candidates, such as `0.1.0-rc.4`,
+Stable versions look like `1.2.0`. Release candidates, such as `1.2.0-rc.1`,
 let you try the next version early.
 
 - The Docker tags `latest` and `0.1` follow stable versions only. A release

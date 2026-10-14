@@ -125,8 +125,8 @@ server. The URL decides how oneloop signs in:
   [Troubleshooting](troubleshooting.md#knowledge-sync).
 
 If a sync fails, **Settings** shows why, and oneloop tries again
-[later](reference.md#limits). People keep reading the last synced files. **Retry sync** on the
-**Knowledge base** page tries at once.
+[later](reference.md#limits). People keep reading the last synced files.
+**Retry sync** on the **Knowledge base** page tries at once.
 
 Changing the URL, branch or folder removes the old files at once; the new ones
 appear after the next sync. **Disconnect** removes the files, the token and the

@@ -207,8 +207,8 @@ schema describes the payload of each operation.
   text. A name alone doesn't notify anyone. `@everyone` has a
   [rate limit](reference.md#limits) in each project.
 - **Files.** Upload and download tickets work once and
-  [expire](reference.md#limits) soon. Send the bytes to the returned `url` with the returned
-  `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload, within the
+  [expire](reference.md#limits) soon. Send the bytes to the returned `url`
+  with the returned `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload, within the
   [file limits](reference.md#limits), or `GET` to download. Never send a local
   file path. To retry a failed upload, ask for a new ticket with the same
   `idempotencyKey`, file name, size and bytes, so the file is attached only once.
