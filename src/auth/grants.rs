@@ -106,8 +106,8 @@ impl AuthService {
             .run(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT id,client_id,client_name,created_at,last_used_at,expires_at
-                 FROM mcp_grants WHERE user_id=?1 AND revoked_at IS NULL AND expires_at>?2
-                 ORDER BY last_used_at DESC,created_at DESC,id DESC",
+                     FROM mcp_grants WHERE user_id=?1 AND revoked_at IS NULL AND expires_at>?2
+                     ORDER BY last_used_at DESC,created_at DESC,id DESC",
                 )?;
                 let grants = statement
                     .query_map(rusqlite::params![user_id, now], |row| {
@@ -272,7 +272,8 @@ pub(crate) fn grant_is_current(
                  LEFT JOIN projects p ON p.id=gp.project_id AND p.deleted_at IS NULL
                  LEFT JOIN project_memberships m
                    ON m.project_id=gp.project_id AND m.user_id=u.id
-                 WHERE gp.grant_id=g.id AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL))))",
+                 WHERE gp.grant_id=g.id
+                   AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL))))",
         )?
         .query_row(rusqlite::params![grant_id, now], |row| row.get(0))?)
 }

@@ -52,7 +52,8 @@ impl AuthService {
                 now+30_i64.saturating_mul(2_i64.pow(exponent)).min(cap)
             } else { now };
             tx.execute(
-                "INSERT INTO login_throttles(key,failure_count,window_started_at,last_failed_at,blocked_until)
+                "INSERT INTO login_throttles
+                 (key,failure_count,window_started_at,last_failed_at,blocked_until)
                  VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET
                  failure_count=excluded.failure_count,window_started_at=excluded.window_started_at,
                  last_failed_at=excluded.last_failed_at,blocked_until=excluded.blocked_until",

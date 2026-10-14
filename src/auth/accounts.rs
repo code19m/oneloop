@@ -16,21 +16,29 @@ impl AuthService {
         let token = random_token()?;
         let new_token_hash = token_hash(&token);
         let user_id = actor.user_id.clone();
-        let (authenticated_at, absolute_expires_at) = self.db.transaction(move |connection| {
-            let now = unix_now()?;
-            let changed = connection.execute(
-                "UPDATE sessions SET authenticated_at=?1,token_hash=?2 WHERE id=?3 AND user_id=?5
-                 AND revoked_at IS NULL AND idle_expires_at>?1 AND absolute_expires_at>?1
-                 AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND is_active=1 AND password_hash=?4)",
-                rusqlite::params![now,new_token_hash,session_id,verified_hash,user_id],
-            )?;
-            if changed != 1 { return Err(AppError::Unauthorized); }
-            let absolute_expires_at = connection.query_row(
-                "SELECT absolute_expires_at FROM sessions WHERE id=?1",
-                [&session_id], |row| row.get(0),
-            )?;
-            Ok((now, absolute_expires_at))
-        }).await?;
+        let (authenticated_at, absolute_expires_at) = self
+            .db
+            .transaction(move |connection| {
+                let now = unix_now()?;
+                let changed = connection.execute(
+                    "UPDATE sessions SET authenticated_at=?1,token_hash=?2
+                     WHERE id=?3 AND user_id=?5 AND revoked_at IS NULL
+                       AND idle_expires_at>?1 AND absolute_expires_at>?1
+                       AND EXISTS(SELECT 1 FROM users
+                                  WHERE id=sessions.user_id AND is_active=1 AND password_hash=?4)",
+                    rusqlite::params![now, new_token_hash, session_id, verified_hash, user_id],
+                )?;
+                if changed != 1 {
+                    return Err(AppError::Unauthorized);
+                }
+                let absolute_expires_at = connection.query_row(
+                    "SELECT absolute_expires_at FROM sessions WHERE id=?1",
+                    [&session_id],
+                    |row| row.get(0),
+                )?;
+                Ok((now, absolute_expires_at))
+            })
+            .await?;
         let mut refreshed = actor.clone();
         refreshed.authenticated_at = authenticated_at;
         Ok(IssuedSession {
@@ -57,33 +65,53 @@ impl AuthService {
         let user_id = actor.user_id.clone();
         let token = random_token()?;
         let new_token_hash = token_hash(&token);
-        let (authenticated_at, absolute_expires_at) = self.db.transaction(move |tx| {
-            // Recheck authority at commit, including temporary-password sessions.
-            // Rotating exactly one live owned session is part of this transaction;
-            // any later failure rolls it back with the password/access changes.
-            let now = unix_now()?;
-            let changed = tx.execute(
-                "UPDATE sessions SET authenticated_at=?1,token_hash=?2 WHERE id=?3 AND user_id=?4
-                 AND revoked_at IS NULL AND idle_expires_at>?1 AND absolute_expires_at>?1",
-                rusqlite::params![now,new_token_hash,session_id,user_id],
-            )?;
-            if changed != 1 { return Err(AppError::Unauthorized); }
-            let changed = tx.execute(
+        let (authenticated_at, absolute_expires_at) = self
+            .db
+            .transaction(move |tx| {
+                // Recheck authority at commit, including temporary-password sessions.
+                // Rotating exactly one live owned session is part of this transaction;
+                // any later failure rolls it back with the password/access changes.
+                let now = unix_now()?;
+                let changed = tx.execute(
+                    "UPDATE sessions SET authenticated_at=?1,token_hash=?2
+                     WHERE id=?3 AND user_id=?4 AND revoked_at IS NULL
+                       AND idle_expires_at>?1 AND absolute_expires_at>?1",
+                    rusqlite::params![now, new_token_hash, session_id, user_id],
+                )?;
+                if changed != 1 {
+                    return Err(AppError::Unauthorized);
+                }
+                let changed = tx.execute(
                 "UPDATE users SET password_hash=?1,must_change_password=0,password_changed_at=?2,
-                        updated_at=?2,revision=revision+1 WHERE id=?3 AND is_active=1 AND password_hash=?4",
+                        updated_at=?2,revision=revision+1
+                 WHERE id=?3 AND is_active=1 AND password_hash=?4",
                 rusqlite::params![new_hash, now, user_id,verified_hash],
             )?;
-            if changed != 1 { return Err(AppError::Unauthorized); }
-            tx.execute("UPDATE sessions SET revoked_at=?1 WHERE user_id=?2 AND id<>?3 AND revoked_at IS NULL",
-                rusqlite::params![now, user_id, session_id])?;
-            revoke_all_app_access(tx, &user_id, now)?;
-            security_event(tx,&user_id,Some(&user_id),"password.changed",serde_json::json!({}),now)?;
-            let absolute_expires_at = tx.query_row(
-                "SELECT absolute_expires_at FROM sessions WHERE id=?1",
-                [&session_id], |row| row.get(0),
-            )?;
-            Ok((now, absolute_expires_at))
-        }).await?;
+                if changed != 1 {
+                    return Err(AppError::Unauthorized);
+                }
+                tx.execute(
+                    "UPDATE sessions SET revoked_at=?1
+                     WHERE user_id=?2 AND id<>?3 AND revoked_at IS NULL",
+                    rusqlite::params![now, user_id, session_id],
+                )?;
+                revoke_all_app_access(tx, &user_id, now)?;
+                security_event(
+                    tx,
+                    &user_id,
+                    Some(&user_id),
+                    "password.changed",
+                    serde_json::json!({}),
+                    now,
+                )?;
+                let absolute_expires_at = tx.query_row(
+                    "SELECT absolute_expires_at FROM sessions WHERE id=?1",
+                    [&session_id],
+                    |row| row.get(0),
+                )?;
+                Ok((now, absolute_expires_at))
+            })
+            .await?;
         let mut refreshed = actor.clone();
         refreshed.must_change_password = false;
         refreshed.authenticated_at = authenticated_at;
@@ -141,7 +169,7 @@ impl AuthService {
                 refresh_actor_connection(connection, &actor_for_tx)?;
                 let changed = connection.execute(
                     "UPDATE users SET display_name=?1,updated_at=?2,revision=revision+1
-                 WHERE id=?3 AND is_active=1",
+                     WHERE id=?3 AND is_active=1",
                     rusqlite::params![saved_name, now, user_id],
                 )?;
                 if changed != 1 {
@@ -163,8 +191,8 @@ impl AuthService {
                 connection
                     .query_row(
                         "SELECT u.password_hash FROM users u JOIN sessions s ON s.user_id=u.id
-                 WHERE u.id=?1 AND s.id=?2 AND u.is_active=1 AND s.revoked_at IS NULL
-                 AND s.idle_expires_at>?3 AND s.absolute_expires_at>?3",
+                         WHERE u.id=?1 AND s.id=?2 AND u.is_active=1 AND s.revoked_at IS NULL
+                         AND s.idle_expires_at>?3 AND s.absolute_expires_at>?3",
                         rusqlite::params![user_id, session_id, unix_now()?],
                         |row| row.get(0),
                     )
@@ -185,15 +213,22 @@ impl AuthService {
         self.db
             .run(move |connection| {
                 refresh_actor_connection(connection, &actor)?.require_admin()?;
-                let mut statement = connection.prepare(
-                "SELECT id,username,display_name,is_admin,is_active,must_change_password,revision,avatar_blob_id
-                 FROM users WHERE username>?1 ORDER BY username LIMIT ?2")?;
-                let rows = statement.query_map(rusqlite::params![cursor, (ACCOUNT_PAGE_SIZE + 1) as i64], account_from_row)?;
-                let mut users=rows.collect::<Result<Vec<_>, _>>()?;
-                let has_more=users.len()>ACCOUNT_PAGE_SIZE;
+                let mut users = connection
+                    .prepare(&format!(
+                        "SELECT {ACCOUNT_COLUMNS} FROM users
+                         WHERE username>?1 ORDER BY username LIMIT ?2"
+                    ))?
+                    .query_map(
+                        rusqlite::params![cursor, (ACCOUNT_PAGE_SIZE + 1) as i64],
+                        account_from_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let has_more = users.len() > ACCOUNT_PAGE_SIZE;
                 users.truncate(ACCOUNT_PAGE_SIZE);
-                let next_cursor=has_more.then(||users.last().map(|user|user.username.clone())).flatten();
-                Ok((users,next_cursor))
+                let next_cursor = has_more
+                    .then(|| users.last().map(|user| user.username.clone()))
+                    .flatten();
+                Ok((users, next_cursor))
             })
             .await
     }
@@ -258,34 +293,79 @@ impl AuthService {
         let user_id = user_id.to_owned();
         let actor_for_tx = actor.clone();
         let now = unix_now()?;
-        self.db.transaction(move |tx| {
-            let actor_for_tx = refresh_actor_connection(tx, &actor_for_tx)?;
-            actor_for_tx.require_admin()?;
-            let existing = tx.query_row(
-                "SELECT id,username,display_name,is_admin,is_active,must_change_password,revision,avatar_blob_id
-                 FROM users WHERE id=?1", [&user_id], account_from_row,
-            ).optional()?.ok_or(AppError::NotFound { resource:"user" })?;
-            let sensitive = existing.is_admin != update.is_admin || existing.is_active != update.is_active;
-            if sensitive { actor_for_tx.require_recent_auth(now)?; }
-            if existing.revision != update.expected_revision {
-                return Err(AppError::revision(update.expected_revision, existing.revision));
-            }
-            let changed = tx.execute(
-                "UPDATE users SET display_name=?1,is_admin=?2,is_active=?3,updated_at=?4,revision=revision+1
-                 WHERE id=?5 AND revision=?6",
-                rusqlite::params![display_name,update.is_admin,update.is_active,now,user_id,update.expected_revision],
-            ).map_err(map_admin_constraint)?;
-            if changed != 1 { return Err(AppError::revision(update.expected_revision, existing.revision)); }
-            if existing.is_active && !update.is_active { revoke_user_access(tx,&user_id,now)?; }
-            // Projects that only the admin role opened are lost, as by removal.
-            if existing.is_admin && !update.is_admin { revoke_lost_project_app_access(tx,&user_id,now)?; }
-            if sensitive { security_event(tx,&user_id,Some(&actor_for_tx.user_id),"account.access_changed",
-                serde_json::json!({"isAdmin":update.is_admin,"isActive":update.is_active}),now)?; }
-            Ok(AccountSummary { id:existing.id,username:existing.username,display_name,
-                is_admin:update.is_admin,is_active:update.is_active,
-                must_change_password:existing.must_change_password,revision:update.expected_revision+1,
-                avatar_url:existing.avatar_url })
-        }).await
+        self.db
+            .transaction(move |tx| {
+                let actor_for_tx = refresh_actor_connection(tx, &actor_for_tx)?;
+                actor_for_tx.require_admin()?;
+                let existing = tx
+                    .query_row(
+                        &format!("SELECT {ACCOUNT_COLUMNS} FROM users WHERE id=?1"),
+                        [&user_id],
+                        account_from_row,
+                    )
+                    .optional()?
+                    .ok_or(AppError::NotFound { resource: "user" })?;
+                let sensitive =
+                    existing.is_admin != update.is_admin || existing.is_active != update.is_active;
+                if sensitive {
+                    actor_for_tx.require_recent_auth(now)?;
+                }
+                if existing.revision != update.expected_revision {
+                    return Err(AppError::revision(
+                        update.expected_revision,
+                        existing.revision,
+                    ));
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE users SET display_name=?1,is_admin=?2,is_active=?3,updated_at=?4,
+                                revision=revision+1
+                         WHERE id=?5 AND revision=?6",
+                        rusqlite::params![
+                            display_name,
+                            update.is_admin,
+                            update.is_active,
+                            now,
+                            user_id,
+                            update.expected_revision
+                        ],
+                    )
+                    .map_err(map_admin_constraint)?;
+                if changed != 1 {
+                    return Err(AppError::revision(
+                        update.expected_revision,
+                        existing.revision,
+                    ));
+                }
+                if existing.is_active && !update.is_active {
+                    revoke_user_access(tx, &user_id, now)?;
+                }
+                // Projects that only the admin role opened are lost, as by removal.
+                if existing.is_admin && !update.is_admin {
+                    revoke_lost_project_app_access(tx, &user_id, now)?;
+                }
+                if sensitive {
+                    security_event(
+                        tx,
+                        &user_id,
+                        Some(&actor_for_tx.user_id),
+                        "account.access_changed",
+                        serde_json::json!({"isAdmin":update.is_admin,"isActive":update.is_active}),
+                        now,
+                    )?;
+                }
+                Ok(AccountSummary {
+                    id: existing.id,
+                    username: existing.username,
+                    display_name,
+                    is_admin: update.is_admin,
+                    is_active: update.is_active,
+                    must_change_password: existing.must_change_password,
+                    revision: update.expected_revision + 1,
+                    avatar_url: existing.avatar_url,
+                })
+            })
+            .await
     }
 
     pub async fn reset_account_password(&self, actor: &Actor, user_id: &str) -> AppResult<String> {

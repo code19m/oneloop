@@ -1598,7 +1598,10 @@ async fn create_transfer(
                 [now],
             )?;
             c.execute(
-                INSERT_MCP_FILE_TRANSFERS_SQL,
+                "INSERT INTO mcp_file_transfers
+                 (token_hash,grant_id,direction,task_id,file_name,size_bytes,is_ephemeral,
+                  idempotency_key,created_at,expires_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 rusqlite::params![
                     hash,
                     grant,
@@ -1680,7 +1683,9 @@ async fn create_download_transfer(
                 [now],
             )?;
             c.execute(
-                INSERT_MCP_FILE_TRANSFERS_2_SQL,
+                "INSERT INTO mcp_file_transfers
+                 (token_hash,grant_id,direction,attachment_id,created_at,expires_at)
+                 VALUES(?1,?2,'download',?3,?4,?5)",
                 rusqlite::params![hash, grant, attachment, now, now + 300],
             )?;
             Ok(())
@@ -1710,13 +1715,6 @@ fn object_output_schema() -> std::sync::Arc<serde_json::Map<String, Value>> {
             .clone(),
     )
 }
-
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
-const INSERT_MCP_FILE_TRANSFERS_SQL: &str = "INSERT INTO mcp_file_transfers(token_hash,grant_id,direction,task_id,file_name,\
-                     size_bytes,is_ephemeral,idempotency_key,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,\
-                     ?7,?8,?9,?10)";
-const INSERT_MCP_FILE_TRANSFERS_2_SQL: &str = "INSERT INTO mcp_file_transfers(token_hash,grant_id,direction,attachment_id,created_at,\
-                     expires_at) VALUES(?1,?2,'download',?3,?4,?5)";
 
 #[cfg(test)]
 mod error_tests {

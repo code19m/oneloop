@@ -137,27 +137,48 @@ pub(crate) fn refresh_actor_connection(
     connection: &rusqlite::Connection,
     actor: &Actor,
 ) -> AppResult<Actor> {
-    let current = connection.prepare_cached("SELECT username,display_name,is_admin,must_change_password FROM users WHERE id=?1 AND is_active=1")?.query_row(
-        [&actor.user_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,bool>(2)?,row.get::<_,bool>(3)?)),
-    ).optional()?.ok_or(AppError::Unauthorized)?;
-    let now = unix_now()?;
     let mut fresh = actor.clone();
-    fresh.username = current.0;
-    fresh.display_name = current.1;
-    fresh.is_admin = current.2;
-    fresh.must_change_password = current.3;
+    (
+        fresh.username,
+        fresh.display_name,
+        fresh.is_admin,
+        fresh.must_change_password,
+    ) = connection
+        .prepare_cached(
+            "SELECT username,display_name,is_admin,must_change_password
+             FROM users WHERE id=?1 AND is_active=1",
+        )?
+        .query_row([&actor.user_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .optional()?
+        .ok_or(AppError::Unauthorized)?;
+    let now = unix_now()?;
     match &actor.source {
         ActorSource::BrowserSession { session_id } => {
-            fresh.authenticated_at = connection.prepare_cached("SELECT authenticated_at FROM sessions WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL \
-                     AND idle_expires_at>?3 AND absolute_expires_at>?3")?.query_row(
-                rusqlite::params![session_id,actor.user_id,now], |row| row.get(0),
-            ).optional()?.ok_or(AppError::Unauthorized)?;
+            fresh.authenticated_at = connection
+                .prepare_cached(
+                    "SELECT authenticated_at FROM sessions
+                     WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL
+                       AND idle_expires_at>?3 AND absolute_expires_at>?3",
+                )?
+                .query_row(rusqlite::params![session_id, actor.user_id, now], |row| {
+                    row.get(0)
+                })
+                .optional()?
+                .ok_or(AppError::Unauthorized)?;
         }
         ActorSource::McpGrant { grant_id } => {
-            let valid: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM mcp_grants WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL \
-                     AND expires_at>?3 AND COALESCE(last_used_at,created_at)>?4)")?.query_row(
-                rusqlite::params![grant_id,actor.user_id,now,now-REFRESH_IDLE_SECONDS], |row| row.get(0),
-            )?;
+            let valid: bool = connection
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM mcp_grants
+                     WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL AND expires_at>?3
+                       AND COALESCE(last_used_at,created_at)>?4)",
+                )?
+                .query_row(
+                    rusqlite::params![grant_id, actor.user_id, now, now - REFRESH_IDLE_SECONDS],
+                    |row| row.get(0),
+                )?;
             if !valid {
                 return Err(AppError::Unauthorized);
             }
@@ -333,11 +354,20 @@ fn insert_user(
         revision: 1,
     };
     tx.execute(
-        "INSERT INTO users (id,username,display_name,password_hash,is_admin,is_active,must_change_password,
-         password_changed_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,1,?6,?7,?7,?7)",
-        rusqlite::params![user.id,user.username,user.display_name,prepared.password_hash,user.is_admin,
-            user.must_change_password,now],
-    ).map_err(|error| map_user_write_error(error, "username is already in use"))?;
+        "INSERT INTO users (id,username,display_name,password_hash,is_admin,is_active,
+                            must_change_password,password_changed_at,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,1,?6,?7,?7,?7)",
+        rusqlite::params![
+            user.id,
+            user.username,
+            user.display_name,
+            prepared.password_hash,
+            user.is_admin,
+            user.must_change_password,
+            now
+        ],
+    )
+    .map_err(|error| map_user_write_error(error, "username is already in use"))?;
     security_event(
         tx,
         &user.id,
@@ -457,11 +487,21 @@ pub fn security_event(
     metadata: serde_json::Value,
     now: i64,
 ) -> AppResult<()> {
+    let metadata = serde_json::to_string(&metadata).map_err(|error| {
+        AppError::Internal(format!("security event serialization failed: {error}"))
+    })?;
     tx.execute(
-        "INSERT INTO security_events(id,subject_user_id,actor_user_id,event_type,metadata_json,created_at)
+        "INSERT INTO security_events
+         (id,subject_user_id,actor_user_id,event_type,metadata_json,created_at)
          VALUES(?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![Uuid::now_v7().to_string(),subject_user_id,actor_user_id,event_type,
-            serde_json::to_string(&metadata).map_err(|error|AppError::Internal(format!("security event serialization failed: {error}")))?,now],
+        rusqlite::params![
+            Uuid::now_v7().to_string(),
+            subject_user_id,
+            actor_user_id,
+            event_type,
+            metadata,
+            now
+        ],
     )?;
     if matches!(
         event_type,
@@ -540,7 +580,8 @@ fn dummy_password_hash() -> String {
 }
 
 fn map_user_write_error(error: rusqlite::Error, message: &str) -> AppError {
-    if matches!(&error, rusqlite::Error::SqliteFailure(inner, _) if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
+    if matches!(&error, rusqlite::Error::SqliteFailure(inner, _)
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
     {
         AppError::rule(crate::error::RuleKind::UsernameTaken, message)
     } else {
@@ -561,6 +602,10 @@ fn map_admin_constraint(error: rusqlite::Error) -> AppError {
         AppError::from(error)
     }
 }
+
+/// The `users` columns that `account_from_row` reads, in order.
+const ACCOUNT_COLUMNS: &str =
+    "id,username,display_name,is_admin,is_active,must_change_password,revision,avatar_blob_id";
 
 fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary> {
     let id: String = row.get(0)?;
@@ -628,8 +673,10 @@ fn list_sessions_query(
 ) -> AppResult<Vec<SessionSummary>> {
     let mut statement = connection.prepare(
         "SELECT id,created_at,last_activity_at,absolute_expires_at,client_name,client_ip,user_agent
-         FROM sessions WHERE user_id=?1 AND revoked_at IS NULL AND idle_expires_at>?2 AND absolute_expires_at>?2
-         ORDER BY last_activity_at DESC,id DESC")?;
+         FROM sessions WHERE user_id=?1 AND revoked_at IS NULL
+           AND idle_expires_at>?2 AND absolute_expires_at>?2
+         ORDER BY last_activity_at DESC,id DESC",
+    )?;
     let rows = statement.query_map(rusqlite::params![user_id, now], |row| {
         let id: String = row.get(0)?;
         Ok(SessionSummary {
@@ -704,8 +751,11 @@ pub(crate) fn can_read_private_pool(
     match &actor.source {
         ActorSource::BrowserSession { .. } => Ok(true),
         ActorSource::McpGrant { grant_id } => Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes WHERE grant_id=?1 AND scope='my_pool_private')",
-            [grant_id], |row| row.get(0))?),
+            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes
+             WHERE grant_id=?1 AND scope='my_pool_private')",
+            [grant_id],
+            |row| row.get(0),
+        )?),
     }
 }
 

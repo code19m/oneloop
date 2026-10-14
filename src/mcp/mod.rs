@@ -162,14 +162,20 @@ async fn claim_transfer(
     direction: &'static str,
 ) -> AppResult<(Actor, Transfer)> {
     let token = bearer(headers).ok_or(AppError::Unauthorized)?;
-    let hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let hash = crate::auth::token_hash(token);
     let now = unix_now()?;
     let claimed = state
         .db
         .transaction(move |tx| {
             let row = tx
                 .query_row(
-                    SELECT_MCP_FILE_TRANSFERS_SQL,
+                    "SELECT f.grant_id,f.direction,f.task_id,f.attachment_id,f.file_name,
+                            f.size_bytes,f.is_ephemeral,f.idempotency_key,u.id,u.username,
+                            u.display_name,u.is_admin,u.must_change_password
+                     FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id
+                     JOIN users u ON u.id=g.user_id
+                     WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL
+                       AND f.expires_at>?3",
                     rusqlite::params![hash, direction, now],
                     |r| {
                         Ok((
@@ -204,7 +210,11 @@ async fn claim_transfer(
                 return Ok(None);
             }
             row.1.require_ready()?;
-            tx.execute(UPDATE_MCP_FILE_TRANSFERS_SQL, rusqlite::params![now, hash])?;
+            tx.execute(
+                "UPDATE mcp_file_transfers SET consumed_at=?1
+                 WHERE token_hash=?2 AND consumed_at IS NULL",
+                rusqlite::params![now, hash],
+            )?;
             Ok(Some((row.1, row.0)))
         })
         .await?;
@@ -338,9 +348,3 @@ async fn download_file(State(state): State<AppState>, headers: HeaderMap) -> App
 struct ValueResponse {
     value: serde_json::Value,
 }
-const SELECT_MCP_FILE_TRANSFERS_SQL: &str = "SELECT f.grant_id,f.direction,f.task_id,f.attachment_id,f.file_name,f.size_bytes,f.is_ephemeral,f.idempotency_key,
-                    u.id,u.username,u.display_name,u.is_admin,u.must_change_password
-             FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id JOIN users u ON u.id=g.user_id
-             WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL AND f.expires_at>?3";
-const UPDATE_MCP_FILE_TRANSFERS_SQL: &str =
-    "UPDATE mcp_file_transfers SET consumed_at=?1 WHERE token_hash=?2 AND consumed_at IS NULL";
