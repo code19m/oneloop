@@ -88,7 +88,8 @@ small hints over SSE, and clients then fetch what changed.
   their own REST routes for reads and writes. `domain`, `collaboration` and
   `knowledge` serve reads. `security` checks host and origin, resolves client
   addresses through trusted proxies and sets headers. `assets` serves the
-  embedded client. `server` bounds connections and shutdown.
+  embedded client under `/v/<hash>/` URLs; the hash names the embedded files,
+  so browsers can keep them for good. `server` bounds connections and shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, `client_metadata` fetches client
   ID metadata documents from public addresses only, `cors` answers clients
@@ -139,10 +140,10 @@ lives and when to add one.
 
 ### Elsewhere
 
-`build.rs` records the version, the Git revision and `ASSET_VERSION`, the hash
-of the web client's files in its `/v/<hash>/` URLs. `docs/` is the
-documentation site (mdBook). `deploy/` has example Compose, service-manager
-and reverse proxy configurations. `scripts/` holds the Node
+`build.rs` records the version and the Git revision, and makes Cargo rebuild
+when a web client file changes, so a build embeds the current files. `docs/`
+is the documentation site (mdBook). `deploy/` has example Compose,
+service-manager and reverse proxy configurations. `scripts/` holds the Node
 scripts that CI and releases run. `benches/` has a workload benchmark against a
 disposable database.
 
