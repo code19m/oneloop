@@ -12,6 +12,7 @@ pub use read::ReadMode;
 mod thumbnail;
 pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
+pub use upload::PendingAttachmentUpload;
 
 use super::BlobState;
 use super::disk::{DiskAdmission, DiskReservation};
@@ -92,45 +93,6 @@ pub struct FileRuntimeReport {
 pub enum UploadStart {
     Replayed(Box<AttachmentView>),
     Pending(Box<PendingAttachmentUpload>),
-}
-
-pub struct PendingAttachmentUpload {
-    disk: Option<DiskReservation>,
-    service: FileService,
-    actor: Actor,
-    reservation_id: String,
-    idempotency_id: String,
-    task_id: String,
-    project_id: String,
-    original_name: String,
-    is_ephemeral: bool,
-    claimed_size: u64,
-    staging_path: PathBuf,
-    storage_key: String,
-    file: Option<File>,
-    written: u64,
-    hasher: Sha256,
-    inspection: Vec<u8>,
-    finished: bool,
-}
-
-struct FinalizeAttachmentUpload {
-    disk: Option<DiskReservation>,
-    service: FileService,
-    actor: Actor,
-    data_lease: DataLease,
-    reservation_id: String,
-    idempotency_id: String,
-    task_id: String,
-    project_id: String,
-    original_name: String,
-    is_ephemeral: bool,
-    staging_path: PathBuf,
-    storage_key: String,
-    file: Option<File>,
-    written: u64,
-    hasher: Sha256,
-    inspection: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
