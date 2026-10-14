@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     access::{Need, require_project},
     auth::{Actor, ActorSource, refresh_actor_connection},
+    clock::unix_now,
     collaboration::{ActivityEvent, ActivityPage},
     error::{AppError, AppResult},
     timezone::TimeZone,
@@ -230,7 +231,7 @@ impl DomainService {
                 Ok(json!({
                 "projectId":project_id,
                 "tracks":tracks(connection,&project_id)?,
-                "epics":epics(connection,&project_id,&time_zone,true)?,
+                "epics":epics(connection,&project_id,&time_zone,Some(unix_now()?))?,
                 "milestones":milestones(connection,&project_id)?
                 }))
             })
@@ -463,19 +464,26 @@ fn tracks(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<
     })?
     .collect::<Result<Vec<_>, _>>()?)
 }
-/// Epics in timeline order. Only the Roadmap shows task counts, so other
-/// views skip the summary, which reads every task of the project.
+/// Epics in timeline order, with their task counts as of `counted_at` when
+/// it is given. Only the Roadmap shows the counts, which read every task of
+/// the project.
 fn epics(
     connection: &rusqlite::Connection,
     project_id: &str,
     timezone: &TimeZone,
-    with_summary: bool,
+    counted_at: Option<i64>,
 ) -> AppResult<Vec<EpicView>> {
-    if !with_summary {
+    let Some(now) = counted_at else {
         return epic_rows(connection, project_id);
-    }
-    let today = timezone.rules().to_datetime(Timestamp::now()).date();
-    epics_on(connection, project_id, timezone, today)
+    };
+    let now = Timestamp::from_second(now)
+        .map_err(|error| AppError::internal(format!("read the current time: {error}")))?;
+    epics_on(
+        connection,
+        project_id,
+        timezone,
+        timezone.rules().to_datetime(now).date(),
+    )
 }
 
 fn epic_rows(connection: &rusqlite::Connection, project_id: &str) -> AppResult<Vec<EpicView>> {
@@ -1635,8 +1643,8 @@ fn bootstrap_snapshot(
         });
     }
     let legacy = query.view.is_none();
-    let archive_cutoff =
-        crate::clock::unix_now()?.saturating_sub(crate::collaboration::ARCHIVE_RETENTION_SECONDS);
+    let now = unix_now()?;
+    let archive_cutoff = now.saturating_sub(crate::collaboration::ARCHIVE_RETENTION_SECONDS);
     let mut result = BootstrapView {
         limits: crate::files::FileLimits::default(),
         time_zone: time_zone.name().into(),
@@ -1690,7 +1698,7 @@ fn bootstrap_snapshot(
         result.tracks = tracks(connection, project_id)?;
         // The Roadmap, and the legacy full projection, show epic task counts.
         let summary = legacy || query.view.as_deref() == Some("roadmap");
-        result.epics = epics(connection, project_id, time_zone, summary)?;
+        result.epics = epics(connection, project_id, time_zone, summary.then_some(now))?;
         result.milestones = milestones(connection, project_id)?;
         let counts = board_counts_connection(connection, project_id)?;
         if legacy || query.view.as_deref() == Some("board") {
