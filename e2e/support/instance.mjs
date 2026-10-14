@@ -125,7 +125,7 @@ async function seedProject(api, ownerId, name, taskPrefix) {
  * migrating, hashing passwords and seeding again.
  */
 async function buildTemplate(playwright, parallelIndex) {
-  if (!existsSync(binary)) throw new Error(`Missing ${binary}. Build it with \`cargo build\`, or set ONELOOP_TEST_BINARY.`);
+  if (!existsSync(binary)) throw new Error(`Missing ${binary}. Build it with \`cargo test --locked --all-targets --no-run\`, or set ONELOOP_TEST_BINARY.`);
   await mkdir(scratch, { recursive: true });
   const directory = await mkdtemp(join(scratch, 'template-'));
   const username = 'smoke_owner', password = randomUUID();
