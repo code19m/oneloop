@@ -65,7 +65,8 @@ pub struct FileService {
     storage_limit_bytes: u64,
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
-    avatar_uploads: std::sync::Arc<tokio::sync::Semaphore>,
+    /// People with an avatar upload under way, one upload each.
+    avatar_uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     scans: Lane,
     /// One image decode at a time, for avatar uploads and thumbnails together,
     /// so their memory never adds up.
@@ -76,7 +77,17 @@ pub struct FileService {
 /// A place for one avatar upload, kept from its first byte through its
 /// decode, while the upload keeps its image in memory.
 pub struct AvatarSlot {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    user_id: String,
+}
+
+impl Drop for AvatarSlot {
+    fn drop(&mut self) {
+        self.uploaders
+            .lock()
+            .expect("avatar uploads lock")
+            .remove(&self.user_id);
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -226,25 +237,31 @@ impl FileService {
             storage_limit_bytes,
             disk,
             thumbnails: Default::default(),
-            avatar_uploads: std::sync::Arc::new(tokio::sync::Semaphore::new(AVATAR_UPLOADS)),
+            avatar_uploaders: Default::default(),
             scans: Lane::new("file scanner", 2),
             decodes: Lane::new("image decoder", 1),
             inspections: Lane::new("text inspection", 2),
         }
     }
 
-    /// A place for an avatar upload, taken before its bytes arrive. When all
+    /// A place for an avatar upload, taken before its bytes arrive. A
+    /// person has one place at most, so no one can take them all. When all
     /// are taken, the upload is told to retry at once.
-    pub fn avatar_slot(&self) -> AppResult<AvatarSlot> {
-        self.avatar_uploads
-            .clone()
-            .try_acquire_owned()
-            .map(|permit| AvatarSlot { _permit: permit })
-            .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))
-    }
-
-    pub fn store(&self) -> &FileStore {
-        &self.store
+    pub fn avatar_slot(&self, actor: &Actor) -> AppResult<AvatarSlot> {
+        let mut uploaders = self.avatar_uploaders.lock().expect("avatar uploads lock");
+        if uploaders.contains(&actor.user_id) {
+            return Err(AppError::RateLimited { retry_after: 1 });
+        }
+        if uploaders.len() >= AVATAR_UPLOADS {
+            return Err(AppError::Unavailable(
+                "avatar processing is busy; retry shortly".into(),
+            ));
+        }
+        uploaders.insert(actor.user_id.clone());
+        Ok(AvatarSlot {
+            uploaders: self.avatar_uploaders.clone(),
+            user_id: actor.user_id.clone(),
+        })
     }
 
     async fn acquire_file_maintenance_gate(&self) -> AppResult<std::fs::File> {

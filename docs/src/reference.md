@@ -158,7 +158,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
-| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px |
+| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
 Text and Markdown previews need the whole file to be valid UTF-8 text.

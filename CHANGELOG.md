@@ -19,6 +19,10 @@ All notable changes to oneloop are recorded here. The format follows
   because their text doesn't fit in the search index. Before, a word in such
   a file gave "No results" without a reason. In MCP, `search_knowledge` and
   `read_knowledge_overview` replies then include `"partial": true`.
+- One person's slow avatar uploads can no longer hold up avatar changes for
+  everyone. Each person now has one avatar upload at a time; another one
+  gets "try again" at once. When the server is busy, a refused avatar upload
+  now gets that answer instead of a network error.
 
 ### Security
 

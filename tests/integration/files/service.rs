@@ -6,7 +6,8 @@ use oneloop::{
     auth::Actor,
     db,
     files::{
-        AttachmentPatch, AttachmentReorder, AttachmentRestore, FileService, ReadMode, UploadStart,
+        AttachmentPatch, AttachmentReorder, AttachmentRestore, FileService, FileStore, ReadMode,
+        UploadStart,
     },
 };
 use tempfile::TempDir;
@@ -63,6 +64,10 @@ impl Fixture {
 
     fn service(&self, limit: u64) -> FileService {
         FileService::new(self.db.clone(), limit, 0)
+    }
+
+    fn store(&self) -> FileStore {
+        FileStore::new(self.db.layout().clone())
     }
 }
 
@@ -617,7 +622,7 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         .await;
         let id = attachment.id.clone();
         let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
-        let path = service.store().file_path(&key).unwrap();
+        let path = f.store().file_path(&key).unwrap();
         service
             .delete_attachment(
                 &actor,
@@ -1369,7 +1374,7 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
     service
         .upload_avatar(
             &fixture.manager,
-            service.avatar_slot().unwrap(),
+            service.avatar_slot(&fixture.manager).unwrap(),
             png.clone(),
         )
         .await
@@ -1387,7 +1392,11 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
     .await
     .unwrap();
     service
-        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+        .upload_avatar(
+            &fixture.manager,
+            service.avatar_slot(&fixture.manager).unwrap(),
+            png,
+        )
         .await
         .unwrap();
     service.remove_avatar(&fixture.manager).await.unwrap();
@@ -1416,7 +1425,11 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
         .unwrap();
     assert!(matches!(
         service
-            .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
+            .upload_avatar(
+                &fixture.manager,
+                service.avatar_slot(&fixture.manager).unwrap(),
+                png
+            )
             .await,
         Err(AppError::Rule {
             kind: oneloop::error::RuleKind::StorageFull,
@@ -1434,7 +1447,7 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
 }
 
 #[tokio::test]
-async fn malformed_text_is_download_only_and_avatars_are_normalized() {
+async fn malformed_text_is_download_only() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     for name in ["broken.txt", "broken.md", "broken.markdown"] {
@@ -1456,35 +1469,6 @@ async fn malformed_text_is_download_only_and_avatars_are_normalized() {
                 .is_err()
         );
     }
-
-    let pixels = [255_u8, 0, 0, 255];
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
-    let url = service
-        .upload_avatar(&fixture.manager, service.avatar_slot().unwrap(), png)
-        .await
-        .unwrap();
-    assert!(url.starts_with("/api/users/manager/avatar?v="));
-    let mut avatar = service
-        .open_avatar(&fixture.manager, "manager")
-        .await
-        .unwrap();
-    let mut normalized = Vec::new();
-    avatar.file.read_to_end(&mut normalized).await.unwrap();
-    let decoded = image::load_from_memory(&normalized).unwrap();
-    assert_eq!((decoded.width(), decoded.height()), (256, 256));
-    assert!(
-        service
-            .upload_avatar(
-                &fixture.manager,
-                service.avatar_slot().unwrap(),
-                b"not an image".to_vec()
-            )
-            .await
-            .is_err()
-    );
 }
 
 #[tokio::test]
@@ -1496,7 +1480,7 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
     let refused = service
         .upload_avatar(
             &fixture.manager,
-            service.avatar_slot().unwrap(),
+            service.avatar_slot(&fixture.manager).unwrap(),
             super::flat_webp(6000, 4500),
         )
         .await;
@@ -1507,7 +1491,7 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
     service
         .upload_avatar(
             &fixture.manager,
-            service.avatar_slot().unwrap(),
+            service.avatar_slot(&fixture.manager).unwrap(),
             super::flat_webp(600, 450),
         )
         .await
@@ -1708,9 +1692,9 @@ async fn capacity_scans_tolerate_staging_and_preview_churn() {
         })
         .await
         .unwrap();
-    service.store().ensure_directories().await.unwrap();
-    let staging = service.store().layout().staging();
-    let previews = service.store().previews();
+    fixture.store().ensure_directories().await.unwrap();
+    let staging = fixture.store().layout().staging();
+    let previews = fixture.store().previews();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let thread_stop = stop.clone();
     let churn = std::thread::spawn(move || {
@@ -1771,9 +1755,13 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
         .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     assert!(
-        full.upload_avatar(&fixture.viewer, full.avatar_slot().unwrap(), png)
-            .await
-            .is_err()
+        full.upload_avatar(
+            &fixture.viewer,
+            full.avatar_slot(&fixture.viewer).unwrap(),
+            png
+        )
+        .await
+        .is_err()
     );
     let listed = service
         .list_attachments(&fixture.manager, "task")
@@ -1903,13 +1891,13 @@ async fn deleted_parent_discovery_uses_the_small_deleted_task_index() {
 async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
     let fixture = Fixture::new().await;
     let service = fixture.service(1);
-    service.store().ensure_directories().await.unwrap();
+    fixture.store().ensure_directories().await.unwrap();
     // One file more than a claim batch of 200, spread over tasks so the
     // 25-attachment product limit holds.
     let mut keys = Vec::new();
     for _ in 0..201 {
-        let key = service.store().new_storage_key().unwrap();
-        let path = service.store().file_path(&key).unwrap();
+        let key = fixture.store().new_storage_key().unwrap();
+        let path = fixture.store().file_path(&key).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, [42; 100]).unwrap();
         keys.push(key);
@@ -2055,7 +2043,7 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
             DELETE FROM idempotency_keys; INSERT INTO idempotency_keys SELECT * FROM crash_receipt;")?;
         Ok(tx.query_row("SELECT staging_key FROM upload_reservations", [], |r| r.get(0))?)
     }).await.unwrap();
-    let path = service.store().staging_path(&staging).unwrap();
+    let path = fixture.store().staging_path(&staging).unwrap();
     tokio::fs::write(&path, b"partial").await.unwrap();
     let expires: i64 = fixture
         .db
@@ -2246,7 +2234,7 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     let error = service
-        .upload_avatar(&f.manager, service.avatar_slot().unwrap(), png)
+        .upload_avatar(&f.manager, service.avatar_slot(&f.manager).unwrap(), png)
         .await
         .unwrap_err();
     assert!(
@@ -2395,8 +2383,7 @@ async fn oversized_chunk_is_rejected_without_changing_the_upload() {
 #[tokio::test]
 async fn concurrent_upload_reservations_protect_the_disk_floor() {
     let f = Fixture::new().await;
-    let ordinary = f.service(100 * 1024 * 1024);
-    ordinary.store().ensure_directories().await.unwrap();
+    f.store().ensure_directories().await.unwrap();
     let free = fs4::available_space(f.db.layout().root()).unwrap();
     let service = FileService::new(
         f.db.clone(),

@@ -7,27 +7,27 @@ async fn image_decodes_run_one_at_a_time() {
     let service = FileService::new(Db::open(root.path()).unwrap(), 1_000_000, 0);
     // A thumbnail decode holds the only turn, so avatar uploads wait.
     let held = service.decodes.turn().await;
-    let actor = Actor {
-        user_id: "test".into(),
-        username: "test".into(),
-        display_name: "Test".into(),
+    let person = |name: &str| Actor {
+        user_id: name.into(),
+        username: name.into(),
+        display_name: name.into(),
         is_admin: false,
         must_change_password: false,
         authenticated_at: 0,
         source: ActorSource::BrowserSession {
-            session_id: "test".into(),
+            session_id: name.into(),
         },
     };
-    let upload = || {
-        let (service, actor) = (service.clone(), actor.clone());
-        let slot = service.avatar_slot().unwrap();
+    let upload = |actor: Actor| {
+        let service = service.clone();
+        let slot = service.avatar_slot(&actor).unwrap();
         tokio::spawn(async move { service.upload_avatar(&actor, slot, vec![1]).await })
     };
-    let waiting = (0..4).map(|_| upload()).collect::<Vec<_>>();
+    let waiting = ["a", "b", "c", "d"].map(|name| upload(person(name)));
     // Only a few are under way; holding their images in memory, more are
     // turned away.
     assert!(matches!(
-        service.avatar_slot(),
+        service.avatar_slot(&person("e")),
         Err(AppError::Unavailable(_))
     ));
     // Those that wait outlast a slow decode, then decode their own image.
@@ -43,7 +43,8 @@ async fn image_decodes_run_one_at_a_time() {
     }
     // A decode that doesn't end turns an upload away after a while.
     let _held = service.decodes.turn().await;
-    let slot = service.avatar_slot().unwrap();
+    let actor = person("a");
+    let slot = service.avatar_slot(&actor).unwrap();
     assert!(matches!(
         service.upload_avatar(&actor, slot, vec![1]).await,
         Err(AppError::Unavailable(_))

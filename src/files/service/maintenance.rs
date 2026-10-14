@@ -236,6 +236,16 @@ impl FileService {
         self.cleanup_for_usage(&self.capacity_usage().await?).await
     }
 
+    /// Storage cleanup that an administrator asked for.
+    pub async fn cleanup_for(&self, actor: &Actor) -> AppResult<FileRuntimeReport> {
+        actor.require_admin()?;
+        let actor = actor.clone();
+        self.db
+            .run(move |connection| refresh_actor_connection(connection, &actor)?.require_admin())
+            .await?;
+        self.cleanup_if_needed().await
+    }
+
     pub(super) async fn cleanup_for_usage(
         &self,
         usage: &CapacityUsage,
@@ -274,9 +284,7 @@ impl FileService {
         let (permanent, temporary, pending_deletion, cleaned, projects, recent_cleanup) = self
             .db
             .run(move |connection| {
-                if !refresh_actor_connection(connection, &actor)?.is_admin {
-                    return Err(AppError::Forbidden);
-                }
+                refresh_actor_connection(connection, &actor)?.require_admin()?;
                 let permanent: i64 = connection.query_row(
                     "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
                      JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id

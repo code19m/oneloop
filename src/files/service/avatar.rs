@@ -178,13 +178,6 @@ impl FileService {
         log_cleanup_failure(self.schedule_blob_deletion(blob_id, "rollback").await);
     }
 
-    pub async fn open_avatar(&self, actor: &Actor, user_id: &str) -> AppResult<FileRead> {
-        match self.open_avatar_conditional(actor, user_id, None).await? {
-            ConditionalRead::Modified(read) => Ok(*read),
-            ConditionalRead::NotModified(_) => unreachable!("unconditional read"),
-        }
-    }
-
     pub(crate) async fn open_avatar_conditional(
         &self,
         actor: &Actor,
