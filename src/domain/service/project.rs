@@ -219,6 +219,11 @@ pub(super) fn delete_project(
         "DELETE FROM projects WHERE id=?1 AND revision=?2",
         params![input.project_id, expected],
     )?;
-    let entity = json!({"entityType":"project","id":input.project_id,"projectId":input.project_id,"deleted":true,"revision":revision+1});
+    let entity = deleted(
+        "project",
+        &input.project_id,
+        &input.project_id,
+        revision + 1,
+    );
     Ok(Mutation::one(entity, event, "project", &input.project_id))
 }

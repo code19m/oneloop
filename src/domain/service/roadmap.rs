@@ -25,15 +25,15 @@ pub(super) fn create_track(
             now
         ],
     )?;
-    let entity = json!({
-    "entityType":"track",
-    "id":id,
-    "projectId":input.project_id,
-    "name":name,
-    "description":description,
-    "position":position,
-    "revision":1
-    });
+    let entity = Entity::Track(TrackView {
+        id: id.clone(),
+        project_id: input.project_id.clone(),
+        name,
+        description,
+        position,
+        revision: 1,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -89,15 +89,6 @@ pub(super) fn update_track(
     }
     let revision = expected + 1;
     tx.execute("UPDATE tracks SET name=?1,description=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6",params![name,description,now,revision,input.track_id,expected])?;
-    let entity = json!({
-    "entityType":"track",
-    "id":input.track_id,
-    "projectId":before.project_id,
-    "name":name,
-    "description":description,
-    "position":before.position,
-    "revision":revision
-    });
     let event = activity(
         tx,
         actor,
@@ -115,6 +106,15 @@ pub(super) fn update_track(
         },
         now,
     )?;
+    let entity = Entity::Track(TrackView {
+        id: input.track_id.clone(),
+        project_id: before.project_id,
+        name,
+        description,
+        position: before.position,
+        revision,
+    })
+    .value()?;
     Ok(Mutation::one(entity, event, "track", &input.track_id))
 }
 
@@ -212,7 +212,7 @@ pub(super) fn delete_track(
     }
     tx.execute("UPDATE tracks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     compact_positions(tx, "tracks", "project_id", &project_id, None, now)?;
-    let entity = json!({"entityType":"track","id":input.id,"projectId":project_id,"deleted":true,"revision":revision+1});
+    let entity = deleted("track", &input.id, &project_id, revision + 1);
     let event = activity(
         tx,
         actor,
@@ -272,19 +272,20 @@ pub(super) fn create_epic(
             now
         ],
     )?;
-    let entity = json!({
-    "entityType":"epic",
-    "id":id,
-    "projectId":input.project_id,
-    "trackId":input.track_id,
-    "title":title,
-    "description":description,
-    "startDate":start,
-    "endDate":end,
-    "state":"planning",
-    "position":position,
-    "revision":1
-    });
+    let mut epic = EpicView {
+        id: id.clone(),
+        project_id: input.project_id.clone(),
+        track_id: input.track_id,
+        title,
+        description,
+        start_date: start,
+        end_date: end,
+        state: "planning".into(),
+        position,
+        summary: None,
+        revision: 1,
+    };
+    let entity = Entity::Epic(epic.clone()).value()?;
     let event = activity(
         tx,
         actor,
@@ -305,18 +306,20 @@ pub(super) fn create_epic(
     // A new epic has no tasks. With its counts, the Roadmap that created it
     // shows 0/0 at once instead of waiting for a read; the activity above
     // records only the epic.
-    let mut entity = entity;
-    for field in [
-        "taskTotal",
-        "taskDone",
-        "taskOpen",
-        "completedThisWeek",
-        "completedSinceStart",
-    ] {
-        entity[field] = json!(0);
-    }
-    entity["weeklyCompletions"] = json!(vec![0; 7]);
-    Ok(Mutation::one(entity, event, "epic", &id))
+    epic.summary = Some(EpicSummary {
+        task_total: 0,
+        task_done: 0,
+        task_open: 0,
+        completed_this_week: 0,
+        completed_since_start: 0,
+        weekly_completions: vec![0; 7],
+    });
+    Ok(Mutation::one(
+        Entity::Epic(epic).value()?,
+        event,
+        "epic",
+        &id,
+    ))
 }
 
 pub(super) fn update_epic(
@@ -394,19 +397,6 @@ pub(super) fn update_epic(
     if track_id != before.track_id {
         compact_positions(tx, "epics", "track_id", &before.track_id, None, now)?;
     }
-    let entity = json!({
-    "entityType":"epic",
-    "id":input.epic_id,
-    "projectId":before.project_id,
-    "trackId":track_id,
-    "title":title,
-    "description":description,
-    "startDate":start,
-    "endDate":end,
-    "state":before.state,
-    "position":position,
-    "revision":revision
-    });
     let mut events = Vec::new();
     for (field, old, new) in [
         ("trackId", json!(before.track_id), json!(track_id)),
@@ -436,12 +426,21 @@ pub(super) fn update_epic(
             now,
         )?);
     }
-    Ok(Mutation {
-        entities: vec![entity],
-        events,
-        resource_type: "epic",
-        resource_id: Some(input.epic_id),
+    let entity = Entity::Epic(EpicView {
+        id: input.epic_id.clone(),
+        project_id: before.project_id,
+        track_id,
+        title,
+        description,
+        start_date: start,
+        end_date: end,
+        state: before.state,
+        position,
+        summary: None,
+        revision,
     })
+    .value()?;
+    Ok(Mutation::new(entity, events, "epic", &input.epic_id))
 }
 
 pub(super) fn complete_epic(
@@ -573,7 +572,7 @@ pub(super) fn delete_epic(
     }
     tx.execute("UPDATE epics SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     compact_positions(tx, "epics", "track_id", &track_id, None, now)?;
-    let entity = json!({"entityType":"epic","id":input.id,"projectId":project_id,"deleted":true,"revision":revision+1});
+    let entity = deleted("epic", &input.id, &project_id, revision + 1);
     let event = activity(
         tx,
         actor,
@@ -618,15 +617,15 @@ pub(super) fn create_milestone(
             now
         ],
     )?;
-    let entity = json!({
-    "entityType":"milestone",
-    "id":id,
-    "projectId":input.project_id,
-    "title":title,
-    "description":description,
-    "milestoneDate":milestone_date,
-    "revision":1
-    });
+    let entity = Entity::Milestone(MilestoneView {
+        id: id.clone(),
+        project_id: input.project_id.clone(),
+        title,
+        description,
+        milestone_date,
+        revision: 1,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -705,15 +704,15 @@ pub(super) fn update_milestone(
             expected
         ],
     )?;
-    let entity = json!({
-    "entityType":"milestone",
-    "id":input.milestone_id,
-    "projectId":before.project_id,
-    "title":title,
-    "description":description,
-    "milestoneDate":milestone_date,
-    "revision":revision
-    });
+    let entity = Entity::Milestone(MilestoneView {
+        id: input.milestone_id.clone(),
+        project_id: before.project_id.clone(),
+        title,
+        description,
+        milestone_date,
+        revision,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -759,7 +758,7 @@ pub(super) fn delete_milestone(
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
     ensure_revision(revision, expected)?;
     tx.execute("UPDATE milestones SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
-    let entity = json!({"entityType":"milestone","id":input.id,"projectId":project_id,"deleted":true,"revision":revision+1});
+    let entity = deleted("milestone", &input.id, &project_id, revision + 1);
     let event = activity(
         tx,
         actor,

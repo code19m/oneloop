@@ -40,14 +40,14 @@ pub(super) fn add_membership(
             error.into()
         }
     })?;
-    let entity = json!({
-    "entityType":"membership",
-    "projectId":input.project_id,
-    "userId":input.user_id,
-    "manageRoadmap":input.manage_roadmap,
-    "manageBoard":input.manage_board,
-    "revision":revision
-    });
+    let entity = Entity::Membership(MembershipView {
+        project_id: input.project_id.clone(),
+        user_id: input.user_id.clone(),
+        manage_roadmap: input.manage_roadmap,
+        manage_board: input.manage_board,
+        revision,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -106,14 +106,14 @@ pub(super) fn update_membership(
             expected
         ],
     )?;
-    let entity = json!({
-    "entityType":"membership",
-    "projectId":input.project_id,
-    "userId":input.user_id,
-    "manageRoadmap":input.manage_roadmap,
-    "manageBoard":input.manage_board,
-    "revision":revision
-    });
+    let entity = Entity::Membership(MembershipView {
+        project_id: input.project_id.clone(),
+        user_id: input.user_id.clone(),
+        manage_roadmap: input.manage_roadmap,
+        manage_board: input.manage_board,
+        revision,
+    })
+    .value()?;
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
     let event = activity(
         tx,

@@ -44,10 +44,11 @@ use crate::{
 
 use super::{
     Access, BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation,
-    EntityId, EpicCreate, EpicUpdate, MembershipCreate, MembershipDelete, MembershipUpdate,
-    MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolScope,
-    ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove, TaskStatus,
-    TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate, require_undo_window,
+    EntityId, EpicCreate, EpicSummary, EpicUpdate, EpicView, MembershipCreate, MembershipDelete,
+    MembershipUpdate, MembershipView, MilestoneCreate, MilestoneUpdate, MilestoneView,
+    PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate,
+    ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock,
+    TaskUpdate, TaskView, TrackCreate, TrackReorder, TrackUpdate, TrackView, require_undo_window,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;
@@ -338,15 +339,38 @@ fn task_row(tx: &Transaction<'_>, id: &str) -> AppResult<TaskRow> {
     .ok_or_else(|| not_found("task"))
 }
 
+/// A record a command returns, tagged with its `entityType`.
 #[derive(Serialize)]
 #[serde(tag = "entityType", rename_all = "camelCase")]
 enum Entity {
-    Task(super::TaskView),
+    Membership(MembershipView),
+    Track(TrackView),
+    Epic(EpicView),
+    Milestone(MilestoneView),
+    Task(TaskView),
+    PoolItem(PoolItemView),
+}
+
+impl Entity {
+    fn value(self) -> AppResult<Value> {
+        serde_json::to_value(self)
+            .map_err(|error| AppError::internal(format!("serialize entity: {error}")))
+    }
 }
 
 fn task_entity(tx: &Transaction<'_>, id: &str) -> AppResult<Value> {
-    serde_json::to_value(Entity::Task(super::reads::task_view(tx, id)?))
-        .map_err(|error| AppError::internal(format!("serialize task: {error}")))
+    Entity::Task(super::reads::task_view(tx, id)?).value()
+}
+
+/// What a command returns for a record it deleted.
+fn deleted(entity_type: &str, id: &str, project_id: &str, revision: i64) -> Value {
+    json!({
+        "entityType": entity_type,
+        "id": id,
+        "projectId": project_id,
+        "deleted": true,
+        "revision": revision,
+    })
 }
 
 fn ensure_open_epic(tx: &Transaction<'_>, epic_id: &str, project_id: &str) -> AppResult<()> {

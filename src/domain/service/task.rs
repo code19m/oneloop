@@ -418,7 +418,7 @@ pub(super) fn delete_task(
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
     ensure_revision(before.revision, expected)?;
     tx.execute("UPDATE tasks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
-    let entity = json!({"entityType":"task","id":input.id,"projectId":before.project_id,"deleted":true,"revision":expected+1});
+    let entity = deleted("task", &input.id, &before.project_id, expected + 1);
     let event = activity(
         tx,
         actor,

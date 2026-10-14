@@ -26,17 +26,18 @@ pub(super) fn create_pool_item(
             now
         ],
     )?;
-    let entity = json!({
-    "entityType":"poolItem",
-    "id":id,
-    "projectId":input.project_id,
-    "scope":input.scope.as_str(),
-    "ownerUserId":owner,
-    "title":title,
-    "description":description,
-    "createdAt":now,
-    "revision":1
-    });
+    let metadata = pool_activity_metadata(input.scope.as_str(), owner.as_deref());
+    let entity = Entity::PoolItem(PoolItemView {
+        id: id.clone(),
+        project_id: input.project_id.clone(),
+        scope: input.scope.as_str().into(),
+        owner_user_id: owner,
+        title,
+        description,
+        created_at: now,
+        revision: 1,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -49,7 +50,7 @@ pub(super) fn create_pool_item(
             field_key: None,
             before: None,
             after: Some(entity.clone()),
-            metadata: pool_activity_metadata(input.scope.as_str(), owner.as_deref()),
+            metadata,
             entity_revision: Some(1),
         },
         now,
@@ -207,7 +208,8 @@ pub(super) fn delete_pool_item(
         "DELETE FROM pool_items WHERE id=?1 AND revision=?2",
         params![input.id, expected],
     )?;
-    let entity = json!({"entityType":"poolItem","id":input.id,"projectId":before.0,"scope":before.1,"deleted":true,"revision":expected+1});
+    let mut entity = deleted("poolItem", &input.id, &before.0, expected + 1);
+    entity["scope"] = json!(before.1);
     Ok(Mutation::one(entity, event, "poolItem", &input.id))
 }
 
@@ -256,14 +258,8 @@ pub(super) fn promote_pool_item(
         "DELETE FROM pool_items WHERE id=?1 AND revision=?2",
         params![input.pool_item_id, expected],
     )?;
-    let removed = json!({
-    "entityType":"poolItem",
-    "id":input.pool_item_id,
-    "projectId":item.0,
-    "deleted":true,
-    "promoted":true,
-    "revision":expected+1
-    });
+    let mut removed = deleted("poolItem", &input.pool_item_id, &item.0, expected + 1);
+    removed["promoted"] = json!(true);
     let mut metadata = pool_activity_metadata(&item.1, item.2.as_deref());
     if let Value::Object(values) = &mut metadata {
         values.insert("taskId".into(), json!(mutation.resource_id));
