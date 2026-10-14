@@ -55,8 +55,7 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
   so up to ten workers can run at once.
 - **Strict browser errors.** An uncaught page error or unexpected console error
   fails the test. A test that injects a failure lists the console text it
-  expects in `allowedConsoleErrors`; a security probe declares its exact page
-  error in `expectedPageErrors`, and that error must occur.
+  expects in `allowedConsoleErrors`.
 
 ## Helpers
 
