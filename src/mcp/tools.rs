@@ -1164,7 +1164,7 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<UploadTicketInput>,
     ) -> Result<Json<TransferTicket>, ToolError> {
-        let ticket = create_transfer(&self.state, &actor(&parts)?, "upload", Some(input))
+        let ticket = create_transfer(&self.state, &actor(&parts)?, input)
             .await
             .map_err(tool_error)?;
         Ok(Json(ticket))
@@ -1554,15 +1554,13 @@ async fn project_members(
 async fn create_transfer(
     state: &AppState,
     actor: &Actor,
-    direction: &str,
-    input: Option<UploadTicketInput>,
+    input: UploadTicketInput,
 ) -> crate::AppResult<TransferTicket> {
     state
         .auth
         .require_mcp_scope(actor, McpScope::Attachments)
         .await?;
     let grant = actor.mcp_grant_id().ok_or(AppError::Forbidden)?.to_owned();
-    let input = input.ok_or_else(|| AppError::internal("missing upload input"))?;
     crate::files::validate_original_name(&input.file_name)?;
     crate::idempotency::validate_key(&input.idempotency_key)?;
     let task = state.domain.task(actor, input.task_id.clone()).await?;
@@ -1579,7 +1577,7 @@ async fn create_transfer(
             ),
         ));
     }
-    let token = random_token()?;
+    let token = crate::auth::token::random_token(32)?;
     let hash = crate::auth::token::hash(&token);
     let now = now()?;
     // The caller may name the task by its key; the ticket keeps its ID.
@@ -1587,7 +1585,6 @@ async fn create_transfer(
     let name = input.file_name;
     let size = input.size_bytes;
     let content_length = size;
-    let direction = direction.to_owned();
     let temporary = input.temporary;
     let key = input.idempotency_key;
     state
@@ -1605,7 +1602,7 @@ async fn create_transfer(
                 rusqlite::params![
                     hash,
                     grant,
-                    direction,
+                    "upload",
                     task,
                     name,
                     i64::try_from(size)
@@ -1641,7 +1638,7 @@ async fn create_download_transfer(
         .require_mcp_scope(actor, McpScope::Attachments)
         .await?;
     let grant = actor.mcp_grant_id().ok_or(AppError::Forbidden)?.to_owned();
-    let token = random_token()?;
+    let token = crate::auth::token::random_token(32)?;
     let hash = crate::auth::token::hash(&token);
     let now = now()?;
     let attachment = attachment_id.to_owned();
@@ -1701,10 +1698,6 @@ async fn create_download_transfer(
         expires_in: 300,
         content_length: listed,
     })
-}
-
-fn random_token() -> crate::AppResult<String> {
-    crate::auth::token::random_token(32)
 }
 
 fn object_output_schema() -> std::sync::Arc<serde_json::Map<String, Value>> {

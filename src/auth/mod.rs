@@ -471,10 +471,6 @@ fn normalize_display_name(value: &str) -> AppResult<String> {
     Ok(value.to_owned())
 }
 
-fn random_token() -> crate::AppResult<String> {
-    crate::auth::token::random_token(32)
-}
-
 pub fn security_event(
     tx: &Transaction<'_>,
     subject_user_id: &str,
@@ -643,25 +639,7 @@ fn actor_from_user(user: User, session_id: String, authenticated_at: i64) -> Act
     }
 }
 
-fn list_sessions_tx(
-    tx: &Transaction<'_>,
-    user_id: &str,
-    current: Option<&str>,
-    now: i64,
-) -> AppResult<Vec<SessionSummary>> {
-    list_sessions_query(tx, user_id, current, now)
-}
-
-fn list_sessions_connection(
-    connection: &rusqlite::Connection,
-    user_id: &str,
-    current: Option<&str>,
-    now: i64,
-) -> AppResult<Vec<SessionSummary>> {
-    list_sessions_query(connection, user_id, current, now)
-}
-
-fn list_sessions_query(
+fn list_sessions(
     connection: &rusqlite::Connection,
     user_id: &str,
     current: Option<&str>,

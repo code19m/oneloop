@@ -13,7 +13,7 @@ impl AuthService {
         let verified_hash = self
             .verify_current_password(actor, password, "password", &permit)
             .await?;
-        let token = random_token()?;
+        let token = token::random_token(32)?;
         let new_token_hash = token_hash(&token);
         let user_id = actor.user_id.clone();
         let (authenticated_at, absolute_expires_at) = self
@@ -63,7 +63,7 @@ impl AuthService {
         let new_owned = new.to_owned();
         let new_hash = password_work(&permit, move || hash_password(&new_owned)).await?;
         let user_id = actor.user_id.clone();
-        let token = random_token()?;
+        let token = token::random_token(32)?;
         let new_token_hash = token_hash(&token);
         let (authenticated_at, absolute_expires_at) = self
             .db

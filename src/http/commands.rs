@@ -25,11 +25,9 @@ pub(crate) async fn execute(
             "is not a supported operation",
         ));
     }
+    // The services check that the payload is an object, for MCP calls too.
     let payload: Value = serde_json::from_str(input.payload.get())
         .map_err(|_| AppError::validation("payload", "must be an object"))?;
-    if !payload.is_object() {
-        return Err(AppError::validation("payload", "must be an object"));
-    }
     let result = if collaboration {
         serde_json::to_value(
             state

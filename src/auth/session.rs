@@ -131,7 +131,7 @@ impl AuthService {
                 "This temporary password has expired. Ask an admin to reset it.",
             ));
         }
-        let token = random_token()?;
+        let token = token::random_token(32)?;
         let token_hash = token_hash(&token);
         let session_id = Uuid::now_v7().to_string();
         let user_for_tx = user.user.clone();
@@ -181,7 +181,7 @@ impl AuthService {
                     |row| row.get(0),
                 )?;
                 if active >= MAX_BROWSER_SESSIONS {
-                    let sessions = list_sessions_tx(tx, &user_for_tx.id, None, now)?;
+                    let sessions = list_sessions(tx, &user_for_tx.id, None, now)?;
                     return Ok(LoginTransaction::Limit(sessions));
                 }
                 let absolute_expires_at = now + SESSION_ABSOLUTE_SECONDS;
@@ -349,9 +349,7 @@ impl AuthService {
         let user_id = actor.user_id.clone();
         let now = unix_now()?;
         self.db
-            .run(move |connection| {
-                list_sessions_connection(connection, &user_id, current.as_deref(), now)
-            })
+            .run(move |connection| list_sessions(connection, &user_id, current.as_deref(), now))
             .await
     }
 
