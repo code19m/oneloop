@@ -162,21 +162,22 @@ impl Envelope {
 
     /// Runs the command once in `tx`, for the actor as the database knows it
     /// now. A retry of a finished command gets its stored result after
-    /// `replay` rechecks today's access (and may bring the result up to date).
-    /// Otherwise `apply` makes the change, and its result becomes the receipt.
+    /// `authorize_replay` rechecks today's access (it may also bring the
+    /// result up to date). Otherwise `apply` makes the change, and its result
+    /// becomes the receipt.
     pub(crate) fn run(
         &self,
         tx: &Transaction<'_>,
         actor: &Actor,
         now: i64,
-        replay: impl FnOnce(&Actor, &mut CommandResult) -> AppResult<()>,
+        authorize_replay: impl FnOnce(&Actor, &mut CommandResult) -> AppResult<()>,
         apply: impl FnOnce(&Actor) -> AppResult<Mutation>,
     ) -> AppResult<CommandResult> {
         let actor = refresh_actor_connection(tx, actor)?;
         if let Some(mut stored) =
-            self::replay::<CommandResult>(tx, &actor, &self.key, self.operation, &self.hash)?
+            replay::<CommandResult>(tx, &actor, &self.key, self.operation, &self.hash)?
         {
-            replay(&actor, &mut stored)?;
+            authorize_replay(&actor, &mut stored)?;
             stored.replayed = true;
             return Ok(stored);
         }
