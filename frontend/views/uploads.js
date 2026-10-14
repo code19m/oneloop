@@ -192,13 +192,14 @@
     hooks.log(task,`made ${file.name} ${file.ephemeral?'temporary':'permanent'}`,{field:'attachment-retention:'+file.id,before,after:file.ephemeral});hooks.refreshActivity(taskId);
     if(!transport())app.toast(file.ephemeral?'Attachment marked temporary':'Attachment marked permanent');return true;
   }
-  // A row's switch acts through its data-action arguments; the preview's switch, which sits in the untrusted preview body, through its own handler.
+  // A row's switch acts through its data-action arguments. Actions never run in
+  // the untrusted preview body, so the preview's switch gets its handler here.
   function syncRetention(taskId,file){
     document.querySelectorAll('[data-attachment-id]').forEach(row=>{if(row.dataset.attachmentId!==file.id)return;const toggle=row.querySelector('.retention-switch');if(toggle){toggle.setAttribute('aria-checked',String(file.ephemeral));toggle.dataset.args=JSON.stringify([taskId,file.id,!file.ephemeral]);}});
     if(preview?.fileId===file.id){const toggle=document.querySelector('[data-file-ephemeral]');if(toggle){toggle.setAttribute('aria-checked',String(file.ephemeral));toggle.onclick=()=>setTemporary(taskId,file.id,!file.ephemeral);}const value=document.querySelector('[data-file-retention]');if(value)value.textContent=file.ephemeral?'Temporary':'Permanent';}
   }
   function retentionSwitch(taskId,file,previewControl=false){
-    return `<button type="button" class="retention-switch" role="switch" aria-checked="${!!file.ephemeral}" aria-label="Temporary: ${escape(file.name)}" title="Allow this file to be removed when storage is low" ${previewControl?'data-file-ephemeral':''} ${UIAction('setAttachmentTemporary',taskId,file.id,!file.ephemeral)}>${icons.clock}<span>Temporary</span><span class="retention-track" aria-hidden="true"></span></button>`;
+    return `<button type="button" class="retention-switch" role="switch" aria-checked="${!!file.ephemeral}" aria-label="Temporary: ${escape(file.name)}" title="Allow this file to be removed when storage is low" ${previewControl?'data-file-ephemeral':UIAction('setAttachmentTemporary',taskId,file.id,!file.ephemeral)}>${icons.clock}<span>Temporary</span><span class="retention-track" aria-hidden="true"></span></button>`;
   }
   function openAttachment(event,taskId,fileId){
     const file=hooks.task(taskId)?.attachments?.find(f=>f.id===fileId);
@@ -341,6 +342,7 @@
     }else{document.body.append(layer);UIMotion.enter(layer.querySelector('.file-dialog'));}
     document.getElementById('app').inert=true;
     layer.querySelector('[data-file-close]').onclick=closePreview;layer.querySelector('[data-file-close]').focus();if(!collection)layer.querySelector('[data-file-download]').onclick=e=>download(e,taskId,fileId);
+    if(editable)syncRetention(taskId,file);
     const files=(collection?collection.files:available(task)).filter(canPreview),index=files.indexOf(file),previous=layer.querySelector('[data-file-prev]'),next=layer.querySelector('[data-file-next]');
     layer.querySelector('[data-file-position]').textContent=`File ${index+1} of ${files.length}`;layer.querySelector('.file-navigation').hidden=files.length<2;previous.disabled=index<=0;next.disabled=index>=files.length-1;
     const move=delta=>{const target=files[index+delta];if(!target)return;previewAttachment(taskId,target.id,collection);document.querySelector(delta<0?'[data-file-prev]:not(:disabled)':'[data-file-next]:not(:disabled)')?.focus({preventScroll:true});};previous.onclick=()=>move(-1);next.onclick=()=>move(1);

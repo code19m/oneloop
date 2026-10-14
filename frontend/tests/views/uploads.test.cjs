@@ -518,3 +518,13 @@ test('a text preview read from the server names the person the page shows', asyn
   await waitFor(() => reads.length === 1, 'the preview reads the text');
   assert.deepEqual(reads, [['/source', t.D.session.userId]]);
 });
+
+test('the Temporary switch in a file preview changes the file', async () => {
+  const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', sourceUrl: '/source', downloadUrl: '/download' };
+  const t = bootApp({ route: 'task/BIR-079', actions: true, api: { attachments: async () => ({ items: [file] }) }, setup: w => { w.fetch = async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('notes').buffer }); } });
+  await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
+  t.A.previewAttachment('BIR-079', 'f1');
+  t.d.querySelector('.file-dialog [data-file-ephemeral]').click();
+  const sent = t.calls.filter(call => call.method === 'updateAttachment').map(call => call.args);
+  assert.equal(JSON.stringify(sent), JSON.stringify([['f1', { isEphemeral: true, expectedRevision: 1 }]]));
+});

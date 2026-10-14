@@ -32,6 +32,8 @@ All notable changes to oneloop are recorded here. The format follows
   deadline at once.
 - Dropping a track back in its own place on the Roadmap no longer shows an
   error.
+- The **Temporary** switch in a file preview works as soon as the preview
+  opens. Before, it did nothing until the attachment list loaded again.
 
 ### Security
 
