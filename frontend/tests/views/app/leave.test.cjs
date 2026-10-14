@@ -133,6 +133,21 @@ test('a deadline refused offline keeps counting once focus leaves it', async () 
   assert.equal(pageWarns(t), true, 'another page asks first'); assert.equal(leaveWarns(t), true);
 });
 
+test('a deadline refused after a status save repainted the header stays marked unsaved', async () => {
+  const t = bootApp({ route: 'task/BIR-079' }), task = t.D.tasks.find(item => item.id === 'BIR-079');
+  t.A.popSelect({ currentTarget: t.d.getElementById('select-tpState'), preventDefault() {} }, 'tpState');
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent === 'In Progress').click();
+  const deadline = enterDeadline(t, '2026-12-24'); await settle();
+  // The deadline waits behind the status save, whose answer repaints the header.
+  Object.assign(task, { state: 'progress', revision: task.revision + 1 });
+  t.commands[0].resolve({ entities: [{ id: task.internalId, revision: task.revision }], events: [] }); await settle();
+  assert.deepEqual(deadlines(t), [['task.move', undefined], ['task.update', '2026-12-24']]);
+  t.commands[1].reject(new t.w.TestApiError('Deadline refused', { status: 400, code: 'validation_failed' })); await settle();
+  assert.equal(deadline.value, '2026-12-24');
+  assert(deadline.hasAttribute('data-unsaved'), 'the refused date shows as not saved');
+  assert.equal(pageWarns(t), true, 'another page asks first');
+});
+
 test('a link to the page that shows never asks', () => {
   const t = bootApp({ route: 'task/BIR-079' });
   type(t.d.getElementById('cmtIn'), 'Half a thought');

@@ -1614,6 +1614,9 @@
   }
   // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
   const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
+  /** The task page's status and Blocked badge in the top bar, and its Properties heading with Block task. */
+  const taskStatusHtml = (t) => `<span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}`;
+  const taskPropertiesHeadingHtml = (t, canEdit) => `<div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>`;
   function renderTask() {
     const t = taskById(state.taskId);
     if (!t) { state.view = 'board'; return renderBoard(); }
@@ -1628,7 +1631,7 @@
         <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave ${UIAction.on('input', 'sizeTaskTitle')} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'title', UIAction.value) : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
       ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" ${UIAction('openModal', 'unblock', t.id)}>Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" ${UIAction('openModal', 'block', t.id)}>Edit reason</button>` : ''}</div></section>` : ''}
       <aside class="tp-rail" aria-labelledby="task-properties-heading">
-        <div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>
+        ${taskPropertiesHeadingHtml(t, canEdit)}
         <dl class="task-properties">
           <div class="task-property"><dt>Status</dt><dd>${selectHtml('tpState', { label: 'Status', cls: 'prop', disabled: !canEdit, icon: stIcon(t.state), value: t.state, options: Object.entries(STATUS).map(([v, l]) => ({ v, l, icon: stIcon(v) })), pick: (v) => App.updTask(t.id, 'state', v) })}</dd></div>
           <div class="task-property"><dt>Epic</dt><dd>${selectHtml('tpEpic', { label: 'Epic', cls: 'prop', disabled: !canEdit, icon: I.roadmap, value: t.epicId, search: true, options: epics().filter(e => e.state !== 'done' || e.id === t.epicId).slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })), pick: (v) => App.updTask(t.id, 'epicId', v) })}</dd></div>
@@ -2194,7 +2197,7 @@
       if (!t) return '<h1>Board</h1>';
       return `<button class="btn icon" ${UIAction('nav', 'board')} title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
       <h1 style="display:flex;align-items:center;gap:8px"><span class="mono">${esc(t.id)}</span></h1>
-      <span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}<span class="task-save-status" role="status" aria-live="polite">${taskSaveFeedback?.id===t.id?taskSaveFeedback.saving?'Saving…':'Saved':''}</span>
+      ${taskStatusHtml(t)}<span class="task-save-status" role="status" aria-live="polite">${taskSaveFeedback?.id===t.id?taskSaveFeedback.saving?'Saving…':'Saved':''}</span>
       ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" ${UIAction('taskActions', UIAction.event, t.id)}>${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
     }
     if (state.view === 'storage') return '<h1>Storage</h1><span class="meta">All projects</span>';
@@ -2866,15 +2869,15 @@
     refreshTaskHeader() {
       const t = state.view === 'task' ? taskById(state.taskId) : null, page = document.querySelector('.task-page');
       if (!t || !page) return;
-      const next = document.createElement('template'); setHTML(next, `<header>${renderTopbar()}</header>${renderTask()}`);
+      // Only these pieces: rendering the whole page again would register its
+      // fields anew, and a save still in flight would no longer find its field.
+      const html = (source) => { const next = document.createElement('template'); setHTML(next, source); return next.content; };
       const topbar = document.querySelector('.topbar');
-      topbar?.querySelector('.task-status-chip')?.replaceWith(next.content.querySelector('.task-status-chip'));
       topbar?.querySelector('.blocked-badge')?.remove();
-      const badge = next.content.querySelector('header .blocked-badge');
-      if (badge) topbar?.querySelector('.task-status-chip')?.after(badge);
+      topbar?.querySelector('.task-status-chip')?.replaceWith(html(taskStatusHtml(t)));
       const heading = page.querySelector('.task-properties-heading');
-      if (heading && !heading.contains(document.activeElement)) heading.replaceWith(next.content.querySelector('.task-properties-heading'));
-      page.querySelector('#select-tpState > svg')?.replaceWith(next.content.querySelector('#select-tpState > svg'));
+      if (heading && !heading.contains(document.activeElement)) heading.replaceWith(html(taskPropertiesHeadingHtml(t, canBoard())));
+      page.querySelector('#select-tpState > svg')?.replaceWith(html(stIcon(t.state)));
       const late = overdue(t);
       page.querySelector('.task-property-date')?.classList.toggle('late', late);
       page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);
