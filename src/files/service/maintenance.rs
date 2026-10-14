@@ -283,10 +283,22 @@ impl FileService {
         let (permanent, temporary, pending_deletion, cleaned, projects, recent_cleanup) = self
             .db
             .run(move |connection| {
-                let permanent: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_SQL, [], |r| r.get(0))?;
-                let temporary: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_2_SQL, [], |r| r.get(0))?;
+                let permanent: i64 = connection.query_row(
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
+                     JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                     WHERE a.is_ephemeral=0 AND b.state='available'
+                       AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let temporary: i64 = connection.query_row(
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
+                     JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                     WHERE a.is_ephemeral=1 AND b.state='available'
+                       AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
                 // Deleted attachments, and the files of deleted tasks, keep
                 // their bytes for the Undo window.
                 let pending_deletion: i64 = connection.query_row(
@@ -298,10 +310,20 @@ impl FileService {
                     [],
                     |r| r.get(0),
                 )?;
-                let cleaned: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_3_SQL, [], |r| r.get(0))?;
+                let cleaned: i64 = connection.query_row(
+                    "SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+                     WHERE b.state='cleaned' AND a.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
                 let projects = {
-                    let mut statement = connection.prepare(SELECT_PROJECTS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT p.id,p.name,count(b.id),coalesce(sum(b.size_bytes),0) FROM projects p
+                         LEFT JOIN task_attachments a ON a.project_id=p.id
+                         LEFT JOIN file_blobs b ON b.id=a.blob_id AND b.state IN ('available','deleting')
+                         WHERE p.deleted_at IS NULL GROUP BY p.id,p.name
+                         HAVING count(b.id)>0 ORDER BY sum(b.size_bytes) DESC,p.name,p.id",
+                    )?;
                     statement
                         .query_map([], |row| {
                             Ok(StorageProjectUsage {
@@ -314,7 +336,10 @@ impl FileService {
                         .collect::<Result<Vec<_>, _>>()?
                 };
                 let recent_cleanup = {
-                    let mut statement = connection.prepare(SELECT_CLEANUP_RUNS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT started_at,files,bytes FROM storage_cleanup_runs
+                         WHERE files > 0 OR bytes > 0 ORDER BY started_at DESC,id DESC LIMIT 5",
+                    )?;
                     statement
                         .query_map([], |row| {
                             Ok(StorageCleanupRun {
@@ -485,10 +510,7 @@ impl FileService {
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?3)",
                         params![blob, now-ACCESS_GRACE_SECONDS, now, revision])?;
                     if changed == 0 { continue; }
-                    let id = Uuid::now_v7().to_string();
-                    tx.execute(
-                        "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
-                         VALUES(?1,?2,?3,'cleanup',?4,?4,?5)", params![id,blob,key,now,run_tx])?;
+                    let id = insert_deletion_job(tx, &blob, &key, "cleanup", Some(&run_tx), now)?;
                     jobs.push((DeletionJob { id, blob_id: blob, storage_key: key }, size));
                     claimed = claimed.saturating_add(size);
                 }
@@ -638,7 +660,13 @@ impl FileService {
         let error = error.chars().take(500).collect::<String>();
         self.db
             .transaction(move |connection| {
-                connection.execute(UPDATE_FILE_DELETION_JOBS_SQL, params![error, job_id])?;
+                // A failed job waits longer after each attempt, up to an hour.
+                connection.execute(
+                    "UPDATE file_deletion_jobs SET attempt_count=attempt_count+1,
+                     available_at=unixepoch()+min(3600,30*(1<<min(attempt_count,7))),last_error=?1
+                     WHERE id=?2",
+                    params![error, job_id],
+                )?;
                 Ok(())
             })
             .await
@@ -666,10 +694,7 @@ impl FileService {
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1",
                         [&blob_id],
                     )?;
-                    tx.execute(
-                        INSERT_FILE_DELETION_JOBS_SQL,
-                        params![Uuid::now_v7().to_string(), blob_id, key, reason, now],
-                    )?;
+                    insert_deletion_job(tx, &blob_id, &key, &reason, None, now)?;
                 }
                 Ok(())
             })
@@ -784,10 +809,7 @@ impl FileService {
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",
                         params![blob,now,now-UNDO_WINDOW_SECONDS])?;
                     if changed == 1 {
-                        tx.execute(
-                            "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
-                             VALUES(?1,?2,?3,?4,?5,?5)",
-                            params![Uuid::now_v7().to_string(),blob,key,reason,now])?;
+                        insert_deletion_job(tx, &blob, &key, &reason, None, now)?;
                     }
                 }
                 Ok(())
@@ -807,7 +829,11 @@ impl FileService {
             let jobs = self
                 .db
                 .run(move |connection| {
-                    let mut statement = connection.prepare(SELECT_FILE_DELETION_JOBS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT id,blob_id,storage_key FROM file_deletion_jobs
+                         WHERE available_at<=?1 AND locked_at IS NULL
+                         ORDER BY available_at,id LIMIT 200",
+                    )?;
                     Ok(statement
                         .query_map([now], |r| {
                             Ok(DeletionJob {
@@ -858,8 +884,16 @@ impl FileService {
         let (blob_bytes, reserved_bytes, staging_keys) = self
             .db
             .run(move |connection| {
-                let blob: i64 = connection.query_row(SELECT_FILE_BLOBS_2_SQL, [], |r| r.get(0))?;
-                let mut statement = connection.prepare(SELECT_UPLOAD_RESERVATIONS_2_SQL)?;
+                let blob: i64 = connection.query_row(
+                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
+                     WHERE state IN ('pending','available','deleting')",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let mut statement = connection.prepare(
+                    "SELECT staging_key,size_bytes FROM upload_reservations
+                     WHERE committed_at IS NULL AND expires_at>?1",
+                )?;
                 let rows = statement
                     .query_map([now], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -903,6 +937,26 @@ impl FileService {
             unreserved_staging_bytes,
         })
     }
+}
+
+/// Queues the removal of a blob's bytes. The caller has just marked the blob
+/// `deleting`, so it has no job yet.
+fn insert_deletion_job(
+    tx: &Transaction<'_>,
+    blob_id: &str,
+    storage_key: &str,
+    reason: &str,
+    cleanup_run_id: Option<&str>,
+    now: i64,
+) -> AppResult<String> {
+    let id = Uuid::now_v7().to_string();
+    tx.execute(
+        "INSERT INTO file_deletion_jobs
+         (id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
+         VALUES(?1,?2,?3,?4,?5,?5,?6)",
+        params![id, blob_id, storage_key, reason, now, cleanup_run_id],
+    )?;
+    Ok(id)
 }
 
 /// Fails when `size` more bytes would take file storage past `limit`.

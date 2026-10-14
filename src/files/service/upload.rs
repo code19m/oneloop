@@ -87,16 +87,7 @@ impl FileService {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
 
-                    let occupied: i64 = tx.query_row(
-                        "SELECT
-                       (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-                        WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
-                       (SELECT count(*) FROM upload_reservations
-                        WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
-                        params![task_id_owned, now],
-                        |row| row.get(0),
-                    )?;
-                    if occupied >= MAX_ATTACHMENTS_PER_TASK {
+                    if occupied_slots(tx, &task_id_owned, now)? >= MAX_ATTACHMENTS_PER_TASK {
                         return Err(AppError::Conflict(
                             format!("a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"),
                         ));
@@ -457,7 +448,8 @@ async fn finalize_attachment_upload(
                     return Err(AppError::NotFound { resource: "task" });
                 }
                 let active: bool = tx.query_row(
-                    SELECT_UPLOAD_RESERVATIONS_SQL,
+                    "SELECT EXISTS(SELECT 1 FROM upload_reservations
+                     WHERE id=?1 AND committed_at IS NULL AND expires_at>?2)",
                     params![reservation_id, now],
                     |r| r.get(0),
                 )?;
@@ -470,11 +462,16 @@ async fn finalize_attachment_upload(
                     |r| r.get(0),
                 )?;
                 tx.execute(
-                    INSERT_ATTACHMENT_BLOB_SQL,
+                    "INSERT INTO file_blobs
+                     (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+                     VALUES(?1,?2,?3,?4,?5,'available',?6)",
                     params![blob_id_tx, storage_key, checksum, size as i64, media, now],
                 )?;
                 tx.execute(
-                    INSERT_TASK_ATTACHMENTS_SQL,
+                    "INSERT INTO task_attachments
+                     (id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,position,
+                      created_at,last_accessed_at,updated_at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?9)",
                     params![
                         attachment_id_tx,
                         project_id,
