@@ -122,6 +122,8 @@ impl SyncError {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pub(crate) max_files: usize,
+    /// Folders inside the synced folder, those of left-out entries included.
+    pub(crate) max_folders: usize,
     pub(crate) max_file_bytes: u64,
     pub(crate) max_total_bytes: u64,
     /// Bytes a sync may write to its working copy, oversized files included.
@@ -406,7 +408,7 @@ impl Git {
                 deadline,
             )
             .await?;
-        let selected = select_files(&listing, folder, limits.max_files)?;
+        let selected = select_files(&listing, folder, limits)?;
 
         // Check out only the folder. Git fetches its file contents in one batch.
         let pattern = if folder.is_empty() {
@@ -965,11 +967,12 @@ fn in_repository<'a>(repository: &'a str, arguments: &[&'a str]) -> Vec<&'a str>
 }
 
 /// Regular files from `git ls-tree -r -z`, as repository and folder-relative
-/// paths. Links, submodules and names that are not plain UTF-8 are left out.
+/// paths. Links, submodules and names that are not plain UTF-8 are left out,
+/// but the checkout still creates their folders, so those count too.
 fn select_files(
     listing: &[u8],
     folder: &str,
-    max_files: usize,
+    limits: Limits,
 ) -> Result<Vec<(String, String, String)>, SyncError> {
     let prefix = if folder.is_empty() {
         String::new()
@@ -977,6 +980,7 @@ fn select_files(
         format!("{folder}/")
     };
     let mut files = Vec::new();
+    let mut folders = HashSet::new();
     for record in listing
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
@@ -984,39 +988,70 @@ fn select_files(
         let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
             continue;
         };
-        let meta = String::from_utf8_lossy(&record[..tab]);
-        let mut fields = meta.split_whitespace();
-        let (Some(mode), Some("blob")) = (fields.next(), fields.next()) else {
+        let Some(relative) = record[tab + 1..].strip_prefix(prefix.as_bytes()) else {
             continue;
         };
-        if !matches!(mode, "100644" | "100755") {
+        let meta = String::from_utf8_lossy(&record[..tab]);
+        let mut fields = meta.split_whitespace();
+        let (Some(mode), Some(kind)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        // A submodule is checked out as an empty folder.
+        let folder = if kind == "commit" {
+            relative
+        } else {
+            parent(relative)
+        };
+        if !add_folders(&mut folders, folder, limits.max_folders) {
+            return Err(SyncError::new(
+                Failure::TooLarge,
+                "the folder has more subfolders than the limit",
+            ));
+        }
+        if kind != "blob" || !matches!(mode, "100644" | "100755") {
             continue;
         }
         let Some(blob) = fields.next().filter(|value| is_object_id(value)) else {
             continue;
         };
-        let Ok(repository_path) = std::str::from_utf8(&record[tab + 1..]) else {
-            continue;
-        };
-        let Some(relative) = repository_path.strip_prefix(&prefix) else {
+        let Ok(relative) = std::str::from_utf8(relative) else {
             continue;
         };
         if !valid_relative_path(relative) {
             continue;
         }
-        if files.len() == max_files {
+        if files.len() == limits.max_files {
             return Err(SyncError::new(
                 Failure::TooLarge,
                 "the folder has more files than the limit",
             ));
         }
         files.push((
-            repository_path.to_owned(),
+            format!("{prefix}{relative}"),
             relative.to_owned(),
             blob.to_owned(),
         ));
     }
     Ok(files)
+}
+
+/// Adds `folder` and the folders above it to `folders`, and returns whether
+/// they stay within `max`. A folder that is already there has its parents
+/// there too, so the walk stops at it.
+fn add_folders<'a>(folders: &mut HashSet<&'a [u8]>, mut folder: &'a [u8], max: usize) -> bool {
+    while !folder.is_empty() && folders.insert(folder) {
+        if folders.len() > max {
+            return false;
+        }
+        folder = parent(folder);
+    }
+    true
+}
+
+fn parent(path: &[u8]) -> &[u8] {
+    path.iter()
+        .rposition(|byte| *byte == b'/')
+        .map_or(&[], |slash| &path[..slash])
 }
 
 pub(crate) fn valid_relative_path(path: &str) -> bool {
@@ -1292,6 +1327,7 @@ pub(super) mod tests {
         let url = GitUrl::parse(&format!("file://{}", repository.display()), true).unwrap();
         let limits = Limits {
             max_files: 5000,
+            max_folders: 5000,
             max_file_bytes: 32,
             max_total_bytes: 100 * 1024 * 1024,
             max_download_bytes: 300 * 1024 * 1024,
@@ -1354,6 +1390,7 @@ pub(super) mod tests {
         let stream = [blob(0, b"abcd"), blob(1, b"too large"), blob(2, b"ef")].concat();
         let limits = Limits {
             max_files: 3,
+            max_folders: 0,
             max_file_bytes: 4,
             max_total_bytes: 6,
             max_download_bytes: 15,
@@ -1527,6 +1564,16 @@ pub(super) mod tests {
         bytes
     }
 
+    fn limits(max_files: usize, max_folders: usize) -> Limits {
+        Limits {
+            max_files,
+            max_folders,
+            max_file_bytes: 0,
+            max_total_bytes: 0,
+            max_download_bytes: 0,
+        }
+    }
+
     #[test]
     fn regular_files_inside_the_folder_are_selected() {
         let selected = select_files(
@@ -1539,7 +1586,7 @@ pub(super) mod tests {
                 ("100644", "blob", "other/notes.md"),
             ]),
             "docs",
-            10,
+            limits(10, 10),
         )
         .unwrap();
         assert_eq!(
@@ -1566,9 +1613,28 @@ pub(super) mod tests {
             ("100644", "blob", "b.md"),
             ("100644", "blob", "c.md"),
         ]);
-        assert_eq!(select_files(&many, "", 3).unwrap().len(), 3);
+        assert_eq!(select_files(&many, "", limits(3, 0)).unwrap().len(), 3);
         assert_eq!(
-            select_files(&many, "", 2).err().unwrap().failure,
+            select_files(&many, "", limits(2, 0)).err().unwrap().failure,
+            Failure::TooLarge
+        );
+    }
+
+    #[test]
+    fn folders_with_too_many_subfolders_fail() {
+        // The checkout creates the folders of links and submodules too.
+        let deep = listing(&[
+            ("100644", "blob", "docs/a/b/c.md"),
+            ("100644", "blob", "docs/a/d.md"),
+            ("120000", "blob", "docs/e/link"),
+            ("160000", "commit", "docs/f"),
+        ]);
+        assert_eq!(select_files(&deep, "docs", limits(10, 4)).unwrap().len(), 2);
+        assert_eq!(
+            select_files(&deep, "docs", limits(10, 3))
+                .err()
+                .unwrap()
+                .failure,
             Failure::TooLarge
         );
     }

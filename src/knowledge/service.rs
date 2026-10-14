@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::{
-    MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
+    MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_FOLDERS, MAX_TOTAL_BYTES,
     content::FileBody,
     git::{Git, Limits},
     markdown,
@@ -393,6 +393,7 @@ impl KnowledgeService {
                 disk,
                 limits: Limits {
                     max_files: MAX_FILES,
+                    max_folders: MAX_FOLDERS,
                     max_file_bytes: MAX_FILE_BYTES,
                     max_total_bytes: MAX_TOTAL_BYTES,
                     max_download_bytes: MAX_DOWNLOAD_BYTES,
