@@ -1,4 +1,4 @@
-// Tests for scripts/newest-release.mjs: the docs site follows the highest released version.
+// Tests for scripts/newest-release.mjs: the docs site follows the highest stable release.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {fakeGitHub, inScratch, runScript} from './support.mjs';
@@ -11,11 +11,12 @@ function newest({releases = [], error = ''} = {}) {
   });
 }
 
-test('the newest release is the highest version, and a final release follows its candidates', () => {
+test('the newest release is the highest stable version, or the highest candidate while none is stable', () => {
   for (const [releases, expected] of [
-    [['v0.9.1', 'v0.10.0-rc.9', 'v0.10.0-rc.10', 'v0.2.0', 'docs-preview'], 'v0.10.0-rc.10'],
+    [['v0.1.0-rc.9', 'v0.1.0-rc.10', 'v0.0.9-rc.1', 'docs-preview'], 'v0.1.0-rc.10'],
+    [['v0.9.1', 'v0.10.0-rc.9', 'v0.10.0-rc.10', 'v0.2.0', 'docs-preview'], 'v0.9.1'],
     [['v0.10.0-rc.10', 'v0.10.0', 'v0.9.1'], 'v0.10.0'],
-    [['v1.0.1', 'v1.1.0-rc.1', 'v1.0.2'], 'v1.1.0-rc.1'],
+    [['v1.0.1', 'v1.1.0-rc.1', 'v1.0.2'], 'v1.0.2'],
   ]) {
     const result = newest({releases});
     assert.equal(result.status, 0, result.stderr);

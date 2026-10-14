@@ -13,7 +13,8 @@ example `v0.1.0-rc.1`.
    update the schema numbers in the docs: the sample output of `db migrate`
    and `/healthz`, and the name of the pre-upgrade backup;
    `rg 'migrated from|schema [0-9]|schemaVersion|pre-migration-v' docs/src`
-   finds them.
+   finds them. For the first stable release, also rewrite the **Status**
+   section of `README.md`, which still calls oneloop a release candidate.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
    `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
    bottom, and note any upgrade steps.
@@ -54,11 +55,12 @@ The Release workflow then:
   `THIRD_PARTY_NOTICES.md` lists them with their versions, and the
   Dependencies workflow audits them;
 - creates a GitHub Release with the changelog notes and no binary files;
-- runs the Docs workflow, which builds the documentation site from the tag of
-  the newest release and publishes it. The newest release is the highest
-  version, release candidates included, so the site always describes a version
-  that people can install. Docs merged to `main` go live with the next release.
-  To publish the site again, run the Docs workflow on `main` by hand.
+- runs the Docs workflow, which publishes the documentation site from the tag
+  of the newest stable release, or of the newest release candidate while there
+  is no stable release. So the site describes the version that production
+  should run, and people can always install it. Docs changes on `main` appear
+  on the site with the next such release. To publish the site again, run the
+  Docs workflow on `main` by hand.
 
 A release candidate gets only the `X.Y.Z-rc.N` image tag. A final release gets
 the `X.Y.Z` tag. `X.Y` and `latest` only move forward: they move to the release
