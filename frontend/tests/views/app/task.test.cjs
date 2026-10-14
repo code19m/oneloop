@@ -322,3 +322,13 @@ test('a block save announces what changed', async () => {
   assert.deepEqual(t.commands.map(command => command.operation), ['task.block.update', 'task.unblock-and-complete']);
   assert.deepEqual(notices, ['Block reason updated', 'Task unblocked and completed']);
 });
+
+test('Done in Status on a blocked task asks to unblock and complete it, as the Board does', () => {
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').block = { id: 'b1', reason: 'Waiting', revision: 1, by: 'taylorwu', at: Date.now(), mentions: [] }; } });
+  const select = t.d.getElementById('select-tpState');
+  t.A.popSelect({ currentTarget: select, preventDefault() {} }, 'tpState');
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent === 'Done').click();
+  assert.equal(t.commands.length, 0, 'the server refuses to complete a blocked task');
+  assert(t.d.querySelector('.modal').textContent.includes('Unblock and complete'));
+  t.A.closeOverlays(); assert.equal(t.d.querySelector('#select-tpState .sel-label').textContent, 'Planning', 'Status still shows the saved status');
+});

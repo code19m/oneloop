@@ -45,6 +45,8 @@ All notable changes to oneloop are recorded here. The format follows
 - oneloop asks before you leave a task whose new deadline could not be saved
   because the connection was lost, also after you left the deadline field. A
   link to the page you are on no longer asks to discard your changes.
+- Choosing **Done** in the Status of a blocked task now asks you to unblock and
+  complete it, as the Board does. Before, the change failed with an error.
 
 ### Security
 
