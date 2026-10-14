@@ -1,4 +1,5 @@
-//! Accounts, browser sessions and app grants share current-actor checks. Password content is preserved; grants never elevate current permissions.
+//! Accounts, password hashes, browser sessions, sign-in delays and connected
+//! apps. `Actor` is whoever makes a request, through a session or an app.
 
 mod accounts;
 mod grants;
@@ -6,7 +7,12 @@ mod session;
 mod throttle;
 
 pub use crate::clock::unix_now;
-pub(crate) use grants::{revoke_lost_project_app_access, revoke_project_app_access};
+use grants::REFRESH_IDLE_SECONDS;
+use grants::revoke_all_app_access;
+pub(crate) use grants::{
+    ACCESS_TOKEN_SECONDS, AppTokens, NewGrant, issue_grant, revoke_grant,
+    revoke_lost_project_app_access, revoke_project_app_access, revoke_unless_current,
+};
 pub use token::hash as token_hash;
 pub mod password;
 pub(crate) mod token;
@@ -24,6 +30,7 @@ use crate::{
 };
 
 use password::{PasswordPolicy, hash_password, verify_password};
+use throttle::{ACCOUNT_RULE, ADDRESS_RULE, PAIR_RULE, PASSWORD_CONFIRMATION_RULE};
 
 const ACCOUNT_PAGE_SIZE: usize = 50;
 
@@ -31,11 +38,6 @@ pub const SESSION_IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 pub const SESSION_ABSOLUTE_SECONDS: i64 = 30 * 24 * 60 * 60;
 pub const RECENT_AUTH_SECONDS: i64 = 30 * 60;
 pub const MAX_BROWSER_SESSIONS: i64 = 10;
-const LOGIN_FAILURE_WINDOW_SECONDS: i64 = 15 * 60;
-const LOGIN_FAILURES_BEFORE_DELAY: i64 = 5;
-const IP_FAILURES_BEFORE_DELAY: i64 = 20;
-const ACCOUNT_FAILURES_BEFORE_DELAY: i64 = 15;
-const ACCOUNT_DELAY_CAP_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -133,27 +135,48 @@ pub(crate) fn refresh_actor_connection(
     connection: &rusqlite::Connection,
     actor: &Actor,
 ) -> AppResult<Actor> {
-    let current = connection.prepare_cached("SELECT username,display_name,is_admin,must_change_password FROM users WHERE id=?1 AND is_active=1")?.query_row(
-        [&actor.user_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,bool>(2)?,row.get::<_,bool>(3)?)),
-    ).optional()?.ok_or(AppError::Unauthorized)?;
-    let now = unix_now()?;
     let mut fresh = actor.clone();
-    fresh.username = current.0;
-    fresh.display_name = current.1;
-    fresh.is_admin = current.2;
-    fresh.must_change_password = current.3;
+    (
+        fresh.username,
+        fresh.display_name,
+        fresh.is_admin,
+        fresh.must_change_password,
+    ) = connection
+        .prepare_cached(
+            "SELECT username,display_name,is_admin,must_change_password
+             FROM users WHERE id=?1 AND is_active=1",
+        )?
+        .query_row([&actor.user_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .optional()?
+        .ok_or(AppError::Unauthorized)?;
+    let now = unix_now()?;
     match &actor.source {
         ActorSource::BrowserSession { session_id } => {
-            fresh.authenticated_at = connection.prepare_cached("SELECT authenticated_at FROM sessions WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL \
-                     AND idle_expires_at>?3 AND absolute_expires_at>?3")?.query_row(
-                rusqlite::params![session_id,actor.user_id,now], |row| row.get(0),
-            ).optional()?.ok_or(AppError::Unauthorized)?;
+            fresh.authenticated_at = connection
+                .prepare_cached(
+                    "SELECT authenticated_at FROM sessions
+                     WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL
+                       AND idle_expires_at>?3 AND absolute_expires_at>?3",
+                )?
+                .query_row(rusqlite::params![session_id, actor.user_id, now], |row| {
+                    row.get(0)
+                })
+                .optional()?
+                .ok_or(AppError::Unauthorized)?;
         }
         ActorSource::McpGrant { grant_id } => {
-            let valid: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM mcp_grants WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL \
-                     AND expires_at>?3 AND COALESCE(last_used_at,created_at)>?4)")?.query_row(
-                rusqlite::params![grant_id,actor.user_id,now,now-crate::mcp::REFRESH_IDLE_SECONDS], |row| row.get(0),
-            )?;
+            let valid: bool = connection
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM mcp_grants
+                     WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL AND expires_at>?3
+                       AND COALESCE(last_used_at,created_at)>?4)",
+                )?
+                .query_row(
+                    rusqlite::params![grant_id, actor.user_id, now, now - REFRESH_IDLE_SECONDS],
+                    |row| row.get(0),
+                )?;
             if !valid {
                 return Err(AppError::Unauthorized);
             }
@@ -329,11 +352,20 @@ fn insert_user(
         revision: 1,
     };
     tx.execute(
-        "INSERT INTO users (id,username,display_name,password_hash,is_admin,is_active,must_change_password,
-         password_changed_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,1,?6,?7,?7,?7)",
-        rusqlite::params![user.id,user.username,user.display_name,prepared.password_hash,user.is_admin,
-            user.must_change_password,now],
-    ).map_err(|error| map_user_write_error(error, "username is already in use"))?;
+        "INSERT INTO users (id,username,display_name,password_hash,is_admin,is_active,
+                            must_change_password,password_changed_at,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,1,?6,?7,?7,?7)",
+        rusqlite::params![
+            user.id,
+            user.username,
+            user.display_name,
+            prepared.password_hash,
+            user.is_admin,
+            user.must_change_password,
+            now
+        ],
+    )
+    .map_err(|error| map_user_write_error(error, "username is already in use"))?;
     security_event(
         tx,
         &user.id,
@@ -410,29 +442,6 @@ pub fn revoke_user_access(tx: &Transaction<'_>, user_id: &str, now: i64) -> AppR
     revoke_all_app_access(tx, user_id, now)
 }
 
-fn revoke_all_app_access(tx: &Transaction<'_>, user_id: &str, now: i64) -> AppResult<()> {
-    tx.execute(
-        "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
-                WHERE user_id=?2 AND revoked_at IS NULL",
-        rusqlite::params![now, user_id],
-    )?;
-    tx.execute(
-        "UPDATE mcp_tokens SET revoked_at=?1 WHERE revoked_at IS NULL AND grant_id IN
-                (SELECT id FROM mcp_grants WHERE user_id=?2)",
-        rusqlite::params![now, user_id],
-    )?;
-    // Unfinished authorizations must not restore access after revocation.
-    tx.execute(
-        "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
-        [user_id],
-    )?;
-    tx.execute(
-        "DELETE FROM oauth_authorization_codes WHERE user_id=?1 AND used_at IS NULL",
-        [user_id],
-    )?;
-    Ok(())
-}
-
 pub fn normalize_username(value: &str) -> AppResult<String> {
     let value = value.trim().to_ascii_lowercase();
     let valid = (3..=32).contains(&value.len())
@@ -464,10 +473,6 @@ fn normalize_display_name(value: &str) -> AppResult<String> {
     Ok(value.to_owned())
 }
 
-fn random_token() -> crate::AppResult<String> {
-    crate::auth::token::random_token(32)
-}
-
 pub fn security_event(
     tx: &Transaction<'_>,
     subject_user_id: &str,
@@ -476,11 +481,21 @@ pub fn security_event(
     metadata: serde_json::Value,
     now: i64,
 ) -> AppResult<()> {
+    let metadata = serde_json::to_string(&metadata).map_err(|error| {
+        AppError::Internal(format!("security event serialization failed: {error}"))
+    })?;
     tx.execute(
-        "INSERT INTO security_events(id,subject_user_id,actor_user_id,event_type,metadata_json,created_at)
+        "INSERT INTO security_events
+         (id,subject_user_id,actor_user_id,event_type,metadata_json,created_at)
          VALUES(?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![Uuid::now_v7().to_string(),subject_user_id,actor_user_id,event_type,
-            serde_json::to_string(&metadata).map_err(|error|AppError::Internal(format!("security event serialization failed: {error}")))?,now],
+        rusqlite::params![
+            Uuid::now_v7().to_string(),
+            subject_user_id,
+            actor_user_id,
+            event_type,
+            metadata,
+            now
+        ],
     )?;
     if matches!(
         event_type,
@@ -559,7 +574,8 @@ fn dummy_password_hash() -> String {
 }
 
 fn map_user_write_error(error: rusqlite::Error, message: &str) -> AppError {
-    if matches!(&error, rusqlite::Error::SqliteFailure(inner, _) if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
+    if matches!(&error, rusqlite::Error::SqliteFailure(inner, _)
+        if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
     {
         AppError::rule(crate::error::RuleKind::UsernameTaken, message)
     } else {
@@ -581,11 +597,15 @@ fn map_admin_constraint(error: rusqlite::Error) -> AppError {
     }
 }
 
+/// The `users` columns that `account_from_row` reads, in order.
+const ACCOUNT_COLUMNS: &str =
+    "id,username,display_name,is_admin,is_active,must_change_password,revision,avatar_blob_id";
+
 fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary> {
     let id: String = row.get(0)?;
     let avatar_blob: Option<String> = row.get(7)?;
     Ok(AccountSummary {
-        avatar_url: avatar_blob.map(|blob| format!("/api/users/{id}/avatar?v={blob}")),
+        avatar_url: avatar_blob.map(|blob| avatar_url(&id, &blob)),
         id,
         username: row.get(1)?,
         display_name: row.get(2)?,
@@ -594,6 +614,11 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary>
         must_change_password: row.get(5)?,
         revision: row.get(6)?,
     })
+}
+
+/// The address of a person's avatar; the blob ID keeps a cached copy current.
+fn avatar_url(user_id: &str, blob_id: &str) -> String {
+    format!("/api/users/{user_id}/avatar?v={blob_id}")
 }
 
 fn account_from_user(user: User) -> AccountSummary {
@@ -621,25 +646,7 @@ fn actor_from_user(user: User, session_id: String, authenticated_at: i64) -> Act
     }
 }
 
-fn list_sessions_tx(
-    tx: &Transaction<'_>,
-    user_id: &str,
-    current: Option<&str>,
-    now: i64,
-) -> AppResult<Vec<SessionSummary>> {
-    list_sessions_query(tx, user_id, current, now)
-}
-
-fn list_sessions_connection(
-    connection: &rusqlite::Connection,
-    user_id: &str,
-    current: Option<&str>,
-    now: i64,
-) -> AppResult<Vec<SessionSummary>> {
-    list_sessions_query(connection, user_id, current, now)
-}
-
-fn list_sessions_query(
+fn list_sessions(
     connection: &rusqlite::Connection,
     user_id: &str,
     current: Option<&str>,
@@ -647,8 +654,10 @@ fn list_sessions_query(
 ) -> AppResult<Vec<SessionSummary>> {
     let mut statement = connection.prepare(
         "SELECT id,created_at,last_activity_at,absolute_expires_at,client_name,client_ip,user_agent
-         FROM sessions WHERE user_id=?1 AND revoked_at IS NULL AND idle_expires_at>?2 AND absolute_expires_at>?2
-         ORDER BY last_activity_at DESC,id DESC")?;
+         FROM sessions WHERE user_id=?1 AND revoked_at IS NULL
+           AND idle_expires_at>?2 AND absolute_expires_at>?2
+         ORDER BY last_activity_at DESC,id DESC",
+    )?;
     let rows = statement.query_map(rusqlite::params![user_id, now], |row| {
         let id: String = row.get(0)?;
         Ok(SessionSummary {
@@ -723,8 +732,11 @@ pub(crate) fn can_read_private_pool(
     match &actor.source {
         ActorSource::BrowserSession { .. } => Ok(true),
         ActorSource::McpGrant { grant_id } => Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes WHERE grant_id=?1 AND scope='my_pool_private')",
-            [grant_id], |row| row.get(0))?),
+            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes
+             WHERE grant_id=?1 AND scope='my_pool_private')",
+            [grant_id],
+            |row| row.get(0),
+        )?),
     }
 }
 

@@ -20,9 +20,9 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use hyper::server::conn::http1;
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo, TokioTimer},
-    server::conn::auto::Builder,
+    rt::{TokioIo, TokioTimer},
     service::TowerToHyperService,
 };
 use ipnet::IpNet;
@@ -183,13 +183,11 @@ async fn serve_connection<T>(
     // Proxies and browsers reach oneloop over HTTP/1.1. Its header timer runs
     // from the moment a connection opens; cleartext HTTP/2 would let a client
     // hold a connection without a request, or stall a stream without reading.
-    let mut builder = Builder::new(TokioExecutor::new()).http1_only();
-    builder
-        .http1()
-        .timer(TokioTimer::new())
-        .header_read_timeout(header_timeout);
     let io = TokioIo::new(PacedWrites::new(io, limits.response));
-    let connection = builder.serve_connection(io, service);
+    let connection = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_timeout)
+        .serve_connection(io, service);
     tokio::pin!(connection);
     tokio::select! {
         result = &mut connection => {

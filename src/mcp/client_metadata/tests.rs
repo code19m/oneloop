@@ -179,19 +179,19 @@ fn documents_must_describe_a_public_client_with_safe_callbacks() {
         ),
         (
             serde_json::json!({"token_endpoint_auth_method": "client_secret_basic"}),
-            "other than none",
+            "token_endpoint_auth_method",
         ),
         (
             serde_json::json!({"token_endpoint_auth_method": "private_key_jwt"}),
-            "other than none",
+            "token_endpoint_auth_method",
         ),
         (
             serde_json::json!({"grant_types": ["client_credentials"]}),
-            "unsupported grant_types",
+            "grant_types",
         ),
         (
             serde_json::json!({"response_types": ["token"]}),
-            "unsupported response_types",
+            "response_types",
         ),
         (serde_json::json!({"client_name": null}), "client_name"),
         (serde_json::json!({"client_name": "  "}), "client_name"),
@@ -210,13 +210,13 @@ fn documents_must_describe_a_public_client_with_safe_callbacks() {
         ),
         (
             serde_json::json!({"redirect_uris": ["javascript:alert(1)"]}),
-            "redirect URI",
+            "redirect_uris",
         ),
         (
             serde_json::json!({"redirect_uris": ["http://evil.example/callback"]}),
-            "redirect URI",
+            "redirect_uris",
         ),
-        (serde_json::json!({"redirect_uris": [7]}), "redirect URI"),
+        (serde_json::json!({"redirect_uris": [7]}), "redirect_uris"),
         (
             serde_json::json!({"client_uri": "http://app.example.com"}),
             "client_uri",

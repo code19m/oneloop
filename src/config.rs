@@ -71,6 +71,13 @@ pub struct Config {
     pub mcp_client_metadata_documents: bool,
 }
 
+impl Config {
+    /// The public URL without its trailing slash, to append paths to.
+    pub fn base_url(&self) -> &str {
+        self.public_url.as_str().trim_end_matches('/')
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataConfig {
     pub data_dir: PathBuf,
@@ -221,13 +228,8 @@ fn parse_allowed_origins(raw: &str) -> AppResult<Vec<String>> {
             )
         };
         let url = Url::parse(item).map_err(|_| invalid())?;
-        let loopback = match url.host() {
-            Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            Some(Host::Ipv4(address)) => address.is_loopback(),
-            Some(Host::Ipv6(address)) => address.is_loopback(),
-            None => return Err(invalid()),
-        };
-        let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+        let allowed_scheme =
+            url.scheme() == "https" || (url.scheme() == "http" && is_loopback(&url));
         if !allowed_scheme
             || !url.username().is_empty()
             || url.password().is_some()
@@ -436,15 +438,12 @@ fn parse_public_url(raw: &str) -> AppResult<Url> {
             "path prefixes are not supported",
         ));
     }
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => return Err(invalid_env(PUBLIC_URL_ENV, "a host is required")),
-    };
+    if url.host().is_none() {
+        return Err(invalid_env(PUBLIC_URL_ENV, "a host is required"));
+    }
     match url.scheme() {
         "https" => {}
-        "http" if loopback => {}
+        "http" if is_loopback(&url) => {}
         "http" => {
             return Err(invalid_env(
                 PUBLIC_URL_ENV,
@@ -455,6 +454,16 @@ fn parse_public_url(raw: &str) -> AppResult<Url> {
     }
     url.set_path("");
     Ok(url)
+}
+
+/// Whether a URL names this computer: `localhost` or a loopback address.
+pub(crate) fn is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
 }
 
 fn parse_size(variable: &'static str, raw: &str) -> AppResult<u64> {

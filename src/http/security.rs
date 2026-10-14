@@ -58,11 +58,7 @@ pub(crate) async fn enforce_host(
                         .any(|part| part.trim().starts_with("text/html"))
                 });
         let mut response = if wants_page {
-            let escaped = canonical_url
-                .replace('&', "&amp;")
-                .replace('"', "&quot;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;");
+            let escaped = escape_html(&canonical_url);
             axum::response::Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Open oneloop</title><h1>Open oneloop at its configured address</h1><p><a href=\"{escaped}\">{escaped}</a></p></html>")).into_response()
         } else {
             AppError::InvalidOrigin { canonical_url }.into_response()
@@ -81,6 +77,16 @@ pub(crate) async fn enforce_host(
         return response;
     }
     next.run(request).await
+}
+
+/// Escapes text for HTML element content and quoted attribute values.
+pub(crate) fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn allowed_authority(raw: &str, public: &Url, peer: Option<SocketAddr>, path: &str) -> bool {

@@ -6,6 +6,12 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `oneloop serve` no longer crashes when nothing reads its standard error and
+  it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
+  line like the others.
+
 ### Security
 
 - Updated rustls to 0.23.46 (RUSTSEC-2026-0349). oneloop uses it when it

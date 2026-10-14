@@ -149,9 +149,11 @@ pub async fn run(cli: Cli) -> AppResult<()> {
 
 async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let config = Config::from_env()?;
+    // Before any warning: tracing ignores a standard error that nobody reads.
+    init_tracing(config.log_level);
     if config.public_url.scheme() == "https" && config.trusted_proxies.is_empty() {
-        eprintln!(
-            "warning: HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
+        tracing::warn!(
+            "HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
         );
     }
     if config.mcp_client_metadata_documents {
@@ -184,8 +186,6 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
 
     let db = Db::open(&config.data_dir).map_err(|error| startup_error(error, &config.data_dir))?;
     let _server_lock = db.layout().try_server_lock()?;
-
-    init_tracing(config.log_level);
     tracing::info!(public_url = %config.public_url, trusted_proxies = ?config.trusted_proxies, "proxy configuration");
     let listen = config.listen;
     let trusted_proxies = config.trusted_proxies.clone();
@@ -262,7 +262,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
     let db = Db::open(config.data_dir)?;
     match arguments.command {
         UserCommand::Add(arguments) => {
-            let password = read_password(arguments.password_stdin, true)?;
+            let password = read_password(arguments.password_stdin)?;
             let username = arguments.username;
             let display_name = arguments.name.unwrap_or_else(|| username.clone());
             let is_admin = arguments.admin;
@@ -294,7 +294,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
             print_line(format_args!("created user {}", created.username))
         }
         UserCommand::Passwd(arguments) => {
-            let password = read_password(arguments.password_stdin, true)?;
+            let password = read_password(arguments.password_stdin)?;
             let username = arguments.username;
             db.transaction(move |transaction| {
                 reset_password_with_policy(transaction, &username, &password, unix_now()?, &policy)
@@ -363,7 +363,7 @@ async fn database(arguments: DatabaseArgs) -> AppResult<()> {
     }
 }
 
-fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
+fn read_password(from_stdin: bool) -> AppResult<String> {
     if from_stdin {
         let mut bytes = Vec::new();
         // Read one byte past the limit plus a possible CRLF, without buffering
@@ -395,11 +395,9 @@ fn read_password(from_stdin: bool, confirm: bool) -> AppResult<String> {
         ));
     }
     let first = rpassword::prompt_password("Password: ")?;
-    if confirm {
-        let second = rpassword::prompt_password("Confirm password: ")?;
-        if first != second {
-            return Err(AppError::validation("password", "passwords do not match"));
-        }
+    let second = rpassword::prompt_password("Confirm password: ")?;
+    if first != second {
+        return Err(AppError::validation("password", "passwords do not match"));
     }
     Ok(first)
 }
