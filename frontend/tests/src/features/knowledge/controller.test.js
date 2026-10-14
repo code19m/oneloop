@@ -192,7 +192,7 @@ test('search shows escaped names and sections, and Escape restores the page', as
   t.state.search = {
     files: [{ path: 'guides/<img src=x onerror=alert(1)>.md', folder: false }],
     documents: [{ path: 'guides/onboarding.md', total: 1, hits: [{ heading: 'First day', section: 'first-day-1', snippet: 'Meet the <team> on the first day.' }] }],
-    fileCount: 1, hitCount: 1,
+    fileCount: 1, hitCount: 1, partial: true,
   };
   const input = t.d.querySelector('[data-knowledge-search]');
   input.focus();
@@ -208,6 +208,7 @@ test('search shows escaped names and sections, and Escape restores the page', as
   assert.equal(section.getAttribute('href'), '#/knowledge/p1/blob/guides/onboarding.md?section=first-day-1');
   assert.equal(section.querySelector('mark').textContent, 'First');
   assert.match(section.querySelector('.knowledge-hit-snippet').innerHTML, /&lt;team&gt;/);
+  assert.match(finder.textContent, /Some files are searched by name only/);
   input.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await settle();
   assert.equal(t.d.querySelector('.knowledge-finder'), null);

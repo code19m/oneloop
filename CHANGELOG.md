@@ -15,6 +15,10 @@ All notable changes to oneloop are recorded here. The format follows
   shows that it is too large. Before, a folder with many deep subfolders
   could make search use gigabytes of memory, and a sync could fill the disk
   with folders.
+- Knowledge search now says when some files are searched by name only,
+  because their text doesn't fit in the search index. Before, a word in such
+  a file gave "No results" without a reason. In MCP, `search_knowledge` and
+  `read_knowledge_overview` replies then include `"partial": true`.
 
 ### Security
 

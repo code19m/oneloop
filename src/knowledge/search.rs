@@ -27,6 +27,8 @@ pub(crate) struct Index {
     outlines: HashMap<String, Outline>,
     /// Approximate memory held by the index.
     bytes: usize,
+    /// Some files' text didn't fit, so they are found by name only.
+    partial: bool,
 }
 
 /// A Markdown file's title and level-two headings.
@@ -61,6 +63,8 @@ struct Entry {
 pub(crate) enum Content<'a> {
     Markdown(&'a str),
     Text(&'a str),
+    /// Text that the budget would not hold, so it wasn't even read.
+    LeftOut,
     None,
 }
 
@@ -81,6 +85,7 @@ impl Index {
             documents: Vec::new(),
             outlines: HashMap::new(),
             bytes: 0,
+            partial: false,
         };
         // Every file can be found by name, however full the index is. Names
         // come first, so text gets what they leave of the budget.
@@ -171,6 +176,7 @@ impl Index {
                         }
                     }
                 }
+                Content::LeftOut => index.partial = true,
                 Content::None => {}
             }
             if !entries.is_empty() {
@@ -181,6 +187,7 @@ impl Index {
                 });
             }
         }
+        index.partial |= full;
         index.names.shrink_to_fit();
         index.documents.shrink_to_fit();
         index
@@ -198,6 +205,10 @@ impl Index {
 
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    pub(crate) fn partial(&self) -> bool {
+        self.partial
     }
 
     pub(crate) fn search(&self, query: &str) -> Results {
@@ -299,6 +310,7 @@ impl Index {
                 .collect(),
             file_count,
             hit_count,
+            partial: self.partial,
         }
     }
 }
@@ -376,6 +388,10 @@ pub struct Results {
     pub file_count: usize,
     /// All matching sections, including those beyond `documents`.
     pub hit_count: usize,
+    /// Some files' text didn't fit in the index, so they are found by name
+    /// only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -631,10 +647,15 @@ mod tests {
         assert!(bytes <= INDEX_BYTES_MAX, "{bytes} bytes");
         assert!(held / 2 <= bytes && bytes <= held * 2, "{bytes} for {held}");
         // Files past the budget are found by name only, and so are folders.
-        assert_eq!(index.search("n1999").files.len(), 1);
+        let results = index.search("n1999");
+        assert_eq!(results.files.len(), 1);
+        assert!(results.partial, "the results say text was left out");
         assert_eq!(index.search("1999/a/b").files.len(), 2);
         let indexed = index.documents.len();
         assert!((1..2_000).contains(&indexed), "{indexed}");
+        // Text left out before it was read counts too.
+        assert!(!Index::build([("a.md", Content::Markdown("# A\n"))]).partial());
+        assert!(Index::build([("a.md", Content::LeftOut)]).partial());
     }
 
     #[test]

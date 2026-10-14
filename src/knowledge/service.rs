@@ -234,6 +234,10 @@ pub struct KnowledgeOverview {
     pub file_count: usize,
     #[serde(skip_serializing_if = "Not::not")]
     pub truncated: bool,
+    /// Some files' text didn't fit in the search index. They have no title
+    /// or sections here, and search finds them by name only.
+    #[serde(skip_serializing_if = "Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -787,6 +791,9 @@ impl KnowledgeService {
             files,
             file_count: inside.len(),
             truncated: inside.len() > OVERVIEW_FILES_MAX,
+            partial: catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.index.partial()),
         })
     }
 
@@ -938,20 +945,14 @@ impl KnowledgeService {
         };
         let project_id = project_id.to_owned();
         let catalog = tokio::task::spawn_blocking(move || {
-            let texts: Vec<(String, Option<PreviewKind>, Option<String>)> = files
-                .into_iter()
-                .map(|(path, kind, bytes)| {
-                    let text = bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-                    (path, kind, text)
-                })
-                .collect();
-            let index = Index::build(texts.iter().map(|(path, kind, text)| {
-                let content = match (kind, text) {
-                    (Some(PreviewKind::Markdown), Some(text)) => Content::Markdown(text),
-                    (Some(PreviewKind::Text), Some(text)) => Content::Text(text),
+            let index = Index::build(files.iter().map(|file| {
+                let content = match (&file.text, file.kind) {
+                    (Text::Read(text), Some(PreviewKind::Markdown)) => Content::Markdown(text),
+                    (Text::Read(text), Some(PreviewKind::Text)) => Content::Text(text),
+                    (Text::LeftOut, _) => Content::LeftOut,
                     _ => Content::None,
                 };
-                (path.as_str(), content)
+                (file.path.as_str(), content)
             }));
             Arc::new(Catalog {
                 project_id,
@@ -1018,13 +1019,19 @@ impl KnowledgeService {
                 let mut read = 0;
                 let mut files = Vec::with_capacity(listed.len());
                 for (rowid, path, kind, size, indexed) in listed {
-                    let text = if indexed && read + size <= CATALOG_TEXT_BYTES {
+                    let text = if !indexed {
+                        Text::None
+                    } else if read + size <= CATALOG_TEXT_BYTES {
                         read += size;
-                        Some(content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?)
+                        let bytes = content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?;
+                        // Valid text is not copied.
+                        Text::Read(String::from_utf8(bytes).unwrap_or_else(|error| {
+                            String::from_utf8_lossy(error.as_bytes()).into_owned()
+                        }))
                     } else {
-                        None
+                        Text::LeftOut
                     };
-                    files.push((path, kind, text));
+                    files.push(CatalogFile { path, kind, text });
                 }
                 Ok(Loaded::Files(key, files))
             })
@@ -1037,7 +1044,22 @@ enum Loaded {
     Cached(Arc<Catalog>),
     /// Not cached, and the files were not requested.
     Missing,
-    Files(String, Vec<(String, Option<PreviewKind>, Option<Vec<u8>>)>),
+    Files(String, Vec<CatalogFile>),
+}
+
+/// A file as a catalog is built from it.
+struct CatalogFile {
+    path: String,
+    kind: Option<PreviewKind>,
+    text: Text,
+}
+
+enum Text {
+    Read(String),
+    /// Searchable text that the index has no room for.
+    LeftOut,
+    /// The file is found by name only, by rule.
+    None,
 }
 
 impl Inner {

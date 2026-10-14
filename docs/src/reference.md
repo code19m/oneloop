@@ -203,7 +203,9 @@ thumbnail a moment after the upload.
 
 All query words must occur in the same file or folder path, Markdown section,
 or plain-text line. Matching ignores letter case. Files outside the searchable
-text limits can still be found by name.
+text limits can still be found by name. When some files' text doesn't fit in
+the search index, the search says that some files are searched by name only,
+and MCP replies include `"partial": true`.
 
 **Text**
 

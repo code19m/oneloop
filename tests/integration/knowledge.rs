@@ -796,6 +796,7 @@ async fn search_finds_names_and_section_text() {
     assert_eq!(results["hitCount"], 1);
     assert_eq!(results["documents"][0]["path"], "README.md");
     assert_eq!(results["documents"][0]["hits"][0]["heading"], "Setup");
+    assert!(results.get("partial").is_none(), "all text fits");
 
     let names = body_json(
         fixture

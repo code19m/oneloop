@@ -314,14 +314,15 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const result = S.results?.query === S.query ? S.results.data : null;
     if (!result) return finderShell('', `<p class="knowledge-finder-status" role="status">${S.searching ? 'Searching…' : ''}</p>`);
     const files = result.fileCount, hits = result.hitCount, quoted = `“${esc(S.query.trim())}”`, scope = S.scope;
+    const partial = result.partial ? '<p class="knowledge-finder-status">Some files are searched by name only.</p>' : '';
     const tabs = `<div class="seg knowledge-scope" role="tablist" aria-label="Search in">${[['all', 'All', files + hits], ['files', 'Files', files], ['content', 'Content', hits]].map(([id, label, count]) => `<button type="button" role="tab" aria-selected="${scope === id}" class="${scope === id ? 'on' : ''}" data-knowledge-action="scope" data-scope="${id}">${label}<span>${count}</span></button>`).join('')}</div>`;
-    if (!files && !hits) return finderShell('', noResults(`No results for ${quoted}`, 'Try fewer words or a different spelling.'));
-    if (scope === 'files' && !files) return finderShell(tabs, noResults(`No file or folder names match ${quoted}`, `${hits} ${hits === 1 ? 'match' : 'matches'} in document text.`));
-    if (scope === 'content' && !hits) return finderShell(tabs, noResults(`No document text matches ${quoted}`, `${files} matching ${files === 1 ? 'name' : 'names'} in Files.`));
+    if (!files && !hits) return finderShell('', noResults(`No results for ${quoted}`, 'Try fewer words or a different spelling.') + partial);
+    if (scope === 'files' && !files) return finderShell(tabs, noResults(`No file or folder names match ${quoted}`, `${hits} ${hits === 1 ? 'match' : 'matches'} in document text.`) + partial);
+    if (scope === 'content' && !hits) return finderShell(tabs, noResults(`No document text matches ${quoted}`, `${files} matching ${files === 1 ? 'name' : 'names'} in Files.`) + partial);
     const all = scope === 'all', fileLimit = all ? 5 : Infinity, docLimit = all ? 3 : Infinity, hitLimit = all ? 2 : Infinity;
     const fileGroup = scope !== 'content' && files ? group('Files', result.files.slice(0, fileLimit).map((/** @type {any} */ item) => nameHit(projectId, item, words, data)).join('') + (all && files > fileLimit ? `<button type="button" class="knowledge-finder-more" data-knowledge-action="scope" data-scope="files">Show all ${files} files</button>` : '')) : '';
     const textGroup = scope !== 'files' && hits ? group('In documents', result.documents.slice(0, docLimit).map((/** @type {any} */ doc) => documentHits(projectId, doc, hitLimit, words, data)).join('') + (all && (result.documents.length > docLimit || hits > result.documents.slice(0, docLimit).reduce((/** @type {number} */ total, /** @type {any} */ doc) => total + Math.min(doc.hits.length, hitLimit), 0)) ? `<button type="button" class="knowledge-finder-more" data-knowledge-action="scope" data-scope="content">Show all ${hits} matches</button>` : '')) : '';
-    return finderShell(tabs, fileGroup + textGroup);
+    return finderShell(tabs, fileGroup + textGroup + partial);
   }
 
   function paintFinder() {
