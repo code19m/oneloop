@@ -205,7 +205,8 @@ async fn register_client_inner(
             )?;
             // Clients described by metadata documents didn't register.
             let global_recent: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM oauth_clients WHERE created_at>?1 AND client_id NOT LIKE 'https://%'",
+                "SELECT COUNT(*) FROM oauth_clients
+                 WHERE created_at>?1 AND client_id NOT LIKE 'https://%'",
                 [now - 3600],
                 |row| row.get(0),
             )?;
@@ -220,8 +221,9 @@ async fn register_client_inner(
                 return Ok(false);
             }
             tx.execute(
-                "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,client_uri,created_at)
-             VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO oauth_clients
+                 (client_id,client_name,redirect_uris_json,client_uri,created_at)
+                 VALUES(?1,?2,?3,?4,?5)",
                 params![
                     inserted_id,
                     stored_name,
@@ -294,20 +296,47 @@ async fn authorize_inner(
         .map_err(|error| AppError::internal(format!("serialize scopes: {error}")))?;
     let challenge = query.code_challenge.clone();
     let now = unix_now()?;
-    state.db.transaction(move |connection| {
-        connection.execute("DELETE FROM oauth_authorization_requests WHERE expires_at<=?1 OR consumed_at IS NOT NULL", [now])?;
-        if let Some(document) = &document {
-            remember_described_client(connection, document, now)?;
-        }
-        connection.execute(
-            "INSERT INTO oauth_authorization_requests
-             (id,user_id,client_id,redirect_uri,state,resource,requested_scopes_json,code_challenge,created_at,expires_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![stored_id,user_id,client_id,redirect_uri,state_value,resource,requested_scopes,challenge,now,now+AUTHORIZATION_REQUEST_SECONDS],
-        )?;
-        connection.execute(DROP_OLDEST_PENDING_REQUESTS_SQL, params![user_id, MAX_PENDING_REQUESTS_PER_PERSON])?;
-        Ok(())
-    }).await?;
+    state
+        .db
+        .transaction(move |tx| {
+            tx.execute(
+                "DELETE FROM oauth_authorization_requests
+                 WHERE expires_at<=?1 OR consumed_at IS NOT NULL",
+                [now],
+            )?;
+            if let Some(document) = &document {
+                remember_described_client(tx, document, now)?;
+            }
+            tx.execute(
+                "INSERT INTO oauth_authorization_requests
+                 (id,user_id,client_id,redirect_uri,state,resource,requested_scopes_json,
+                  code_challenge,created_at,expires_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    stored_id,
+                    user_id,
+                    client_id,
+                    redirect_uri,
+                    state_value,
+                    resource,
+                    requested_scopes,
+                    challenge,
+                    now,
+                    now + AUTHORIZATION_REQUEST_SECONDS
+                ],
+            )?;
+            // Expired and used requests are gone now. A new row's rowid is above
+            // every row there is, so rowids give the order of requests even when
+            // the clock steps back.
+            tx.execute(
+                "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND rowid NOT IN
+                 (SELECT rowid FROM oauth_authorization_requests
+                  WHERE user_id=?1 ORDER BY rowid DESC LIMIT ?2)",
+                params![user_id, MAX_PENDING_REQUESTS_PER_PERSON],
+            )?;
+            Ok(())
+        })
+        .await?;
     let client_name = client_name(&state, &query.client_id).await?;
     consent_response(
         Html(consent_html(
@@ -349,7 +378,12 @@ async fn described_client(
             // The page says only "invalid request", so that it can't be used
             // to probe the server's network; the log tells the admin why.
             if let AppError::Validation { message, .. } = error {
-                tracing::info!(user_id = %actor.user_id, client_id = %query.client_id, %message, "client metadata document refused");
+                tracing::info!(
+                    user_id = %actor.user_id,
+                    client_id = %query.client_id,
+                    %message,
+                    "client metadata document refused"
+                );
             }
         })?;
     let redirect = validate_redirect_uri(&query.redirect_uri, schemes)?;
@@ -380,7 +414,12 @@ fn remember_described_client(
     let redirects = serde_json::to_string(&document.redirect_uris)
         .map_err(|error| AppError::internal(format!("serialize redirect URIs: {error}")))?;
     tx.execute(
-        UPSERT_DESCRIBED_CLIENT_SQL,
+        "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,client_uri,created_at)
+         VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,
+           redirect_uris_json=excluded.redirect_uris_json,client_uri=excluded.client_uri,
+           created_at=CASE WHEN last_used_at IS NULL THEN excluded.created_at
+                           ELSE oauth_clients.created_at END",
         params![
             document.client_id,
             document.client_name,
@@ -390,7 +429,15 @@ fn remember_described_client(
         ],
     )?;
     tx.execute(
-        DELETE_OLD_DESCRIBED_CLIENTS_SQL,
+        "DELETE FROM oauth_clients WHERE client_id IN (
+         SELECT client_id FROM oauth_clients
+         WHERE client_id LIKE 'https://%' AND last_used_at IS NULL AND client_id<>?1
+           AND client_id NOT IN (
+             SELECT client_id FROM oauth_authorization_requests
+             WHERE consumed_at IS NULL AND expires_at>?3
+             UNION SELECT client_id FROM oauth_authorization_codes
+             WHERE used_at IS NULL AND expires_at>?3)
+         ORDER BY created_at DESC,client_id DESC LIMIT -1 OFFSET ?2)",
         params![document.client_id, MAX_UNUSED_DESCRIBED_CLIENTS - 1, now],
     )?;
     Ok(())
@@ -474,9 +521,10 @@ async fn consent(
             let row = tx
                 .query_row(
                     "SELECT r.user_id,r.client_id,c.client_name,r.redirect_uri,r.state,r.resource,
-                    r.requested_scopes_json,r.code_challenge
-             FROM oauth_authorization_requests r JOIN oauth_clients c ON c.client_id=r.client_id
-             WHERE r.id=?1 AND r.user_id=?2 AND r.consumed_at IS NULL AND r.expires_at>?3",
+                            r.requested_scopes_json,r.code_challenge
+                     FROM oauth_authorization_requests r
+                     JOIN oauth_clients c ON c.client_id=r.client_id
+                     WHERE r.id=?1 AND r.user_id=?2 AND r.consumed_at IS NULL AND r.expires_at>?3",
                     params![request_hash, user_id, now],
                     |row| {
                         Ok(StoredAuthorizationRequest {
@@ -632,20 +680,35 @@ async fn approve_consent(
     let stored = stored.clone();
     let request_hash = hash_token(&form.request_id);
     let actor = actor.clone();
-    state.db.transaction(move |connection| {
-        // The session may have been revoked since this request was authenticated.
-        let actor = crate::auth::refresh_actor_connection(connection, &actor)?;
-        validate_selected_projects(connection, &actor, &projects)?;
-        consume_request(connection, &request_hash, &actor.user_id, unix_now()?)?;
-        connection.execute(
-            "INSERT INTO oauth_authorization_codes
-             (code_hash,user_id,client_id,client_name,redirect_uri,resource,projects_json,scopes_json,code_challenge,issued_at,expires_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![code_hash,stored.user_id,stored.client_id,stored.client_name,stored.redirect_uri,
-                stored.resource,projects_json,scopes_json,stored.challenge,issued_at,issued_at+AUTHORIZATION_CODE_SECONDS],
-        )?;
-        Ok(())
-    }).await?;
+    state
+        .db
+        .transaction(move |connection| {
+            // The session may have been revoked since this request was authenticated.
+            let actor = crate::auth::refresh_actor_connection(connection, &actor)?;
+            validate_selected_projects(connection, &actor, &projects)?;
+            consume_request(connection, &request_hash, &actor.user_id, unix_now()?)?;
+            connection.execute(
+                "INSERT INTO oauth_authorization_codes
+                 (code_hash,user_id,client_id,client_name,redirect_uri,resource,projects_json,
+                  scopes_json,code_challenge,issued_at,expires_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    code_hash,
+                    stored.user_id,
+                    stored.client_id,
+                    stored.client_name,
+                    stored.redirect_uri,
+                    stored.resource,
+                    projects_json,
+                    scopes_json,
+                    stored.challenge,
+                    issued_at,
+                    issued_at + AUTHORIZATION_CODE_SECONDS
+                ],
+            )?;
+            Ok(())
+        })
+        .await?;
     Ok(code)
 }
 
@@ -812,7 +875,11 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
         .db
         .run(move |c| {
             Ok(c.query_row(
-                SELECT_OAUTH_AUTHORIZATION_CODES_SQL,
+                "SELECT EXISTS(SELECT 1 FROM oauth_authorization_codes
+                 WHERE code_hash=?1 AND client_id=?2 AND redirect_uri=?3 AND resource=?4
+                   AND code_challenge=?5
+                   AND ((used_at IS NULL AND expires_at>?6)
+                        OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))",
                 params![
                     lookup_hash,
                     lookup_client,
@@ -1022,7 +1089,12 @@ async fn accessible_projects(state: &AppState, actor: &Actor) -> AppResult<Vec<(
     state
         .db
         .run(move |connection| {
-            let mut statement = connection.prepare(SELECT_PROJECTS_2_SQL)?;
+            let mut statement = connection.prepare(
+                "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
+                   AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m
+                                       WHERE m.project_id=p.id AND m.user_id=?2))
+                 ORDER BY p.name,p.id",
+            )?;
             Ok(statement
                 .query_map(params![actor.is_admin, actor.user_id], |row| {
                     Ok((row.get(0)?, row.get(1)?))
@@ -1038,10 +1110,14 @@ fn validate_selected_projects(
     projects: &[String],
 ) -> AppResult<()> {
     for id in projects {
-        let allowed: bool =
-            connection.query_row(SELECT_PROJECTS_SQL, params![id, actor.user_id], |row| {
-                row.get(0)
-            })?;
+        let allowed: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2
+             WHERE p.id=?1 AND p.deleted_at IS NULL AND u.is_active=1
+               AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m
+                                          WHERE m.project_id=p.id AND m.user_id=u.id)))",
+            params![id, actor.user_id],
+            |row| row.get(0),
+        )?;
         if !allowed {
             return Err(AppError::validation(
                 "project",
@@ -1497,33 +1573,6 @@ async fn authorize(
     };
     result.unwrap_or_else(|error| OAuthError::from_app(error, false).page())
 }
-
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
-/// Expired and used requests are already gone when this runs. A new row's
-/// rowid is above every row there is, so rowids give the order of requests
-/// even when the clock steps back.
-const DROP_OLDEST_PENDING_REQUESTS_SQL: &str = "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND rowid NOT IN
-     (SELECT rowid FROM oauth_authorization_requests WHERE user_id=?1 ORDER BY rowid DESC LIMIT ?2)";
-const SELECT_OAUTH_AUTHORIZATION_CODES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM oauth_authorization_codes WHERE code_hash=?1 AND \
-                     client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5 AND ((used_at IS NULL AND expires_at>?6) OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))";
-const SELECT_PROJECTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2 WHERE p.id=?1 AND \
-                     p.deleted_at IS NULL AND u.is_active=1 AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM \
-                     project_memberships m WHERE m.project_id=p.id AND m.user_id=u.id)))";
-
-const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,client_uri,created_at)
-             VALUES(?1,?2,?3,?4,?5)
-             ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,
-               redirect_uris_json=excluded.redirect_uris_json,client_uri=excluded.client_uri,
-               created_at=CASE WHEN last_used_at IS NULL THEN excluded.created_at ELSE oauth_clients.created_at END";
-const DELETE_OLD_DESCRIBED_CLIENTS_SQL: &str = "DELETE FROM oauth_clients WHERE client_id IN (
-             SELECT client_id FROM oauth_clients
-             WHERE client_id LIKE 'https://%' AND last_used_at IS NULL AND client_id<>?1
-               AND client_id NOT IN (
-                 SELECT client_id FROM oauth_authorization_requests WHERE consumed_at IS NULL AND expires_at>?3
-                 UNION SELECT client_id FROM oauth_authorization_codes WHERE used_at IS NULL AND expires_at>?3)
-             ORDER BY created_at DESC,client_id DESC LIMIT -1 OFFSET ?2)";
-const SELECT_PROJECTS_2_SQL: &str = "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
-            AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?2)) ORDER BY p.name,p.id";
 
 #[cfg(test)]
 mod tests {
@@ -1995,7 +2044,7 @@ mod tests {
                     .collect::<Result<Vec<_>, _>>()?;
                 let pending: i64 = c.query_row(
                     "SELECT (SELECT COUNT(*) FROM oauth_authorization_requests)
-                        + (SELECT COUNT(*) FROM oauth_authorization_codes)",
+                     + (SELECT COUNT(*) FROM oauth_authorization_codes)",
                     [],
                     |r| r.get(0),
                 )?;
