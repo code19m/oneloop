@@ -5,43 +5,29 @@ const { bootApp, settle, waitFor } = require('../support/dom.cjs');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
 const { createRecoveryController } = require('../../src/features/recovery/controller.js');
 const { ApiError } = require('../../src/data/api-client.js');
-const { installViewBridge } = require('../../src/app/view-bridge.js');
 
 // Comments and blocks share one membership check: a new mention needs an active member, a saved one is kept.
 // One case per outcome: an active member for blocks (new comment mentions are sent below), removed and
 // inactive members, and a saved mention of a member who left.
 for(const [kind,state,retained] of [['comment','removed',false],['comment','inactive',false],['comment','removed',true],['block','active',false],['block','removed',false],['block','removed',true]])test(`${kind} editor validates ${retained?'saved':'new'} mentions when the recipient is ${state}`,async()=>{
- const saves=[];
- const t=bootApp({route:'task/BIR-079',prepare(D,w){
-  w.OneloopTransport={};w.OneloopCollaboration={bind(){return {saveComment(input){saves.push(input);}};}};
+ const t=bootApp({route:'task/BIR-079',prepare(D){
   const task=D.tasks.find(item=>item.id==='BIR-079');task.internalId='task-1';
   task.comments=[{id:'retained-comment',who:D.session.userId,ts:1700000000000,text:retained?'@robin original':'Original',revision:1,mentions:retained?[{id:'robin',label:'robin',start:0,end:6}]:[]}];
   task.block={id:'retained-block',reason:retained?'@robin original':'Original',revision:1,by:D.session.userId,at:1700000000000,mentions:retained?[{kind:'user',userId:'robin',label:'@robin',startOffset:0,endOffset:6}]:[]};
  }});
  const task=t.D.tasks.find(item=>item.id==='BIR-079'),project=t.D.projects.find(item=>item.id===t.A.context().projectId);
  const invalidate=()=>{if(state==='removed')project.members=project.members.filter(member=>member.userId!=='robin');if(state==='inactive')t.D.users.find(user=>user.id==='robin').active=false;};
- const previousFormData=globalThis.FormData,previousCollab=globalThis.Collab;
- try{
-  if(kind==='block'){
-   globalThis.FormData=t.w.FormData;globalThis.Collab=t.w.Collab;
-   installViewBridge({app:t.A,data:t.D,api:{},gateway:{execute:async(operation,payload)=>{saves.push({operation,payload});return {entities:[],events:[]};}},reads:{counts:async()=>{}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
-  }
-  if(retained)invalidate();
-  if(kind==='comment')t.A.editComment(task.id,'retained-comment');else t.A.openModal('block',task.id);
-  if(!retained){if(kind==='comment')mention(t,'@rob','robin');else pickBlock(t,'@rob','robin');invalidate();}
-  if(kind==='comment')typeComment(t,'@robin corrected');else typeBlock(t,'@robin corrected');
-  if(kind==='comment')t.A.addComment(task.id);else saveBlockForm(t);
-  await settle();
-  const accepted=retained||state==='active';assert.equal(saves.length,accepted?1:0);
-  if(!accepted){assert.match(t.d.querySelector(kind==='comment'?'.comment-feedback':'.block-mention-feedback').textContent,/no longer an active project member/);return;}
-  if(kind==='comment'){
-   assert.equal(saves[0].text,'@robin corrected');assert.equal(saves[0].commentId,'retained-comment');
-   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].mentions)),[{id:'robin',label:'robin',start:0,end:6}]);
-  }else{
-   assert.equal(saves[0].operation,'task.block.update');
-   assert.deepEqual(JSON.parse(JSON.stringify(saves[0].payload)),{blockId:'retained-block',reason:'@robin corrected',mentions:[{kind:'user',userId:'robin',startOffset:0,endOffset:6,label:'@robin'}]});
-  }
- }finally{globalThis.FormData=previousFormData;globalThis.Collab=previousCollab;}
+ if(retained)invalidate();
+ if(kind==='comment')t.A.editComment(task.id,'retained-comment');else t.A.openModal('block',task.id);
+ if(!retained){if(kind==='comment')mention(t,'@rob','robin');else pickBlock(t,'@rob','robin');invalidate();}
+ if(kind==='comment')typeComment(t,'@robin corrected');else typeBlock(t,'@robin corrected');
+ if(kind==='comment')t.A.addComment(task.id);else saveBlockForm(t);
+ await settle();
+ const accepted=retained||state==='active';assert.equal(t.commands.length,accepted?1:0);
+ if(!accepted){assert.match(t.d.querySelector(kind==='comment'?'.comment-feedback':'.block-mention-feedback').textContent,/no longer an active project member/);return;}
+ const mentions=[{kind:'user',userId:'robin',startOffset:0,endOffset:6,label:'@robin'}];
+ if(kind==='comment')assert.deepEqual([t.commands[0].operation,t.commands[0].payload],['discussion.comment.edit',{commentId:'retained-comment',content:'@robin corrected',mentions}]);
+ else assert.deepEqual([t.commands[0].operation,t.commands[0].payload],['task.block.update',{blockId:'retained-block',reason:'@robin corrected',mentions}]);
 });
 
 function productionComments(commands) {
@@ -180,7 +166,7 @@ test('a comment edit typed after Save saves over that acknowledged save',async()
 
 /** Boot a task page; `prepare` edits the projection before the views load. */
 function boot(prepare, route = 'task/BIR-079', scenario = '') {
-  return bootApp({ route, scenario, fixture: scenario === 'collaboration-demo' ? 'collaboration-demo' : undefined, prepare: prepare || undefined });
+  return bootApp({ route, scenario, production: false, fixture: scenario === 'collaboration-demo' ? 'collaboration-demo' : undefined, prepare: prepare || undefined });
 }
 function event(form){return{target:form,preventDefault(){}}}
 function block(t,mode,reason='Waiting for approval'){t.A.openModal(mode,'BIR-079');const form=t.d.querySelector('.modal form');form.querySelector('[name="reason"]').value=reason;return t.A.saveBlock(event(form),'BIR-079',mode);}
@@ -360,7 +346,7 @@ test('comment/reply edit consolidation, reverts, unchanged saves, content finger
 });
 
 test('Enter submits block/edit/unblock/completion, mentions select first, Shift/IME/repeat guards and failed-submit input preservation', () => {
- const t=bootApp({route:'task/BIR-079',actions:true}),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
+ const t=bootApp({route:'task/BIR-079',actions:true,production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079');let input;
  const open=mode=>{t.A.openModal(mode,task.id);const form=t.d.querySelector('form[data-block-action]');input=form.querySelector('textarea');return form;};
  const key=(options={})=>{const ev={currentTarget:input,key:'Enter',defaultPrevented:false,preventDefault(){this.defaultPrevented=true;},stopPropagation(){},...options};t.A.commentKey(ev);return ev;};
  open('block');key();assert(!task.block);assert(t.d.querySelector('.ferr'));

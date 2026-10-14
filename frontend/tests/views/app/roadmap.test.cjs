@@ -11,12 +11,11 @@ const boot = (route = 'roadmap', { readOnly = false, stored, prepare } = {}) => 
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose commands stay pending until the test settles them. */
+/** Boot with a runtime whose actions stay pending until the test settles them. */
 function withRuntime(route) {
   const calls = [], reports = [], requests = [];
-  const t = bootApp({ route, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  } });
+  const t = bootApp({ route });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });

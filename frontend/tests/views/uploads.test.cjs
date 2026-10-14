@@ -5,14 +5,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM, bootApp, source, waitFor } = require('../support/dom.cjs');
 const { ApiError } = require('../../src/data/api-client.js');
-const { retryableFailure } = require('../../src/app/action-feedback.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
 
 /** A task page with an HTML receipt and a text file attached through the view. */
 async function withFiles() {
   const revoked = [];
-  const t = bootApp({ route: 'task/BIR-079', setup: w => { w.URL.createObjectURL = () => 'blob:attachment'; w.URL.revokeObjectURL = url => revoked.push(url); } });
+  const t = bootApp({ route: 'task/BIR-079', production: false, setup: w => { w.URL.createObjectURL = () => 'blob:attachment'; w.URL.revokeObjectURL = url => revoked.push(url); } });
   const task = t.D.tasks.find(item => item.id === 'BIR-079');
   t.A.attachFiles(task.id, { files: [new t.w.File([receipt], 'receipt-preview.html', { type: 'text/html' }), new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
   await waitFor(() => (task.attachments || []).length === 2, 'both files are attached');
@@ -74,7 +73,7 @@ test('retention switches change one file, suppress reverted activity and keep fo
 });
 
 test('each click on an attachment row\'s Temporary switch changes it once', () => {
-  const t = bootApp({ route: 'task/BIR-079', actions: true });
+  const t = bootApp({ route: 'task/BIR-079', actions: true, production: false });
   const task = t.D.tasks.find(item => item.id === 'BIR-079');
   (task.attachments ||= []).push({ id: 'notes', name: 'notes.txt', size: 5, url: 'blob:notes', ephemeral: false }); t.A.refresh();
   const retention = () => t.d.querySelector('[data-attachment-id="notes"] .retention-switch');
@@ -187,7 +186,7 @@ test('legacy bidirectional file names are isolated in rows and activity', () => 
 });
 
 test('files with duplicate names stay separate attachments with download links', async () => {
-const t=bootApp({route:'task/BIR-079'});t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nExample,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>t.D.tasks.find(x=>x.id==='BIR-079').attachments?.length===1,'the first file is attached');const task=t.D.tasks.find(x=>x.id==='BIR-079');assert.equal(task.attachments.length,1);t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nSecond,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>task.attachments?.length===2,'the duplicate name is attached separately');assert.equal(task.attachments.length,2);assert.notEqual(task.attachments[0].id,task.attachments[1].id);assert(t.d.querySelector('a[download="example.csv"]'));
+const t=bootApp({route:'task/BIR-079',production:false});t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nExample,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>t.D.tasks.find(x=>x.id==='BIR-079').attachments?.length===1,'the first file is attached');const task=t.D.tasks.find(x=>x.id==='BIR-079');assert.equal(task.attachments.length,1);t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nSecond,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>task.attachments?.length===2,'the duplicate name is attached separately');assert.equal(task.attachments.length,2);assert.notEqual(task.attachments[0].id,task.attachments[1].id);assert(t.d.querySelector('a[download="example.csv"]'));
 });
 
 test('capacity cleanup removes only eligible temporary files and keeps tombstones and permanent files', () => {
@@ -200,7 +199,7 @@ test('capacity cleanup removes only eligible temporary files and keeps tombstone
 });
 
 test('a task holds at most 25 files, defaults to permanent and previews text safely', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(t => t.id === 'BIR-079').attachments = Array.from({ length: 24 }, (_, i) => ({ id: 'existing' + i, name: 'existing.txt', size: 1, ephemeral: false })); } });
+  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false, prepare: D => { D.tasks.find(t => t.id === 'BIR-079').attachments = Array.from({ length: 24 }, (_, i) => ({ id: 'existing' + i, name: 'existing.txt', size: 1, ephemeral: false })); } });
   const task = D.tasks.find(t => t.id === 'BIR-079');
   A.attachFiles(task.id, { files: [new w.File(['name,value\n"hello, world",<script>'], 'sample.txt', { type: 'text/plain' })], value: '' });
   await waitFor(() => w.Uploads.available(task).length === 25, 'the 25th file is attached');
@@ -241,7 +240,7 @@ function drag(w, type, target, files = [], items = [], types = ['Files']) {
 }
 
 test('file drops, drag targets, folders, access, limits and overlays share one upload path', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079' });
+  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false });
   const task = D.tasks.find(t => t.id === 'BIR-079'), notices = []; A.toast = (text, kind) => notices.push({ text, kind });
   const zone = () => d.querySelector('.task-attachments');
   assert.equal(zone().dataset.uploadTask, task.id); assert(zone().querySelector(':scope > button.attachment-dropzone')); assert.equal(zone().querySelectorAll('button.attachment-dropzone').length, 1);
@@ -279,7 +278,7 @@ test('file drops, drag targets, folders, access, limits and overlays share one u
 });
 
 test('attachment order is shared by keyboard and pointer moves, which Escape and leaving cancel', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079' });
+  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false });
   const task = D.tasks.find(t => t.id === 'BIR-079');
   A.attachFiles(task.id, { files: [new w.File(['hello'], 'hello.txt'), new w.File(['world'], 'world.md'), new w.File(['third'], 'third.txt')], value: '' });
   await waitFor(() => task.attachments?.length === 3, 'three files are attached');
@@ -402,40 +401,33 @@ test('inline image previews work outside the dialog and stop when disposed', asy
 });
 
 test('an upload, retention change and delete still finish after a live update replaced the task', async () => {
-  const pending = [];
   const file = (overrides = {}) => ({ id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', downloadUrl: '/download', ...overrides });
-  const held = name => () => new Promise(resolve => pending.push({ name, resolve }));
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopTransport = { api: { attachments: async () => ({ items: [] }), uploadAttachment: held('upload'), updateAttachment: held('retention'), deleteAttachment: held('delete') }, subscribe: () => () => {} };
-  } });
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => ({ items: [] }) } });
   const replace = () => { const current = t.D.tasks.find(item => item.id === 'BIR-079'), copy = { ...current, attachments: [...(current.attachments || [])].map(item => ({ ...item })) }; t.D.tasks.splice(t.D.tasks.indexOf(current), 1, copy); return copy; };
-  const answer = async (name, value) => { await waitFor(() => pending.some(item => item.name === name), `${name} was sent`); replace(); pending.find(item => item.name === name).resolve(value); };
+  const answer = async (method, value) => { await waitFor(() => t.calls.some(call => call.method === method && !call.settled), `${method} was sent`); replace(); t.answer(method, value); };
   const notices = []; const toast = t.A.toast; t.A.toast = (text, kind) => { notices.push(text); return toast(text, kind); };
   t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
-  await answer('upload', file());
+  await answer('uploadAttachment', file());
   await waitFor(() => notices.includes('Attachment added'), 'the upload completes');
   assert.equal(t.D.tasks.find(item => item.id === 'BIR-079').attachments.filter(item => item.id === 'f1').length, 1);
   assert.equal(t.d.querySelector('.upload-row'), null, 'no failed upload row offers Retry');
   t.A.setAttachmentTemporary('BIR-079', 'f1', true);
-  await answer('retention', file({ isEphemeral: true, revision: 2 }));
+  await answer('updateAttachment', file({ isEphemeral: true, revision: 2 }));
   await waitFor(() => notices.includes('Attachment marked temporary'), 'the retention change completes');
   assert.equal(t.D.tasks.find(item => item.id === 'BIR-079').attachments[0].ephemeral, true);
   t.A.delAttachment('BIR-079', 0); t.d.querySelector('[data-confirm-accept]').click();
-  await answer('delete', {});
+  await answer('deleteAttachment', {});
   await waitFor(() => notices.includes('Attachment deleted'), 'the delete completes');
   assert.deepEqual(t.D.tasks.find(item => item.id === 'BIR-079').attachments, []);
 });
 
 test('live updates read attachments and storage usage again passively', async () => {
   const reads = [];
-  let listener = () => {};
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopTransport = { api: {
-      attachments: async (_id, options = {}) => { reads.push(['attachments', !!options.background]); return { items: [] }; },
-      storageUsage: async (options = {}) => { reads.push(['storage', !!options.background]); return { budgetBytes: 100, highWatermarkBytes: 90, lowWatermarkBytes: 80, usedBytes: 1, permanentBytes: 1, temporaryBytes: 0, cleanedRecords: 0, reservedBytes: 0, projects: [], recentCleanup: [] }; },
-      uploadAttachment() {},
-    }, subscribe: fn => { listener = fn; return () => {}; } };
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: {
+    attachments: async (_id, options = {}) => { reads.push(['attachments', !!options.background]); return { items: [] }; },
+    storageUsage: async (options = {}) => { reads.push(['storage', !!options.background]); return { budgetBytes: 100, highWatermarkBytes: 90, lowWatermarkBytes: 80, usedBytes: 1, permanentBytes: 1, temporaryBytes: 0, cleanedRecords: 0, reservedBytes: 0, projects: [], recentCleanup: [] }; },
   } });
+  const listener = change => t.runtime.publish(change);
   // Each read answers at once; let its reply land before the next step.
   const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await new Promise(resolve => setImmediate(resolve)); };
   await answered(1, 'the task page reads its attachments');
@@ -454,10 +446,9 @@ test('live updates read attachments and storage usage again passively', async ()
 });
 
 test('a live re-read of attachments that lost access stays quiet', async () => {
-  let reads = 0, listener = () => {};
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopTransport = { api: { attachments: async () => { if (++reads > 1) throw new w.TestApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; }, uploadAttachment() {} }, subscribe: fn => { listener = fn; return () => {}; } };
-  } });
+  let reads = 0;
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => { if (++reads > 1) throw new ApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; } } });
+  const listener = change => t.runtime.publish(change);
   const notices = []; t.A.toast = (text, kind) => notices.push([text, kind]);
   await waitFor(() => reads === 1, 'the page reads its attachments'); await new Promise(resolve => setImmediate(resolve));
   listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
@@ -467,9 +458,7 @@ test('a live re-read of attachments that lost access stays quiet', async () => {
 
 test('image files show their thumbnail, or the original when there is none', async () => {
   const image = (id, overrides) => ({ id, name: `${id}.png`, size: 5, mediaType: 'image/png', previewKind: 'image', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${id}`, downloadUrl: `/download/${id}`, ...overrides });
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopTransport = { api: { attachments: async () => ({ items: [image('photo', { thumbnailUrl: '/thumbnail/photo' }), image('spinner', { mediaType: 'image/gif' })] }), uploadAttachment() {} }, subscribe: () => () => {} };
-  } });
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => ({ items: [image('photo', { thumbnailUrl: '/thumbnail/photo' }), image('spinner', { mediaType: 'image/gif' })] }) } });
   await waitFor(() => t.d.querySelectorAll('.attachment-thumbnail img').length === 2, 'both images render');
   assert.deepEqual([...t.d.querySelectorAll('.attachment-thumbnail img')].map(img => img.getAttribute('src')), ['/thumbnail/photo', '/content/spinner']);
 });
@@ -478,14 +467,10 @@ test('a file Undo that meets a busy server offers Undo again, with the same key'
   const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 3, contentUrl: '/content', downloadUrl: '/download' };
   let listed = [file];
   const restores = [];
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopRetryable = retryableFailure;
-    w.OneloopTransport = { api: {
-      attachments: async () => ({ items: listed }),
-      deleteAttachment: async () => { listed = []; return {}; },
-      restoreAttachment: async (_id, input) => { restores.push(input.idempotencyKey); if (restores.length === 1) throw new ApiError('Busy', { status: 503, code: 'unavailable', uncertain: true }); listed = [{ ...file, revision: 5 }]; return listed[0]; },
-      uploadAttachment() {},
-    }, subscribe: () => () => {} };
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: {
+    attachments: async () => ({ items: listed }),
+    deleteAttachment: async () => { listed = []; return {}; },
+    restoreAttachment: async (_id, input) => { restores.push(input.idempotencyKey); if (restores.length === 1) throw new ApiError('Busy', { status: 503, code: 'unavailable', uncertain: true }); listed = [{ ...file, revision: 5 }]; return listed[0]; },
   } });
   const notices = []; t.A.toast = (text, kind, options) => notices.push({ text, kind, options });
   await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
@@ -503,13 +488,10 @@ test('a deleted file offers Undo, which restores it at the revision its deletion
   const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 3, contentUrl: '/content', downloadUrl: '/download' };
   let listed = [file];
   const restores = [];
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
-    w.OneloopTransport = { api: {
-      attachments: async () => ({ items: listed }),
-      deleteAttachment: async () => { listed = []; return {}; },
-      restoreAttachment: async (id, input) => { restores.push([id, input.expectedRevision, typeof input.idempotencyKey]); listed = [{ ...file, revision: 5 }]; return listed[0]; },
-      uploadAttachment() {},
-    }, subscribe: () => () => {} };
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: {
+    attachments: async () => ({ items: listed }),
+    deleteAttachment: async () => { listed = []; return {}; },
+    restoreAttachment: async (id, input) => { restores.push([id, input.expectedRevision, typeof input.idempotencyKey]); listed = [{ ...file, revision: 5 }]; return listed[0]; },
   } });
   const notices = []; t.A.toast = (text, kind, options) => notices.push({ text, kind, options });
   await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
@@ -528,9 +510,8 @@ test('a deleted file offers Undo, which restores it at the revision its deletion
 test('a text preview read from the server names the person the page shows', async () => {
   const file = { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', sourceUrl: '/source', downloadUrl: '/download' };
   const reads = [];
-  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, setup: w => {
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => ({ items: [file] }) }, setup: w => {
     w.fetch = async (url, options) => { reads.push([url, new w.Headers(options.headers).get('X-Oneloop-User')]); return { ok: true, arrayBuffer: async () => new TextEncoder().encode('notes').buffer }; };
-    w.OneloopTransport = { api: { attachments: async () => ({ items: [file] }), uploadAttachment() {} }, subscribe: () => () => {} };
   } });
   await waitFor(() => (t.D.tasks.find(item => item.id === 'BIR-079').attachments || []).length === 1, 'the file is listed');
   t.A.previewAttachment('BIR-079', 'f1');

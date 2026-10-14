@@ -18,7 +18,8 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       const { w, d } = bootApp({
         route: 'roadmap', html: '<!doctype html><meta name="theme-color"><div id="app"></div>', media: () => true,
         scripts: ['theme', 'data', 'motion', 'activity', 'collaboration', 'app'],
-        setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; w.OneloopRuntime = { now: () => now, invoke: async () => {}, report() {} }; },
+        api: { serverNow: () => now },
+        setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; },
         beforeScript: (name, w) => {
           if (name !== 'app') return;
           w.DATA.timeZone = 'UTC'; w.DATA.tasks.find(task => task.id === 'BIR-079').deadline = '2026-06-15';
@@ -60,7 +61,7 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
 
 test('the configured UTC zone controls every displayed instant, whatever the host zone', () => {
  const instant=Date.parse('2099-01-02T23:04:05Z'),expected='2099-01-02 23:04:05';
- const t=boot('task/BIR-079',{prepare:D=>{
+ const t=bootApp({route:'task/BIR-079',production:false,prepare:D=>{
    const task=D.tasks.find(item=>item.id==='BIR-079');D.timeZone='UTC';task.created=instant;
    task.comments=[{id:'utc-comment',who:'taylorwu',text:'UTC comment',ts:instant,mentions:[]}];
    task.activity=[{id:'utc-activity',who:'taylorwu',text:'UTC activity',ts:instant}];

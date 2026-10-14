@@ -2,17 +2,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
-const { installViewBridge } = require('../../../src/app/view-bridge.js');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 test('Settings can page through the directory and add an eligible account from a later page',async()=>{
- const t=bootApp({route:'settings',prepare(D){D.users=D.users.filter(user=>user.id===D.session.userId);D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
- const requests=[],commands=[];
- const api={users:async({afterUsername})=>{
+ const requests=[];
+ const users=async({afterUsername})=>{
   requests.push(afterUsername);
   return afterUsername?{users:[{id:'last',username:'zulu',displayName:'Zulu',isActive:true,isAdmin:false,revision:1}],nextCursor:null}:{users:Array.from({length:50},(_,i)=>({id:`u${i}`,username:`account${i}`,displayName:`Account ${i}`,isActive:false,isAdmin:false,revision:1})),nextCursor:'account49'};
- }};
- const bridge=installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
- await bridge.loadCurrentRoute();
+ };
+ const t=bootApp({route:'settings',api:{users},prepare(D){D.users=D.users.filter(user=>user.id===D.session.userId);D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
+ await t.bridge.loadCurrentRoute();
  const more=[...t.d.querySelectorAll('button')].find(button=>button.textContent==='Load more users');assert(more,'Settings exposes the next account page even if the first has no eligible users');
  assert(!t.d.querySelector('.settings').textContent.includes('No users to add'),'a partial directory is not exhaustive');
  t.A.loadMoreUsers();await settle();
@@ -20,7 +19,7 @@ test('Settings can page through the directory and add an eligible account from a
  const trigger=t.d.getElementById('select-addMember');t.A.popSelect({preventDefault(){},currentTarget:trigger},'addMember');
  const search=t.d.querySelector('.pop-search');search.value='Zulu';search.dispatchEvent(new t.w.Event('input',{bubbles:true}));
  t.d.querySelector('.pop-opt').click();await settle();
- assert.deepEqual(commands,[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
+ assert.deepEqual(t.commands.map(command=>[command.operation,command.payload]),[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
 });
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
@@ -30,8 +29,8 @@ const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = 
 } });
 
 /** A projection with a second project the viewer cannot access. */
-function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}) {
-  return bootApp({ route, media: () => true, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
+function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}, options = {}) {
+  return bootApp({ ...options, route, media: () => true, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
     D.session.userId = user; const p = D.projects.find(item => item.id === 'p2'); p.name = 'Secret project'; p.members = [];
     D.tracks.push({ id: 'secret-track', projectId: p.id, name: 'Secret track', order: 1 }); D.epics.push({ id: 'secret-epic', trackId: 'secret-track', title: 'Secret epic', state: 'active', start: '2026-01-01', end: '2026-12-01', done: 0, total: 1 });
     D.tasks.push({ id: 'SEC-001', epicId: 'secret-epic', title: 'Secret task', state: 'planning', created: Date.now(), attachments: [{ id: 'secret-file', name: 'private.png', size: 10, previewKind: 'image', url: 'blob:private' }] });
@@ -40,8 +39,8 @@ function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = ()
 }
 
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
-/** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
-const bootWithTransport = (route, prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
+/** Boot with a fixed layout. */
+const bootWithLayout = (route, options) => bootApp({ route, media: () => true, setup: layout, ...options });
 
 test('members see only their projects, files and routes; secret tasks, epics and attachments stay hidden', () => {
  const t=withSecretProject();assert(t.d.querySelector('.tp-title'));t.A.projectMenu({currentTarget:t.d.querySelector('.switcher-btn')});assert(!t.d.querySelector('.menu').textContent.includes('Secret project'));t.A.closeOverlays();
@@ -56,7 +55,7 @@ test('direct routes to a hidden task are denied to members but open for administ
 });
 
 test('losing membership closes previews, redacts Inbox rows and leaves account pages usable', () => {
- const t=withSecretProject();t.D.notifications.push({id:'retained',eventId:'old',recipientId:'blairq',actorId:'taylorwu',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:Date.now()});
+ const t=withSecretProject('blairq','task/BIR-079',()=>{},{production:false});t.D.notifications.push({id:'retained',eventId:'old',recipientId:'blairq',actorId:'taylorwu',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:Date.now()});
  t.A.previewAttachment('BIR-079','member-file');t.D.projects[0].members=t.D.projects[0].members.filter(m=>m.userId!=='blairq');t.A.refresh();assert(!t.d.querySelector('.file-dialog'));assert(!t.d.querySelector('.tp-title'));
  t.A.nav('inbox');const page=t.d.querySelector('.inbox-page');assert(page);assert(page.textContent.includes('Task unavailable'));assert(!page.textContent.includes('Birch Grove'));assert(!page.textContent.includes('BIR-079'));assert(!page.textContent.includes('Flexible reading'));
  t.A.openNotification('retained');assert(!t.d.querySelector('.tp-title'));t.A.nav('roadmap');assert(t.d.querySelector('.page-empty').textContent.includes('No projects available'));t.A.openModal('pool');assert(!t.d.querySelector('.modal'));t.A.nav('profile');assert(t.d.querySelector('[name="name"]'));
@@ -76,9 +75,12 @@ test('ending the session closes open previews and the task page', () => {
  const t=withSecretProject();t.A.previewAttachment('BIR-079','member-file');assert(t.d.querySelector('.file-dialog'));t.D.session=null;t.A.refresh();assert(!t.d.querySelector('.file-dialog'));assert(!t.d.querySelector('.tp-title'));
 });
 
-test('unknown routes show a page error and keep their address', () => {
+test('unknown routes show a page error and keep their address', async () => {
 const missing=boot('missing');assert(missing.d.querySelector('.page-error').textContent.includes('Page not found'));assert.equal(missing.w.location.hash,'#/missing');
-const bad=boot('task/BAD');assert(bad.d.querySelector('.page-error'));assert.equal(bad.w.location.hash,'#/task/BAD');
+// A task the page does not have is the server's to find; the route loader shows its answer.
+const bad=bootApp({route:'task/BAD',reads:{task:async()=>{throw new ApiError('Task not found',{status:404,code:'not_found'});}}});
+await bad.bridge.loadCurrentRoute().catch(error=>bad.w.Recovery.handleRouteError(error));
+assert(bad.d.querySelector('.page-error'));assert.equal(bad.w.location.hash,'#/task/BAD');
 });
 
 test('Users is admin-only in navigation and at its direct route', () => {
@@ -90,11 +92,11 @@ const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.titl
 });
 
 test('a reserved task prefix is rejected inline and a new prefix keeps the old one reserved', () => {
-const {d,A,D}=boot('settings');const prefix=d.querySelector('[name="key"]');prefix.value='ONE';A.updateProjectField(prefix);assert.equal(D.projects[0].key,'BIR');assert(d.querySelector('.ferr'));prefix.value='NEW';A.updateProjectField(prefix);assert.equal(D.prefixRegistry.BIR,'p1');assert.equal(D.prefixRegistry.NEW,'p1');
+const {d,A,D}=bootApp({route:'settings',production:false});const prefix=d.querySelector('[name="key"]');prefix.value='ONE';A.updateProjectField(prefix);assert.equal(D.projects[0].key,'BIR');assert(d.querySelector('.ferr'));prefix.value='NEW';A.updateProjectField(prefix);assert.equal(D.prefixRegistry.BIR,'p1');assert.equal(D.prefixRegistry.NEW,'p1');
 });
 
 test('Users pages load 50 at a time and project Settings keep member access separate', () => {
- const t=boot('users',{prepare:D=>{
+ const t=bootApp({route:'users',production:false,prepare:D=>{
   for(let i=0;i<110;i++)D.users.push({id:'page-user-'+i,name:'Page user '+i,active:true,admin:false});
  }});
  assert.equal(t.d.querySelectorAll('.user-row').length,50);
@@ -104,17 +106,16 @@ test('Users pages load 50 at a time and project Settings keep member access sepa
 });
 
 test('Enter in a project field saves it and leaves it, but not while text is being composed', async () => {
- const t=boot('settings',{actions:true}),commands=[];
- installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){}},gateway:{execute:async(operation,payload)=>{commands.push([operation,payload]);return {entities:[],events:[]};}},auth:{},recovery:{},reloadBootstrap:async()=>({})});
+ const t=boot('settings',{actions:true}),commands=()=>t.commands.map(command=>[command.operation,command.payload]);
  const name=t.d.querySelector('.project-fields [name="name"]'),enter=init=>{const event=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...init});name.dispatchEvent(event);return event;};
  name.focus();name.value='Renamed project';
- assert.equal(enter({isComposing:true}).defaultPrevented,false);assert.equal(t.d.activeElement,name);assert.deepEqual(commands,[]);
+ assert.equal(enter({isComposing:true}).defaultPrevented,false);assert.equal(t.d.activeElement,name);assert.deepEqual(commands(),[]);
  assert.equal(enter().defaultPrevented,true);await settle();
- assert.notEqual(t.d.activeElement,name);assert(commands.length);for(const command of commands)assert.deepEqual(command,['project.update',{projectId:'p1',name:'Renamed project'}]);
+ assert.notEqual(t.d.activeElement,name);assert(commands().length);for(const command of commands())assert.deepEqual(command,['project.update',{projectId:'p1',name:'Renamed project'}]);
 });
 
 test('Enter in the profile name saves through the blur path', () => {
- const t=boot('profile',{actions:true}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
+ const t=bootApp({route:'profile',actions:true,production:false}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
 });
 
 test('project Settings bound member rows, update loading state in place and search all members', () => {
@@ -130,15 +131,15 @@ test('project Settings bound member rows, update loading state in place and sear
 });
 
 test('Storage failures offer a local Retry and keep loaded usage after a background failure', async () => {
-  let fail=true,listener;
-  const t=bootWithTransport('storage',w=>{w.OneloopTransport={api:{uploadAttachment(){},storageUsage:async()=>{if(fail)throw Error('Unavailable');return {budgetBytes:1000,usedBytes:125,pendingDeletionBytes:25,highWatermarkBytes:800,lowWatermarkBytes:700,permanentBytes:100,temporaryBytes:0,projects:[],recentCleanup:[],cleanedRecords:0,reservedBytes:0};}},subscribe(fn){listener=fn;return()=>{};}};w.OneloopCollaboration={bind(){return {mount(){}};}};});
+  let fail=true;
+  const t=bootWithLayout('storage',{api:{storageUsage:async()=>{if(fail)throw Error('Unavailable');return {budgetBytes:1000,usedBytes:125,pendingDeletionBytes:25,highWatermarkBytes:800,lowWatermarkBytes:700,permanentBytes:100,temporaryBytes:0,projects:[],recentCleanup:[],cleanedRecords:0,reservedBytes:0};}}});
   await new Promise(resolve=>setTimeout(resolve,0));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not load storage usage'));
   fail=false;await t.A.retryStorageUsage();assert(t.d.querySelector('.storage-amount')?.textContent.includes('125 B'));assert(t.d.querySelector('.storage-breakdown').textContent.includes('Pending deletion'));assert(!t.d.querySelector('.storage-breakdown').textContent.includes('Other usage'));
-  fail=true;listener({type:'sse'});await new Promise(resolve=>setTimeout(resolve,0));assert(t.d.querySelector('.storage-amount'));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not refresh storage usage'));
+  fail=true;t.runtime.publish({type:'sse'});await new Promise(resolve=>setTimeout(resolve,0));assert(t.d.querySelector('.storage-amount'));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not refresh storage usage'));
 });
 
 test('temporary passwords show the account, copy exactly, report clipboard failures and clear on session change', async () => {
-  const t=bootWithTransport('users'),user={id:'opaque-account-id',username:'review_member',name:'Review Member',active:true};
+  const t=bootWithLayout('users'),user={id:'opaque-account-id',username:'review_member',name:'Review Member',active:true};
   t.D.users.push(user);
   const password='A'.repeat(80)+'-example';
   const messages=[],copies=[];
@@ -164,13 +165,8 @@ test('temporary passwords show the account, copy exactly, report clipboard failu
 
 test('a temporary password stays reachable when its New user dialog closed while saving',async()=>{
  const t=bootApp({route:'users',prepare(D){D.adminUsers={ids:[],loaded:false,nextCursor:null};}});
- const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
- try{
- let release;
- const api={createUser:()=>new Promise(resolve=>{release=resolve;})};
- installViewBridge({app:t.A,data:t.D,api,reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
  const save=()=>{t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value='newcomer';form.querySelector('[name="name"]').value='New Comer';t.A.saveUser({target:form,preventDefault(){}},'');};
- const answer=(id,temporaryPassword)=>release({user:{id,username:'newcomer',displayName:'New Comer',isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword});
+ const answer=(id,temporaryPassword)=>t.answer('createUser',{user:{id,username:'newcomer',displayName:'New Comer',isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword});
  save();t.A.closeOverlays();answer('u-new','Shown-Once-1');await settle();
  assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-1','the password opens once nothing else is open');
  t.A.closeOverlays();
@@ -178,54 +174,45 @@ test('a temporary password stays reachable when its New user dialog closed while
  assert.equal(t.d.querySelector('.modal h2').textContent,'Edit user','another open dialog is not replaced');
  t.A.closeOverlays();
  assert.equal(t.d.getElementById('tmpPw')?.textContent,'Shown-Once-2','it opens when that dialog closes');
- }finally{globalThis.FormData=originalFormData;}
 });
 
 test('Escape in the password prompt closes only the prompt and keeps the dialog behind it',async()=>{
  const t=bootApp({route:'users'});
  const {createAuthController}=require('../../../src/auth/auth-controller.js');
- const previous={document:globalThis.document,HTMLElement:globalThis.HTMLElement};
- Object.assign(globalThis,{document:t.d,HTMLElement:t.w.HTMLElement});
- try{
-  const auth=createAuthController({api:{serverNow:()=>Date.now()},data:t.D,refresh(){},loadBootstrap:async()=>{},reportError(){}});
-  t.A.openModal('user');t.d.querySelector('.modal [name="name"]').value='Typed name';
-  t.D.session.authenticatedAt=Date.now()-31*60_000;
-  const pending=auth.withRecentAuth(async()=>{});
-  t.d.getElementById('reauth-password').dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
-  await assert.rejects(pending,error=>error.code==='reauth_cancelled');
-  assert.equal(t.d.querySelector('.reauth-layer'),null);
-  assert.equal(t.d.querySelector('.modal [name="name"]')?.value,'Typed name');
- }finally{Object.assign(globalThis,previous);}
+ const auth=createAuthController({api:{serverNow:()=>Date.now()},data:t.D,refresh(){},loadBootstrap:async()=>{},reportError(){}});
+ t.A.openModal('user');t.d.querySelector('.modal [name="name"]').value='Typed name';
+ t.D.session.authenticatedAt=Date.now()-31*60_000;
+ const pending=auth.withRecentAuth(async()=>{});
+ t.d.getElementById('reauth-password').dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ await assert.rejects(pending,error=>error.code==='reauth_cancelled');
+ assert.equal(t.d.querySelector('.reauth-layer'),null);
+ assert.equal(t.d.querySelector('.modal [name="name"]')?.value,'Typed name');
 });
 
 test('Users counts loaded accounts as a lower bound and lists a new account only in its place',async()=>{
- const t=bootApp({route:'users',prepare(D){for(const user of D.users)user.username=user.id;D.adminUsers={ids:['blairq','danaell','robin'],loaded:true,nextCursor:'robin'};}});
- const originalFormData=globalThis.FormData;globalThis.FormData=t.w.FormData;
- try{
-  let next;
-  installViewBridge({app:t.A,data:t.D,api:{createUser:async()=>next},reads:{cancel(){}},gateway:{},auth:{withRecentAuth:run=>run()},recovery:{},reloadBootstrap:async()=>({})});
-  const count=()=>t.d.querySelector('.users-count').textContent,listed=()=>[...t.d.querySelectorAll('.user-row')].map(row=>row.dataset.userId);
-  const create=async username=>{
-   next={user:{id:`u-${username}`,username,displayName:username,isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword:'Shown-Once'};
-   t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value=username;form.querySelector('[name="name"]').value=username;
-   t.A.saveUser({target:form,preventDefault(){}},'');await settle();t.A.closeOverlays();
-  };
-  assert.equal(count(),'3+');
-  await create('zz.new');
-  assert.deepEqual(listed(),['blairq','danaell','robin'],'an account after the loaded pages waits for its page');assert.equal(count(),'3+');
-  await create('carol');
-  assert.deepEqual(listed(),['blairq','u-carol','danaell','robin']);assert.equal(count(),'4+');
- }finally{globalThis.FormData=originalFormData;}
+ let next;
+ const t=bootApp({route:'users',api:{createUser:async()=>next},prepare(D){for(const user of D.users)user.username=user.id;D.adminUsers={ids:['blairq','danaell','robin'],loaded:true,nextCursor:'robin'};}});
+ const count=()=>t.d.querySelector('.users-count').textContent,listed=()=>[...t.d.querySelectorAll('.user-row')].map(row=>row.dataset.userId);
+ const create=async username=>{
+  next={user:{id:`u-${username}`,username,displayName:username,isAdmin:false,isActive:true,mustChangePassword:true,revision:1},temporaryPassword:'Shown-Once'};
+  t.A.openModal('user');const form=t.d.querySelector('.modal form');form.querySelector('[name="username"]').value=username;form.querySelector('[name="name"]').value=username;
+  t.A.saveUser({target:form,preventDefault(){}},'');await settle();t.A.closeOverlays();
+ };
+ assert.equal(count(),'3+');
+ await create('zz.new');
+ assert.deepEqual(listed(),['blairq','danaell','robin'],'an account after the loaded pages waits for its page');assert.equal(count(),'3+');
+ await create('carol');
+ assert.deepEqual(listed(),['blairq','u-carol','danaell','robin']);assert.equal(count(),'4+');
 });
 
 /** End the session the way the auth controller does: private data goes, the page signs out. */
 function endSession(t) {
  const session = t.D.session;
  t.w.Recovery.sessionExpired();
- t.D.session = null; t.w.Recovery.sessionChanged(null); t.A.refresh();
+ t.D.session = null; t.runtime.publish({ type: 'auth', session: null }); t.w.Recovery.sessionChanged(null); t.A.refresh();
  return session;
 }
-function signInAgain(t, session) { t.D.session = session; t.w.Recovery.sessionChanged(session); t.A.refresh(); }
+function signInAgain(t, session) { t.D.session = session; t.runtime.publish({ type: 'auth', session }); t.w.Recovery.sessionChanged(session); t.A.refresh(); }
 
 test('text typed when the session ends waits for the same person to sign in again', () => {
  const t = bootApp({ route: 'task/BIR-079' });
@@ -308,14 +295,16 @@ test('the sign-in page still focuses Username when nothing typed is waiting', ()
  assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in to continue.');
 });
 
-test('a reply typed when the session ends comes back as a reply, and as a comment once its target is gone', () => {
+test('a reply typed when the session ends comes back as a reply, and as a comment once its target is gone', async () => {
  for (const removed of [false, true]) {
   const t = bootApp({ route: 'task/BIR-079', prepare(D) { D.tasks.find(task => task.id === 'BIR-079').comments = [{ id: 'c1', who: 'robin', ts: Date.now() - 60_000, text: 'Question', mentions: [], parentId: null }]; } });
   t.A.replyComment('BIR-079', 'c1');
   const input = t.d.getElementById('cmtIn'); input.value = 'My answer'; input.focus();
   const session = endSession(t);
   if (removed) t.D.tasks.find(task => task.id === 'BIR-079').comments = [];
-  signInAgain(t, session);
+  signInAgain(t, session); await settle();
+  // A reply whose comment is missing waits until the page reads its comments again.
+  t.answer('comments', { items: [] }); t.answer('activity', { items: [] }); await settle();
   assert.equal(t.d.getElementById('cmtIn').value, 'My answer');
   assert.equal(!!t.d.querySelector('.collaboration-composer .reply-context'), !removed, removed ? 'a reply to a removed comment' : 'a reply');
  }

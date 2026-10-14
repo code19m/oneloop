@@ -57,17 +57,16 @@ const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bo
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose commands stay pending until the test settles them. */
+/** Boot with a runtime whose actions stay pending until the test settles them. */
 function withRuntime(route = 'board') {
   const calls = [], reports = [], requests = [];
-  const t = bootApp({ route, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  } });
+  const t = bootApp({ route });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-/** Boot the Board with recorded animations, a fixed layout and a resolved runtime. */
+/** Boot the Board with recorded animations, a fixed layout and a runtime whose actions succeed at once. */
 function recordingBoard(reduced) {
   const animations = [];
   const t = bootApp({
@@ -77,8 +76,8 @@ function recordingBoard(reduced) {
       w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; };
       w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
     },
-    beforeScript: (name, w) => { if (name === 'app') w.OneloopRuntime = { invoke: () => Promise.resolve({}), report: () => {} }; },
   });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke: () => Promise.resolve({}), report: () => {} };
   return { ...t, animations };
 }
 
@@ -157,7 +156,7 @@ test('accepting another Board page appends cards and leaves loaded cards and col
 });
 
 test('Board columns page at 50 cards and load more on demand', () => {
- const t=boot('board',{prepare:D=>{
+ const t=bootApp({route:'board',production:false,prepare:D=>{
   for(let i=0;i<60;i++)D.tasks.push({id:'BIR-page-'+i,epicId:'e2',state:'planning',title:'Paged task '+i,created:Date.now()});
  }});
  assert.equal(t.d.querySelectorAll('[data-col="planning"] .col-cards > .card').length,50);
@@ -191,7 +190,7 @@ test('Pool does not keep unsent entries across tabs or reopening', () => {
 });
 
 test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', () => {
- const t=boot('board');t.A.openModal('pool');let input=t.d.getElementById('poolAdd');input.value='Idea with context';t.A.togglePoolDescription();const notes=t.d.getElementById('poolNewDesc');notes.value='First line\n<example> & details';const beforeCount=t.D.pool.length;let prevented=false;const enter=extra=>t.A.poolDescriptionKey({key:'Enter',currentTarget:notes,preventDefault(){prevented=true;},...extra});enter({shiftKey:true});assert(!prevented);enter({isComposing:true});assert.equal(t.D.pool.length,beforeCount);enter({});assert(prevented);assert(!t.d.querySelector('.pool-description-actions').textContent.includes('Enter'));
+ const t=bootApp({route:'board',production:false});t.A.openModal('pool');let input=t.d.getElementById('poolAdd');input.value='Idea with context';t.A.togglePoolDescription();const notes=t.d.getElementById('poolNewDesc');notes.value='First line\n<example> & details';const beforeCount=t.D.pool.length;let prevented=false;const enter=extra=>t.A.poolDescriptionKey({key:'Enter',currentTarget:notes,preventDefault(){prevented=true;},...extra});enter({shiftKey:true});assert(!prevented);enter({isComposing:true});assert.equal(t.D.pool.length,beforeCount);enter({});assert(prevented);assert(!t.d.querySelector('.pool-description-actions').textContent.includes('Enter'));
  const item=t.D.pool.find(p=>p.title==='Idea with context');assert.equal(item.desc,'First line\n<example> & details');assert.equal(input.value,'');assert.equal(t.d.getElementById('poolNewDesc').value,'');assert(!t.d.querySelector('.pool-capture').classList.contains('is-expanded'));
  const row=()=>t.d.querySelector(`[data-pool-item="${item.id}"]`);assert(row().querySelector('.pool-description-preview').textContent.includes('<example>'));assert.equal(row().querySelectorAll('.act>button').length,3);
  t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);let form=row().querySelector('form');form.querySelector('textarea').value='Saved context';t.A.poolDescriptionKey({key:'Enter',currentTarget:form.querySelector('textarea'),preventDefault(){}},item.id);assert.equal(item.desc,'Saved context');
@@ -332,9 +331,7 @@ test('a card dropped below a long column follows its last shown card and stays d
 });
 
 test('the click that ends a card drag never opens the card, however late it comes', () => {
-  const t = bootApp({ route: 'board', actions: true, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke: () => Promise.resolve({}), report() {} };
-  } });
+  const t = bootApp({ route: 'board', actions: true });
   t.d.elementFromPoint = () => null;
   const card = t.d.querySelector('.board .card[data-task]');
   const pointer = (type, x) => card.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, pointerType: 'mouse', clientX: x, clientY: 10 }));

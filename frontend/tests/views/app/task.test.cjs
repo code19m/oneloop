@@ -2,14 +2,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
-const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { stored, prepare } = {}) => bootApp({ route, stored, prepare });
 
 /** A task page whose toasts are recorded as notices. */
-function taskPage() {
-  const t = bootApp({ route: 'task/BIR-079' });
+function taskPage(options) {
+  const t = bootApp({ route: 'task/BIR-079', ...options });
   const notices = [];
   t.A.toast = (text, kind = 'success') => notices.push({ text, kind });
   return { ...t, notices };
@@ -18,7 +17,7 @@ const event=target=>({target,preventDefault(){}});
 function block(t,mode,reason){t.A.openModal(mode,'BIR-079');const form=t.d.querySelector('.modal form');form.querySelector('[name=reason]').value=reason;t.A.saveBlock(event(form),'BIR-079',mode);}
 
 test('field saves show a quiet Saved status and block actions announce once', () => {
- const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
+ const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
  t.A.updTask(task.id,'title','Changed title');assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
  // No-op command feedback is covered by view-bridge tests against the production command gateway.
  t.A.updTask(task.id,'state','progress');assert.equal(status(),'Saved');
@@ -32,18 +31,18 @@ test('field saves show a quiet Saved status and block actions announce once', ()
 
 
 test('attachment actions announce changes, stay quiet on cancel or no change and report stale permissions', () => {
- const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079');task.attachments=[{id:'one',name:'one.txt',size:1},{id:'two',name:'two.txt',size:1}];t.A.refresh();
+ const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079');task.attachments=[{id:'one',name:'one.txt',size:1},{id:'two',name:'two.txt',size:1}];t.A.refresh();
  t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.at(-1).text,'Attachment marked temporary');assert(!task.attachments[1].ephemeral);let count=t.notices.length;t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.length,count);
  t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-cancel]').click();assert.equal(t.notices.length,count);t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Attachment deleted');
  assert.equal(task.attachments.length,1);t.A.delAttachment(task.id,0);t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).kind,'error');assert.notEqual(task.attachments[0].state,'removed');
 });
 
 test('deleting a comment announces once and deleting it again reports an error', () => {
- const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079');task.comments=[{id:'test-comment',who:'taylorwu',text:'Hello',ts:Date.now(),mentions:[],attachments:[]}];t.A.refresh();t.A.deleteComment(task.id,'test-comment');t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Comment deleted');t.A.deleteComment(task.id,'test-comment');assert.equal(t.notices.at(-1).kind,'error');
+ const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079');task.comments=[{id:'test-comment',who:'taylorwu',text:'Hello',ts:Date.now(),mentions:[],attachments:[]}];t.A.refresh();t.A.deleteComment(task.id,'test-comment');t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Comment deleted');t.A.deleteComment(task.id,'test-comment');assert.equal(t.notices.at(-1).kind,'error');
 });
 
 test('the deadline field saves on blur and rejects invalid text, and task actions follow permissions', () => {
- const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),input=t.d.getElementById('tpDl-input');
+ const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079'),input=t.d.getElementById('tpDl-input');
  input.value='2026-09-01';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert(!t.d.querySelector('.date-display'));assert.equal(input.value,'2026-09-01');
  input.value='bad';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert.equal(input.getAttribute('aria-invalid'),'true');
  input.value='';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,null);assert.equal(input.value,'');
@@ -52,7 +51,7 @@ test('the deadline field saves on blur and rejects invalid text, and task action
 });
 
 test('new tasks and Pool promotions save their deadline and assignees and validate both', () => {
- const t=taskPage(),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
+ const t=taskPage({production:false}),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
  assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);
  const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
  t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';const count=t.D.tasks.length;t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);const task=t.D.tasks.at(-1);assert.equal(task.deadline,'2026-10-15');assert.deepEqual([...task.assignees],['robin']);assert(Number.isFinite(task.created));assert(t.D.notifications.some(n=>n.taskId===task.id&&n.recipientId==='robin'&&n.reason==='assigned'));
@@ -61,7 +60,7 @@ test('new tasks and Pool promotions save their deadline and assignees and valida
 });
 
 test('new epics require an explicit track', () => {
- const t=taskPage(),count=t.D.epics.length;t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count);assert(form.textContent.includes('Choose a track.'));form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count+1);const epic=t.D.epics.at(-1);t.A.openModal('epic',epic.id);assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
+ const t=taskPage({production:false}),count=t.D.epics.length;t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count);assert(form.textContent.includes('Choose a track.'));form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count+1);const epic=t.D.epics.at(-1);t.A.openModal('epic',epic.id);assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
 });
 
 test('comment readers reset every height before measuring any of them', () => {
@@ -93,21 +92,18 @@ const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaqu
 });
 
 test('the activity feed loads older records in batches', () => {
-const x=boot('task/BIR-079');const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
+const x=bootApp({route:'task/BIR-079',production:false});const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
 });
 
-/** The task page wired to the production bridge, with commands answered by the test. */
-/** A task page with the production bridge; reading the task again brings someone else's `latest` change. */
+/** A task page whose commands the test answers; reading the task again brings someone else's `latest` change. */
 function productionTaskPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
-  const t = bootApp({ route: 'task/BIR-079', media: () => true });
-  const task = t.D.tasks.find(x => x.id === 'BIR-079');
-  Object.assign(task, { internalId: 'bir-079', projectId: 'p1', revision: 1, deadline: null });
-  const requests = [];
-  const gateway = { execute: (operation, payload, options) => new Promise((resolve, reject) => requests.push({ operation, payload, options, resolve, reject })) };
-  const reads = { task: async () => { Object.assign(task, { revision: 2, ...latest }); t.A.refresh(); return { stale: false, task }; }, counts: async () => ({}), cancel() {} };
-  const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap: async () => ({}) });
-  t.w.OneloopRuntime = bridge;
-  return { ...t, task, requests, bridge };
+  let task;
+  const t = bootApp({
+    route: 'task/BIR-079', media: () => true,
+    prepare: D => { task = Object.assign(D.tasks.find(x => x.id === 'BIR-079'), { internalId: 'bir-079', projectId: 'p1', revision: 1, deadline: null }); },
+    reads: { task: async () => { Object.assign(task, { revision: 2, ...latest }); t.A.refresh(); return { stale: false, task }; } },
+  });
+  return { ...t, task };
 }
 
 test('a title conflict keeps newer typing elsewhere and shows the title as typed beside the latest one', async () => {
@@ -116,8 +112,8 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
   title.focus(); title.value = 'My title'; title.blur(); t.A.updTask(t.task.id, 'title', title.value);
   const description = t.d.getElementById('task-description');
   description.focus(); description.value = 'Typed after the title save started'; description.dispatchEvent(new t.w.Event('input', { bubbles: true }));
-  assert.equal(t.requests.length, 1);
-  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  assert.equal(t.commands.length, 1);
+  t.commands[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
   await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
   assert.equal(t.d.getElementById('task-description').value, 'Typed after the title save started');
   assert.equal(t.d.querySelector('.tp-title').value, 'My title');
@@ -128,7 +124,7 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
 test('Use latest on a description shows the saved description, not the typed one', async () => {
   const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
-  t.requests[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
+  t.commands[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
   await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
   [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === 'Use latest').click();
   await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'desc'), 'the typed description is dropped');
@@ -147,11 +143,11 @@ test('an unsaved description stays on the page through refreshes and offers Save
   assert.equal(t.d.getElementById('task-description').value, 'Written offline');
   const note = t.d.querySelector('.task-description [data-draft-note]');
   assert.match(note.textContent, /Not saved/); assert(note.querySelector('button'));
-  assert.equal(t.requests.length, 0);
+  assert.equal(t.commands.length, 0);
 });
 
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
-  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  const t = bootApp({ route: 'task/BIR-079', actions: true, production: false }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
   const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };
   title.focus(); title.value = 'Renamed with Enter';
   assert.equal(enter({ isComposing: true }).defaultPrevented, false); assert.equal(t.d.activeElement, title);
@@ -194,63 +190,52 @@ test('text typed into a task field when edit rights end stays as Not saved, read
   assert.equal(field.readOnly, false); assert.equal(field.value, 'Typed while access changed');
   assert.match(note.textContent, /^Not saved/); assert(note.querySelector('button'));
   t.A.saveTaskDraft(t.task.id, 'desc');
-  assert.deepEqual(t.requests.map(request => [request.operation, request.payload.description, request.options.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
+  assert.deepEqual(t.commands.map(command => [command.operation, command.payload.description, command.expectedRevision]), [['task.update', 'Typed while access changed', 1]]);
 });
 
 const conflict = t => new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' });
 const promptButton = (t, label) => [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === label);
-/** Run `body` with the page as the document that the view bridge finds fields in, as in a browser. */
-async function inPage(t, body) {
-  const previous = globalThis.document; globalThis.document = t.d;
-  try { await body(); } finally { globalThis.document = previous; }
-}
 /** Save `value` into a task field, as its blur does, and answer the save with a conflict. */
 async function conflictOn(t, field, value) {
   field.focus(); field.value = value; field.blur(); t.A.updTask(t.task.id, field.id === 'task-description' ? 'desc' : 'title', value);
-  t.requests[0].reject(conflict(t));
+  t.commands[0].reject(conflict(t));
   await waitFor(() => promptButton(t, 'Use latest'), 'the conflict prompt appears');
 }
 
 test('a live redraw keeps the conflict prompt beside the redrawn field until the person answers it', async () => {
   const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
-  await inPage(t, async () => {
-    await conflictOn(t, description, 'My description');
-    const prompt = t.d.querySelector('[data-recovery-conflict]'), keep = promptButton(t, 'Keep my changes');
-    keep.focus();
-    // A teammate's change arrives and the task page draws again.
-    t.A.refresh(); await settle();
-    assert.notEqual(t.d.getElementById('task-description'), description, 'the field was drawn again');
-    assert.equal(t.d.querySelector('.task-description [data-recovery-conflict]'), prompt, 'the prompt is beside the new field');
-    assert.equal(t.d.activeElement, keep, 'and keeps focus on its button');
-    assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null, 'no Not saved note while it waits');
-    keep.click();
-    await waitFor(() => t.requests.length === 2, 'Keep my changes saves again');
-    assert.equal(t.requests[1].payload.description, 'My description'); assert.equal(t.requests[1].options.expectedRevision, 2);
-  });
+  await conflictOn(t, description, 'My description');
+  const prompt = t.d.querySelector('[data-recovery-conflict]'), keep = promptButton(t, 'Keep my changes');
+  keep.focus();
+  // A teammate's change arrives and the task page draws again.
+  t.A.refresh(); await settle();
+  assert.notEqual(t.d.getElementById('task-description'), description, 'the field was drawn again');
+  assert.equal(t.d.querySelector('.task-description [data-recovery-conflict]'), prompt, 'the prompt is beside the new field');
+  assert.equal(t.d.activeElement, keep, 'and keeps focus on its button');
+  assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null, 'no Not saved note while it waits');
+  keep.click();
+  await waitFor(() => t.commands.length === 2, 'Keep my changes saves again');
+  assert.equal(t.commands[1].payload.description, 'My description'); assert.equal(t.commands[1].expectedRevision, 2);
 });
 
 test('after a redraw, Use latest shows the latest value in the redrawn field', async () => {
   const t = productionTaskPage({ title: 'Their title' });
-  await inPage(t, async () => {
-    await conflictOn(t, t.d.querySelector('.tp-title'), 'My title');
-    t.A.refresh(); await settle();
-    promptButton(t, 'Use latest').click();
-    await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'title'), 'the typed title is dropped');
-    assert.equal(t.d.querySelector('.tp-title').value, 'Their title');
-    assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
-  });
+  await conflictOn(t, t.d.querySelector('.tp-title'), 'My title');
+  t.A.refresh(); await settle();
+  promptButton(t, 'Use latest').click();
+  await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'title'), 'the typed title is dropped');
+  assert.equal(t.d.querySelector('.tp-title').value, 'Their title');
+  assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
 });
 
 test('leaving the task page still closes the prompt, and the change waits there as Not saved', async () => {
   const t = productionTaskPage({ desc: 'Their description' });
-  await inPage(t, async () => {
-    await conflictOn(t, t.d.getElementById('task-description'), 'My description');
-    t.A.nav('board'); await settle();
-    assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
-    t.A.openTask(t.task.id); await settle();
-    assert.equal(t.d.getElementById('task-description').value, 'My description');
-    assert.match(t.d.querySelector('.task-description [data-draft-note]').textContent, /Not saved/);
-  });
+  await conflictOn(t, t.d.getElementById('task-description'), 'My description');
+  t.A.nav('board'); await settle();
+  assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
+  t.A.openTask(t.task.id); await settle();
+  assert.equal(t.d.getElementById('task-description').value, 'My description');
+  assert.match(t.d.querySelector('.task-description [data-draft-note]').textContent, /Not saved/);
 });
 
 test('Ctrl+Z runs the newest Undo while its message shows, and leaves typing in a text field alone', async () => {

@@ -54,7 +54,7 @@ test('every editable scope uses the same projection and keeps raw history', () =
 });
 
 test('the task timeline and epic activity suppress reverted changes while keeping audit events', () => {
-  const { w, d } = bootApp({ route: 'task/BIR-079' });
+  const { w, d } = bootApp({ route: 'task/BIR-079', production: false });
   const task = w.DATA.tasks.find(t => t.id === 'BIR-079'), title = task.title, deadline = task.deadline || '';
   w.App.updTask(task.id, 'state', 'progress'); assert.equal(d.querySelectorAll('.timeline .tl-act').length, 1);
   w.App.updTask(task.id, 'state', 'planning'); assert.equal(d.querySelectorAll('.timeline .tl-act').length, 0);

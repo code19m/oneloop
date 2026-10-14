@@ -33,11 +33,11 @@ test('Inbox renders its actor, time and read state through reads and full or sco
 
 const sampleScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'];
 /** The sample Inbox projection, optionally with stored collaboration state. */
-const sampleInbox = (stored, options = {}) => bootApp({ route: 'inbox', fixture: 'inbox', html: '<html data-view-samples><head><meta name="theme-color"></head><body><div id="app"></div></body></html>', scripts: sampleScripts, stored: stored ? { 'oneloop.collaboration.v1': stored } : {}, ...options });
+const sampleInbox = (stored, options = {}) => bootApp({ route: 'inbox', fixture: 'inbox', html: '<html data-view-samples><head><meta name="theme-color"></head><body><div id="app"></div></body></html>', scripts: sampleScripts, stored: stored ? { 'oneloop.collaboration.v1': stored } : {}, production: false, ...options });
 
 const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
 /** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
-const boot = (route = 'inbox', prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
+const boot = (route = 'inbox', prepare, options) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); }, ...options });
 
 test('the sample Inbox groups notifications and filters unread rows in place', () => {
   const t = sampleInbox(null, { actions: true });
@@ -95,7 +95,7 @@ test('Storage shows the capacity meter, instance totals and a row per project', 
 });
 
 test('Inbox actions keep focus on the acted-on row or bulk control', () => {
-  const t=boot('inbox');
+  const t=boot('inbox',undefined,{production:false});
   t.D.notifications.push({id:'test-notice',eventId:'test-event',recipientId:'taylorwu',actorId:'robin',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:Date.now(),readAt:null,archivedAt:null});t.A.refresh();
   const row=t.d.querySelector('[data-notification-id]');assert(row);
   const open=row.querySelector('.inbox-open');open.focus();t.A.setNotificationRead(row.dataset.notificationId,false);
