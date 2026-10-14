@@ -4,6 +4,7 @@
 
 use url::Url;
 
+use super::git::valid_relative_path;
 use crate::{AppError, AppResult};
 
 const URL_MAX: usize = 2_000;
@@ -242,24 +243,26 @@ pub(crate) fn branch(value: &str) -> AppResult<String> {
 /// slash. An empty value is the repository root.
 pub(crate) fn folder(value: &str) -> AppResult<String> {
     let trimmed = value.trim().trim_matches('/');
-    let invalid = || AppError::validation("folder", "must be a folder inside the repository");
     if trimmed.is_empty() || trimmed == "." {
         return Ok(String::new());
     }
-    if trimmed.len() > FOLDER_MAX {
-        return Err(invalid());
-    }
-    for part in trimmed.split('/') {
-        if part.is_empty()
-            || part == "."
-            || part == ".."
-            || part.eq_ignore_ascii_case(".git")
-            || part.chars().any(|c| c.is_control() || c == '\\')
-        {
-            return Err(invalid());
-        }
+    if trimmed.len() > FOLDER_MAX || !valid_relative_path(trimmed) {
+        return Err(AppError::validation(
+            "folder",
+            "must be a folder inside the repository",
+        ));
     }
     Ok(trimmed.to_owned())
+}
+
+/// What paths inside `folder` start with: `folder/`, or nothing for the
+/// repository root.
+pub(crate) fn folder_prefix(folder: &str) -> String {
+    if folder.is_empty() {
+        String::new()
+    } else {
+        format!("{folder}/")
+    }
 }
 
 /// An access token travels in an HTTP header, so it must be one line of

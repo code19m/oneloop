@@ -19,7 +19,7 @@ use tokio::{
 };
 use zeroize::Zeroizing;
 
-use super::source::GitUrl;
+use super::source::{GitUrl, folder_prefix};
 use crate::files::disk::DiskReservation;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -486,12 +486,9 @@ impl Git {
                 self.read_blobs(&session, &repository_arg, selected, limits, deadline),
             )
             .await?;
+        let prefix = folder_prefix(folder);
         for file in &mut files {
-            let repository_path = if folder.is_empty() {
-                file.path.clone()
-            } else {
-                format!("{folder}/{}", file.path)
-            };
+            let repository_path = format!("{prefix}{}", file.path);
             file.changed_at = changed_at.get(&repository_path).copied();
         }
         // Release temporary bytes before SQLite can write both WAL and data pages.
@@ -974,11 +971,7 @@ fn select_files(
     folder: &str,
     limits: Limits,
 ) -> Result<Vec<(String, String, String)>, SyncError> {
-    let prefix = if folder.is_empty() {
-        String::new()
-    } else {
-        format!("{folder}/")
-    };
+    let prefix = folder_prefix(folder);
     let mut files = Vec::new();
     let mut folders = HashSet::new();
     for record in listing

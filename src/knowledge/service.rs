@@ -48,7 +48,6 @@ const OVERVIEW_SECTIONS_MAX: usize = 12;
 const README_CHARS_MAX: usize = 20_000;
 const FILE_TEXT_CHARS_MAX: usize = 100_000;
 const FILE_HEADINGS_MAX: usize = 60;
-const PATH_QUERY_MAX: usize = 1_024;
 /// Bytes that always hold `chars` characters, whatever the script.
 const fn text_bytes(chars: usize) -> u64 {
     4 * chars as u64
@@ -682,17 +681,10 @@ impl KnowledgeService {
         folder: Option<&str>,
     ) -> AppResult<KnowledgeOverview> {
         actor.require_ready()?;
-        let folder = match folder.map(str::trim).filter(|value| !value.is_empty()) {
-            Some(value) => source::folder(value)?,
-            None => String::new(),
-        };
+        let folder = source::folder(folder.unwrap_or_default())?;
         let view = self.view(actor, project_id).await?;
         let catalog = self.catalog(actor, project_id).await?;
-        let prefix = if folder.is_empty() {
-            String::new()
-        } else {
-            format!("{folder}/")
-        };
+        let prefix = source::folder_prefix(&folder);
         let inside: Vec<&KnowledgeFile> = view
             .files
             .iter()
@@ -1566,7 +1558,7 @@ fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
 }
 
 fn requested_path(path: &str) -> AppResult<String> {
-    if path.len() > PATH_QUERY_MAX || !super::git::valid_relative_path(path) {
+    if !super::git::valid_relative_path(path) {
         return Err(AppError::NotFound { resource: "file" });
     }
     Ok(path.to_owned())
