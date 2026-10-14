@@ -176,6 +176,17 @@ test('multi-select filters keep keyboard position through toggles and return foc
  key('Escape');assert(!t.d.querySelector('.pop'));assert.equal(t.d.activeElement,trigger);
 });
 
+test('Pool Load more reads the next page once per click, before and after the list repaints', () => {
+ const t=bootApp({route:'board',actions:true}),projectId=t.A.context().projectId;
+ t.D.poolPageInfo[`${projectId}:mine`]={nextCursor:'next',total:30,loaded:true};
+ t.A.openModal('pool');
+ const more=()=>t.d.querySelectorAll('.pool-load-more'),reads=()=>t.reads.calls.filter(call=>call[0]==='morePool').length;
+ assert.equal(more().length,1);more()[0].click();assert.equal(reads(),1);
+ // The fake read repaints the open list in place, which rebuilds the button.
+ assert.equal(more().length,1);more()[0].click();assert.equal(reads(),2);
+ t.D.poolPageInfo[`${projectId}:mine`].nextCursor=null;t.A.refreshPool();assert.equal(more().length,0);
+});
+
 test('Pool does not keep unsent entries across tabs or reopening', () => {
  const t=boot();t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
 });

@@ -1888,6 +1888,9 @@
     const pending=page?.loaded===false;
     return `<div class="empty-note"${pending?' role="status"':''}>${pending?'Loading items…':'No items'}</div>`;
   }
+  function poolLoadMoreHtml() {
+    return D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?`<button class="btn quiet pool-load-more" ${UIAction('loadMorePool')}>Load more</button>`:'';
+  }
   function updatePool({ completeItemId } = {}) {
     updateDocumentTitle();
     const view = document.querySelector('.pool-view');
@@ -1927,8 +1930,7 @@
     if (!items.length) setHTML(list,poolReadNotice(true));
     else if(D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.error){const note=document.createElement('template');setHTML(note,poolReadNotice());list.append(note.content);}
     list.querySelector('.pool-load-more')?.remove();
-    const page=D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`];
-    if(page?.nextCursor){const more=document.createElement('button');more.className='btn quiet pool-load-more';more.textContent='Load more';more.addEventListener('click',()=>App.loadMorePool());list.append(more);}
+    const more=document.createElement('template');setHTML(more,poolLoadMoreHtml());list.append(more.content);
     view.querySelectorAll('[data-pool-tab]').forEach((button) => {
       const selected = button.dataset.poolTab === state.poolTab;
       button.classList.toggle('on', selected);
@@ -2036,7 +2038,7 @@
         <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" ${UIAction('closeOverlays')}>${I.close}</button>
       </div>
       <div class="pool-capture" ${canWritePool?'':'hidden'}><div class="pool-capture-title"><input id="poolAdd" class="ctl" placeholder="Add an item" aria-label="Add pool item" maxlength="140" ${canWritePool?'':'hidden'} ${UIAction.on('keydown', 'poolKey', UIAction.event)}><button type="button" class="btn icon pool-capture-toggle" aria-label="Add description" title="Add description" aria-expanded="false" aria-controls="pool-capture-notes" ${UIAction('togglePoolDescription')}>${I.note}</button></div><div class="pool-capture-notes" id="pool-capture-notes" aria-hidden="true" inert><div><label for="poolNewDesc">Description ${optionalMark}</label><textarea id="poolNewDesc" class="ctl" maxlength="2000" placeholder="A little context for later…" ${UIAction.on('keydown', 'poolDescriptionKey', UIAction.event)}></textarea><div class="pool-description-actions"><button type="button" class="btn primary" ${UIAction('addPoolItem')}>Add item</button></div></div></div></div>
-      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?`<button class="btn quiet pool-load-more" ${UIAction('loadMorePool')}>Load more</button>`:''}</div></div>`;
+      <div class="pool-list" data-pool-scope="${UIEscape(state.poolTab)}">${rows}${poolLoadMoreHtml()}</div></div>`;
     } else if (m.type === 'knowledge') {
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
@@ -2238,7 +2240,7 @@
     // The page heading and main area outlast any content render of the same page, such as
     // a loading skeleton during a slow read, so a keyboard user keeps their place.
     const landmark=active?.matches?.('.topbar h1')?'.topbar h1':active?.id==='main'?'#main':null,page=pageScope();
-    const snapshot=focused?window.OneloopRecovery?.captureEditor?.():null;
+    const snapshot=focused?window.Recovery?.captureEditor?.():null;
     if(snapshot)snapshot.controls=snapshot.controls.filter(control=>control.key===snapshot.activeKey);
     rendering=true;
     try{
@@ -2252,7 +2254,7 @@
         target?.focus({preventScroll:true});
       }
       if(scope===renderScope()&&focused){
-        if(snapshot)window.OneloopRecovery.restoreEditor(snapshot);
+        if(snapshot)window.Recovery.restoreEditor(snapshot);
         restoreOpener(focused.opener);
         const target=document.activeElement;
         if(target?.matches('input,textarea')){target.value=focused.value;target.scrollTop=focused.scrollTop;if(focused.opener.selection)try{target.setSelectionRange(...focused.opener.selection);}catch{}}
@@ -2289,7 +2291,7 @@
     document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
     document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
     mountDescription();collaboration?.mount();
-    finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);Reflect.set(App,'_focusPool',false);
+    finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);
     paintedScope=renderScope();
   }
   function renderContent() {
@@ -2389,7 +2391,6 @@
     if (state.menu) placeMenu();
     collaboration?.mount();
     syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, oldPeekKey, oldPanelFocus });
-    App._focusPool = false;
   }
 
   // ---------- roadmap mount: scroll + zoom ----------
@@ -3114,7 +3115,7 @@
       if (type === 'task' && !App.require('manage_board')) return;
       if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
       state.sideOpen = false;
-      state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') { App._poolScroll = {}; App._focusPool = true; } renderOverlays();
+      state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') App._poolScroll = {}; renderOverlays();
       if(type==='pool')invoke('pool.open');
     },
     toast: pushToast,

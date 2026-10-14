@@ -51,7 +51,7 @@ export function installAttachmentTransport(
     const fileName = typeof File !== 'undefined' && file instanceof File ? file.name : 'attachment';
     body.set('file', file, fileName);
 
-    const recovery = globalThis.OneloopRecovery;
+    const recovery = globalThis.Recovery;
     const requestContext = recovery?.requestContext?.();
     const upload = new Promise((resolve, reject) => {
       const xhr = xhrFactory();

@@ -112,8 +112,8 @@ test('an open comment edit conflicts against its original revision after a live 
   Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
  });
  await settle();
- const previous=globalThis.OneloopRecovery;
- globalThis.OneloopRecovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
+ const previous=globalThis.Recovery;
+ globalThis.Recovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
  try{
   t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
   Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');

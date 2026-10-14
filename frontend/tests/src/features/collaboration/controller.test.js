@@ -135,7 +135,7 @@ test('comment saves let the gateway compare changed intent instead of blindly re
 });
 
 test('an edited-comment conflict reviews the canonical value before an explicit latest-revision retry',async()=>{
-  const previous=globalThis.OneloopRecovery;let commandCalls=0,reviewed='';
+  const previous=globalThis.Recovery;let commandCalls=0,reviewed='';
   try{
     const t=fixture({facade:{commentEditor:()=>({})},api:{
       comments:async()=>({items:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Latest saved',mentions:[],createdAt:20,editedAt:21,deletedAt:null,revision:3}],nextCursor:null}),
@@ -148,13 +148,13 @@ test('an edited-comment conflict reviews the canonical value before an explicit 
       assert.equal(options.expectedRevision,3);
       return {entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Keep mine',mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:4}],events:[{id:'a4'}]};
     };
-    globalThis.OneloopRecovery={
+    globalThis.Recovery={
       isRevisionConflict:()=>true,
       async resolveConflict(input){await input.reloadLatest();const latest=input.latestEntity();reviewed=input.target.latestValue(latest);return {saved:true,result:await input.retry(latest.revision)};},
     };
     const ok=await t.controller.saveComment({task:t.data.tasks[0],mode:'edit',commentId:'c1',revision:1,text:'Keep mine',mentions:[],interactionId:'edit-conflict'});
     assert.equal(ok,true);assert.equal(reviewed,'Latest saved');assert.equal(commandCalls,2);assert.equal(t.data.tasks[0].comments[0].text,'Keep mine');
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('Inbox reads use server filters, counts and cursor pagination; bulk changes keep the same filter',async()=>{
@@ -277,26 +277,26 @@ test('a session change cancels queued projection reconciliation',async()=>{
 
 test('SSE lifecycle reports live-channel recovery without treating a healthy API as offline',async()=>{
   const lifecycle=[];let expired=0;
-  const previous=globalThis.OneloopRecovery;
-  globalThis.OneloopRecovery={liveConnected:()=>lifecycle.push('connected'),liveDisconnected:()=>lifecycle.push('disconnected'),sessionExpired:()=>{expired++;return true;}};
+  const previous=globalThis.Recovery;
+  globalThis.Recovery={liveConnected:()=>lifecycle.push('connected'),liveDisconnected:()=>lifecycle.push('disconnected'),sessionExpired:()=>{expired++;return true;}};
   try{
     const t=fixture({api:{request:async()=>{throw Object.assign(new Error('Ended'),{status:401});}}});
     t.events.listeners.open({});
     t.events.listeners.error({});await tick();
     assert.deepEqual(lifecycle,['connected','disconnected']);assert.equal(expired,1);
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('task access loss delegates to the shell state without a stale project toast',async()=>{
   useMockedClock();
-  const previous=globalThis.OneloopRecovery,states=[],toasts=[];
-  globalThis.OneloopRecovery={handleRouteError:(error,options)=>states.push([error.status,options.background])};
+  const previous=globalThis.Recovery,states=[],toasts=[];
+  globalThis.Recovery={handleRouteError:(error,options)=>states.push([error.status,options.background])};
   try{
     const t=fixture({api:{request:async()=>{throw Object.assign(new Error('project was not found'),{status:404,code:'not_found'});}},app:{toast:(...args)=>toasts.push(args)}});
     t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
     t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
     assert.deepEqual(states,[[404,true]]);assert.deepEqual(toasts,[]);
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('older activity does not restart exhausted comments and retains reply context/counts',async()=>{
@@ -325,8 +325,8 @@ test('block activity retains reasons and resolutions after the resolved-block pa
 });
 
 test('failed discussion loading after navigation cannot replace the current page',async()=>{
-  const previous=globalThis.OneloopRecovery,errors=[],toasts=[];let rejectComments;
-  globalThis.OneloopRecovery={handleRouteError:error=>errors.push(error)};
+  const previous=globalThis.Recovery,errors=[],toasts=[];let rejectComments;
+  globalThis.Recovery={handleRouteError:error=>errors.push(error)};
   const t=fixture({api:{comments:()=>new Promise((_resolve,reject)=>{rejectComments=reject;})},app:{toast:message=>toasts.push(message)}});
   try{
     t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
@@ -335,7 +335,7 @@ test('failed discussion loading after navigation cannot replace the current page
     rejectComments(Object.assign(new Error('No longer visible'),{status:403}));
     assert.deepEqual(await pending,{stale:true});assert.deepEqual(errors,[]);assert.deepEqual(toasts,[]);
     assert.equal(t.pages.length,1);assert.equal(t.pages[0][1].loading,true);
-  }finally{t.controller.dispose();globalThis.OneloopRecovery=previous;}
+  }finally{t.controller.dispose();globalThis.Recovery=previous;}
 });
 
 test('task and Inbox hint bursts share reads and retain one follow-up during a slow read',async()=>{
@@ -522,25 +522,25 @@ test('SSE open plus reconcile performs one reload after reconnect',async()=>{
   useMockedClock();
   let reloads=0;const sources=[],timers=[];
   const t=fixture({app:{context:()=>({view:'board',projectId:'p1'})},api:{request:async()=>({})},transport:{reload:async()=>{reloads++;return {stale:false};}},eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){}};sources.push(source);return source;}});
-  const previous=globalThis.OneloopRecovery;
+  const previous=globalThis.Recovery;
   const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{},getApp:()=>t.app,getAuth:()=>null,reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
-  globalThis.OneloopRecovery=recovery;
+  globalThis.Recovery=recovery;
   try{
     sources[0].listeners.error();await tick();timers.at(-1)();
     assert.equal(sources.length,2);assert.equal(sources[1].url,'/api/events');
     sources[1].listeners.open();sources[1].listeners.reconcile({data:'{}'});
     await delay(100);assert.equal(reloads,1);assert.equal(t.apiCalls.filter(call=>call[0]==='inbox').length,1);
-  }finally{t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}
+  }finally{t.controller.dispose();recovery.dispose();globalThis.Recovery=previous;}
 });
 
 /** A page with streams that record their listeners, and the real recovery controller. */
 function streamingPage(overrides={}){
   const sources=[],timers=[];let expires=0;
   const t=fixture({...overrides,eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};sources.push(source);return source;}});
-  const previous=globalThis.OneloopRecovery;
+  const previous=globalThis.Recovery;
   const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{invalidate(){}},getApp:()=>t.app,getAuth:()=>({expire(){expires++;}}),reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
-  globalThis.OneloopRecovery=recovery;
-  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();globalThis.OneloopRecovery=previous;}};
+  globalThis.Recovery=recovery;
+  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();globalThis.Recovery=previous;}};
 }
 
 test('a hidden tab whose stream comes back for someone who signed in elsewhere ends its session and reads nothing for them',async()=>{

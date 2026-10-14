@@ -154,9 +154,8 @@ export function compareTaskOrder(left, right, doneOrder) {
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {
-  const previous=new Map(data.tasks.map((item)=>[item.internalId,item]));
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
-  for(const view of taskViews)byId.set(view.id,retainTaskDetails(previous.get(view.id),mapTask(view)));
+  for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
   replace(data.tasks,[...byId.values()]);
   const current=data.epicPageInfo[epicId]??{taskIds:[],tasksCursor:null,tasksTotal:0,activityCursor:null,loaded:false};
   const taskIds=append?[...current.taskIds]:[];

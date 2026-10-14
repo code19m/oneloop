@@ -104,7 +104,7 @@ test('a failed block submission keeps its reason and the retry saves once', asyn
   await expect(page.locator('.save-feedback')).toBeVisible();
   await expect(reason).toHaveValue('Keep this reason');
   expect(await page.evaluate(() => DATA.tasks.find(task => task.id === App.context().taskId)?.block ?? null)).toBeNull();
-  await page.evaluate(() => OneloopRecovery.reconnect(true));
+  await page.evaluate(() => Recovery.reconnect(true));
   await page.locator('.modal').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
   await expect(page.locator('.task-page')).toContainText('Keep this reason');

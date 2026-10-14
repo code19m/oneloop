@@ -94,7 +94,6 @@ const buildMonitor=createBuildMonitor({
   onUpdate:(value)=>recovery?.buildChanged(value),
 });
 recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
-globalThis.OneloopRecovery=recovery;
 globalThis.Recovery=recovery;
 
 installTooltips(document);

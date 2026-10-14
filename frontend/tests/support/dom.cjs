@@ -40,7 +40,7 @@ class JSDOM extends jsdom.JSDOM {
 // The src modules run in Node and reach the page through these globals, so
 // while a booted window is open they name that window's. A test may still
 // assign one; the harness puts every global back after the test.
-const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement', 'Collab', 'OneloopRecovery'];
+const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement', 'Collab', 'Recovery'];
 const replacedGlobals = new Map();
 function useWindowGlobals(w) {
   for (const name of WINDOW_GLOBALS) {
@@ -90,7 +90,7 @@ function dataScript() {
  */
 function recoveryScript() {
   return '(function(){' + read(path.join(frontend, 'src/features/recovery/controller.js')).replace(/^import .*;$/mg, 'const ApiError=window.TestApiError;').replaceAll('export ', '')
-    + '\nwindow.Recovery=window.OneloopRecovery=createRecoveryController({data:DATA,...window.TestWiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
+    + '\nwindow.Recovery=createRecoveryController({data:DATA,...window.TestWiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
 }
 
 /**
