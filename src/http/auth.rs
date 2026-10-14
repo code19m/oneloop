@@ -4,8 +4,8 @@ use std::{convert::Infallible, net::SocketAddr};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, State},
-    http::{HeaderMap, Request, StatusCode, header},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, FromRequestParts, Path, State},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppError, AppResult, AppState,
     auth::{
-        AccountSummary, AccountUpdate, Actor, ConnectedAppSummary, LoginResult, SessionMetadata,
-        SessionSummary, unix_now,
+        AccountSummary, AccountUpdate, Actor, ConnectedAppSummary, IssuedSession, LoginResult,
+        SessionMetadata, SessionSummary, unix_now,
     },
 };
 
@@ -53,9 +53,12 @@ pub fn users_router() -> Router<AppState> {
         .layer(middleware::from_fn(auth_no_store))
 }
 
+/// Checks the origin of every account route and signs in every one except
+/// login and logout, which handle sessions themselves. Handlers take the
+/// signed-in `Actor` from the request extensions.
 pub async fn account_boundary(
     State(state): State<AppState>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> AppResult<Response> {
     require_canonical_origin(
@@ -64,10 +67,11 @@ pub async fn account_boundary(
         &state.config.public_url,
     )?;
     if !matches!(request.uri().path(), "/api/auth/login" | "/api/auth/logout") {
-        let actor = authenticate_headers(&state, request.headers(), false).await?;
+        let actor = authenticate_headers(&state, request.headers(), true).await?;
         if request.uri().path().starts_with("/api/users") {
             actor.require_admin()?;
         }
+        request.extensions_mut().insert(actor);
     }
     Ok(next.run(request).await)
 }
@@ -165,11 +169,6 @@ async fn login(
     headers: HeaderMap,
     ApiJson(request): ApiJson<LoginRequest>,
 ) -> AppResult<Response> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     let metadata = SessionMetadata {
         client_name: clean_metadata(request.client_name, 100),
         client_ip: client_ip(peer, &headers, &state.config.trusted_proxies)
@@ -193,14 +192,7 @@ async fn login(
         .await?
     {
         LoginResult::Authenticated(issued) => {
-            let cookie = session_cookie(
-                &state.config.public_url,
-                &issued.token,
-                issued
-                    .absolute_expires_at
-                    .saturating_sub(unix_now()?)
-                    .max(0),
-            )?;
+            let cookie = session_cookie_for(&state, &issued)?;
             let body = Json(auth_response(&state, &issued.actor).await?);
             Ok(([(header::SET_COOKIE, cookie)], body).into_response())
         }
@@ -222,11 +214,6 @@ async fn login(
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     match authenticate_cookie(&state, &headers, false).await {
         // A page still showing someone who signed out signs out only itself:
         // the cookie and the session belong to whoever signed in after them.
@@ -245,8 +232,10 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<
         .into_response())
 }
 
-async fn me(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<AuthResponse>> {
-    let actor = authenticate_headers(&state, &headers, true).await?;
+async fn me(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+) -> AppResult<Json<AuthResponse>> {
     Ok(Json(auth_response(&state, &actor).await?))
 }
 
@@ -258,15 +247,9 @@ struct UpdateMeRequest {
 
 async fn update_me(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiJson(request): ApiJson<UpdateMeRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    require_canonical_origin(
-        &axum::http::Method::PATCH,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let actor = state
         .auth
         .update_profile(&actor, &request.display_name)
@@ -283,27 +266,14 @@ struct ChangePasswordRequest {
 
 async fn change_password(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiJson(request): ApiJson<ChangePasswordRequest>,
 ) -> AppResult<Response> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let issued = state
         .auth
         .change_password(&actor, &request.current_password, &request.new_password)
         .await?;
-    let cookie = session_cookie(
-        &state.config.public_url,
-        &issued.token,
-        issued
-            .absolute_expires_at
-            .saturating_sub(unix_now()?)
-            .max(0),
-    )?;
+    let cookie = session_cookie_for(&state, &issued)?;
     Ok((
         [(header::SET_COOKIE, cookie)],
         Json(auth_response(&state, &issued.actor).await?),
@@ -319,27 +289,14 @@ struct PasswordRequest {
 
 async fn recent_auth(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiJson(request): ApiJson<PasswordRequest>,
 ) -> AppResult<Response> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let issued = state
         .auth
         .recent_authenticate(&actor, &request.password)
         .await?;
-    let cookie = session_cookie(
-        &state.config.public_url,
-        &issued.token,
-        issued
-            .absolute_expires_at
-            .saturating_sub(unix_now()?)
-            .max(0),
-    )?;
+    let cookie = session_cookie_for(&state, &issued)?;
     Ok((
         [(header::SET_COOKIE, cookie)],
         Json(RecentAuthResponse {
@@ -351,9 +308,8 @@ async fn recent_auth(
 
 async fn sessions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<SessionsResponse>> {
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let sessions = state.auth.list_sessions(&actor).await?;
     Ok(Json(SessionsResponse { sessions }))
 }
@@ -361,37 +317,24 @@ async fn sessions(
 async fn revoke_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<StatusCode> {
-    require_canonical_origin(
-        &axum::http::Method::DELETE,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     state.auth.revoke_session(&actor, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn revoke_other_sessions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<RevokedResponse>> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let revoked = state.auth.revoke_other_sessions(&actor).await?;
     Ok(Json(RevokedResponse { revoked }))
 }
 
 async fn connected_apps(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<ConnectedAppsResponse>> {
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let apps = state.auth.list_connected_apps(&actor).await?;
     Ok(Json(ConnectedAppsResponse { apps }))
 }
@@ -399,14 +342,8 @@ async fn connected_apps(
 async fn revoke_connected_app(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<StatusCode> {
-    require_canonical_origin(
-        &axum::http::Method::DELETE,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     state.auth.revoke_connected_app(&actor, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -510,10 +447,9 @@ struct UsersQuery {
 
 async fn list_users(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiQuery(query): ApiQuery<UsersQuery>,
 ) -> AppResult<Json<UsersResponse>> {
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let (users, next_cursor) = state
         .auth
         .list_accounts(&actor, query.after_username.as_deref())
@@ -532,15 +468,9 @@ struct CreateUserRequest {
 
 async fn create_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiJson(request): ApiJson<CreateUserRequest>,
 ) -> AppResult<(StatusCode, Json<CreatedUserResponse>)> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let created = state
         .auth
         .create_account(
@@ -571,15 +501,9 @@ struct UpdateUserRequest {
 async fn update_user(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
     ApiJson(request): ApiJson<UpdateUserRequest>,
 ) -> AppResult<Json<AccountSummary>> {
-    require_canonical_origin(
-        &axum::http::Method::PATCH,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let user = state
         .auth
         .update_account(
@@ -599,14 +523,8 @@ async fn update_user(
 async fn reset_user_password(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<TemporaryPasswordResponse>> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
-    let actor = authenticate_headers(&state, &headers, true).await?;
     let temporary_password = state.auth.reset_account_password(&actor, &id).await?;
     Ok(Json(TemporaryPasswordResponse { temporary_password }))
 }
@@ -627,6 +545,15 @@ struct CreatedUserResponse {
 #[serde(rename_all = "camelCase")]
 struct TemporaryPasswordResponse {
     temporary_password: String,
+}
+
+/// The cookie for a session that was just issued, valid until the session ends.
+fn session_cookie_for(state: &AppState, issued: &IssuedSession) -> AppResult<HeaderValue> {
+    let max_age = issued
+        .absolute_expires_at
+        .saturating_sub(unix_now()?)
+        .max(0);
+    session_cookie(&state.config.public_url, &issued.token, max_age)
 }
 
 fn clean_metadata(value: Option<String>, max_chars: usize) -> Option<String> {

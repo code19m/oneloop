@@ -24,8 +24,6 @@ use crate::{
     },
 };
 
-use super::security::require_canonical_origin;
-
 const MULTIPART_OVERHEAD_BYTES: usize = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT: usize = MAX_ATTACHMENT_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
 const AVATAR_BODY_LIMIT: usize = MAX_AVATAR_BYTES as usize + MULTIPART_OVERHEAD_BYTES;
@@ -97,11 +95,6 @@ async fn upload_attachment(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> AppResult<Response> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     let idempotency_key = required_header(&headers, "idempotency-key", "idempotencyKey")?;
     let declared_size = required_header(&headers, "x-file-size", "file")?
         .parse::<u64>()
@@ -217,14 +210,8 @@ async fn update_attachment(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(attachment_id): Path<String>,
-    headers: HeaderMap,
     ApiJson(patch): ApiJson<AttachmentPatch>,
 ) -> AppResult<Json<AttachmentView>> {
-    require_canonical_origin(
-        &axum::http::Method::PATCH,
-        &headers,
-        &state.config.public_url,
-    )?;
     state
         .files
         .set_ephemeral(&actor, &attachment_id, patch)
@@ -236,14 +223,8 @@ async fn reorder_attachments(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(task_id): Path<String>,
-    headers: HeaderMap,
     ApiJson(input): ApiJson<AttachmentReorder>,
 ) -> AppResult<Json<AttachmentList>> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     state.files.reorder(&actor, &task_id, input).await.map(Json)
 }
 
@@ -260,11 +241,6 @@ async fn delete_attachment(
     ApiQuery(query): ApiQuery<DeleteQuery>,
     headers: HeaderMap,
 ) -> AppResult<StatusCode> {
-    require_canonical_origin(
-        &axum::http::Method::DELETE,
-        &headers,
-        &state.config.public_url,
-    )?;
     let idempotency_key = required_header(&headers, "idempotency-key", "idempotencyKey")?;
     state
         .files
@@ -282,14 +258,8 @@ async fn restore_attachment(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(attachment_id): Path<String>,
-    headers: HeaderMap,
     ApiJson(input): ApiJson<AttachmentRestore>,
 ) -> AppResult<Json<AttachmentView>> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     state
         .files
         .restore_attachment(&actor, &attachment_id, input)
@@ -462,10 +432,8 @@ pub(super) fn html_preview_response(bytes: Vec<u8>) -> Response {
 async fn upload_avatar(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
-    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> AppResult<Json<serde_json::Value>> {
-    require_canonical_origin(&axum::http::Method::PUT, &headers, &state.config.public_url)?;
     // The image stays in memory until it is decoded, so only a few uploads may
     // read theirs at once.
     let slot = state.files.avatar_slot()?;
@@ -509,13 +477,7 @@ async fn upload_avatar(
 async fn remove_avatar(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
-    headers: HeaderMap,
 ) -> AppResult<StatusCode> {
-    require_canonical_origin(
-        &axum::http::Method::DELETE,
-        &headers,
-        &state.config.public_url,
-    )?;
     state.files.remove_avatar(&actor).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -544,13 +506,7 @@ async fn storage_usage(
 async fn storage_cleanup(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
-    headers: HeaderMap,
 ) -> AppResult<Json<crate::files::FileRuntimeReport>> {
-    require_canonical_origin(
-        &axum::http::Method::POST,
-        &headers,
-        &state.config.public_url,
-    )?;
     actor.require_admin()?;
     state.files.cleanup_if_needed().await.map(Json)
 }
