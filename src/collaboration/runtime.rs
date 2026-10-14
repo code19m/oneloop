@@ -20,8 +20,6 @@ use crate::{AppError, AppResult, Db};
 
 use super::{CollaborationService, SseHint};
 
-/// Leases from versions that claimed messages before delivering them.
-const CLAIM_SECONDS: i64 = 30;
 /// One delivery transaction takes at most this many messages, and stops
 /// taking more after `BATCH_TIME`, so it holds the writer only briefly.
 const BATCH_MESSAGES: usize = 64;
@@ -337,12 +335,9 @@ impl OutboxWorker {
                     .prepare_cached(&format!(
                         "SELECT EXISTS(SELECT 1 FROM outbox_messages
                  WHERE delivered_at IS NULL AND available_at<=?1
-                   AND topic IN ({DELIVERABLE_TOPICS})
-                   AND (locked_at IS NULL OR locked_at<=?2))"
+                   AND topic IN ({DELIVERABLE_TOPICS}))"
                     ))?
-                    .query_row(params![now, now - CLAIM_SECONDS], |row| {
-                        row.get::<_, bool>(0)
-                    })?)
+                    .query_row([now], |row| row.get::<_, bool>(0))?)
             })
             .await?;
         if !ready {
@@ -377,8 +372,7 @@ impl OutboxWorker {
             .run(move |connection| {
                 Ok(connection
                     .prepare_cached(&format!(
-                        "SELECT MIN(MAX(available_at,COALESCE(locked_at+{CLAIM_SECONDS},0)))
-                         FROM outbox_messages
+                        "SELECT MIN(available_at) FROM outbox_messages
                          WHERE delivered_at IS NULL AND topic IN ({DELIVERABLE_TOPICS})"
                     ))?
                     .query_row([], |row| row.get(0))?)
@@ -415,22 +409,18 @@ fn deliver_batch(
              FROM outbox_messages
              WHERE delivered_at IS NULL AND available_at<=?1
                AND topic IN ({DELIVERABLE_TOPICS})
-               AND (locked_at IS NULL OR locked_at<=?2)
-             ORDER BY available_at,id LIMIT ?3"
+             ORDER BY available_at,id LIMIT ?2"
         ))?
-        .query_map(
-            params![now, now - CLAIM_SECONDS, BATCH_MESSAGES as i64],
-            |row| {
-                Ok(ClaimedMessage {
-                    id: row.get(0)?,
-                    topic: row.get(1)?,
-                    aggregate_type: row.get(2)?,
-                    aggregate_id: row.get(3)?,
-                    payload_json: row.get(4)?,
-                    attempt_count: row.get(5)?,
-                })
-            },
-        )?
+        .query_map(params![now, BATCH_MESSAGES as i64], |row| {
+            Ok(ClaimedMessage {
+                id: row.get(0)?,
+                topic: row.get(1)?,
+                aggregate_type: row.get(2)?,
+                aggregate_id: row.get(3)?,
+                payload_json: row.get(4)?,
+                attempt_count: row.get(5)?,
+            })
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut batch = Batch {
         delivered: 0,
@@ -454,7 +444,7 @@ fn deliver_batch(
                 let backoff = 2_i64.saturating_pow(attempt.min(8) as u32).min(300);
                 tx.execute(
                     "UPDATE outbox_messages
-                     SET attempt_count=?1,available_at=?2,locked_at=NULL,locked_by=NULL,last_error=?3
+                     SET attempt_count=?1,available_at=?2,last_error=?3
                      WHERE id=?4 AND delivered_at IS NULL",
                     params![attempt, now + backoff, safe_error(&error), message.id],
                 )?;
@@ -488,7 +478,7 @@ fn deliver_message(
         _ => None,
     };
     tx.execute(
-        "UPDATE outbox_messages SET delivered_at=?1,locked_at=NULL,locked_by=NULL,last_error=NULL
+        "UPDATE outbox_messages SET delivered_at=?1,last_error=NULL
          WHERE id=?2 AND delivered_at IS NULL",
         params![now, message.id],
     )?;

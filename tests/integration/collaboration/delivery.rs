@@ -308,7 +308,7 @@ async fn activity_hints_include_task_scope_and_revision_for_targeted_reconciliat
 }
 
 #[tokio::test]
-async fn worker_failures_release_the_lease_and_schedule_a_retry() {
+async fn worker_failures_schedule_a_retry() {
     let SeededProject {
         root: _root, db, ..
     } = seeded_project().await;
@@ -321,11 +321,11 @@ async fn worker_failures_release_the_lease_and_schedule_a_retry() {
     }).await.unwrap();
     let runtime = CollaborationRuntime::new(db.clone());
     assert!(runtime.worker().run_once().await.is_err());
-    let state:(i64,Option<i64>,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
-        "SELECT attempt_count,locked_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
+    let state:(i64,i64,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
+        "SELECT attempt_count,available_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
         |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
     assert_eq!(state.0, 1);
-    assert!(state.1.is_none());
+    assert!(state.1 > available);
     assert!(state.2.is_some());
     assert!(state.3.is_none());
 }
