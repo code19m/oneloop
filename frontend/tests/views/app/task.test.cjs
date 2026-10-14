@@ -302,3 +302,15 @@ test('a message with an action runs it once and closes, and never merges with an
   assert.deepEqual(runs, ['first']);
   assert.equal(t.d.querySelectorAll('#toast-region .toast[data-toast-id]').length, 1);
 });
+
+test('a block save announces what changed', async () => {
+  const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').block = { id: 'b1', reason: 'Waiting', revision: 1, by: 'taylorwu', at: Date.now(), mentions: [] }; } });
+  const notices = []; t.A.toast = text => notices.push(text);
+  for (const [mode, reason] of [['block', 'Waiting for review'], ['completeBlocked', 'Reviewed']]) {
+    t.A.openModal(mode, 'BIR-079'); const form = t.d.querySelector('.modal form'); form.querySelector('[name=reason]').value = reason;
+    t.A.saveBlock({ target: form, preventDefault() {} }, 'BIR-079', mode);
+    t.commands.at(-1).resolve({ entities: [], events: [] }); await settle();
+  }
+  assert.deepEqual(t.commands.map(command => command.operation), ['task.block.update', 'task.unblock-and-complete']);
+  assert.deepEqual(notices, ['Block reason updated', 'Task unblocked and completed']);
+});

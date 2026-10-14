@@ -16,6 +16,10 @@ import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.j
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
 import { leaveAdminPage } from '../features/recovery/controller.js';
 
+const BLOCK_MESSAGES = Object.freeze({
+  'task.block':'Task blocked', 'task.block.update':'Block reason updated',
+  'task.unblock':'Task unblocked', 'task.unblock-and-complete':'Task unblocked and completed',
+});
 /** The server's username order: SQLite's binary collation, not the browser's locale. */
 const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 /** Cut at `max` UTF-16 units, as maxlength does, without splitting a surrogate pair. */
@@ -714,7 +718,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     else if(mode==='block'){operation='task.block';payload={taskId:item.internalId,reason,mentions:prepared.mentions||[]};}
     else {operation=mode==='completeBlocked'?'task.unblock-and-complete':'task.unblock';payload={taskId:item.internalId,resolution:reason||null};}
     const revisionEntity=operation==='task.block.update'?item.block:item;
-    return fire(execute(operation,payload,revisionEntity,mode==='block'?'Task blocked':'Task unblocked',{form,closeForm:true}));
+    return fire(execute(operation,payload,revisionEntity,BLOCK_MESSAGES[operation],{form,closeForm:true}));
   };
 
   // An item leaves the field as soon as it is sent, so what is typed next is a

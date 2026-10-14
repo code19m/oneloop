@@ -37,6 +37,9 @@ All notable changes to oneloop are recorded here. The format follows
 - A tab whose live updates a newer tab took over now says that live updates
   are paused, with **Resume**. Before, it looked connected but showed no new
   changes until you used it.
+- Saving a new block reason now says "Block reason updated", and unblocking
+  and completing a task says "Task unblocked and completed". Before, they said
+  "Task blocked" and "Task unblocked".
 
 ### Security
 
