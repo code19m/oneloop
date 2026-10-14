@@ -40,12 +40,12 @@ impl FileService {
                 }
                 match mode {
                     ReadMode::Content => {
-                        if !matches!(stored.attachment.preview_kind, Some(PreviewKind::Image | PreviewKind::Pdf)) {
+                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::is_inline_media) {
                             return Err(AppError::NotFound { resource: "preview" });
                         }
                     }
                     ReadMode::Source => {
-                        if !matches!(stored.attachment.preview_kind, Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)) {
+                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::has_source) {
                             return Err(AppError::NotFound { resource: "source" });
                         }
                     }

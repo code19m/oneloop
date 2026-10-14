@@ -851,16 +851,11 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
             revision: row.get(13)?,
             preview_kind: preview,
             download_url: available.then(|| format!("/api/attachments/{id}/download")),
-            content_url: (available
-                && matches!(preview, Some(PreviewKind::Image | PreviewKind::Pdf)))
-            .then(|| format!("/api/attachments/{id}/content")),
+            content_url: (available && preview.is_some_and(PreviewKind::is_inline_media))
+                .then(|| format!("/api/attachments/{id}/content")),
             thumbnail_url: thumbnail.then(|| format!("/api/attachments/{id}/thumbnail")),
-            source_url: (available
-                && matches!(
-                    preview,
-                    Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)
-                ))
-            .then(|| format!("/api/attachments/{id}/source")),
+            source_url: (available && preview.is_some_and(PreviewKind::has_source))
+                .then(|| format!("/api/attachments/{id}/source")),
             html_preview_url: (available && preview == Some(PreviewKind::Html))
                 .then(|| format!("/api/attachments/{id}/preview/html")),
         },

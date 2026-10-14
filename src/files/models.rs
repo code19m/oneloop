@@ -29,6 +29,28 @@ impl PreviewKind {
             Self::Text => "text",
         }
     }
+
+    /// The kind that `as_str` stored.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Some(match value {
+            "image" => Self::Image,
+            "pdf" => Self::Pdf,
+            "html" => Self::Html,
+            "markdown" => Self::Markdown,
+            "text" => Self::Text,
+            _ => return None,
+        })
+    }
+
+    /// Images and PDFs, which the browser shows as they are.
+    pub fn is_inline_media(self) -> bool {
+        matches!(self, Self::Image | Self::Pdf)
+    }
+
+    /// Text, Markdown and HTML, which have a source view.
+    pub fn has_source(self) -> bool {
+        matches!(self, Self::Text | Self::Markdown | Self::Html)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

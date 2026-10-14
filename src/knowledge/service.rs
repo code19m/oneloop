@@ -603,13 +603,8 @@ impl KnowledgeService {
                     .ok_or(AppError::NotFound { resource: "file" })?;
                 let kind = preview_kind(kind.as_deref(), &media_type);
                 let allowed = match mode {
-                    FileMode::Content => {
-                        matches!(kind, Some(PreviewKind::Image | PreviewKind::Pdf))
-                    }
-                    FileMode::Text => matches!(
-                        kind,
-                        Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)
-                    ),
+                    FileMode::Content => kind.is_some_and(PreviewKind::is_inline_media),
+                    FileMode::Text => kind.is_some_and(PreviewKind::has_source),
                     FileMode::Download => true,
                 };
                 if !allowed {
@@ -629,11 +624,7 @@ impl KnowledgeService {
                     Some(limit) => format!("\"{checksum}-text-{limit}\""),
                     None => format!("\"{checksum}\""),
                 };
-                let current = validator.as_deref().is_some_and(|value| {
-                    value
-                        .split(',')
-                        .any(|tag| tag.trim().trim_start_matches("W/") == etag)
-                });
+                let current = crate::files::etag_matches(validator.as_deref(), &etag);
                 let length = limit.map_or(size as u64, |limit| (size as u64).min(limit));
                 let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
                 Ok(FileRead {
@@ -799,11 +790,7 @@ impl KnowledgeService {
             truncated: false,
             note: None,
         };
-        let readable = matches!(
-            file.kind,
-            Some(PreviewKind::Markdown | PreviewKind::Text | PreviewKind::Html)
-        );
-        if !readable {
+        if !file.kind.is_some_and(PreviewKind::has_source) {
             if section.is_some() {
                 return Err(AppError::validation(
                     "section",
@@ -1572,19 +1559,10 @@ fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> 
 }
 
 fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
+    let kind = PreviewKind::from_stored(value?)?;
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.
-    if matches!(value, Some("markdown" | "text" | "html")) && !media_type.starts_with("text/") {
-        return None;
-    }
-    match value? {
-        "image" => Some(PreviewKind::Image),
-        "pdf" => Some(PreviewKind::Pdf),
-        "html" => Some(PreviewKind::Html),
-        "markdown" => Some(PreviewKind::Markdown),
-        "text" => Some(PreviewKind::Text),
-        _ => None,
-    }
+    (!kind.has_source() || media_type.starts_with("text/")).then_some(kind)
 }
 
 fn requested_path(path: &str) -> AppResult<String> {

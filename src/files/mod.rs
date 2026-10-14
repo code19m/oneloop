@@ -17,7 +17,7 @@ pub use service::{
     ReadMode, UploadStart, sanitize_html_preview,
 };
 pub(crate) use service::{
-    ConditionalRead, ThumbnailRead, classify_bytes, file_etag, sanitized_html_preview,
-    validate_original_name,
+    ConditionalRead, ThumbnailRead, classify_bytes, etag_matches, file_etag,
+    sanitized_html_preview, validate_original_name,
 };
 pub use storage::FileStore;
