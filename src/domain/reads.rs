@@ -4,7 +4,7 @@ use jiff::{
     civil::{Date, DateTime},
     tz::AmbiguousOffset,
 };
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -127,13 +127,7 @@ impl DomainService {
         let actor = actor.clone();
         let time_zone = self.time_zone.clone();
         self.db
-            .run(move |connection| {
-                let transaction =
-                    connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let result = bootstrap_snapshot(&transaction, &actor, query, &time_zone)?;
-                transaction.commit()?;
-                Ok(result)
-            })
+            .snapshot(move |connection| bootstrap_snapshot(connection, &actor, query, &time_zone))
             .await
     }
 
@@ -162,12 +156,10 @@ impl DomainService {
         actor.require_ready()?;
         let actor = actor.clone();
         self.db
-            .run(move |connection| {
-                let transaction =
-                    connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let actor = refresh_actor_connection(&transaction, &actor)?;
-                require_project(&transaction, &actor, &query.project_id, Need::Read, false)?;
-                let counts = board_counts_connection(&transaction, &query.project_id)?;
+            .snapshot(move |connection| {
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &query.project_id, Need::Read, false)?;
+                let counts = board_counts_connection(connection, &query.project_id)?;
                 let unfiltered = query
                     .search
                     .as_deref()
@@ -179,7 +171,7 @@ impl DomainService {
                     && !query.blocked;
                 let page = |status: super::TaskStatus, total: i64| {
                     board_page_with_total(
-                        &transaction,
+                        connection,
                         &actor,
                         &BoardQuery {
                             project_id: query.project_id.clone(),
@@ -210,7 +202,6 @@ impl DomainService {
                     done,
                     counts,
                 };
-                transaction.commit()?;
                 Ok(result)
             })
             .await
@@ -220,14 +211,10 @@ impl DomainService {
         actor.require_ready()?;
         let actor = actor.clone();
         self.db
-            .run(move |connection| {
-                let transaction =
-                    connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-                let actor = refresh_actor_connection(&transaction, &actor)?;
-                require_project(&transaction, &actor, &project_id, Need::Read, false)?;
-                let counts = board_counts_connection(&transaction, &project_id)?;
-                transaction.commit()?;
-                Ok(counts)
+            .snapshot(move |connection| {
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
+                board_counts_connection(connection, &project_id)
             })
             .await
     }

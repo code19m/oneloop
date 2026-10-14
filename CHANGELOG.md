@@ -23,6 +23,9 @@ All notable changes to oneloop are recorded here. The format follows
   everyone. Each person now has one avatar upload at a time; another one
   gets "try again" at once. When the server is busy, a refused avatar upload
   now gets that answer instead of a network error.
+- The Inbox's unread and filter counts now always match the items they come
+  with, and an activity feed or a block's history no longer mixes data from
+  before and after a change that lands while it is read.
 
 ### Security
 

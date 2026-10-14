@@ -222,7 +222,7 @@ impl CollaborationService {
         let actor = actor.clone();
         let task_id = task_id.to_owned();
         let block_id = block_id.to_owned();
-        self.db.run(move |connection| {
+        self.db.snapshot(move |connection| {
             let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
@@ -264,7 +264,7 @@ impl CollaborationService {
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
         self.db
-            .run(move |connection| {
+            .snapshot(move |connection| {
                 let actor = refresh_actor_connection(connection, &actor)?;
                 require_project(connection, &actor, &project_id, Need::Read, false)?;
                 let mut visible = activity_projection_stream(
@@ -316,7 +316,7 @@ impl CollaborationService {
         let actor = actor.clone();
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
-        self.db.run(move |connection| {
+        self.db.snapshot(move |connection| {
             let actor = refresh_actor_connection(connection, &actor)?;
             access::require_scope(connection, &actor, "inbox_private", None)?;
             validate_inbox_projects(connection, &actor, &filter.project_ids)?;
