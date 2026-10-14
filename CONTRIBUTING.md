@@ -13,7 +13,8 @@ You need:
 - **A C compiler.** SQLite is compiled in, so `cc` must work.
 - **Node.js 22 or newer**, for frontend checks and browser tests. The exact
   range is in `frontend/package.json`.
-- **mdBook**, only if you change the documentation site.
+- **mdBook 0.5.4**, the version CI uses, only if you change the documentation
+  site.
 
 Install the JavaScript tools. They are needed only for checks and tests; the
 app itself has no JavaScript build step.
@@ -59,9 +60,11 @@ npm --prefix e2e run test:smoke
 
 # If you changed repository scripts:
 node --test "scripts/tests/*.test.mjs"
-# If you changed dependencies or vendored files:
+# If you changed dependencies, vendored files or the Markdown preview styles:
 node scripts/third-party-notices.mjs --check
 node scripts/vendor-verify.mjs --local
+node scripts/vendor-audit.mjs --check
+node scripts/markdown-preview-css.mjs --check
 # If you changed the docs:
 mdbook build docs
 node scripts/check-doc-links.mjs
