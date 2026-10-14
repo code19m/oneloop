@@ -6,7 +6,11 @@ mod session;
 mod throttle;
 
 pub use crate::clock::unix_now;
-pub(crate) use grants::{revoke_lost_project_app_access, revoke_project_app_access};
+use grants::revoke_all_app_access;
+pub(crate) use grants::{
+    ACCESS_TOKEN_SECONDS, GRANT_ABSOLUTE_SECONDS, REFRESH_IDLE_SECONDS, revoke_grant,
+    revoke_lost_project_app_access, revoke_project_app_access, revoke_unless_current,
+};
 pub use token::hash as token_hash;
 pub mod password;
 pub(crate) mod token;
@@ -152,7 +156,7 @@ pub(crate) fn refresh_actor_connection(
         ActorSource::McpGrant { grant_id } => {
             let valid: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM mcp_grants WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL \
                      AND expires_at>?3 AND COALESCE(last_used_at,created_at)>?4)")?.query_row(
-                rusqlite::params![grant_id,actor.user_id,now,now-crate::mcp::REFRESH_IDLE_SECONDS], |row| row.get(0),
+                rusqlite::params![grant_id,actor.user_id,now,now-REFRESH_IDLE_SECONDS], |row| row.get(0),
             )?;
             if !valid {
                 return Err(AppError::Unauthorized);
@@ -408,29 +412,6 @@ pub fn revoke_user_access(tx: &Transaction<'_>, user_id: &str, now: i64) -> AppR
         rusqlite::params![now, user_id],
     )?;
     revoke_all_app_access(tx, user_id, now)
-}
-
-fn revoke_all_app_access(tx: &Transaction<'_>, user_id: &str, now: i64) -> AppResult<()> {
-    tx.execute(
-        "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
-                WHERE user_id=?2 AND revoked_at IS NULL",
-        rusqlite::params![now, user_id],
-    )?;
-    tx.execute(
-        "UPDATE mcp_tokens SET revoked_at=?1 WHERE revoked_at IS NULL AND grant_id IN
-                (SELECT id FROM mcp_grants WHERE user_id=?2)",
-        rusqlite::params![now, user_id],
-    )?;
-    // Unfinished authorizations must not restore access after revocation.
-    tx.execute(
-        "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
-        [user_id],
-    )?;
-    tx.execute(
-        "DELETE FROM oauth_authorization_codes WHERE user_id=?1 AND used_at IS NULL",
-        [user_id],
-    )?;
-    Ok(())
 }
 
 pub fn normalize_username(value: &str) -> AppResult<String> {

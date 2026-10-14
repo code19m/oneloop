@@ -26,7 +26,10 @@ use super::{
 };
 use crate::{
     AppError, AppResult, AppState,
-    auth::Actor,
+    auth::{
+        ACCESS_TOKEN_SECONDS, Actor, GRANT_ABSOLUTE_SECONDS, REFRESH_IDLE_SECONDS, revoke_grant,
+        revoke_unless_current,
+    },
     http::{
         auth::authenticate_headers,
         security::{client_ip, require_canonical_origin},
@@ -34,9 +37,6 @@ use crate::{
 };
 
 const REFRESH_REUSE_GRACE_SECONDS: i64 = 30;
-pub(super) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
-pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
-pub(super) const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
 const AUTHORIZATION_REQUEST_SECONDS: i64 = 10 * 60;
 /// Authorization requests one person may have waiting for consent; a new one
 /// replaces the oldest.
@@ -876,32 +876,23 @@ async fn revoke_inner(
     let hash = hash_token(&form.token);
     let client = form.client_id;
     let now = unix_now()?;
-    let target = state
+    let grant = state
         .db
-        .run(move |tx| {
-            let target: Option<(String,String)> = tx.query_row(
-            "SELECT t.grant_id,t.family_id FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
-             WHERE t.token_hash=?1 AND (?2 IS NULL OR g.client_id=?2)",
-            params![hash,client], |row| Ok((row.get(0)?,row.get(1)?)),
-        ).optional()?;
-            Ok(target)
+        .run(move |connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT t.grant_id FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
+                     WHERE t.token_hash=?1 AND (?2 IS NULL OR g.client_id=?2)",
+                    params![hash, client],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
         })
         .await?;
-    if let Some((grant, family)) = target {
+    if let Some(grant) = grant {
         state
             .db
-            .transaction(move |tx| {
-                tx.execute(
-                    "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE family_id=?2",
-                    params![now, family],
-                )?;
-                tx.execute(
-                    "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,\
-                     revision=revision+1 WHERE id=?2",
-                    params![now, grant],
-                )?;
-                Ok(())
-            })
+            .transaction(move |tx| revoke_grant(tx, &grant, now).map(drop))
             .await?;
     }
     Ok(StatusCode::OK)
@@ -971,11 +962,7 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
                 )
                 .optional()?;
             if let Some(grant) = replay {
-                tx.execute(
-                    "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE grant_id=?2",
-                    params![now, grant],
-                )?;
-                tx.execute(UPDATE_MCP_GRANTS_SQL, params![now, grant])?;
+                revoke_grant(tx, &grant, now)?;
                 // Returning success commits revocation; the caller returns invalid_grant.
                 return Ok(None);
             }
@@ -1144,8 +1131,7 @@ async fn exchange_refresh(state: &AppState, form: TokenForm) -> AppResult<TokenR
                     (0..=REFRESH_REUSE_GRACE_SECONDS).contains(&(now - rotation))
                 });
             if rotated && !within_grace {
-                tx.execute(UPDATE_MCP_TOKENS_SQL, params![now, row.family_id])?;
-                tx.execute(UPDATE_MCP_GRANTS_SQL, params![now, row.grant_id])?;
+                revoke_grant(tx, &row.grant_id, now)?;
                 return Ok(None);
             }
             let RefreshTokenRow {
@@ -1164,13 +1150,7 @@ async fn exchange_refresh(state: &AppState, form: TokenForm) -> AppResult<TokenR
                 tx.execute(UPDATE_MCP_TOKENS_2_SQL, params![now, old_id])?;
                 return Ok(None);
             }
-            let active: bool =
-                tx.query_row(SELECT_MCP_GRANTS_SQL, params![grant_id, now], |row| {
-                    row.get(0)
-                })?;
-            if !active {
-                tx.execute(UPDATE_MCP_TOKENS_3_SQL, params![now, family_id])?;
-                tx.execute(UPDATE_MCP_GRANTS_2_SQL, params![now, grant_id])?;
+            if !revoke_unless_current(tx, &grant_id, now)? {
                 return Ok(None);
             }
             let grant_expiry: i64 = tx.query_row(
@@ -1855,16 +1835,6 @@ const SELECT_OAUTH_AUTHORIZATION_CODES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM 
                      client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5 AND ((used_at IS NULL AND expires_at>?6) OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))";
 const INSERT_MCP_GRANTS_SQL: &str = "INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)
                     VALUES(?1,?2,?3,?4,?5,?5,?6,?5)";
-const SELECT_MCP_GRANTS_SQL: &str =
-    "SELECT EXISTS(SELECT 1 FROM mcp_grants g JOIN users u ON u.id=g.user_id
-            WHERE g.id=?1 AND g.revoked_at IS NULL AND g.expires_at>?2 AND u.is_active=1
-              AND EXISTS(SELECT 1 FROM mcp_grant_projects WHERE grant_id=g.id)
-              AND NOT EXISTS(
-                SELECT 1 FROM mcp_grant_projects gp
-                LEFT JOIN projects p ON p.id=gp.project_id AND p.deleted_at IS NULL
-                LEFT JOIN project_memberships m ON m.project_id=gp.project_id AND m.user_id=u.id
-                WHERE gp.grant_id=g.id AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL))
-              ))";
 const INSERT_MCP_TOKENS_SQL: &str = "INSERT INTO mcp_tokens(id,grant_id,family_id,kind,token_hash,issued_at,expires_at,last_used_at)
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?6)";
 const SELECT_PROJECTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2 WHERE p.id=?1 AND \
@@ -1886,16 +1856,8 @@ const SELECT_MCP_TOKENS_2_SQL: &str =
     "SELECT t.id,t.grant_id,t.family_id,t.expires_at,t.last_used_at,t.rotated_to_id,t.revoked_at
              FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
              WHERE t.token_hash=?1 AND t.kind='refresh' AND g.client_id=?2";
-const UPDATE_MCP_TOKENS_SQL: &str =
-    "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE family_id=?2";
-const UPDATE_MCP_GRANTS_SQL: &str = "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,\
-                     revision=revision+1 WHERE id=?2";
 const UPDATE_MCP_TOKENS_2_SQL: &str =
     "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE id=?2";
-const UPDATE_MCP_TOKENS_3_SQL: &str =
-    "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE family_id=?2";
-const UPDATE_MCP_GRANTS_2_SQL: &str = "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,\
-                     revision=revision+1 WHERE id=?2";
 const UPDATE_MCP_TOKENS_4_SQL: &str = "UPDATE mcp_tokens SET revoked_at=?1,last_used_at=?1,rotated_to_id=?2 WHERE id=?3 AND \
                      revoked_at IS NULL";
 const SELECT_MCP_GRANT_SCOPES_SQL: &str =

@@ -1,7 +1,17 @@
-//! Connected-app access is bounded by current account/project permissions and explicit grant scopes.
+//! Connected apps: OAuth grants, their tokens and the rule for when a grant still works.
 use super::*;
 
+/// An access token works for 15 minutes; the app refreshes it after that.
+pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
+/// A grant that no app used for 30 days stops working. `src/retention.rs`
+/// repeats the value as a literal, because its index expression must match.
+pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// A grant stops working 90 days after consent, however often it is used.
+pub(crate) const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
+
 impl AuthService {
+    /// Signs in a connected app. A grant that no longer works is revoked
+    /// here, so that getting access back later doesn't revive it.
     pub async fn authenticate_mcp_access_token(&self, token: &str) -> AppResult<Actor> {
         if token.len() < 32 || token.len() > 256 {
             return Err(AppError::Unauthorized);
@@ -9,22 +19,48 @@ impl AuthService {
         let hash = token_hash(token);
         let now = unix_now()?;
         let lookup_hash = hash.clone();
-        let authenticated = self.db.run(move |connection| {
-            let authenticated=connection.query_row(
-                "SELECT g.id,u.id,u.username,u.display_name,u.is_admin,u.must_change_password,
-                        t.last_used_at,g.last_used_at
-                 FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
-                 JOIN users u ON u.id=g.user_id
-                 WHERE t.token_hash=?1 AND t.kind='access' AND t.revoked_at IS NULL
-                   AND t.expires_at>?2 AND g.revoked_at IS NULL AND g.expires_at>?2 AND u.is_active=1",
-                rusqlite::params![lookup_hash,now],|row|Ok(McpAuthentication {
-                    grant_id:row.get(0)?,user_id:row.get(1)?,username:row.get(2)?,display_name:row.get(3)?,
-                    is_admin:row.get(4)?,must_change_password:row.get(5)?,token_last_used:row.get(6)?,
-                    grant_last_used:row.get(7)?,
-                })).optional()?;
-            let Some(authenticated)=authenticated else { return Err(AppError::Unauthorized); };
-            Ok(authenticated)
-        }).await?;
+        let (authenticated, current) = self
+            .db
+            .run(move |connection| {
+                let authenticated = connection
+                    .query_row(
+                        "SELECT g.id,u.id,u.username,u.display_name,u.is_admin,
+                                u.must_change_password,t.last_used_at,g.last_used_at
+                         FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
+                         JOIN users u ON u.id=g.user_id
+                         WHERE t.token_hash=?1 AND t.kind='access' AND t.revoked_at IS NULL
+                           AND t.expires_at>?2",
+                        rusqlite::params![lookup_hash, now],
+                        |row| {
+                            Ok(McpAuthentication {
+                                grant_id: row.get(0)?,
+                                user_id: row.get(1)?,
+                                username: row.get(2)?,
+                                display_name: row.get(3)?,
+                                is_admin: row.get(4)?,
+                                must_change_password: row.get(5)?,
+                                token_last_used: row.get(6)?,
+                                grant_last_used: row.get(7)?,
+                            })
+                        },
+                    )
+                    .optional()?
+                    .ok_or(AppError::Unauthorized)?;
+                let current = grant_is_current(connection, &authenticated.grant_id, now)?;
+                Ok((authenticated, current))
+            })
+            .await?;
+        if !current {
+            // Recheck under the writer lock: the person may have access again.
+            let grant = authenticated.grant_id.clone();
+            let current = self
+                .db
+                .transaction(move |tx| revoke_unless_current(tx, &grant, now))
+                .await?;
+            if !current {
+                return Err(AppError::Unauthorized);
+            }
+        }
         if authenticated
             .token_last_used
             .is_none_or(|used| used <= now.saturating_sub(60))
@@ -33,13 +69,21 @@ impl AuthService {
                 .is_none_or(|used| used <= now.saturating_sub(60))
         {
             let grant = authenticated.grant_id.clone();
-            self.db.try_activity_write(move |tx| {
-                tx.execute("UPDATE mcp_tokens SET last_used_at=MAX(COALESCE(last_used_at,0),?1) WHERE token_hash=?2 \
-                     AND revoked_at IS NULL", rusqlite::params![now,hash])?;
-                tx.execute("UPDATE mcp_grants SET last_used_at=MAX(COALESCE(last_used_at,0),?1) WHERE id=?2 AND \
-                     revoked_at IS NULL", rusqlite::params![now,grant])?;
-                Ok(())
-            }).await?;
+            self.db
+                .try_activity_write(move |tx| {
+                    tx.execute(
+                        "UPDATE mcp_tokens SET last_used_at=MAX(COALESCE(last_used_at,0),?1)
+                         WHERE token_hash=?2 AND revoked_at IS NULL",
+                        rusqlite::params![now, hash],
+                    )?;
+                    tx.execute(
+                        "UPDATE mcp_grants SET last_used_at=MAX(COALESCE(last_used_at,0),?1)
+                         WHERE id=?2 AND revoked_at IS NULL",
+                        rusqlite::params![now, grant],
+                    )?;
+                    Ok(())
+                })
+                .await?;
         }
         Ok(Actor {
             user_id: authenticated.user_id,
@@ -101,30 +145,28 @@ impl AuthService {
     pub async fn revoke_connected_app(&self, actor: &Actor, grant_id: &str) -> AppResult<()> {
         actor.require_ready()?;
         let actor = actor.clone();
-        let user_id = actor.user_id.clone();
         let grant_id = grant_id.to_owned();
         let now = unix_now()?;
         self.db
             .transaction(move |tx| {
                 refresh_actor_connection(tx, &actor)?;
-                let changed = tx.execute(
-                    "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
-                 WHERE id=?2 AND user_id=?3 AND revoked_at IS NULL",
-                    rusqlite::params![now, grant_id, user_id],
-                )?;
-                if changed != 1 {
+                let owner: Option<String> = tx
+                    .query_row(
+                        "SELECT user_id FROM mcp_grants WHERE id=?1 AND revoked_at IS NULL",
+                        [&grant_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if owner.as_deref() != Some(actor.user_id.as_str()) {
                     return Err(AppError::NotFound {
                         resource: "connected app",
                     });
                 }
-                tx.execute(
-                    "UPDATE mcp_tokens SET revoked_at=?1 WHERE grant_id=?2 AND revoked_at IS NULL",
-                    rusqlite::params![now, grant_id],
-                )?;
+                revoke_grant(tx, &grant_id, now)?;
                 security_event(
                     tx,
-                    &user_id,
-                    Some(&user_id),
+                    &actor.user_id,
+                    Some(&actor.user_id),
                     "connected_app.revoked",
                     serde_json::json!({"grantId":grant_id}),
                     now,
@@ -212,6 +254,99 @@ impl AuthService {
     }
 }
 
+/// Whether a grant still works: it is not revoked or expired, its account is
+/// active, and it selected at least one project, each of which still exists
+/// and is still open to the person.
+pub(crate) fn grant_is_current(
+    connection: &rusqlite::Connection,
+    grant_id: &str,
+    now: i64,
+) -> AppResult<bool> {
+    Ok(connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM mcp_grants g JOIN users u ON u.id=g.user_id
+             WHERE g.id=?1 AND g.revoked_at IS NULL AND g.expires_at>?2 AND u.is_active=1
+               AND EXISTS(SELECT 1 FROM mcp_grant_projects WHERE grant_id=g.id)
+               AND NOT EXISTS(
+                 SELECT 1 FROM mcp_grant_projects gp
+                 LEFT JOIN projects p ON p.id=gp.project_id AND p.deleted_at IS NULL
+                 LEFT JOIN project_memberships m
+                   ON m.project_id=gp.project_id AND m.user_id=u.id
+                 WHERE gp.grant_id=g.id AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL))))",
+        )?
+        .query_row(rusqlite::params![grant_id, now], |row| row.get(0))?)
+}
+
+/// Revokes a grant and every token issued under it. Rows that are already
+/// revoked keep their time. Returns whether the grant was still live.
+pub(crate) fn revoke_grant(tx: &Transaction<'_>, grant_id: &str, now: i64) -> AppResult<bool> {
+    let revoked = tx.execute(
+        "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
+         WHERE id=?2 AND revoked_at IS NULL",
+        rusqlite::params![now, grant_id],
+    )?;
+    tx.execute(
+        "UPDATE mcp_tokens SET revoked_at=?1 WHERE grant_id=?2 AND revoked_at IS NULL",
+        rusqlite::params![now, grant_id],
+    )?;
+    Ok(revoked == 1)
+}
+
+/// Whether a grant still works; one that doesn't is revoked for good. The
+/// caller returns a rejection as data, so that the revocation commits.
+pub(crate) fn revoke_unless_current(
+    tx: &Transaction<'_>,
+    grant_id: &str,
+    now: i64,
+) -> AppResult<bool> {
+    if grant_is_current(tx, grant_id, now)? {
+        return Ok(true);
+    }
+    revoke_grant(tx, grant_id, now)?;
+    Ok(false)
+}
+
+/// Revokes every grant that `grants` selects; its one parameter is `?1`.
+fn revoke_grants(
+    tx: &Transaction<'_>,
+    grants: &str,
+    parameters: impl rusqlite::Params,
+    now: i64,
+) -> AppResult<()> {
+    let ids: Vec<String> = tx
+        .prepare(grants)?
+        .query_map(parameters, |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for id in ids {
+        revoke_grant(tx, &id, now)?;
+    }
+    Ok(())
+}
+
+/// Revokes a person's connected apps and drops their unfinished
+/// authorizations, which must not restore access later.
+pub(super) fn revoke_all_app_access(
+    tx: &Transaction<'_>,
+    user_id: &str,
+    now: i64,
+) -> AppResult<()> {
+    revoke_grants(
+        tx,
+        "SELECT id FROM mcp_grants WHERE user_id=?1 AND revoked_at IS NULL",
+        [user_id],
+        now,
+    )?;
+    tx.execute(
+        "DELETE FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
+        [user_id],
+    )?;
+    tx.execute(
+        "DELETE FROM oauth_authorization_codes WHERE user_id=?1 AND used_at IS NULL",
+        [user_id],
+    )?;
+    Ok(())
+}
+
 /// Revoke the connected apps that selected a project, with their tokens; their
 /// transfer tickets stop working with them. Authorization codes for the project
 /// that were not exchanged yet are dropped too. With a user, only that person's
@@ -224,17 +359,12 @@ pub(crate) fn revoke_project_app_access(
     user_id: Option<&str>,
     now: i64,
 ) -> AppResult<()> {
-    tx.execute(
-        "UPDATE mcp_grants SET revoked_at=?1,updated_at=?1,revision=revision+1
-         WHERE revoked_at IS NULL AND (?3 IS NULL OR user_id=?3) AND id IN
-             (SELECT grant_id FROM mcp_grant_projects WHERE project_id=?2)",
-        rusqlite::params![now, project_id, user_id],
-    )?;
-    tx.execute(
-        "UPDATE mcp_tokens SET revoked_at=?1 WHERE revoked_at IS NULL AND grant_id IN
-             (SELECT g.id FROM mcp_grants g JOIN mcp_grant_projects gp ON gp.grant_id=g.id
-              WHERE gp.project_id=?2 AND (?3 IS NULL OR g.user_id=?3))",
-        rusqlite::params![now, project_id, user_id],
+    revoke_grants(
+        tx,
+        "SELECT g.id FROM mcp_grants g JOIN mcp_grant_projects gp ON gp.grant_id=g.id
+         WHERE gp.project_id=?1 AND g.revoked_at IS NULL AND (?2 IS NULL OR g.user_id=?2)",
+        rusqlite::params![project_id, user_id],
+        now,
     )?;
     // Exchanging such a code would otherwise connect the app to a project the
     // person lost, or fail on a deleted project with a server error.

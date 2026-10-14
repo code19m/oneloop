@@ -1296,6 +1296,65 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
 }
 
 #[tokio::test]
+async fn disconnecting_an_app_in_the_profile_ends_its_tokens() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let client = register(&app).await;
+    let (code, verifier) = authorize(&app, &session, &client).await;
+    let tokens = issue(&app, &client, &code, &verifier).await;
+    let apps = |method: &str, path: String| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header(header::COOKIE, format!("oneloop_session={session}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let listed = app
+        .clone()
+        .oneshot(apps("GET", "/api/auth/apps".into()))
+        .await
+        .unwrap();
+    let grant = body_json(listed).await["apps"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let disconnected = app
+        .clone()
+        .oneshot(apps("DELETE", format!("/api/auth/apps/{grant}")))
+        .await
+        .unwrap();
+    assert_eq!(disconnected.status(), StatusCode::NO_CONTENT);
+    let access = tokens["access_token"].as_str().unwrap();
+    let call = app
+        .clone()
+        .oneshot(mcp_request(
+            access,
+            None,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(call.status(), StatusCode::UNAUTHORIZED);
+    let refreshed = app
+        .clone()
+        .oneshot(form(
+            "/oauth/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", &client),
+                ("refresh_token", tokens["refresh_token"].as_str().unwrap()),
+                ("resource", "http://127.0.0.1:8080/mcp"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(refreshed).await["error"], "invalid_grant");
+    assert!(connected_app_clients(&app, &session).await.is_empty());
+}
+
+#[tokio::test]
 async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
     for reset in [false, true] {
         let (_dir, db, app, session, user) = fixture().await;

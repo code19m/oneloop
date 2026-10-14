@@ -3,10 +3,7 @@ mod cors;
 mod oauth;
 mod tools;
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use axum::{
     Router,
@@ -27,10 +24,10 @@ use tokio_util::io::ReaderStream;
 use crate::{
     AppError, AppResult, AppState,
     auth::{Actor, ActorSource},
+    clock::unix_now,
     files::{ReadMode, UploadStart},
 };
 
-pub(crate) use oauth::REFRESH_IDLE_SECONDS;
 pub use tools::OneloopMcp;
 
 pub fn router(state: AppState) -> Router<AppState> {
@@ -100,20 +97,13 @@ async fn require_mcp_actor(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let token_presented = bearer(request.headers()).is_some();
-    let result = bearer(request.headers()).ok_or(AppError::Unauthorized);
-    let actor = match result {
-        Ok(token) => state.auth.authenticate_mcp_access_token(token).await,
-        Err(error) => Err(error),
+    let token = bearer(request.headers());
+    let token_presented = token.is_some();
+    let actor = match token {
+        Some(token) => state.auth.authenticate_mcp_access_token(token).await,
+        None => Err(AppError::Unauthorized),
     };
-    let checked = match actor {
-        Ok(actor) => match actor.require_ready() {
-            Ok(()) => current_grant_projects(&state, &actor).await.map(|()| actor),
-            Err(error) => Err(error),
-        },
-        Err(error) => Err(error),
-    };
-    match checked {
+    match actor.and_then(|actor| actor.require_ready().map(|()| actor)) {
         Ok(actor) => {
             request.extensions_mut().insert(actor);
             next.run(request).await
@@ -122,72 +112,6 @@ async fn require_mcp_actor(
         Err(AppError::PreconditionFailed(_)) => AppError::Forbidden.into_response(),
         Err(error) => error.into_response(),
     }
-}
-
-async fn current_grant_projects(state: &AppState, actor: &Actor) -> AppResult<()> {
-    let grant_id = actor
-        .mcp_grant_id()
-        .ok_or(AppError::Unauthorized)?
-        .to_owned();
-    let user_id = actor.user_id.clone();
-    let check_grant = grant_id.clone();
-    let check_user = user_id.clone();
-    let current = state
-        .db
-        .run(move |connection| grant_projects_current(connection, &check_grant, &check_user))
-        .await?;
-    if current {
-        return Ok(());
-    }
-    // Recheck under the writer lock before revoking: membership may have changed.
-    let now = now()?;
-    let current = state
-        .db
-        .transaction(move |tx| validate_grant_projects_tx(tx, &grant_id, &user_id, now))
-        .await?;
-    if current {
-        Ok(())
-    } else {
-        Err(AppError::Unauthorized)
-    }
-}
-
-/// Return rejection as data so revocation commits before the caller rejects it.
-fn validate_grant_projects_tx(
-    tx: &rusqlite::Transaction<'_>,
-    grant: &str,
-    user: &str,
-    now: i64,
-) -> AppResult<bool> {
-    if grant_projects_current(tx, grant, user)? {
-        return Ok(true);
-    }
-    tx.execute(
-        "UPDATE mcp_grants SET revoked_at=COALESCE(revoked_at,?1),updated_at=?1,revision=revision+1 WHERE id=?2",
-        rusqlite::params![now, grant],
-    )?;
-    tx.execute(
-        "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE grant_id=?2",
-        rusqlite::params![now, grant],
-    )?;
-    Ok(false)
-}
-
-fn grant_projects_current(
-    connection: &rusqlite::Connection,
-    grant: &str,
-    user: &str,
-) -> AppResult<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM mcp_grant_projects WHERE grant_id=?1)
-        AND NOT EXISTS(
-            SELECT 1 FROM mcp_grant_projects gp JOIN users u ON u.id=?2
-            LEFT JOIN projects p ON p.id=gp.project_id AND p.deleted_at IS NULL
-            LEFT JOIN project_memberships m ON m.project_id=gp.project_id AND m.user_id=u.id
-            WHERE gp.grant_id=?1 AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL)))",
-        rusqlite::params![grant, user],
-        |row| row.get(0),
-    )?)
 }
 
 fn unauthorized(state: &AppState, token_presented: bool) -> Response {
@@ -239,7 +163,7 @@ async fn claim_transfer(
 ) -> AppResult<(Actor, Transfer)> {
     let token = bearer(headers).ok_or(AppError::Unauthorized)?;
     let hash = hex::encode(Sha256::digest(token.as_bytes()));
-    let now = now()?;
+    let now = unix_now()?;
     let claimed = state
         .db
         .transaction(move |tx| {
@@ -275,15 +199,11 @@ async fn claim_transfer(
                     rusqlite::Error::QueryReturnedNoRows => AppError::Unauthorized,
                     other => other.into(),
                 })?;
-            row.1.require_ready()?;
-            if !validate_grant_projects_tx(
-                tx,
-                row.1.mcp_grant_id().ok_or(AppError::Unauthorized)?,
-                &row.1.user_id,
-                now,
-            )? {
+            let grant = row.1.mcp_grant_id().ok_or(AppError::Unauthorized)?;
+            if !crate::auth::revoke_unless_current(tx, grant, now)? {
                 return Ok(None);
             }
+            row.1.require_ready()?;
             tx.execute(UPDATE_MCP_FILE_TRANSFERS_SQL, rusqlite::params![now, hash])?;
             Ok(Some((row.1, row.0)))
         })
@@ -418,17 +338,9 @@ async fn download_file(State(state): State<AppState>, headers: HeaderMap) -> App
 struct ValueResponse {
     value: serde_json::Value,
 }
-fn now() -> AppResult<i64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| AppError::internal(e.to_string()))?
-        .as_secs() as i64)
-}
-
 const SELECT_MCP_FILE_TRANSFERS_SQL: &str = "SELECT f.grant_id,f.direction,f.task_id,f.attachment_id,f.file_name,f.size_bytes,f.is_ephemeral,f.idempotency_key,
                     u.id,u.username,u.display_name,u.is_admin,u.must_change_password
              FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id JOIN users u ON u.id=g.user_id
-             WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL AND f.expires_at>?3
-               AND g.revoked_at IS NULL AND g.expires_at>?3 AND u.is_active=1";
+             WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL AND f.expires_at>?3";
 const UPDATE_MCP_FILE_TRANSFERS_SQL: &str =
     "UPDATE mcp_file_transfers SET consumed_at=?1 WHERE token_hash=?2 AND consumed_at IS NULL";
