@@ -118,7 +118,7 @@ async fn competing_workers_claim_an_outbox_message_once() {
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("concurrent"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             available,
@@ -351,7 +351,7 @@ async fn inbox_state_changes_emit_one_private_hint_and_noops_stay_quiet() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("private"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 event_time,
@@ -483,7 +483,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("event"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 base + index,
@@ -546,7 +546,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("new"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             now(),
@@ -605,7 +605,7 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("event"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 event_time,
@@ -1328,7 +1328,7 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("after the timeout"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             now(),
@@ -1399,13 +1399,13 @@ async fn worker_survives_failed_archive_purge_and_delivers_new_notifications() {
     db.transaction(move |tx| {
         snapshot_notification_tx(tx,&actor,NotificationInput {
             project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("purge me"),payload:json!({})},vec!["bob".into()],now())?;
+            block_id:None,excerpt:Some("purge me"),broadcast: false},vec!["bob".into()],now())?;
         tx.execute("UPDATE notification_recipients SET archived_at=1,read_at=1,delivered_at=1",[])?;
         tx.execute_batch("CREATE TRIGGER fail_purge BEFORE UPDATE OF project_name_snapshot ON notification_recipients
             BEGIN SELECT RAISE(FAIL,'injected purge failure'); END;")?;
         snapshot_notification_tx(tx,&actor,NotificationInput {
             project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("new delivery"),payload:json!({})},vec!["bob".into()],now())?;
+            block_id:None,excerpt:Some("new delivery"),broadcast: false},vec!["bob".into()],now())?;
         Ok(())
     }).await.unwrap();
     let service = CollaborationService::new(db.clone());
@@ -1724,7 +1724,7 @@ async fn ineligible_recipients_skip_events_but_preserve_broadcast_receipts() {
                     comment_id: None,
                     block_id: None,
                     excerpt: None,
-                    payload: json!({"broadcast":broadcast}),
+                    broadcast,
                 },
                 vec!["bob".into()],
                 now(),

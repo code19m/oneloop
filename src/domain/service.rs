@@ -263,25 +263,6 @@ fn activity(
     record_activity_tx(tx, actor, input, now)
 }
 
-fn notify(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    input: NotificationInput<'_>,
-    recipient_ids: impl IntoIterator<Item = String>,
-    now: i64,
-) -> AppResult<()> {
-    let broadcast = input
-        .payload
-        .get("broadcast")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if broadcast {
-        crate::access::enforce_broadcast_cooldown(tx, actor, input.project_id, now)?;
-    }
-    snapshot_notification_tx(tx, actor, input, recipient_ids, now)?;
-    Ok(())
-}
-
 fn normalize_prefix(value: &str) -> AppResult<String> {
     let value = value.trim().to_ascii_uppercase();
     if !(2..=4).contains(&value.len())

@@ -244,30 +244,6 @@ fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
     result
 }
 
-const BROADCAST_COOLDOWN_SECONDS: i64 = 60;
-
-pub(crate) fn enforce_broadcast_cooldown(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    project_id: &str,
-    now: i64,
-) -> AppResult<()> {
-    let recent: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM notification_events
-         WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3
-           AND json_extract(payload_json,'$.broadcast')=1)",
-        params![project_id, actor.user_id, now - BROADCAST_COOLDOWN_SECONDS],
-        |row| row.get(0),
-    )?;
-    if recent {
-        return Err(AppError::rule(
-            crate::error::RuleKind::BroadcastCooldown,
-            "@everyone can be used once per minute in this project",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

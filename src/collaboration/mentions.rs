@@ -6,7 +6,6 @@ use rusqlite::{
     Connection, Row, Transaction, params,
     types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
 };
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::{AppResult, auth::Actor};
@@ -182,12 +181,11 @@ pub(crate) fn notify(
         comment_id,
         block_id,
         excerpt: Some(notice.excerpt),
-        payload: json!({"broadcast": broadcast}),
+        broadcast,
     };
     let mut notified = direct.clone();
     snapshot_notification_tx(tx, actor, input(mentioned, false), direct, now)?;
     if has_everyone && !had_everyone {
-        crate::access::enforce_broadcast_cooldown(tx, actor, notice.project_id, now)?;
         let mut everyone: BTreeSet<String> = tx
             .prepare_cached(
                 "SELECT m.user_id FROM project_memberships m JOIN users u ON u.id=m.user_id

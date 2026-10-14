@@ -78,7 +78,7 @@ pub(super) fn create_comment(
             comment_id: Some(&id),
             block_id: None,
             excerpt: Some(&excerpt),
-            payload: json!({"broadcast": false}),
+            broadcast: false,
         },
         reply_author,
         now,

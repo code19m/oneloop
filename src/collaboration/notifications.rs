@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::{AppError, AppResult, auth::Actor};
@@ -14,7 +14,9 @@ pub struct NotificationInput<'a> {
     pub comment_id: Option<&'a str>,
     pub block_id: Option<&'a str>,
     pub excerpt: Option<&'a str>,
-    pub payload: Value,
+    /// An `@everyone` notification. One person may send one per project each
+    /// minute, so it is recorded even when nobody is left to receive it.
+    pub broadcast: bool,
 }
 
 pub fn snapshot_notification_tx(
@@ -28,13 +30,11 @@ pub fn snapshot_notification_tx(
         .into_iter()
         .filter(|user_id| user_id != &actor.user_id)
         .collect();
-    let is_broadcast = input
-        .payload
-        .get("broadcast")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if requested.is_empty() && !is_broadcast {
+    if requested.is_empty() && !input.broadcast {
         return Ok(None);
+    }
+    if input.broadcast {
+        enforce_broadcast_cooldown(tx, actor, input.project_id, now)?;
     }
     let project_name: String = tx
         .query_row(
@@ -64,7 +64,7 @@ pub fn snapshot_notification_tx(
         None => (None, None),
     };
     let eligible = eligible_recipients(tx, input.project_id, requested)?;
-    if eligible.is_empty() && !is_broadcast {
+    if eligible.is_empty() && !input.broadcast {
         return Ok(None);
     }
     let notification_id = Uuid::now_v7().to_string();
@@ -81,7 +81,7 @@ pub fn snapshot_notification_tx(
             input.task_id,
             input.comment_id,
             input.block_id,
-            input.payload.to_string(),
+            json!({"broadcast": input.broadcast}).to_string(),
             now,
         ],
     )?;
@@ -117,6 +117,30 @@ pub fn snapshot_notification_tx(
         )?;
     }
     Ok(Some(notification_id))
+}
+
+const BROADCAST_COOLDOWN_SECONDS: i64 = 60;
+
+fn enforce_broadcast_cooldown(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    project_id: &str,
+    now: i64,
+) -> AppResult<()> {
+    let recent: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM notification_events
+         WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3
+           AND json_extract(payload_json,'$.broadcast')=1)",
+        params![project_id, actor.user_id, now - BROADCAST_COOLDOWN_SECONDS],
+        |row| row.get(0),
+    )?;
+    if recent {
+        return Err(AppError::rule(
+            crate::error::RuleKind::BroadcastCooldown,
+            "@everyone can be used once per minute in this project",
+        ));
+    }
+    Ok(())
 }
 
 fn eligible_recipients(

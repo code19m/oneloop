@@ -66,7 +66,7 @@ pub(super) fn create_task(
         },
         now,
     )?;
-    notify(
+    snapshot_notification_tx(
         tx,
         actor,
         NotificationInput {
@@ -76,7 +76,7 @@ pub(super) fn create_task(
             comment_id: None,
             block_id: None,
             excerpt: None,
-            payload: json!({"broadcast":false}),
+            broadcast: false,
         },
         assignees.clone(),
         now,
@@ -237,7 +237,7 @@ pub(super) fn update_task(
             now,
         )?);
     }
-    notify(
+    snapshot_notification_tx(
         tx,
         actor,
         NotificationInput {
@@ -247,7 +247,7 @@ pub(super) fn update_task(
             comment_id: None,
             block_id: None,
             excerpt: None,
-            payload: json!({"broadcast":false}),
+            broadcast: false,
         },
         newly_assigned,
         now,

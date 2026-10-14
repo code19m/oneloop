@@ -247,7 +247,7 @@ pub(super) fn unblock_task(
         },
         now,
     )?;
-    notify(
+    snapshot_notification_tx(
         tx,
         actor,
         NotificationInput {
@@ -257,7 +257,7 @@ pub(super) fn unblock_task(
             comment_id: None,
             block_id: Some(&block_id),
             excerpt: Some(&block_reason),
-            payload: json!({"broadcast":false}),
+            broadcast: false,
         },
         assignee_ids(tx, &input.task_id)?,
         now,
