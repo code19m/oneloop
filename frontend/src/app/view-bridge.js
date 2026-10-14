@@ -317,8 +317,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     // description goes on: its draft keeps a refused value and sends it later.
     if(field==='state'&&refusedAtOnce(null))return false;
     // A blocked task is completed with its block resolved, as on the Board.
-    // Status shows the saved status again behind the dialog.
-    if(field==='state'&&value==='done'&&item.block){app.refresh();app.openModal('completeBlocked',item.id);return false;}
+    // Status shows the saved status again behind the dialog, which opens once
+    // the Status menu has returned focus, so it takes focus and gives it back.
+    if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
     if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
