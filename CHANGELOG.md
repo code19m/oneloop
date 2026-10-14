@@ -40,6 +40,8 @@ All notable changes to oneloop are recorded here. The format follows
 - Saving a new block reason now says "Block reason updated", and unblocking
   and completing a task says "Task unblocked and completed". Before, they said
   "Task blocked" and "Task unblocked".
+- Markdown in **Knowledge** shows at the reader's own width and spacing.
+  Before, it used the wider layout of file previews.
 
 ### Security
 

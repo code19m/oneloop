@@ -1,8 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readdirSync,readFileSync} from 'node:fs';
+import {JSDOM} from 'jsdom';
 
-const css=readFileSync(new URL('../../styles/style.css',import.meta.url),'utf8');
+const read=path=>readFileSync(new URL(path,import.meta.url),'utf8');
+const stylesheet=name=>read(`../../styles/${name}.css`);
+const css=stylesheet('style');
+// The app's own rules. markdown-preview.css is the vendored GitHub theme followed by these overrides.
+const appCss=[...['style','workspace-pages','comment-threads','pool','knowledge'].map(stylesheet),read('../../../scripts/markdown-preview-overrides.css')].join('\n');
 const luminance=hex=>{
   const rgb=hex.match(/[\da-f]{2}/gi).map(part=>parseInt(part,16)/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4);
   return rgb[0]*0.2126+rgb[1]*0.7152+rgb[2]*0.0722;
@@ -23,4 +28,27 @@ test('muted labels meet normal-text contrast on both themes and selected control
 test('light focus ring clears 3:1 on white, sidebar, controls and selected navigation',()=>{
   const ring=css.match(/--focus-ring:\s*(#[\da-f]{6})/i)[1];
   for(const surface of ['#ffffff','#f2f2f2','#f1f1f1','#e2e2e2'])assert(contrast(ring,surface)>=3,`${ring} on ${surface}`);
+});
+
+test('stylesheets read only custom properties that something defines',()=>{
+  // Templates and scripts set a few on elements, such as a Roadmap bar's --d.
+  const scripts=['views','src'].flatMap(folder=>readdirSync(new URL(`../../${folder}`,import.meta.url),{recursive:true}).filter(file=>file.endsWith('.js')).map(file=>read(`../../${folder}/${file}`))).join('\n');
+  const defined=new Set([...`${appCss}\n${scripts}`.matchAll(/(--[\w-]+)\s*:|setProperty\('(--[\w-]+)'/g)].map(match=>match[1]??match[2]));
+  const missing=[...appCss.matchAll(/var\((--[\w-]+)\)/g)].map(match=>match[1]).filter(name=>!defined.has(name));
+  assert.deepEqual([...new Set(missing)],[]);
+});
+
+test('no text is smaller than 12 px',()=>{
+  const sizes=[...appCss.matchAll(/font(?:-size)?:[^;}]*?(\d+(?:\.\d+)?)px/g)].map(match=>Number(match[1]));
+  assert.deepEqual(sizes.filter(size=>size<12),[]);
+});
+
+test('the Knowledge reader keeps its own width and padding inside the Markdown preview styles',()=>{
+  const styles=['style','knowledge','markdown-preview'].map(name=>`<style>${stylesheet(name)}</style>`).join('');
+  const markdown='<div class="markdown-scroll"><article class="markdown-body"></article></div>';
+  const {window}=new JSDOM(`<html data-theme="light"><head>${styles}</head><body><div class="knowledge-preview-body">${markdown}</div><div class="file-preview-content">${markdown}</div></body></html>`);
+  const [reader,preview]=[...window.document.querySelectorAll('.markdown-body')].map(element=>window.getComputedStyle(element));
+  assert.deepEqual([reader.maxWidth,reader.paddingTop],['850px','34px']);
+  assert.deepEqual([preview.maxWidth,preview.paddingTop],['980px','32px']);
+  window.close();
 });

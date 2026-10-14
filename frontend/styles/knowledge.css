@@ -77,7 +77,8 @@
 .knowledge-preview-body>.access-note,.knowledge-preview-body>.preview-unavailable { padding:50px 22px; text-align:center; }
 .knowledge-preview-body .document-preview { display:block; flex:initial; overflow:visible; min-height:0; }
 .knowledge-preview-body .markdown-scroll { overflow:visible; padding:0; }
-.knowledge-preview-body .markdown-body { max-width:850px; margin:0 auto; padding:34px 38px 44px; font-family:var(--font-sans); }
+/* The reader is narrower than a file preview. This outranks the preview's layout in markdown-preview.css, which loads later. */
+:root[data-theme] .knowledge-preview-body .markdown-scroll .markdown-body { max-width:850px; margin:0 auto; padding:34px 38px 44px; font-family:var(--font-sans); }
 .knowledge-preview-body .markdown-body h1 { margin-top:0; }
 .knowledge-preview-body pre.html-source,.knowledge-preview-body pre.file-source-text { margin:0; padding:24px; font:var(--text-label)/1.8 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--ink); background:var(--surface-canvas); }
 .knowledge-preview-body .html-preview { min-height:480px; }
@@ -181,7 +182,7 @@
 @media (max-width:900px) {
   .knowledge-toolbar { padding:12px 18px; gap:10px; }
   .knowledge-content { padding:20px 18px 40px; }
-  .knowledge-preview-body .markdown-body { padding:26px; }
+  :root[data-theme] .knowledge-preview-body .markdown-scroll .markdown-body { padding:26px; }
 }
 @media (max-width:700px) {
   .knowledge-banner { padding:12px 16px; flex-wrap:wrap; }
@@ -207,7 +208,7 @@
   .knowledge-preview-actions { gap:6px; }
   .knowledge-preview-modes { order:3; width:100%; }
   .knowledge-preview-modes .image-controls,.knowledge-preview-modes .pdf-controls { justify-content:space-between; width:100%; }
-  .knowledge-preview-body .markdown-body { padding:24px 18px; }
+  :root[data-theme] .knowledge-preview-body .markdown-scroll .markdown-body { padding:24px 18px; }
   :root :is(.knowledge-preview-body,.knowledge-full-view) .markdown-body.markdown-body table { font-size:var(--text-label); }
   .knowledge-preview .knowledge-media-body { height:62dvh; min-height:320px; }
   .knowledge-media-body .pdf-surface { padding:16px; }
