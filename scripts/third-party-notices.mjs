@@ -41,11 +41,13 @@ for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', '
     if (match) included.add(`${match[1]}@${match[2]}`);
   }
 }
-// The rmcp crates omit their workspace-root license. This copy comes from the published crates' VCS
-// revision 0cde3c5cf3e6aff0cc852ce6045f107e95991f48 of github.com/modelcontextprotocol/rust-sdk.
+// The rmcp crates omit their workspace-root license. This copy comes from VCS revision
+// 0cde3c5cf3e6aff0cc852ce6045f107e95991f48 of github.com/modelcontextprotocol/rust-sdk, which
+// rmcp 3.5.0 was published from. When rmcp moves to another version, check that the license
+// at its revision is still this one.
 const crateOverrides = {
-  'rmcp@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
-  'rmcp-macros@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  rmcp: ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  'rmcp-macros': ['scripts/licenses/rmcp-Apache-2.0.txt'],
 };
 let crateCount = 0;
 for (const pkg of metadata.packages) {
@@ -53,7 +55,7 @@ for (const pkg of metadata.packages) {
   if (!pkg.source || !included.has(key)) continue;
   const directory = dirname(pkg.manifest_path), files = licenseFiles(directory);
   if (pkg.license_file && !files.includes(join(directory, pkg.license_file))) files.push(join(directory, pkg.license_file));
-  files.push(...(crateOverrides[key] ?? []));
+  files.push(...(crateOverrides[pkg.name] ?? []));
   addComponent(pkg.name, pkg.version, pkg.license ?? 'see its license text', files.map(read), 'Rust crate');
   crateCount++;
 }

@@ -86,5 +86,11 @@ Browser libraries under `frontend/vendor/` are copied from exact npm releases
 rather than installed; [frontend/vendor/README.md](frontend/vendor/README.md)
 explains how to update one. After any dependency change, regenerate the notices.
 
+Dependabot's Cargo pull requests change `Cargo.lock` but not
+`THIRD_PARTY_NOTICES.md`, so they always fail the notices check. Check out the
+branch, run `node scripts/third-party-notices.mjs`, review the changes and push
+them. If `rmcp` changed, also check its license as the comment in the script
+asks.
+
 To move to a newer Rust, change `rust-toolchain.toml`. The
 `pinned-versions` test in `scripts/tests/` lists the other places to change.
