@@ -500,38 +500,7 @@ impl FileService {
                 }
                 Ok(jobs)
             }).await?;
-            let mut removed = Vec::new();
-            let mut parents = HashMap::new();
-            for (job, size) in jobs {
-                let path = self.store.file_path(&job.storage_key)?;
-                match self.store.remove_file_if_present(&path).await {
-                    Ok(()) => {
-                        self.remove_thumbnail(&job.storage_key).await;
-                        parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
-                        removed.push((job, size));
-                    }
-                    Err(error) => {
-                        self.record_deletion_failure(&job.id, &error.to_string())
-                            .await?
-                    }
-                }
-            }
-            for path in parents.into_values() {
-                FileStore::sync_deletion_parent(path).await?;
-            }
-            let (count, bytes) = self
-                .db
-                .transaction(move |tx| {
-                    let mut count = 0;
-                    let mut bytes = 0_u64;
-                    for (job, size) in removed {
-                        // Count physical progress even if another reconciler completed it.
-                        bytes = bytes.saturating_add(size);
-                        count += u64::from(finish_deletion_job(tx, &job)?);
-                    }
-                    Ok((count, bytes))
-                })
-                .await?;
+            let (count, bytes) = self.complete_deletion_jobs(jobs).await?;
             report.temporary_files_cleaned += count;
             report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
             needed = needed.saturating_sub(bytes);
@@ -833,34 +802,43 @@ impl FileService {
                 break;
             }
             attempted += jobs.len();
-            let mut removed = Vec::new();
-            let mut parents = HashMap::new();
-            for job in jobs {
-                let path = self.store.file_path(&job.storage_key)?;
-                if let Err(error) = self.store.remove_file_if_present(&path).await {
-                    self.record_deletion_failure(&job.id, &error.to_string())
-                        .await?;
-                    continue;
-                }
-                self.remove_thumbnail(&job.storage_key).await;
-                parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
-                removed.push(job);
-            }
-            for path in parents.into_values() {
-                FileStore::sync_deletion_parent(path).await?;
-            }
-            completed += self
-                .db
-                .transaction(move |tx| {
-                    let mut count = 0;
-                    for job in removed {
-                        count += u64::from(finish_deletion_job(tx, &job)?);
-                    }
-                    Ok(count)
-                })
-                .await?;
+            let jobs = jobs.into_iter().map(|job| (job, 0)).collect();
+            completed += self.complete_deletion_jobs(jobs).await?.0;
         }
         Ok(completed)
+    }
+
+    /// Removes each job's file and thumbnail, syncs each folder once, and
+    /// finishes the jobs whose file is gone in one transaction. A job comes
+    /// with the bytes it frees. Returns how many jobs this call finished, and
+    /// the bytes freed, which count even when another worker finished a job.
+    async fn complete_deletion_jobs(&self, jobs: Vec<(DeletionJob, u64)>) -> AppResult<(u64, u64)> {
+        let mut removed = Vec::new();
+        let mut parents = HashMap::new();
+        for (job, size) in jobs {
+            let path = self.store.file_path(&job.storage_key)?;
+            if let Err(error) = self.store.remove_file_if_present(&path).await {
+                self.record_deletion_failure(&job.id, &error.to_string())
+                    .await?;
+                continue;
+            }
+            self.remove_thumbnail(&job.storage_key).await;
+            parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
+            removed.push((job, size));
+        }
+        for path in parents.into_values() {
+            FileStore::sync_deletion_parent(path).await?;
+        }
+        self.db
+            .transaction(move |tx| {
+                let (mut count, mut bytes) = (0, 0_u64);
+                for (job, size) in removed {
+                    bytes = bytes.saturating_add(size);
+                    count += u64::from(finish_deletion_job(tx, &job)?);
+                }
+                Ok((count, bytes))
+            })
+            .await
     }
 
     pub(super) async fn capacity_usage(&self) -> AppResult<CapacityUsage> {
