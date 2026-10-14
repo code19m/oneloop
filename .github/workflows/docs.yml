@@ -1,8 +1,9 @@
 name: Docs
 
-# The site always shows the newest release. Pull requests and pushes to main only
-# check the documentation. The Release workflow, or a manual run on main, builds
-# the site from the newest release's tag and publishes it.
+# The site shows the newest stable release, or the newest release candidate while
+# there is no stable release. Pull requests and pushes to main only check the
+# documentation. The Release workflow, or a manual run on main, builds the site
+# from that release's tag and publishes it.
 on:
   pull_request:
     paths:

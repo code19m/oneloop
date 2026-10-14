@@ -1,5 +1,5 @@
-// Check relative links and anchors in the documentation site (docs/src) and the
-// root Markdown files, using the same Markdown parser as attachment previews.
+// Check relative links and anchors in the repository's Markdown files, using the same
+// Markdown parser as attachment previews. Generated notices and test fixtures are skipped.
 import {execFileSync} from 'node:child_process';
 import {readFileSync, existsSync} from 'node:fs';
 import {createRequire} from 'node:module';
@@ -59,7 +59,9 @@ export function checkDocument(file, {read = path => readFileSync(path, 'utf8'), 
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ':(glob)*.md', ':(glob)docs/src/**/*.md'], {cwd: root, encoding: 'utf8'}).split('\0').filter(file => file && existsSync(resolve(root, file)));
+  const markdown = [':(glob)**/*.md', ':(exclude,glob)**/THIRD_PARTY_NOTICES.md', ':(exclude,glob)frontend/tests/**'];
+  const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...markdown], {cwd: root, encoding: 'utf8'})
+    .split('\0').filter(file => file && existsSync(resolve(root, file)));
   const errors = files.flatMap(file => checkDocument(resolve(root, file)));
   if (errors.length) { console.error(errors.join('\n')); process.exitCode = 1; }
   else console.log(`Relative links and Markdown anchors checked in ${files.length} files`);

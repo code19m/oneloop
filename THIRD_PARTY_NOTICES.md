@@ -347,7 +347,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 | rustls-native-certs@0.8.4 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types@1.15.1 | MIT OR Apache-2.0 |
 | rustls-webpki@0.103.15 | ISC |
-| rustls@0.23.45 | Apache-2.0 OR ISC OR MIT |
+| rustls@0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustversion@1.0.23 | MIT OR Apache-2.0 |
 | rw@1.3.3 | BSD-3-Clause |
 | ryu@1.0.23 | Apache-2.0 OR BSL-1.0 |
@@ -572,7 +572,7 @@ The full EPL-2.0 text is reproduced under License texts below.
 - rustix@1.1.5
 - rustls-native-certs@0.8.4
 - rustls-pki-types@1.15.1: Copyright 2023 Dirkjan Ochtman
-- rustls@0.23.45
+- rustls@0.23.46
 - rustversion@1.0.23
 - ryu@1.0.23
 - scopeguard@1.2.0
@@ -3047,7 +3047,7 @@ THIS SOFTWARE.
 ### 21. ISC License
 
 - rustls-native-certs@0.8.4: Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-- rustls@0.23.45: Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
+- rustls@0.23.46: Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
 
 ```text
 ISC License (ISC)
@@ -3372,7 +3372,7 @@ third-party/chromium/LICENSE.
 - rustix@1.1.5
 - rustls-native-certs@0.8.4: Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 - rustls-pki-types@1.15.1: Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
-- rustls@0.23.45: Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+- rustls@0.23.46: Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 - rustversion@1.0.23
 - safer-buffer@2.1.2: Copyright (c) 2018 Nikita Skovoroda <chalkerx@gmail.com>
 - same-file@1.0.6: Copyright (c) 2017 Andrew Gallant

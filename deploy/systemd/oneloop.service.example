@@ -20,10 +20,8 @@ Environment=ONELOOP_LISTEN=127.0.0.1:8080
 Environment=ONELOOP_DATA_DIR=/var/lib/oneloop/data
 # The IANA timezone used for deadlines and the Roadmap's Today.
 Environment=ONELOOP_TIMEZONE=UTC
-Environment=ONELOOP_STORAGE_LIMIT=10GiB
-Environment=ONELOOP_DISK_MIN_FREE=1GiB
 Environment=ONELOOP_TRUSTED_PROXIES=127.0.0.1
-Environment=ONELOOP_LOG_LEVEL=info
+# Other settings: https://code19m.github.io/oneloop/reference.html#configuration
 ExecStart=/usr/local/bin/oneloop serve
 Restart=on-failure
 RestartSec=5

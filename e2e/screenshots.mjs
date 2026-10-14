@@ -12,15 +12,14 @@
 // when they are installed.
 //
 // Set ONELOOP_TEST_BINARY to use another build. CI does not run this script.
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, request } from '@playwright/test';
+import { cli, command, serve, stopServer } from './support/server.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const binary = process.env.ONELOOP_TEST_BINARY
@@ -135,54 +134,7 @@ function day(offset) {
   return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + offset)).toISOString().slice(0, 10);
 }
 
-/** Environment for the binary, never inheriting a developer's own instance configuration. */
-function environment(extra = {}) {
-  const env = { ...process.env };
-  for (const name of Object.keys(env)) if (name.startsWith('ONELOOP_')) delete env[name];
-  return Object.assign(env, { ONELOOP_DATA_DIR: dataDir }, extra);
-}
-
-function cli(args, input) {
-  const result = spawnSync(binary, args, { env: environment(), input, encoding: 'utf8', timeout: 30_000 });
-  if (result.status !== 0) throw new Error(`oneloop ${args.join(' ')} failed: ${result.error?.message || result.stderr}`);
-}
-
-async function portIsFree(port) {
-  const socket = createServer();
-  try {
-    await new Promise((done, fail) => { socket.once('error', fail); socket.listen(port, '127.0.0.1', done); });
-    await new Promise(done => socket.close(done));
-    return true;
-  } catch { return false; }
-}
-
-async function serve() {
-  for (const port of PORTS) {
-    if (!await portIsFree(port)) continue;
-    const url = `http://127.0.0.1:${port}`;
-    const env = environment({ ONELOOP_LISTEN: `127.0.0.1:${port}`, ONELOOP_PUBLIC_URL: url, ONELOOP_TIMEZONE: 'UTC' });
-    const child = spawn(binary, ['serve'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let log = '';
-    const listening = new Promise((done, fail) => {
-      const collect = chunk => { log = (log + chunk).slice(-8_000); if (log.includes('oneloop listening')) done(); };
-      child.stdout.on('data', collect);
-      child.stderr.on('data', collect);
-      child.once('exit', code => fail(new Error(`oneloop serve exited (${code}):\n${log}`)));
-    });
-    const timeout = new Promise((_, fail) => setTimeout(() => fail(new Error(`oneloop serve did not start:\n${log}`)), 15_000).unref());
-    try { await Promise.race([listening, timeout]); } catch (error) { await stop({ child }); throw error; }
-    return { url, child };
-  }
-  throw new Error(`No free port among ${PORTS.join(', ')}`);
-}
-
-async function stop({ child }) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  const force = setTimeout(() => child.kill('SIGKILL'), 5_000);
-  try { await exited; } finally { clearTimeout(force); }
-}
+const serveData = () => serve(binary, dataDir, PORTS, { ONELOOP_TIMEZONE: 'UTC' });
 
 // ---------------------------------------------------------------------------
 // Seeding
@@ -194,10 +146,9 @@ async function signIn(url, username, password) {
   return { api, user: (await login.json()).user };
 }
 
-async function command(api, operation, payload, expectedRevision) {
-  const response = await api.post('/api/commands', { data: { operation, payload, expectedRevision, idempotencyKey: randomUUID() } });
-  if (!response.ok()) throw new Error(`${operation}: ${await response.text()}`);
-  return (await response.json()).entities[0];
+/** Send a command and return the item it created or changed. */
+async function write(api, operation, payload, expectedRevision) {
+  return (await command(api, operation, payload, expectedRevision)).entities[0];
 }
 
 function mentions(text, userIds) {
@@ -248,9 +199,9 @@ async function seed(browser, log) {
   const passwords = {};
   for (const [username, person] of Object.entries(people)) {
     passwords[username] = randomUUID();
-    cli(['user', 'add', username, '--name', person.name, '--password-stdin', ...(person.admin ? ['--admin'] : [])], `${passwords[username]}\n`);
+    cli(binary, dataDir, ['user', 'add', username, '--name', person.name, '--password-stdin', ...(person.admin ? ['--admin'] : [])], `${passwords[username]}\n`);
   }
-  const server = await serve();
+  const server = await serveData();
   const clients = {};
   try {
     const userIds = {};
@@ -264,25 +215,25 @@ async function seed(browser, log) {
       if (!changed.ok()) throw new Error(`change password ${username}: ${await changed.text()}`);
     }
     const lead = clients.maya;
-    const project = await command(lead, 'project.create', { name: 'Harbor', taskPrefix: 'HBR' });
+    const project = await write(lead, 'project.create', { name: 'Harbor', taskPrefix: 'HBR' });
     for (const [username, userId] of Object.entries(userIds)) {
-      await command(lead, 'membership.add', { projectId: project.id, userId, manageRoadmap: username === 'maya', manageBoard: true });
+      await write(lead, 'membership.add', { projectId: project.id, userId, manageRoadmap: username === 'maya', manageBoard: true });
     }
     const trackIds = {}, epicIds = {}, created = {};
     for (const track of tracks) {
-      trackIds[track.key] = (await command(lead, 'track.create', { projectId: project.id, name: track.name, description: track.description })).id;
+      trackIds[track.key] = (await write(lead, 'track.create', { projectId: project.id, name: track.name, description: track.description })).id;
     }
     for (const epic of epics) {
-      epicIds[epic.key] = (await command(lead, 'epic.create', {
+      epicIds[epic.key] = (await write(lead, 'epic.create', {
         projectId: project.id, trackId: trackIds[epic.track], title: epic.title,
         description: epic.description, startDate: day(epic.start), endDate: day(epic.end),
       })).id;
     }
     for (const milestone of milestones) {
-      await command(lead, 'milestone.create', { projectId: project.id, title: milestone.title, description: milestone.description, milestoneDate: day(milestone.day) });
+      await write(lead, 'milestone.create', { projectId: project.id, title: milestone.title, description: milestone.description, milestoneDate: day(milestone.day) });
     }
     const create = async task => {
-      created[task.title] = await command(lead, 'task.create', {
+      created[task.title] = await write(lead, 'task.create', {
         projectId: project.id, epicId: epicIds[task.epic], title: task.title, description: task.description ?? '',
         deadline: task.deadline === undefined ? null : day(task.deadline), assigneeIds: task.assignees.map(key => userIds[key]),
       });
@@ -291,26 +242,26 @@ async function seed(browser, log) {
     // Each task's first assignee moves it, as they would on the Board.
     const move = async (task, status) => {
       const { id, revision } = created[task.title];
-      created[task.title] = await command(clients[task.assignees[0] ?? 'maya'], 'task.move', { taskId: id, status }, revision);
+      created[task.title] = await write(clients[task.assignees[0] ?? 'maya'], 'task.move', { taskId: id, status }, revision);
     };
 
     await phase(log, 'finished');
     for (const task of tasks.filter(item => item.status === 'done')) await move(task, 'done');
     const roadmap = await (await lead.get(`/api/projects/${project.id}/roadmap`)).json();
     for (const epic of epics.filter(item => item.done)) {
-      await command(lead, 'epic.complete', { id: epicIds[epic.key] }, findById(roadmap, epicIds[epic.key]).revision);
+      await write(lead, 'epic.complete', { id: epicIds[epic.key] }, findById(roadmap, epicIds[epic.key]).revision);
     }
 
     await phase(log, 'backlog');
     for (const task of tasks.filter(item => item.status === 'planning')) await create(task);
-    for (const title of ideas) await command(lead, 'pool.create', { projectId: project.id, scope: 'team', title });
+    for (const title of ideas) await write(lead, 'pool.create', { projectId: project.id, scope: 'team', title });
 
     await phase(log, 'started');
     for (const task of tasks.filter(item => item.status === 'in_progress' || item.status === 'in_review')) await move(task, 'in_progress');
     for (const task of tasks.filter(item => item.status === 'in_review')) await move(task, 'in_review');
 
     await phase(log, 'blocked');
-    await command(clients.sofia, 'task.block', { taskId: created[blocked].id, reason: blockReason, mentions: mentions(blockReason, userIds) }, created[blocked].revision);
+    await write(clients.sofia, 'task.block', { taskId: created[blocked].id, reason: blockReason, mentions: mentions(blockReason, userIds) }, created[blocked].revision);
 
     await phase(log, 'mockup');
     const mockup = await renderMockup(browser);
@@ -323,7 +274,7 @@ async function seed(browser, log) {
     const comments = [];
     for (const comment of discussion) {
       await phase(log, comment.phase);
-      comments.push(await command(clients[comment.author], 'discussion.comment.create', {
+      comments.push(await write(clients[comment.author], 'discussion.comment.create', {
         taskId: created[featured].id, content: comment.text, mentions: mentions(comment.text, userIds),
         ...(comment.replyTo === undefined ? {} : { replyToId: comments[comment.replyTo].id }),
       }));
@@ -332,7 +283,7 @@ async function seed(browser, log) {
     return { password: passwords.maya, taskKey: created[featured].taskKey };
   } finally {
     await Promise.all(Object.values(clients).map(api => api.dispose()));
-    await stop(server);
+    await stopServer(server);
   }
 }
 
@@ -450,21 +401,21 @@ if (!existsSync(binary)) throw new Error(`Missing ${binary}. Build it with \`car
 await rm(dataDir, { recursive: true, force: true });
 await mkdir(dataDir, { recursive: true });
 await mkdir(output, { recursive: true });
-cli(['db', 'migrate']);
+cli(binary, dataDir, ['db', 'migrate']);
 
 const browser = await chromium.launch();
 try {
   const log = [];
   const { password, taskKey } = await seed(browser, log);
   await backdate(log);
-  const server = await serve();
+  const server = await serveData();
   try {
     for (const file of await capture(browser, server.url, password, taskKey)) {
       optimize(file);
       console.log(`${relative(repository, file)}  ${Math.round((await stat(file)).size / 1024)} KB`);
     }
   } finally {
-    await stop(server);
+    await stopServer(server);
   }
 } finally {
   await browser.close();

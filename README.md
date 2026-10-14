@@ -16,10 +16,14 @@
 
 ![The oneloop Board, with task cards in the Planning, In Progress, In Review and Done columns](docs/src/assets/screenshots/board.png)
 
+<!-- The documentation's introduction includes the parts between ANCHOR lines. -->
+<!-- ANCHOR: intro -->
 oneloop is a lightweight task manager for small teams. You host it yourself.
 It is a single program with a built-in database, so it runs well on a small
 server or in one container.
+<!-- ANCHOR_END: intro -->
 
+<!-- ANCHOR: features -->
 ## Features
 
 - **Roadmap**: plan tracks, epics and milestones on a timeline.
@@ -35,6 +39,7 @@ server or in one container.
 - **AI assistants**: connect Claude Code, Codex or another MCP client, with the
   access you choose.
 - **Easy to run**: one binary, SQLite storage and backups with one command.
+<!-- ANCHOR_END: features -->
 
 ## Quick start
 
@@ -44,7 +49,7 @@ With Docker Compose:
 mkdir oneloop && cd oneloop
 curl -fsSLO https://raw.githubusercontent.com/code19m/oneloop/v0.1.0-rc.4/deploy/compose.yaml
 docker compose run --rm oneloop db migrate
-docker compose run --rm oneloop user add admin --admin
+docker compose run --rm oneloop user add admin --admin --name "Your Name"
 docker compose up -d
 ```
 
@@ -59,9 +64,15 @@ reference.
 
 ## Status
 
-oneloop is a release candidate. Small teams can use it, but expect
-some bugs, and read the [changelog](CHANGELOG.md) before you upgrade. It runs on
-Linux and macOS, directly or in Docker. Windows is not supported.
+<!-- ANCHOR: status -->
+oneloop is a release candidate. Small teams can use it, but expect some bugs.
+Read the [changelog](https://code19m.github.io/oneloop/changelog.html) before
+you upgrade.
+
+oneloop runs on Linux (x86_64 and arm64) and on macOS with Apple silicon, either
+directly or in Docker. Windows is not supported. Use a current version of
+Chrome, Firefox or Safari.
+<!-- ANCHOR_END: status -->
 
 ## Contributing
 

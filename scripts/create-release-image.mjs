@@ -3,10 +3,11 @@
 // images (a re-run of failed jobs), or the script stops before it pushes anything.
 // Usage: node scripts/create-release-image.mjs IMAGE VERSION DIGEST DIGEST
 import {imagetools, inspectRaw} from './imagetools.mjs';
+import {parseVersion} from './release-version.mjs';
 
 const [image, version, ...digests] = process.argv.slice(2);
 if (!image || image.startsWith('-')) throw new Error('Expected an image name');
-if (!/^\d+\.\d+\.\d+(?:-rc\.[1-9]\d*)?$/.test(version ?? '')) throw new Error(`Expected X.Y.Z or X.Y.Z-rc.N, got ${version}`);
+if (!parseVersion(version)) throw new Error(`Expected X.Y.Z or X.Y.Z-rc.N, got ${version}`);
 if (digests.length !== 2 || !digests.every(digest => /^[0-9a-f]{64}$/.test(digest))) {
   throw new Error('Expected two platform digests');
 }

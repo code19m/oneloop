@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vendorPackages } from './vendor-packages.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
@@ -40,11 +41,13 @@ for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', '
     if (match) included.add(`${match[1]}@${match[2]}`);
   }
 }
-// The rmcp crates omit their workspace-root license. This copy comes from the published crates' VCS
-// revision 0cde3c5cf3e6aff0cc852ce6045f107e95991f48 of github.com/modelcontextprotocol/rust-sdk.
+// The rmcp crates omit their workspace-root license. This copy comes from VCS revision
+// 0cde3c5cf3e6aff0cc852ce6045f107e95991f48 of github.com/modelcontextprotocol/rust-sdk, which
+// rmcp 3.5.0 was published from. When rmcp moves to another version, check that the license
+// at its revision is still this one.
 const crateOverrides = {
-  'rmcp@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
-  'rmcp-macros@3.5.0': ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  rmcp: ['scripts/licenses/rmcp-Apache-2.0.txt'],
+  'rmcp-macros': ['scripts/licenses/rmcp-Apache-2.0.txt'],
 };
 let crateCount = 0;
 for (const pkg of metadata.packages) {
@@ -52,7 +55,7 @@ for (const pkg of metadata.packages) {
   if (!pkg.source || !included.has(key)) continue;
   const directory = dirname(pkg.manifest_path), files = licenseFiles(directory);
   if (pkg.license_file && !files.includes(join(directory, pkg.license_file))) files.push(join(directory, pkg.license_file));
-  files.push(...(crateOverrides[key] ?? []));
+  files.push(...(crateOverrides[pkg.name] ?? []));
   addComponent(pkg.name, pkg.version, pkg.license ?? 'see its license text', files.map(read), 'Rust crate');
   crateCount++;
 }
@@ -72,12 +75,11 @@ const browserLicenses = {
   mermaid: 'MIT',
   pdfjs: 'Apache-2.0; bundled fonts and CMaps under their own licenses',
 };
-const vendor = JSON.parse(read('frontend/vendor/vendor.json'));
-for (const pkg of vendor.packages) {
-  const [, name, version] = pkg.source.match(/^https:\/\/registry\.npmjs\.org\/(.+)\/-\/[^/]+-(\d[^/]*)\.tgz$/);
-  const license = browserLicenses[pkg.directory];
-  if (!license) throw new Error(`Review the license of frontend/vendor/${pkg.directory} and add it to browserLicenses.`);
-  const files = licenseFiles(join('frontend/vendor', pkg.directory), true).filter(path => !path.endsWith('.json'));
+const vendor = vendorPackages();
+for (const { directory, name, version } of vendor) {
+  const license = browserLicenses[directory];
+  if (!license) throw new Error(`Review the license of frontend/vendor/${directory} and add it to browserLicenses.`);
+  const files = licenseFiles(join('frontend/vendor', directory), true).filter(path => !path.endsWith('.json'));
   addComponent(name, version, license, files.map(read), 'frontend/vendor');
 }
 
@@ -191,7 +193,7 @@ it by hand. It covers ${components.size} components:
 - ${crateCount} Rust crates: the normal and build dependencies in \`Cargo.lock\` for
   Linux x86_64, Linux arm64 and macOS arm64. Build-only crates are included
   conservatively.
-- ${vendor.packages.length} browser libraries vendored in \`frontend/vendor/\`.
+- ${vendor.length} browser libraries vendored in \`frontend/vendor/\`.
 - ${mermaidCount} packages bundled into the rebuilt Mermaid.
 
 Each license text appears once, followed by the components it covers and their

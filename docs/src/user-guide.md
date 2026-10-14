@@ -155,11 +155,11 @@ If Undo fails because the connection dropped or the server was busy, the
 message that says so offers **Undo** again until the item can no longer be
 restored.
 
-Deleted files and comment text stay on the server for
-[5 minutes](reference.md#limits), so that Undo can work. Within about a minute
-after that, oneloop removes them for good, together with the files of a deleted
-task. A deleted task's own text and its comments stay in the database; only its
-files are removed.
+Deleted files and comment text stay on the server for the
+[Undo window](reference.md#limits), so that Undo can work. Soon after that,
+oneloop removes them for good, together with the files of a deleted task. A
+deleted task's own text and its comments stay in the database; only its files
+are removed.
 
 ## Knowledge
 
@@ -167,7 +167,7 @@ files are removed.
 team's guides, product rules and decisions, from one folder of a Git repository
 that an admin connects. It is read-only and stands on its own, without links to
 tasks or epics. To change a file, change it in Git; oneloop shows the change
-within about a minute.
+after its next [sync](reference.md#limits).
 
 - A folder's **README.md** appears below its list of files. **Updated** is
   estimated from the Git history oneloop fetched. If that history does not
@@ -200,8 +200,8 @@ read-only Board.
 - To mention someone, type `@` and pick the person from the list. Only people
   you pick get a notification. A name you type yourself, or a mention inside
   `code` or a quote, is plain text.
-- **@everyone** notifies all active members of the project except you. You can
-  use it once a minute in each project.
+- **@everyone** notifies all active members of the project except you. It has a
+  [rate limit](reference.md#limits) in each project.
 - When you edit a comment or block reason, only people you newly mention get a
   notification. Editing keeps mentions of people who have left the project.
 

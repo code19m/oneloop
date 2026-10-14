@@ -7,11 +7,12 @@ import {readFile, writeFile, mkdir, mkdtemp, rm, readdir} from 'node:fs/promises
 import {dirname, resolve, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {gunzipSync} from 'node:zlib';
+import {vendorPackages} from './vendor-packages.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = join(root, 'frontend/vendor');
-const manifest = JSON.parse(await readFile(join(vendor, 'vendor.json'), 'utf8'));
-assert.deepEqual(manifest.packages.map(pkg => pkg.directory).sort(),
+const packages = vendorPackages();
+assert.deepEqual(packages.map(pkg => pkg.directory).sort(),
   (await readdir(vendor, {withFileTypes: true})).filter(entry => entry.isDirectory()).map(entry => entry.name).sort(),
   'Unmapped or missing vendor package');
 const localOnly = process.argv.includes('--local');
@@ -26,7 +27,7 @@ async function download(url) {
 await mkdir(join(root, 'target'), {recursive: true});
 const scratch = await mkdtemp(join(root, 'target/vendor-verify-'));
 try {
-  for (const pkg of manifest.packages) {
+  for (const pkg of packages) {
     assert(safePath(pkg.directory));
     const base = join(vendor, pkg.directory);
     const records = {...pkg.files, ...pkg.derived};

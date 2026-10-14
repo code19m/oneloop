@@ -57,10 +57,25 @@ usernames, IP addresses and file paths, so keep them private.
 | People see "Too many attempts" when they sign in | A [sign-in limit](reference.md#limits) was reached. People can share an address even with correct forwarding. | Wait for the delay. If the log says `ignoring X-Forwarded-For from an untrusted peer`, set [`ONELOOP_TRUSTED_PROXIES`](production.md#trusted-proxy). |
 | Changes appear only after reloading | The proxy buffers the live-update stream. | Turn off buffering for `/api/events`. |
 | The app gets slow with many open tabs | The browser reaches the proxy over HTTP/1.1, which allows only six connections to a site. | Turn on HTTP/2 in the proxy. |
-| Large uploads fail with HTTP 413 | The proxy's limit for request bodies is too small. | Allow at least 27 MB (in nginx, `client_max_body_size 27m`). |
+| Large uploads fail with HTTP 413 | The proxy's limit for request bodies is too small. | Raise it as the [rules for any proxy](production.md#rules-for-any-proxy) say. |
 | Uploads fail with "There is not enough storage for this file", and the **Storage** page shows **Storage full** or **Cleanup threshold reached** | The upload doesn't fit in the [storage limit](reference.md#storage). | Choose **Clean up now**, delete files, or raise `ONELOOP_STORAGE_LIMIT`. |
 | Uploads fail with "There is not enough storage for this file", and the **Storage** page shows **Within capacity** | The server's disk is nearly full: the upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`. | Free disk space on the server, or lower `ONELOOP_DISK_MIN_FREE`. |
 | An admin forgot their password | No other admin can reset it. | Run `oneloop user passwd <username>` on the server. Sign in with that temporary password, then choose a new one. |
+
+## Stopped backups
+
+A backup builds its copy in a hidden folder next to the destination, and
+renames the folder when the copy is complete and verified. oneloop removes the
+hidden folder of a stopped backup only when it can tell that the backup has
+ended: the backup ran on the same computer, and its process no longer runs.
+Otherwise oneloop prints the folder's path. Delete the folder yourself once you
+are sure that no backup is running. oneloop tells computers apart by their host
+name, so don't share a backup folder between computers that have the same host
+name.
+
+While it copies the files, a backup also keeps links to them in the hidden
+folder `.oneloop-backup-pins` inside the data directory. If the backup stops
+halfway, the server removes that folder within a minute.
 
 ## Knowledge sync
 

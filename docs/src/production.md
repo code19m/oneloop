@@ -82,10 +82,10 @@ not add to it. oneloop ignores `Forwarded`, `X-Real-IP` and
 `X-Forwarded-Proto`.
 
 Naming the proxy also keeps its idle connections to oneloop open
-[longer](reference.md#limits) than proxies such as Caddy, nginx and Tailscale
-keep them. Otherwise oneloop closes them first, and a request that the proxy
-sends on a connection just as oneloop closes it fails with 502. So Caddy needs
-no `keepalive` setting.
+[longer](reference.md#limits) than Caddy, nginx and Tailscale keep them. So the
+proxy always closes an idle connection first. Otherwise oneloop could close a
+connection just as the proxy sends a request on it, and that request would fail
+with 502. Caddy needs no `keepalive` setting.
 
 ### Rules for any proxy
 

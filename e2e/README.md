@@ -1,14 +1,14 @@
 # End-to-end tests
 
 Playwright journeys that drive the real `oneloop` binary in Chromium, Firefox
-and WebKit.
+and WebKit. Install the tools as [CONTRIBUTING.md](../CONTRIBUTING.md#getting-set-up)
+describes. `cargo test --locked --all-targets` builds the binary that the
+journeys run, `target/debug/oneloop`; add `--no-run` to build it without
+running the Rust tests. Then:
 
 ```sh
-cargo build --locked                  # cargo test builds it too
-npm --prefix e2e ci
-npm --prefix e2e exec -- playwright install chromium firefox webkit
-npm --prefix e2e run test:smoke       # @smoke journeys in Chromium, under 2 minutes
-npm --prefix e2e test                 # every journey in all three browsers, a few minutes locally
+npm --prefix e2e run test:smoke   # the @smoke journeys, in Chromium
+npm --prefix e2e test             # every journey, in all three browsers
 ```
 
 The Knowledge journeys also need `git` 2.31 or later and `openssl` on your
@@ -55,8 +55,7 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
   so up to ten workers can run at once.
 - **Strict browser errors.** An uncaught page error or unexpected console error
   fails the test. A test that injects a failure lists the console text it
-  expects in `allowedConsoleErrors`; a security probe declares its exact page
-  error in `expectedPageErrors`, and that error must occur.
+  expects in `allowedConsoleErrors`.
 
 ## Helpers
 

@@ -23,14 +23,9 @@
     <!-- The IANA timezone used for deadlines and the Roadmap's Today. -->
     <key>ONELOOP_TIMEZONE</key>
     <string>UTC</string>
-    <key>ONELOOP_STORAGE_LIMIT</key>
-    <string>10GiB</string>
-    <key>ONELOOP_DISK_MIN_FREE</key>
-    <string>1GiB</string>
     <key>ONELOOP_TRUSTED_PROXIES</key>
     <string>127.0.0.1</string>
-    <key>ONELOOP_LOG_LEVEL</key>
-    <string>info</string>
+    <!-- Other settings: https://code19m.github.io/oneloop/reference.html#configuration -->
   </dict>
   <key>SoftResourceLimits</key>
   <dict>

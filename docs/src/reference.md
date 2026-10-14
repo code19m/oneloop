@@ -163,14 +163,25 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 
 Text and Markdown previews need the whole file to be valid UTF-8 text.
 
-oneloop decodes one image at a time, and only an image that needs at most about
-192 MiB of memory to decode, with at most 8192 px per side and 128 MiB of
-pixels. That allows about 44 megapixels for a photo, 33 for an image with
-transparency, and 22 for a 16-bit PNG, or 16 with transparency. Some images
-need more memory to decode, so their limit is lower: about 32 megapixels for a
-progressive JPEG, or 22 when it keeps full colour detail; 24 for a lossless
-WebP; 18 for a progressive CMYK JPEG or a WebP with transparency; and 12 for an
-animated WebP. A larger avatar is refused.
+oneloop decodes one image at a time. It decodes only an image that needs at
+most about 192 MiB of memory, with at most 8192 px per side and 128 MiB of
+pixels. Some kinds of images need more memory than others, so the largest size
+depends on the kind:
+
+| Image | Largest size, about |
+| --- | --- |
+| Photo | 44 megapixels |
+| Image with transparency | 33 megapixels |
+| Progressive JPEG | 32 megapixels |
+| Lossless WebP | 24 megapixels |
+| 16-bit PNG | 22 megapixels |
+| Progressive JPEG that keeps full colour detail | 22 megapixels |
+| Progressive CMYK JPEG | 18 megapixels |
+| WebP with transparency | 18 megapixels |
+| 16-bit PNG with transparency | 16 megapixels |
+| Animated WebP | 12 megapixels |
+
+A larger avatar is refused.
 
 Tasks load the original file for other images, such as GIFs, and for images
 that oneloop can't read or that are over these limits. A new image has its

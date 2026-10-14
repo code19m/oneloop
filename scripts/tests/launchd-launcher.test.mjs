@@ -2,11 +2,11 @@
 // after a non-zero exit, so the launcher exits 0 when a restart can't help.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, writeFileSync, readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {inScratch} from './support.mjs';
 
 const launcher = fileURLToPath(new URL('../../deploy/launchd/oneloop-launchd.sh', import.meta.url));
 const ready = 'configuration and schema are valid (schema 3, data /data)';
@@ -14,8 +14,7 @@ const uninitialized = 'configuration is valid; database is not initialized (data
 
 /** Runs the launcher with a fake oneloop: `serve --check` prints `output` and exits with `check`. */
 function launch({check = 0, output = ready, serve = 0, binary} = {}) {
-  const scratch = mkdtempSync(join(tmpdir(), 'launchd-test-'));
-  try {
+  return inScratch(scratch => {
     const fake = join(scratch, 'fake oneloop'), calls = join(scratch, 'calls');
     writeFileSync(fake, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$LAUNCHER_TEST_CALLS"\nif [ "$2" = "--check" ]; then printf "%s\\n" "$LAUNCHER_TEST_OUTPUT"; exit "$LAUNCHER_TEST_CHECK"; fi\nexit "$LAUNCHER_TEST_SERVE"\n', {mode: 0o700});
     const result = spawnSync('/bin/sh', [launcher, binary ?? fake], {
@@ -24,7 +23,7 @@ function launch({check = 0, output = ready, serve = 0, binary} = {}) {
     });
     const invoked = existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean) : [];
     return {status: result.status, stdout: result.stdout, stderr: result.stderr, invoked};
-  } finally { rmSync(scratch, {recursive: true, force: true}); }
+  });
 }
 
 test('launcher stops the job when a restart cannot help', () => {

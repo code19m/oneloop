@@ -1,6 +1,7 @@
 # Frontend
 
-The Rust binary serves these files directly, with URL paths matching this tree and no bundler.
+The Rust binary serves these files directly, with URL paths matching this tree
+and no bundler.
 
 ```text
 index.html  Application entry and SPA fallback
@@ -14,26 +15,56 @@ tests/      Unit tests mirroring src/ and views/, with a shared jsdom harness
 
 ## Where new code goes
 
-Add application logic to `src/` as ES modules with JSDoc types; preserve the DOM contracts in `views/`.
-Whole-app browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
+Add application logic to `src/` as ES modules with JSDoc types; preserve the
+DOM contracts in `views/`. Whole-app browser journeys live in
+[`../e2e/journeys/`](../e2e/README.md).
 
-To change an action, start from `src/app/view-bridge.js`: it replaces many `App` methods in `views/app.js` with server-backed versions, so the method in `views/` may not be the one that runs.
-Markup has no inline event handlers. An element names the `App` method that its click runs in `data-action`, or that another event runs in `data-action-<event>`, with JSON arguments in `data-args`. In `views/`, write these with `UIAction`, such as `UIAction('openTask', id)` or `UIAction.on('keydown', 'epicKey', UIAction.event, id)`. `src/app/view-actions.js` runs them from listeners on the document, but never inside rendered Markdown or file previews; a test checks that each one names an existing method.
-Before someone leaves a page, `hasUnsavedInput` in the recovery controller looks for changed fields in open editors. Mark a field that saves itself when it loses focus with `data-autosave`, so it counts only while it is being typed.
-Put a detail that only a hover would show, such as a full time or a name that may be cut off, in `data-tip` rather than `title`: `src/app/tooltips.js` shows it on hover, keyboard focus and tap. Add `data-tip-overflow` to show it only while the text is cut off. Don't make an element focusable just for its tip, as a long list would gain a Tab stop per row: give the detail to screen readers through the row's name or description instead, as the Board card does for a Blocked reason. A tip inside a clickable row takes a tap only with `data-tip-tap`, and `data-tip-keyboard` shows a tip on keyboard focus only, as a Board card's title does for its Blocked reason.
+- **Actions.** To change an action, start from `src/app/view-bridge.js`. It
+  replaces many `App` methods in `views/app.js` with server-backed versions, so
+  the method in `views/` may not be the one that runs.
+- **Event handlers.** Markup has no inline event handlers. An element names the
+  `App` method that its click runs in `data-action`, or that another event runs
+  in `data-action-<event>`, with JSON arguments in `data-args`. In `views/`,
+  write these with `UIAction`, such as `UIAction('openTask', id)` or
+  `UIAction.on('keydown', 'epicKey', UIAction.event, id)`.
+  `src/app/view-actions.js` runs them from listeners on the document, but never
+  inside rendered Markdown or file previews. A test checks that each one names
+  an existing method.
+- **Unsaved input.** Before someone leaves a page, `hasUnsavedInput` in the
+  recovery controller looks for changed fields in open editors. Mark a field
+  that saves itself when it loses focus with `data-autosave`, so it counts only
+  while it is being typed.
+- **Tooltips.** Put a detail that only a hover would show, such as a full time
+  or a name that may be cut off, in `data-tip` rather than `title`.
+  `src/app/tooltips.js` shows it on hover, keyboard focus and tap.
+  - Add `data-tip-overflow` to show it only while the text is cut off.
+  - Don't make an element focusable just for its tip, because a long list would
+    gain a Tab stop per row. Give the detail to screen readers through the
+    row's name or description instead, as the Board card does for a Blocked
+    reason.
+  - A tip inside a clickable row takes a tap only with `data-tip-tap`.
+  - `data-tip-keyboard` shows a tip on keyboard focus only, as a Board card's
+    title does for its Blocked reason.
 
-The page's Content-Security-Policy enforces Trusted Types and refuses inline `<style>` elements:
+The page's Content-Security-Policy enforces Trusted Types and refuses inline
+`<style>` elements:
 
-- Write HTML with `UIHTML` (`setHTML` in `views/app.js`), which goes through the app's `oneloop` policy. A plain string passed to `innerHTML`, `srcdoc` or `DOMParser` is refused.
+- Write HTML with `UIHTML` (`setHTML` in `views/app.js`), which goes through
+  the app's `oneloop` policy. A plain string passed to `innerHTML`, `srcdoc` or
+  `DOMParser` is refused.
 - Load scripts only from `src/`, `views/` and `vendor/`.
 - Style with the CSS files and `style` attributes, not `<style>` elements.
 
-Mermaid writes inline styles and HTML strings, so it lays out diagrams in `views/diagram-renderer.html`, a separate document with its own policy, and the page shows each result as an image.
+Mermaid writes inline styles and HTML strings, so it lays out diagrams in
+`views/diagram-renderer.html`, a separate document with its own policy, and the
+page shows each result as an image.
 
 ## How it loads
 
-`theme.js` runs in the document head; `src/app/main.js` starts `boot.js`, which loads motion, SHA-256, activity, file views, uploads and collaboration in order, then `app.js`.
-The view bridge installs server-backed actions before the first application render; preview libraries load on demand.
+`theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
+loads motion, SHA-256, activity, file views, uploads and collaboration in
+order, then `app.js`. The view bridge installs server-backed actions before the
+first application render; preview libraries load on demand.
 
 ## Design
 
