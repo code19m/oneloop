@@ -8,8 +8,8 @@ request. For a map of the code and the rules it keeps, read
 
 You need:
 
-- **Rust.** `rust-toolchain.toml` pins the toolchain (1.92.0, the minimum
-  supported version), and rustup installs it on first use.
+- **Rust.** `rust-toolchain.toml` pins the toolchain, which is also the
+  minimum supported version. rustup installs it on first use.
 - **A C compiler.** SQLite is compiled in, so `cc` must work.
 - **Node.js 22 or newer**, for frontend checks and browser tests. The exact
   range is in `frontend/package.json`.

@@ -7,11 +7,12 @@ Tags are `vX.Y.Z` for releases and `vX.Y.Z-rc.N` for release candidates, for
 example `v0.1.0-rc.1`.
 
 1. Set the version in `Cargo.toml` and run `cargo check` to update
-   `Cargo.lock`. Update the version that `README.md`, `deploy/compose.yaml`
-   and the pages in `docs/src/` show; `rg -F` with the previous version finds
-   them. If `CURRENT_SCHEMA_VERSION` changed since the previous release, also
-   update the schema numbers in the docs: the sample output of `db migrate`
-   and `/healthz`, and the name of the pre-upgrade backup;
+   `Cargo.lock`. Then `node --test scripts/tests/pinned-versions.test.mjs`
+   lists each place in `README.md`, `deploy/compose.yaml` and `docs/src/`
+   that still shows the old version. If `CURRENT_SCHEMA_VERSION` changed
+   since the previous release, also update the schema numbers in the docs:
+   the sample output of `db migrate` and `/healthz`, and the name of the
+   pre-upgrade backup;
    `rg 'migrated from|schema [0-9]|schemaVersion|pre-migration-v' docs/src`
    finds them. For the first stable release, also rewrite the **Status**
    section of `README.md`, which still calls oneloop a release candidate.
@@ -84,3 +85,6 @@ of the vendored browser files on pull requests, on pushes to `main` and weekly.
 Browser libraries under `frontend/vendor/` are copied from exact npm releases
 rather than installed; [frontend/vendor/README.md](frontend/vendor/README.md)
 explains how to update one. After any dependency change, regenerate the notices.
+
+To move to a newer Rust, change `rust-toolchain.toml`. The
+`pinned-versions` test in `scripts/tests/` lists the other places to change.
