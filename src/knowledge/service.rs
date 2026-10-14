@@ -416,14 +416,7 @@ impl KnowledgeService {
     }
 
     pub fn supports(operation: &str) -> bool {
-        matches!(
-            operation,
-            "knowledge.connect"
-                | "knowledge.update"
-                | "knowledge.disconnect"
-                | "knowledge.sync"
-                | "knowledge.deploy-key.create"
-        )
+        Operation::parse(operation).is_some()
     }
 
     pub async fn execute(
@@ -432,17 +425,10 @@ impl KnowledgeService {
         command: KnowledgeCommand,
     ) -> AppResult<KnowledgeCommandResult> {
         actor.require_ready()?;
-        if !Self::supports(&command.operation) {
-            return Err(AppError::validation(
-                "operation",
-                "unsupported knowledge operation",
-            ));
-        }
+        let operation = Operation::parse(&command.operation)
+            .ok_or_else(|| AppError::validation("operation", "unsupported knowledge operation"))?;
         crate::idempotency::validate_key(&command.idempotency_key)?;
-        let needs_revision = matches!(
-            command.operation.as_str(),
-            "knowledge.update" | "knowledge.disconnect"
-        );
+        let needs_revision = operation.needs_revision();
         if needs_revision != command.expected_revision.is_some() {
             return Err(AppError::validation(
                 "expectedRevision",
@@ -487,12 +473,9 @@ impl KnowledgeService {
                     &hash,
                     now,
                 )?;
-                let (project_id, entity, events) = dispatch(tx, &inner, &current, &command, now)?;
-                let changed = matches!(
-                    command.operation.as_str(),
-                    "knowledge.update" | "knowledge.disconnect"
-                )
-                .then(|| project_id.clone());
+                let (project_id, entity, events) =
+                    dispatch(tx, &inner, &current, operation, &command, now)?;
+                let changed = operation.replaces_source().then(|| project_id.clone());
                 let result = KnowledgeCommandResult {
                     entities: vec![entity],
                     events,
@@ -1086,16 +1069,49 @@ impl Inner {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Operation {
+    Connect,
+    Update,
+    Disconnect,
+    Sync,
+    CreateDeployKey,
+}
+
+impl Operation {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "knowledge.connect" => Self::Connect,
+            "knowledge.update" => Self::Update,
+            "knowledge.disconnect" => Self::Disconnect,
+            "knowledge.sync" => Self::Sync,
+            "knowledge.deploy-key.create" => Self::CreateDeployKey,
+            _ => return None,
+        })
+    }
+
+    /// Changes to a connected source name the revision they were based on.
+    fn needs_revision(self) -> bool {
+        matches!(self, Self::Update | Self::Disconnect)
+    }
+
+    /// The source changes or goes, so a running sync works for the old one.
+    fn replaces_source(self) -> bool {
+        matches!(self, Self::Update | Self::Disconnect)
+    }
+}
+
 fn dispatch(
     tx: &Transaction<'_>,
     inner: &Inner,
     actor: &Actor,
+    operation: Operation,
     command: &KnowledgeCommand,
     now: i64,
 ) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
-    match command.operation.as_str() {
-        "knowledge.connect" => connect(tx, inner, actor, payload(command)?, now),
-        "knowledge.update" => update(
+    match operation {
+        Operation::Connect => connect(tx, inner, actor, payload(command)?, now),
+        Operation::Update => update(
             tx,
             inner,
             actor,
@@ -1103,7 +1119,7 @@ fn dispatch(
             command.expected_revision.expect("checked revision"),
             now,
         ),
-        "knowledge.disconnect" => disconnect(
+        Operation::Disconnect => disconnect(
             tx,
             inner,
             actor,
@@ -1111,14 +1127,8 @@ fn dispatch(
             command.expected_revision.expect("checked revision"),
             now,
         ),
-        "knowledge.sync" => request_sync(tx, actor, payload(command)?, now),
-        "knowledge.deploy-key.create" => {
-            create_deploy_key(tx, inner, actor, payload(command)?, now)
-        }
-        _ => Err(AppError::validation(
-            "operation",
-            "unsupported knowledge operation",
-        )),
+        Operation::Sync => request_sync(tx, actor, payload(command)?, now),
+        Operation::CreateDeployKey => create_deploy_key(tx, inner, actor, payload(command)?, now),
     }
 }
 
@@ -1205,22 +1215,13 @@ fn connect(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.connected",
-            field_key: None,
-            before: None,
             after: Some(described(&place.url, &place.branch, &place.folder)),
-            metadata: json!({}),
             entity_revision: Some(revision),
+            ..source_activity(&input.project_id, "knowledge.connected")
         },
         now,
     )?);
-    let row = load_source(tx, &input.project_id)?.expect("inserted source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, events))
 }
 
@@ -1320,22 +1321,15 @@ fn update(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.updated",
-            field_key: None,
             before: Some(described(&previous_url, &before.branch, &before.folder)),
             after: Some(described(&place.url, &place.branch, &place.folder)),
             metadata: json!({"credentialsChanged": credentials_changed}),
             entity_revision: Some(before.revision + 1),
+            ..source_activity(&input.project_id, "knowledge.updated")
         },
         now,
     )?);
-    let row = load_source(tx, &input.project_id)?.expect("updated source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, events))
 }
 
@@ -1370,16 +1364,9 @@ fn disconnect(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.disconnected",
-            field_key: None,
             before: Some(described(&url, &before.branch, &before.folder)),
-            after: None,
-            metadata: json!({}),
             entity_revision: Some(before.revision + 1),
+            ..source_activity(&input.project_id, "knowledge.disconnected")
         },
         now,
     )?;
@@ -1409,9 +1396,7 @@ fn request_sync(
         "UPDATE knowledge_sources SET requested_at=?2 WHERE project_id=?1",
         params![input.project_id, now],
     )?;
-    let row = load_source(tx, &input.project_id)?.expect("existing source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, Vec::new()))
 }
 
@@ -1468,20 +1453,33 @@ fn ensure_deploy_key(
     Ok(Some(record_activity_tx(
         tx,
         actor,
-        ActivityInput {
-            project_id: Some(project_id),
-            entity_type: "knowledge_source",
-            entity_id: project_id,
-            task_id: None,
-            event_type: "knowledge.deploy_key.created",
-            field_key: None,
-            before: None,
-            after: None,
-            metadata: json!({}),
-            entity_revision: None,
-        },
+        source_activity(project_id, "knowledge.deploy_key.created"),
         now,
     )?))
+}
+
+/// Activity on a project's Knowledge source. Callers add what changed.
+pub(super) fn source_activity<'a>(project_id: &'a str, event_type: &'a str) -> ActivityInput<'a> {
+    ActivityInput {
+        project_id: Some(project_id),
+        entity_type: "knowledge_source",
+        entity_id: project_id,
+        task_id: None,
+        event_type,
+        field_key: None,
+        before: None,
+        after: None,
+        metadata: json!({}),
+        entity_revision: None,
+    }
+}
+
+/// The source as a command returns it.
+fn source_entity(connection: &Connection, project_id: &str) -> AppResult<Value> {
+    let row = load_source(connection, project_id)?
+        .ok_or_else(|| AppError::internal("the knowledge source is missing"))?;
+    serde_json::to_value(source_view(connection, project_id, &row)?)
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// The repository as activity records it: never a credential.

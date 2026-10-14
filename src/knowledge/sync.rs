@@ -29,7 +29,7 @@ use crate::{
 use super::{
     git::{Credentials, Failure, Snapshot, SnapshotOptions, SyncError},
     secrets::Purpose,
-    service::{Inner, KnowledgeService},
+    service::{Inner, KnowledgeService, source_activity},
     source::{GitUrl, Transport},
 };
 
@@ -500,16 +500,9 @@ impl KnowledgeService {
                 record_system_activity_tx(
                     tx,
                     ActivityInput {
-                        project_id: Some(&project_id),
-                        entity_type: "knowledge_source",
-                        entity_id: &project_id,
-                        task_id: None,
-                        event_type: event,
-                        field_key: None,
-                        before: None,
-                        after: None,
                         metadata,
                         entity_revision: Some(revision),
+                        ..source_activity(&project_id, event)
                     },
                     now,
                 )?;
