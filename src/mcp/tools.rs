@@ -501,8 +501,7 @@ impl OneloopMcp {
             .state
             .domain
             .roadmap(&actor(&parts)?, input.project_id)
-            .await
-            .map_err(tool_error)?;
+            .await?;
         Ok(Json(value))
     }
 
@@ -571,9 +570,8 @@ impl OneloopMcp {
             .state
             .domain
             .task(&actor(&parts)?, input.task_id)
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(view).map_err(internal_error)?))
+            .await?;
+        json(view)
     }
 
     #[tool(
@@ -602,8 +600,7 @@ impl OneloopMcp {
                     limit: input.limit,
                 },
             )
-            .await
-            .map_err(tool_error)?;
+            .await?;
         let activity = service
             .epic_activity(
                 &actor,
@@ -613,8 +610,7 @@ impl OneloopMcp {
                     limit: input.limit,
                 },
             )
-            .await
-            .map_err(tool_error)?;
+            .await?;
         Ok(Json(json!({
             "epicId": input.epic_id,
             "tasks": tasks,
@@ -649,9 +645,8 @@ impl OneloopMcp {
                     limit: input.limit,
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(view).map_err(internal_error)?))
+            .await?;
+        json(view)
     }
 
     #[tool(
@@ -671,24 +666,21 @@ impl OneloopMcp {
         Parameters(input): Parameters<WorkCommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         let operation: DomainOperation =
-            serde_json::from_value(Value::String(input.operation.clone())).map_err(|_| {
-                ToolError::invalid_params("unsupported ordinary work operation", None)
-            })?;
+            serde_json::from_value(Value::String(input.operation.clone()))
+                .map_err(|_| ToolError::invalid_arguments("unsupported ordinary work operation"))?;
         match operation.mcp_tool() {
             Some("execute_work_command") => {}
             Some(_) => {
-                return Err(ToolError::invalid_params(
+                return Err(ToolError::invalid_arguments(
                     "deletion must use execute_destructive_command",
-                    None,
                 ));
             }
             None if operation == DomainOperation::RestoreTask => {
-                return Err(ToolError::invalid_params(UNDO_IS_BROWSER_ONLY, None));
+                return Err(ToolError::invalid_arguments(UNDO_IS_BROWSER_ONLY));
             }
             None => {
-                return Err(ToolError::invalid_params(
+                return Err(ToolError::invalid_arguments(
                     "administrative operations are not exposed through MCP",
-                    None,
                 ));
             }
         }
@@ -704,9 +696,8 @@ impl OneloopMcp {
                     expected_revision: input.expected_revision,
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -843,9 +834,8 @@ impl OneloopMcp {
         let actor = actor(&parts)?;
         let result = if let Some(comment_id) = input.comment_id {
             if input.cursor.is_some() || input.limit.is_some() {
-                return Err(ToolError::invalid_params(
+                return Err(ToolError::invalid_arguments(
                     "cursor and limit cannot be combined with commentId",
-                    None,
                 ));
             }
             service
@@ -855,9 +845,8 @@ impl OneloopMcp {
             service
                 .comments(&actor, &input.task_id, input.cursor.as_deref(), input.limit)
                 .await
-        }
-        .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+        }?;
+        json(result)
     }
 
     #[tool(
@@ -877,30 +866,27 @@ impl OneloopMcp {
     ) -> Result<Json<Value>, ToolError> {
         let service = &self.state.collaboration;
         if let Some(block_id) = input.block_id {
-            let task_id = input.task_id.ok_or_else(|| {
-                ToolError::invalid_params("taskId is required with blockId", None)
-            })?;
+            let task_id = input
+                .task_id
+                .ok_or_else(|| ToolError::invalid_arguments("taskId is required with blockId"))?;
             if input.cursor.is_some() {
-                return Err(ToolError::invalid_params(
+                return Err(ToolError::invalid_arguments(
                     "blockId context does not accept a cursor",
-                    None,
                 ));
             }
             let result = service
                 .block_context(&actor(&parts)?, &task_id, &block_id)
-                .await
-                .map_err(tool_error)?;
+                .await?;
             if result
                 .items
                 .iter()
                 .any(|item| item.project_id.as_deref() != Some(input.project_id.as_str()))
             {
-                return Err(ToolError::invalid_params(
+                return Err(ToolError::invalid_arguments(
                     "block does not belong to projectId",
-                    None,
                 ));
             }
-            return Ok(Json(serde_json::to_value(result).map_err(internal_error)?));
+            return json(result);
         }
         let result = service
             .activity(
@@ -910,9 +896,8 @@ impl OneloopMcp {
                 input.cursor.as_deref(),
                 input.limit,
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -943,9 +928,8 @@ impl OneloopMcp {
                 input.cursor.as_deref(),
                 input.limit,
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -967,9 +951,8 @@ impl OneloopMcp {
             .state
             .knowledge
             .overview(&actor(&parts)?, &input.project_id, input.folder.as_deref())
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -996,9 +979,8 @@ impl OneloopMcp {
                 &input.path,
                 input.section.as_deref(),
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1020,9 +1002,8 @@ impl OneloopMcp {
             .state
             .knowledge
             .search(&actor(&parts)?, &input.project_id, &input.query)
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1044,9 +1025,8 @@ impl OneloopMcp {
             .state
             .files
             .list_attachments(&actor(&parts)?, &input.task_id)
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1075,9 +1055,8 @@ impl OneloopMcp {
                     expected_revision: input.expected_revision,
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1110,9 +1089,8 @@ impl OneloopMcp {
                     idempotency_key: input.idempotency_key,
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1135,8 +1113,7 @@ impl OneloopMcp {
         self.state
             .auth
             .require_mcp_scope(&actor, McpScope::Destructive)
-            .await
-            .map_err(tool_error)?;
+            .await?;
         self.state
             .files
             .delete_attachment(
@@ -1145,8 +1122,7 @@ impl OneloopMcp {
                 input.expected_revision,
                 &input.idempotency_key,
             )
-            .await
-            .map_err(tool_error)?;
+            .await?;
         Ok(Json(json!({"deleted":true})))
     }
 
@@ -1164,9 +1140,7 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<UploadTicketInput>,
     ) -> Result<Json<TransferTicket>, ToolError> {
-        let ticket = create_transfer(&self.state, &actor(&parts)?, input)
-            .await
-            .map_err(tool_error)?;
+        let ticket = create_transfer(&self.state, &actor(&parts)?, input).await?;
         Ok(Json(ticket))
     }
 
@@ -1184,9 +1158,8 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<DownloadTicketInput>,
     ) -> Result<Json<TransferTicket>, ToolError> {
-        let ticket = create_download_transfer(&self.state, &actor(&parts)?, &input.attachment_id)
-            .await
-            .map_err(tool_error)?;
+        let ticket =
+            create_download_transfer(&self.state, &actor(&parts)?, &input.attachment_id).await?;
         Ok(Json(ticket))
     }
 }
@@ -1196,7 +1169,7 @@ fn actor(parts: &Parts) -> Result<Actor, ToolError> {
         .extensions
         .get::<Actor>()
         .cloned()
-        .ok_or_else(|| ToolError::invalid_request("authenticated actor is missing", None))
+        .ok_or_else(|| ToolError::invalid_request("authenticated actor is missing"))
 }
 fn board_query(input: &SearchTasksInput, status: crate::domain::TaskStatus) -> BoardQuery {
     BoardQuery {
@@ -1221,12 +1194,30 @@ enum ToolError {
 }
 
 impl ToolError {
-    fn invalid_params(message: &'static str, _: Option<Value>) -> Self {
+    /// Arguments that match the schema but not the tool's rules. Like a
+    /// service's validation error, this is a tool result, not a protocol error.
+    fn invalid_arguments(message: &'static str) -> Self {
         Self::Application(AppError::validation("arguments", message))
     }
-    fn invalid_request(message: &'static str, data: Option<Value>) -> Self {
-        Self::Protocol(ErrorData::invalid_request(message, data))
+    fn invalid_params(message: &'static str, _: Option<Value>) -> Self {
+        Self::invalid_arguments(message)
     }
+    fn invalid_request(message: &'static str) -> Self {
+        Self::Protocol(ErrorData::invalid_request(message, None))
+    }
+}
+
+impl From<AppError> for ToolError {
+    fn from(error: AppError) -> Self {
+        Self::Application(error)
+    }
+}
+
+/// A tool's structured result.
+fn json(value: impl Serialize) -> Result<Json<Value>, ToolError> {
+    serde_json::to_value(value)
+        .map(Json)
+        .map_err(|error| AppError::internal(error.to_string()).into())
 }
 
 impl rmcp::handler::server::tool::IntoCallToolResult for ToolError {
