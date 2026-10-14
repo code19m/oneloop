@@ -249,20 +249,13 @@ impl FileService {
             return Ok(false);
         }
         let original = self.store.file_path(key)?;
-        let permit = IMAGE_DECODE_PERMITS
-            .acquire()
-            .await
-            .map_err(|_| AppError::Unavailable("image worker is shutting down".into()))?;
+        let turn = self.decodes.turn().await;
         // The marker goes in first, once the image is known to be still
         // wanted. A decode that ends the process leaves it.
         if !self.write_thumbnail(key, marker, None).await? {
             return Ok(false);
         }
-        let rendered = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            render_thumbnail(&original)
-        })
-        .await;
+        let rendered = turn.run(move || render_thumbnail(&original)).await;
         let bytes = match rendered {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(RenderError::Io(error))) => {
@@ -376,7 +369,8 @@ impl FileService {
         &self,
         referenced: &HashSet<String>,
     ) -> AppResult<Vec<PathBuf>> {
-        Ok(regular_files(self.store.previews())
+        Ok(self
+            .regular_files(self.store.previews())
             .await?
             .into_iter()
             .map(|(path, _)| path)

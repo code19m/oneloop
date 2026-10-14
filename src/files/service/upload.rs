@@ -377,16 +377,11 @@ async fn finalize_attachment_upload(
         let name = upload.original_name.clone();
         let path = upload.staging_path.clone();
         let prefix = std::mem::take(&mut upload.inspection);
-        let permit = TEXT_INSPECTION_PERMITS
-            .acquire()
-            .await
-            .map_err(|_| AppError::internal("text inspection worker is shutting down"))?;
-        let media = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            detect::inspect_file_media(&name, &path, &prefix)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("text inspection worker failed: {error}")))??;
+        let media = upload
+            .service
+            .inspections
+            .run(move || detect::inspect_file_media(&name, &path, &prefix))
+            .await??;
         let checksum = hex::encode(upload.hasher.finalize());
         Ok((media, checksum))
     }
@@ -577,5 +572,3 @@ async fn finalize_attachment_upload(
         }
     }
 }
-
-static TEXT_INSPECTION_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);

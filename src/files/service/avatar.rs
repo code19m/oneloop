@@ -19,13 +19,12 @@ impl FileService {
                 ),
             ));
         }
-        let permit = avatar_decode_permit().await?;
-        let normalized = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            normalize_avatar(&bytes)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("avatar worker failed: {error}")))??;
+        let normalized = self
+            .decodes
+            .turn_within(AVATAR_DECODE_WAIT)
+            .await?
+            .run(move || normalize_avatar(&bytes))
+            .await??;
         self.store.ensure_directories().await?;
         let mut capacity = self.prepare_capacity().await?;
         let normalized_size = normalized.len() as u64;

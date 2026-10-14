@@ -20,6 +20,7 @@ use crate::{
     AppError, AppResult, Db,
     access::{Need, require_project},
     auth::{Actor, ActorSource, refresh_actor_connection, unix_now},
+    blocking::Lane,
     collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
     files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
 };
@@ -85,9 +86,9 @@ pub(super) struct Inner {
     builds: tokio::sync::Mutex<()>,
     /// MCP reads one file's text at a time, so the memory of large files
     /// never adds up.
-    readers: Arc<tokio::sync::Semaphore>,
+    readers: Lane,
     /// Searches run one at a time.
-    searches: Arc<tokio::sync::Semaphore>,
+    searches: Lane,
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
     searchers: Mutex<HashSet<String>>,
@@ -407,8 +408,8 @@ impl KnowledgeService {
                 waiting: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
-                readers: Arc::new(tokio::sync::Semaphore::new(1)),
-                searches: Arc::new(tokio::sync::Semaphore::new(1)),
+                readers: Lane::new("knowledge reader", 1),
+                searches: Lane::new("knowledge search", 1),
                 searchers: Mutex::new(HashSet::new()),
             }),
         }
@@ -694,19 +695,9 @@ impl KnowledgeService {
         // folder. It runs off the async workers, one at a time, so searches
         // can't slow other requests down; a search that waits too long is
         // told to try again.
-        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.searches.clone().acquire_owned())
-            .await
-            .map_err(|_| {
-                AppError::Unavailable("knowledge search is busy; try again shortly".into())
-            })?
-            .map_err(|_| AppError::Unavailable("knowledge search is shutting down".into()))?;
+        let turn = self.inner.searches.turn_within(QUEUE_WAIT).await?;
         let query = query.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            catalog.index.search(&query)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("knowledge search failed: {error}")))
+        turn.run(move || catalog.index.search(&query)).await
     }
 
     /// For MCP clients: the README of `folder` and a compact file index.
@@ -854,20 +845,14 @@ impl KnowledgeService {
         // is read. One file at a time is read and parsed, off the async
         // workers, so many calls at once can't use up the memory; a read
         // that waits too long is told to try again.
-        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.readers.clone().acquire_owned())
-            .await
-            .map_err(|_| {
-                AppError::Unavailable("knowledge reader is busy; try again shortly".into())
-            })?
-            .map_err(|_| AppError::Unavailable("knowledge reader is shutting down".into()))?;
+        let turn = self.inner.readers.turn_within(QUEUE_WAIT).await?;
         let limit = if markdown_file {
             MARKDOWN_SOURCE_BYTES
         } else {
             text_bytes(FILE_TEXT_CHARS_MAX)
         };
         let (text, longer) = self.text(actor, project_id, &file.path, limit).await?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        turn.run(move || {
             let mut content = text.as_str();
             if markdown_file {
                 let sections = markdown::outline(&text);
@@ -896,8 +881,7 @@ impl KnowledgeService {
             result.truncated = truncated || unfinished;
             Ok(result)
         })
-        .await
-        .map_err(|error| AppError::internal(format!("knowledge reader failed: {error}")))?
+        .await?
     }
 
     /// The first `limit` bytes of a text file as text, read after the caller
@@ -1727,13 +1711,7 @@ mod tests {
             searchers.contains(&actor.user_id)
         };
         // A long search holds the one slot, and Alice's search waits for it.
-        let held = service
-            .inner
-            .searches
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
+        let held = service.inner.searches.turn().await;
         let first = search(alice);
         while !searching(alice) {
             tokio::task::yield_now().await;
@@ -1754,13 +1732,7 @@ mod tests {
         first.await.unwrap().unwrap();
         other.await.unwrap().unwrap();
         // A search whose request ends lets its person search again at once.
-        let held = service
-            .inner
-            .searches
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
+        let held = service.inner.searches.turn().await;
         let cancelled = search(alice);
         while !searching(alice) {
             tokio::task::yield_now().await;
@@ -1813,7 +1785,7 @@ mod tests {
         let (_root, service, people) = synced_project(files, &["alice"]).await;
         tokio::time::pause();
         // Another read holds the one reader.
-        let held = service.inner.readers.clone().acquire_owned().await.unwrap();
+        let held = service.inner.readers.turn().await;
         let read = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             service.read_text(&people[0], "p", "note.md", None),

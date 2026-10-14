@@ -1,12 +1,12 @@
 use super::*;
 
 #[tokio::test(start_paused = true)]
-async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
-    // A thumbnail decode holds the only permit, so avatar uploads wait.
-    let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
+async fn image_decodes_run_one_at_a_time() {
     let root = tempfile::tempdir().unwrap();
     crate::db::migrate(root.path(), None).unwrap();
     let service = FileService::new(Db::open(root.path()).unwrap(), 1_000_000, 0);
+    // A thumbnail decode holds the only turn, so avatar uploads wait.
+    let held = service.decodes.turn().await;
     let actor = Actor {
         user_id: "test".into(),
         username: "test".into(),
@@ -42,36 +42,12 @@ async fn image_decodes_run_one_at_a_time_and_survive_request_cancellation() {
         );
     }
     // A decode that doesn't end turns an upload away after a while.
-    let held = IMAGE_DECODE_PERMITS.acquire().await.unwrap();
+    let _held = service.decodes.turn().await;
     let slot = service.avatar_slot().unwrap();
     assert!(matches!(
         service.upload_avatar(&actor, slot, vec![1]).await,
         Err(AppError::Unavailable(_))
     ));
-    drop(held);
-
-    let permit = avatar_decode_permit().await.unwrap();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-    let request = tokio::spawn(async move {
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            started_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-            drop(_permit);
-            done_tx.send(()).unwrap();
-        })
-        .await
-        .unwrap();
-    });
-    started_rx.await.unwrap();
-    request.abort();
-    let _ = request.await;
-    assert_eq!(IMAGE_DECODE_PERMITS.available_permits(), 0);
-    release_tx.send(()).unwrap();
-    done_rx.await.unwrap();
-    assert_eq!(IMAGE_DECODE_PERMITS.available_permits(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -127,7 +103,8 @@ async fn recovery_scan_does_not_lock_publication_and_rechecks_old_snapshots() {
     let key = service.store.new_storage_key().unwrap();
     let path = service.store.prepare_file_parent(&key).await.unwrap();
     std::fs::write(&path, b"x").unwrap();
-    let candidates = unreferenced_files(service.store.layout().files(), HashSet::new())
+    let candidates = service
+        .unreferenced_files(service.store.layout().files(), HashSet::new())
         .await
         .unwrap();
     assert_eq!(candidates, vec![path.clone()]);

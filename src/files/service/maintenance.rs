@@ -115,7 +115,10 @@ impl FileService {
         // Scan without blocking publication. Only apparent orphans need the gate;
         // their reference is rechecked under it before unlinking, so an upload
         // committed after the snapshot is never mistaken for an orphan.
-        for path in unreferenced_files(self.store.layout().files(), referenced).await? {
+        for path in self
+            .unreferenced_files(self.store.layout().files(), referenced)
+            .await?
+        {
             report.orphan_files_removed += u64::from(self.remove_if_unreferenced(&path).await?);
         }
         for path in orphan_thumbnails {
@@ -135,7 +138,7 @@ impl FileService {
                     .collect::<Result<_, _>>()?)
             })
             .await?;
-        for (path, _) in regular_files(self.store.layout().staging()).await? {
+        for (path, _) in self.regular_files(self.store.layout().staging()).await? {
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 self.store.remove_file_if_present(&path).await?;
                 report.orphan_files_removed += 1;
@@ -390,7 +393,7 @@ impl FileService {
         let mut report = FileRuntimeReport::default();
         let usage = self.capacity_usage().await?.total();
         let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
-        let previews = regular_files(self.store.previews()).await?;
+        let previews = self.regular_files(self.store.previews()).await?;
         let now = unix_now()?;
         let candidates = self.db.run(move |connection| {
             let mut statement = connection.prepare(
@@ -880,7 +883,7 @@ impl FileService {
             .await?;
         let mut staging_bytes = 0_u64;
         let mut unreserved_staging_bytes = 0_u64;
-        for (path, size) in regular_files(self.store.layout().staging()).await? {
+        for (path, size) in self.regular_files(self.store.layout().staging()).await? {
             staging_bytes = staging_bytes.saturating_add(size);
             if path
                 .file_name()
@@ -894,7 +897,7 @@ impl FileService {
             blob_bytes,
             reserved_bytes,
             staging_bytes,
-            preview_bytes: tree_bytes(self.store.previews()).await?,
+            preview_bytes: self.tree_bytes(self.store.previews()).await?,
             unreserved_staging_bytes,
         })
     }

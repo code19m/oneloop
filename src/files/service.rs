@@ -37,6 +37,7 @@ use uuid::Uuid;
 use crate::{
     AppError, AppResult, Db,
     auth::{Actor, ActorSource},
+    blocking::Lane,
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
     db::DataLease,
     domain::UNDO_WINDOW_SECONDS,
@@ -64,6 +65,11 @@ pub struct FileService {
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
     avatar_uploads: std::sync::Arc<tokio::sync::Semaphore>,
+    scans: Lane,
+    /// One image decode at a time, for avatar uploads and thumbnails together,
+    /// so their memory never adds up.
+    decodes: Lane,
+    inspections: Lane,
 }
 
 /// A place for one avatar upload, kept from its first byte through its
@@ -263,6 +269,9 @@ impl FileService {
             disk,
             thumbnails: Default::default(),
             avatar_uploads: std::sync::Arc::new(tokio::sync::Semaphore::new(AVATAR_UPLOADS)),
+            scans: Lane::new("file scanner", 2),
+            decodes: Lane::new("image decoder", 1),
+            inspections: Lane::new("text inspection", 2),
         }
     }
 
@@ -1083,53 +1092,56 @@ fn record_system_cleanup(
     Ok(())
 }
 
-static FILE_SCAN_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+impl FileService {
+    async fn regular_files(&self, root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
+        self.scans
+            .run(move || {
+                let mut files = Vec::new();
+                walk_regular_files_blocking(root, |path, size| {
+                    files.push((path, size));
+                    Ok(())
+                })?;
+                Ok(files)
+            })
+            .await?
+    }
 
-async fn regular_files(root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        regular_files_blocking(root)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
-}
+    async fn unreferenced_files(
+        &self,
+        root: PathBuf,
+        referenced: HashSet<String>,
+    ) -> AppResult<Vec<PathBuf>> {
+        self.scans
+            .run(move || {
+                let mut orphans = Vec::new();
+                walk_regular_files_blocking(root.clone(), |path, _| {
+                    let key = path
+                        .strip_prefix(&root)
+                        .map_err(|_| AppError::internal("file escaped storage root"))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !referenced.contains(&key) {
+                        orphans.push(path);
+                    }
+                    Ok(())
+                })?;
+                Ok(orphans)
+            })
+            .await?
+    }
 
-fn regular_files_blocking(root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
-    let mut files = Vec::new();
-    walk_regular_files_blocking(root, |path, size| {
-        files.push((path, size));
-        Ok(())
-    })?;
-    Ok(files)
-}
-
-async fn unreferenced_files(root: PathBuf, referenced: HashSet<String>) -> AppResult<Vec<PathBuf>> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let mut orphans = Vec::new();
-        walk_regular_files_blocking(root.clone(), |path, _| {
-            let key = path
-                .strip_prefix(&root)
-                .map_err(|_| AppError::internal("file escaped storage root"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if !referenced.contains(&key) {
-                orphans.push(path);
-            }
-            Ok(())
-        })?;
-        Ok(orphans)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
+    async fn tree_bytes(&self, root: PathBuf) -> AppResult<u64> {
+        self.scans
+            .run(move || {
+                let mut total = 0_u64;
+                walk_regular_files_blocking(root, |_, size| {
+                    total = total.saturating_add(size);
+                    Ok(())
+                })?;
+                Ok(total)
+            })
+            .await?
+    }
 }
 
 fn walk_regular_files_blocking(
@@ -1174,24 +1186,6 @@ fn walk_regular_files_blocking(
     }
     Ok(())
 }
-async fn tree_bytes(root: PathBuf) -> AppResult<u64> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let mut total = 0_u64;
-        walk_regular_files_blocking(root, |_, size| {
-            total = total.saturating_add(size);
-            Ok(())
-        })?;
-        Ok(total)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
-}
-
 fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
     let format = image::guess_format(bytes)
         .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
@@ -1317,20 +1311,12 @@ fn find_tag_end(
     None
 }
 
-static HTML_PREVIEW_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-
-/// Sanitize HTML for the sandboxed preview frame, at most two files at once.
+/// Sanitize HTML for the sandboxed preview frame, at most two files at once,
+/// attachments and Knowledge files together.
 pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>> {
-    let permit = HTML_PREVIEW_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("preview worker is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        sanitize_html_preview(&bytes)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("preview worker failed: {error}")))
+    static PREVIEWS: std::sync::LazyLock<Lane> =
+        std::sync::LazyLock::new(|| Lane::new("HTML preview", 2));
+    PREVIEWS.run(move || sanitize_html_preview(&bytes)).await
 }
 
 /// The media type and preview kind of complete file contents, decided as for
@@ -1341,9 +1327,6 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
 }
-/// One image decode at a time, for avatar uploads and the thumbnail worker
-/// together, so their memory never adds up.
-static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 /// Avatar uploads under way at once; each keeps its image in memory until it
 /// is decoded. More are told to retry.
 const AVATAR_UPLOADS: usize = 4;
@@ -1351,13 +1334,6 @@ const AVATAR_UPLOADS: usize = 4;
 /// included. The slowest decode the limits allow takes about a second on a
 /// laptop, and a few seconds on a small server.
 const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
-    tokio::time::timeout(AVATAR_DECODE_WAIT, IMAGE_DECODE_PERMITS.acquire())
-        .await
-        .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?
-        .map_err(|_| AppError::Unavailable("avatar worker is shutting down".into()))
-}
 
 struct DeletionJob {
     id: String,
