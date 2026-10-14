@@ -734,21 +734,22 @@
     const value = parseDateInput(raw), error = dateError(def, value);
     if (error) return dateFieldError(wrap, error, focusError);
     const sending = value !== (def.value || '') && !!def.pick, result = sending ? def.pick(value) : true;
-    if (result === false) return false;
+    if (result === false) { if (def.autosave) wrap.querySelector('.date-text').toggleAttribute('data-unsaved', true); return false; }
     const previous = def.value;
     def.value = value;
     wrap.querySelector('input[type="hidden"]').value = value;
     wrap.querySelector('.date-text').value = value || '';
     // A date that saves itself counts as saved once the server accepted it,
     // though it may keep focus, as after Enter. One the server refused counts
-    // again, and the next Enter or Tab sends it again.
+    // again, also once focus leaves it, and the next Enter or Tab sends it again.
     if (def.autosave) {
       const settled = (saved) => {
-        const current = document.querySelector(`[data-date-key="${UIEscape(key)}"]`);
-        if (saved !== false) { const input = current?.querySelector('.date-text'); if (input && parseDateInput(input.value) === value) window.Recovery?.markSaved?.(input); return; }
+        const current = document.querySelector(`[data-date-key="${UIEscape(key)}"]`), input = current?.querySelector('.date-text'), shown = !!input && parseDateInput(input.value) === value;
+        if (saved !== false) { if (shown) { window.Recovery?.markSaved?.(input); input.removeAttribute('data-unsaved'); } return; }
         if (DPS[key] !== def || def.value !== value) return;
         def.value = previous;
         const hidden = current?.querySelector('input[type="hidden"]'); if (hidden) hidden.value = previous || '';
+        if (shown) input.toggleAttribute('data-unsaved', true);
       };
       if (sending && typeof result?.then === 'function') { def.pending = value; result.then((saved) => { if (def.pending === value) def.pending = null; settled(saved); }); }
       else if (def.pending !== value) settled(result);
@@ -4031,7 +4032,7 @@
         // Escape closes the calendar or undoes the typing first; with nothing to undo, it goes on to the dialog.
         const undoes = POP.id === 'dp:' + key || ev.target.value !== (DPS[key].value || '');
         closePop(true);
-        ev.target.value = DPS[key].value || '';
+        ev.target.value = DPS[key].value || ''; ev.target.removeAttribute('data-unsaved');
         dateFieldError(ev.target.closest('.date-field'), '');
         if (undoes) { ev.preventDefault(); ev.stopPropagation(); }
       } else if (ev.key === 'ArrowDown' && ev.altKey) {

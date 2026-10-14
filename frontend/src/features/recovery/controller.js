@@ -39,6 +39,8 @@ function changedControl(element) {
 const NOT_TYPED = new Set(['password','file','submit','button','reset','image','hidden','search']);
 /** A field that saves itself when it loses focus, such as a task's title. */
 const AUTOSAVE = '[data-autosave]';
+/** A field that saves itself whose last save was refused, so what it shows is not saved. */
+const REFUSED = '[data-unsaved]';
 /** Reload after updates, a choice each browser makes. */
 const AUTO_RELOAD = 'oneloop.autoReload';
 /** The versions a tab already reloaded itself for. */
@@ -48,9 +50,9 @@ const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUIL
 /**
  * Whether an open editor holds text the person typed and has not saved or
  * sent: a changed field in a dialog, a drawer, the task page or a settings
- * page. A field that saves itself counts only while it has focus with a value
- * it has not saved yet; a checkbox that saves itself never counts, because it
- * saves when it changes. `skip` leaves out controls that keep their own state;
+ * page. A field that saves itself counts while it has focus with a value it
+ * has not saved yet, and after its save was refused; a checkbox that saves
+ * itself never counts, because it saves when it changes. `skip` leaves out controls that keep their own state;
  * `roots` limits the check to some editors, such as one dialog.
  * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
  * @param {(element:Element)=>boolean} [skip] @param {Iterable<Element>} [roots]
@@ -62,7 +64,7 @@ export function hasTypedInput(doc, committed, skip = () => false, roots = doc.qu
     if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
     if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
     if (isTick(element) || element instanceof HTMLSelectElement) continue;
-    if (element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
+    if (element.matches(REFUSED) || element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
   }
   return false;
 }

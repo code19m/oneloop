@@ -124,6 +124,23 @@ test('a deadline typed offline is refused at once, keeps counting, and Tab sends
   assert.deepEqual(deadlines(t), [['task.update', '2026-12-24']]);
 });
 
+test('a deadline refused offline keeps counting once focus leaves it', async () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Network', { code: 'network_error' }) });
+  const deadline = enterDeadline(t, '2026-12-24');
+  tabAway(t, deadline); await settle();
+  assert.notEqual(t.d.activeElement, deadline);
+  assert.equal(pageWarns(t), true, 'another page asks first'); assert.equal(leaveWarns(t), true);
+});
+
+test('a link to the page that shows never asks', () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  type(t.d.getElementById('cmtIn'), 'Half a thought');
+  const link = t.d.createElement('a'); link.href = '#/task/BIR-079'; link.textContent = 'This task'; t.d.querySelector('.task-page').append(link);
+  link.click();
+  assert.equal(ask(t), null);
+});
+
 test('a comment that is being sent does not count, and counts again if the send fails', async () => {
   let finish;
   const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {

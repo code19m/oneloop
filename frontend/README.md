@@ -33,7 +33,8 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 - **Unsaved input.** Before someone leaves a page, `hasUnsavedInput` in the
   recovery controller looks for changed fields in open editors. Mark a field
   that saves itself when it loses focus with `data-autosave`, so it counts only
-  while it is being typed.
+  while it is being typed. One whose save was refused gets `data-unsaved` and
+  counts until it saves.
 - **Tooltips.** Put a detail that only a hover would show, such as a full time
   or a name that may be cut off, in `data-tip` rather than `title`.
   `src/app/tooltips.js` shows it on hover, keyboard focus and tap.

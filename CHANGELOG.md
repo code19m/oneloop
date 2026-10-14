@@ -42,6 +42,9 @@ All notable changes to oneloop are recorded here. The format follows
   "Task blocked" and "Task unblocked".
 - Markdown in **Knowledge** shows at the reader's own width and spacing.
   Before, it used the wider layout of file previews.
+- oneloop asks before you leave a task whose new deadline could not be saved
+  because the connection was lost, also after you left the deadline field. A
+  link to the page you are on no longer asks to discard your changes.
 
 ### Security
 

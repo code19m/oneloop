@@ -361,8 +361,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     askToDiscard(()=>nav(view));
   };
   globalThis.document?.addEventListener?.('click',(event)=>{
-    const link=/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]');
-    if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
+    const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]'));
+    // A link to the page that shows changes nothing, so it loses nothing.
+    if(!link||link.href===globalThis.location?.href||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
     event.preventDefault();
     askToDiscard(()=>app.followAddress(link.getAttribute('href')));
   },true);
