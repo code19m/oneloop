@@ -89,7 +89,7 @@ test('an open editor keeps its focus-time revision across a live projection refr
   const task={id:'ONE-1',internalId:'opaque-1',revision:1};
   const data={session:{id:'s1',userId:'u1'},tasks:[task],projects:[],tracks:[],epics:[],milestones:[],pool:[]};
   const app={context:()=>({view:'task',taskId:'ONE-1',projectId:'p1'}),refresh(){}};
-  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null,locationObject:{hash:'#/task/ONE-1'}});
+  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
   controller.bind(app,{refresh(){}});
   const target={closest:(selector)=>selector.includes('.task-page')?root:null};
   listeners.focusin({target});
