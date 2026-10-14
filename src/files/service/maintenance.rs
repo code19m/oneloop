@@ -827,7 +827,7 @@ impl FileService {
             removed.push((job, size));
         }
         for path in parents.into_values() {
-            FileStore::sync_deletion_parent(path).await?;
+            FileStore::sync_parent(path).await?;
         }
         self.db
             .transaction(move |tx| {
