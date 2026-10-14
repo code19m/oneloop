@@ -21,7 +21,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    client_metadata::{self, ClientDocument},
+    client_metadata::{self, ClientDocument, ClientMetadata, ValidClient},
     cors,
 };
 use crate::{
@@ -153,20 +153,6 @@ async fn authorization_server_metadata(
     })
 }
 
-#[derive(Deserialize)]
-struct RegistrationRequest {
-    client_name: Option<String>,
-    redirect_uris: Vec<String>,
-    #[serde(default)]
-    client_uri: Option<String>,
-    #[serde(default)]
-    token_endpoint_auth_method: Option<String>,
-    #[serde(default)]
-    grant_types: Vec<String>,
-    #[serde(default)]
-    response_types: Vec<String>,
-}
-
 #[derive(Serialize)]
 struct RegistrationResponse {
     client_id: String,
@@ -201,74 +187,23 @@ async fn register_client_inner(
     State(state): State<AppState>,
     OptionalPeer(peer): OptionalPeer,
     headers: HeaderMap,
-    Json(request): Json<RegistrationRequest>,
+    Json(mut request): Json<ClientMetadata>,
 ) -> AppResult<(StatusCode, Json<RegistrationResponse>)> {
     if headers.contains_key(header::ORIGIN) && !cors::listed_origin(&state, &headers) {
         require_canonical_origin(&Method::POST, &headers, &state.config.public_url)?;
     }
-    if let Some(name) = request.client_name.as_deref() {
-        crate::text::validate(name, "client_name", crate::text::Lines::Single, true)?;
-    }
-    let name = request
+    request
         .client_name
-        .as_deref()
-        .unwrap_or("Unnamed app")
-        .trim();
-    if name.is_empty() || name.chars().count() > 100 {
-        return Err(AppError::validation(
-            "client_name",
-            "must contain 1 to 100 characters",
-        ));
-    }
-    if request.redirect_uris.is_empty() || request.redirect_uris.len() > 10 {
-        return Err(AppError::validation(
-            "redirect_uris",
-            "must contain 1 to 10 safe redirect URIs",
-        ));
-    }
-    if request
-        .token_endpoint_auth_method
-        .as_deref()
-        .unwrap_or("none")
-        != "none"
-    {
-        return Err(AppError::validation(
-            "token_endpoint_auth_method",
-            "only public clients using none are supported",
-        ));
-    }
-    if !request.grant_types.is_empty()
-        && request
-            .grant_types
-            .iter()
-            .any(|v| v != "authorization_code" && v != "refresh_token")
-    {
-        return Err(AppError::validation(
-            "grant_types",
-            "only authorization_code and refresh_token are supported",
-        ));
-    }
-    if !request.response_types.is_empty() && request.response_types.iter().any(|v| v != "code") {
-        return Err(AppError::validation(
-            "response_types",
-            "only code is supported",
-        ));
-    }
-    let mut redirects = BTreeSet::new();
-    for value in request.redirect_uris {
-        redirects.insert(validate_redirect_uri(
-            &value,
-            &state.config.mcp_redirect_schemes,
-        )?);
-    }
-    let client_uri = request
-        .client_uri
-        .map(|value| validate_client_uri(&value))
-        .transpose()?;
-    let redirects = redirects.into_iter().collect::<Vec<_>>();
+        .get_or_insert_with(|| "Unnamed app".to_owned());
+    let schemes = &state.config.mcp_redirect_schemes;
+    let ValidClient {
+        client_name: name,
+        redirect_uris: redirects,
+        client_uri,
+    } = request.validate(|value| validate_redirect_uri(value, schemes))?;
     let client_id = format!("olc_{}", Uuid::now_v7().simple());
     let inserted_id = client_id.clone();
-    let stored_name = name.to_owned();
+    let stored_name = name.clone();
     let stored_redirects = serde_json::to_string(&redirects)
         .map_err(|error| AppError::internal(format!("serialize redirect URIs: {error}")))?;
     let stored_client_uri = client_uri.clone();
@@ -329,7 +264,7 @@ async fn register_client_inner(
         StatusCode::CREATED,
         Json(RegistrationResponse {
             client_id,
-            client_name: name.to_owned(),
+            client_name: name,
             redirect_uris: redirects,
             client_uri,
             token_endpoint_auth_method: "none",
@@ -1744,7 +1679,7 @@ async fn register_client(
     State(state): State<AppState>,
     peer: OptionalPeer,
     headers: HeaderMap,
-    request: Result<Json<RegistrationRequest>, axum::extract::rejection::JsonRejection>,
+    request: Result<Json<ClientMetadata>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, OAuthError> {
     let request = request.map_err(|rejection| {
         let mut error = OAuthError::invalid("invalid_client_metadata");

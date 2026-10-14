@@ -21,6 +21,7 @@ use std::{
 use axum::http::{HeaderMap, StatusCode, header};
 use http_body_util::BodyExt;
 use ipnet::{Ipv4Net, Ipv6Net};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -420,6 +421,98 @@ fn cache_lifetime(headers: &HeaderMap) -> Duration {
         .clamp(SHORTEST_CACHE, LONGEST_CACHE)
 }
 
+/// What a client says about itself, in a registration request or in its
+/// metadata document. Other fields are ignored.
+#[derive(Deserialize)]
+pub(crate) struct ClientMetadata {
+    #[serde(default)]
+    pub(crate) client_name: Option<String>,
+    redirect_uris: Vec<String>,
+    #[serde(default)]
+    client_uri: Option<String>,
+    #[serde(default)]
+    token_endpoint_auth_method: Option<String>,
+    #[serde(default)]
+    grant_types: Vec<String>,
+    #[serde(default)]
+    response_types: Vec<String>,
+}
+
+/// Client metadata that passed the checks, with normalized callbacks.
+pub(crate) struct ValidClient {
+    pub(crate) client_name: String,
+    pub(crate) redirect_uris: Vec<String>,
+    pub(crate) client_uri: Option<String>,
+}
+
+impl ClientMetadata {
+    /// Checks the rules that registered and described clients share: a name
+    /// that can be shown, 1 to 10 callbacks that `redirect_uri` accepts, a
+    /// public client, and only the authorization code flow.
+    pub(crate) fn validate(
+        self,
+        redirect_uri: impl Fn(&str) -> AppResult<String>,
+    ) -> AppResult<ValidClient> {
+        let name = self
+            .client_name
+            .as_deref()
+            .ok_or_else(|| AppError::validation("client_name", "is required"))?;
+        crate::text::validate(name, "client_name", crate::text::Lines::Single, true)?;
+        let name = name.trim();
+        if name.chars().count() > 100 {
+            return Err(AppError::validation(
+                "client_name",
+                "must contain 1 to 100 characters",
+            ));
+        }
+        if !(1..=10).contains(&self.redirect_uris.len()) {
+            return Err(AppError::validation(
+                "redirect_uris",
+                "must contain 1 to 10 redirect URIs",
+            ));
+        }
+        if self
+            .token_endpoint_auth_method
+            .is_some_and(|method| method != "none")
+        {
+            return Err(AppError::validation(
+                "token_endpoint_auth_method",
+                "only public clients using none are supported",
+            ));
+        }
+        if self
+            .grant_types
+            .iter()
+            .any(|value| value != "authorization_code" && value != "refresh_token")
+        {
+            return Err(AppError::validation(
+                "grant_types",
+                "only authorization_code and refresh_token are supported",
+            ));
+        }
+        if self.response_types.iter().any(|value| value != "code") {
+            return Err(AppError::validation(
+                "response_types",
+                "only code is supported",
+            ));
+        }
+        let redirect_uris = self
+            .redirect_uris
+            .iter()
+            .map(|value| redirect_uri(value))
+            .collect::<AppResult<BTreeSet<_>>>()?;
+        Ok(ValidClient {
+            client_name: name.to_owned(),
+            redirect_uris: redirect_uris.into_iter().collect(),
+            client_uri: self
+                .client_uri
+                .as_deref()
+                .map(super::oauth::validate_client_uri)
+                .transpose()?,
+        })
+    }
+}
+
 /// Checks a fetched document against the client ID it was fetched for.
 fn parse_document(
     client_id: &str,
@@ -436,66 +529,21 @@ fn parse_document(
     if object.contains_key("client_secret") || object.contains_key("client_secret_expires_at") {
         return Err(refused("contains a client secret"));
     }
-    match object.get("token_endpoint_auth_method") {
-        None => {}
-        Some(Value::String(method)) if method == "none" => {}
-        Some(_) => {
-            return Err(refused(
-                "uses a token endpoint authentication method other than none",
-            ));
-        }
-    }
-    let strings = |field: &str, allowed: &[&str]| -> AppResult<()> {
-        match object.get(field) {
-            None => Ok(()),
-            Some(Value::Array(values))
-                if values
-                    .iter()
-                    .all(|value| value.as_str().is_some_and(|value| allowed.contains(&value))) =>
-            {
-                Ok(())
+    let metadata: ClientMetadata = serde_path_to_error::deserialize(value)
+        .map_err(|error| refused(&format!("can't be read: {error}")))?;
+    let client = metadata
+        .validate(redirect_uri)
+        .map_err(|error| match error {
+            AppError::Validation { field, message } => {
+                refused(&format!("has an unacceptable {field}: {message}"))
             }
-            Some(_) => Err(refused(&format!("lists unsupported {field}"))),
-        }
-    };
-    strings("grant_types", &["authorization_code", "refresh_token"])?;
-    strings("response_types", &["code"])?;
-    let name = object
-        .get("client_name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty() && name.chars().count() <= 100)
-        .ok_or_else(|| refused("needs a client_name of 1 to 100 characters"))?;
-    crate::text::validate(name, "client_name", crate::text::Lines::Single, true)
-        .map_err(|_| refused("has a client_name that can't be shown"))?;
-    let listed = object
-        .get("redirect_uris")
-        .and_then(Value::as_array)
-        .filter(|values| (1..=10).contains(&values.len()))
-        .ok_or_else(|| refused("needs 1 to 10 redirect_uris"))?;
-    let mut redirect_uris = BTreeSet::new();
-    for value in listed {
-        let value = value
-            .as_str()
-            .ok_or_else(|| refused("lists a redirect URI that isn't a string"))?;
-        redirect_uris.insert(
-            redirect_uri(value)
-                .map_err(|_| refused("lists a redirect URI oneloop doesn't accept"))?,
-        );
-    }
-    let client_uri = match object.get("client_uri") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(uri)) => Some(
-            super::oauth::validate_client_uri(uri)
-                .map_err(|_| refused("has an invalid client_uri"))?,
-        ),
-        Some(_) => return Err(refused("has an invalid client_uri")),
-    };
+            error => error,
+        })?;
     Ok(ClientDocument {
         client_id: client_id.to_owned(),
-        client_name: name.to_owned(),
-        redirect_uris: redirect_uris.into_iter().collect(),
-        client_uri,
+        client_name: client.client_name,
+        redirect_uris: client.redirect_uris,
+        client_uri: client.client_uri,
     })
 }
 
