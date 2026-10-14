@@ -32,12 +32,11 @@ All notable changes to oneloop are recorded here. The format follows
   deadline at once.
 - Dropping a track back in its own place on the Roadmap no longer shows an
   error.
-- The **Temporary** switch in a file preview works as soon as the preview
-  opens. Before, it did nothing until the attachment list loaded again.
+- The **Temporary** switch in a file preview works. Before, it did nothing.
 - A tab whose live updates a newer tab took over now says that live updates
   are paused, with **Resume**. Before, it looked connected but showed no new
   changes until you used it.
-- Saving a new block reason now says "Block reason updated", and unblocking
+- Saving a changed block reason now says "Block reason updated", and unblocking
   and completing a task says "Task unblocked and completed". Before, they said
   "Task blocked" and "Task unblocked".
 - Markdown in **Knowledge** shows at the reader's own width and spacing.
