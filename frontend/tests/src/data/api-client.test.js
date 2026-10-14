@@ -86,18 +86,6 @@ test('auth helpers use the fixed same-origin routes and JSON contracts', async (
   assert.equal(JSON.parse(calls[2][1].body).password, 'secret');
 });
 
-test('file upload sends reservation metadata without JSON encoding the bytes', async () => {
-  let captured;
-  const api=createApiClient({fetchImpl:async(url,options)=>{captured={url,options};return Response.json({id:'a1'},{status:201});}});
-  const file=new Blob(['hello'],{type:'text/plain'});
-  await api.uploadAttachment('task one',{file,ephemeral:true,idempotencyKey:'upload-1'});
-  assert.equal(captured.url,'/api/tasks/task%20one/attachments?ephemeral=true');
-  assert.equal(captured.options.headers['Idempotency-Key'],'upload-1');
-  assert.equal(captured.options.headers['X-File-Size'],'5');
-  assert.ok(captured.options.body instanceof FormData);
-  assert.equal(captured.options.headers['Content-Type'],undefined);
-});
-
 test('every request names the person the page shows, so the server never answers for whoever signed in after them',async()=>{
   const calls=[];let person='u1';
   const api=createApiClient({getRequestContext:()=>({sessionGeneration:1,userId:person}),fetchImpl:async(_url,options)=>{calls.push(options.headers);return Response.json({});}});
@@ -149,9 +137,9 @@ test('transport outcomes are observed exactly once without changing retry behavi
 
 for (const status of [429,503]) {
   test(`non-JSON HTTP ${status} retains retry guidance for JSON and file responses`, async () => {
-    for (const route of ['request','uploadAttachment','uploadAvatar']) {
+    for (const route of ['request','uploadAvatar']) {
       const api=createApiClient({fetchImpl:async()=>new Response('<html>Proxy unavailable</html>',{status,headers:{'Retry-After':'120'}})});
-      const promise=route==='request'?api.request('/api/bootstrap'):route==='uploadAvatar'?api.uploadAvatar(new Blob(['a'])):api.uploadAttachment('t1',{file:new Blob(['a'])});
+      const promise=route==='request'?api.request('/api/bootstrap'):api.uploadAvatar(new Blob(['a']));
       await assert.rejects(promise,error=>error.status===status&&error.retryAfter==='120'&&error.code==='invalid_response');
     }
   });

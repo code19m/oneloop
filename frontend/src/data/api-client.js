@@ -160,15 +160,6 @@ export function createApiClient({
   }
 
   /** Multipart is isolated so JSON commands can never accidentally accept file bodies. */
-  /** @param {string} taskId @param {{file:Blob,ephemeral?:boolean,idempotencyKey?:string,signal?:AbortSignal}} options */
-  async function uploadAttachment(taskId, { file, ephemeral = false, idempotencyKey = crypto.randomUUID(), signal }) {
-    if (!(file instanceof Blob)) throw new TypeError('Expected a file');
-    const path = `/api/tasks/${encodeURIComponent(taskId)}/attachments?ephemeral=${String(!!ephemeral)}`;
-    const body = new FormData();
-    body.set('file', file, typeof File !== 'undefined' && file instanceof File ? file.name : 'attachment');
-    return send(path, { method: 'POST', headers: { Accept: 'application/json', 'Idempotency-Key': idempotencyKey, 'X-File-Size': String(file.size) }, body, signal, timeoutMs: uploadTimeoutMs });
-  }
-
   async function uploadAvatar(file, { signal } = /** @type {SignalOptions} */ ({})) {
     if (!(file instanceof Blob)) throw new TypeError('Expected an image file');
     const body = new FormData();
@@ -235,7 +226,6 @@ export function createApiClient({
     connectedApps: ({signal,background} = /** @type {SignalOptions} */ ({})) => request('/api/auth/apps',{signal,background}),
     revokeConnectedApp: (id,{signal}=/** @type {SignalOptions} */({}))=>request('/api/auth/apps/'+encodeURIComponent(id),{method:'DELETE',signal}),
     attachments: (taskId,{signal,background}=/** @type {SignalOptions} */({}))=>request(`/api/tasks/${encodeURIComponent(taskId)}/attachments`,{signal,background}),
-    uploadAttachment,
     uploadAvatar,
     removeAvatar: ({signal}=/** @type {SignalOptions} */({}))=>request('/api/auth/avatar',{method:'DELETE',signal}),
     updateAttachment: (id,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/attachments/${encodeURIComponent(id)}`,{method:'PATCH',body:input,signal}),
