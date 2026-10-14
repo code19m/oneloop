@@ -3,9 +3,10 @@
 // Usage: node scripts/release-exists.mjs vX.Y.Z
 // gh needs GH_TOKEN, and GH_REPO outside a clone of the repository.
 import {spawnSync} from 'node:child_process';
+import {parseTag} from './release-version.mjs';
 
 const tag = process.argv[2];
-if (!/^v\d+\.\d+\.\d+(?:-rc\.[1-9]\d*)?$/.test(tag ?? '')) throw new Error(`Expected vX.Y.Z or vX.Y.Z-rc.N, got ${tag}`);
+if (!parseTag(tag)) throw new Error(`Expected vX.Y.Z or vX.Y.Z-rc.N, got ${tag}`);
 
 const result = spawnSync('gh', ['release', 'view', tag, '--json', 'tagName'], {encoding: 'utf8'});
 if (result.error) throw result.error;

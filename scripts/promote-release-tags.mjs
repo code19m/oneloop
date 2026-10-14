@@ -4,15 +4,15 @@
 // On GitHub Actions, the latest output tells whether latest now names this version.
 import {appendFileSync} from 'node:fs';
 import {imagetools, inspectRaw} from './imagetools.mjs';
+import {compareVersions, parseVersion} from './release-version.mjs';
 
 const [image, version] = process.argv.slice(2);
-function parts(value) {
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value ?? '')) {
-    throw new Error(`Expected a stable X.Y.Z version, got ${value}`);
-  }
-  return value.split('.').map(BigInt);
+function stable(value) {
+  const parsed = parseVersion(value);
+  if (!parsed || parsed.prerelease) throw new Error(`Expected a stable X.Y.Z version, got ${value}`);
+  return parsed;
 }
-const candidate = parts(version);
+const candidate = stable(version);
 if (!image || image.startsWith('-')) throw new Error('Expected an image name');
 
 const minor = version.split('.').slice(0, 2).join('.');
@@ -24,15 +24,15 @@ for (const alias of [minor, 'latest']) {
   const published = inspectRaw(reference);
   if (published !== null) {
     const current = JSON.parse(published).annotations?.['org.opencontainers.image.version'];
-    const existing = parts(current);
+    const existing = stable(current);
     if (alias !== 'latest' && current.split('.').slice(0, 2).join('.') !== minor) {
       throw new Error(`${reference} names a different minor version: ${current}`);
     }
-    const difference = candidate.findIndex((part, i) => part !== existing[i]);
-    if (difference === -1 || candidate[difference] < existing[difference]) {
+    const order = compareVersions(candidate, existing);
+    if (order <= 0) {
       console.log(`Keep ${reference} at ${current}`);
       // A re-run finds latest at this version already.
-      if (alias === 'latest') latest = difference === -1;
+      if (alias === 'latest') latest = order === 0;
       continue;
     }
   }
