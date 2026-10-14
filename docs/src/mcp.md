@@ -127,7 +127,7 @@ oneloop also ends a connection when:
   access to every project), you lose the admin role and aren't a member of it,
   or it is deleted;
 - a backup is restored;
-- it isn't used for 30 days, or 90 days have passed since you connected it.
+- it expires; see [Limits](reference.md#limits) for how long it lasts.
 
 After a password change or reset, or when an admin reactivates your account,
 start any unfinished connection again.
@@ -196,18 +196,18 @@ schema describes the payload of each operation.
   read. If someone changed the item since then, the call fails with
   `revision_conflict`. Read it again and retry.
 - **Pages.** List tools return a `nextCursor`. Pass it back as `cursor`, with
-  the same filters, to get the next page. A page has at most 50 items (100 for
-  comments, activity and the Inbox). If the tasks change between pages, the call
-  fails with `cursor_stale`; start again from the first page.
+  the same filters, to get the next page. [Limits](reference.md#limits) gives
+  the page sizes. If the tasks change between pages, the call fails with
+  `cursor_stale`; start again from the first page.
 - **Statuses and dates.** Task statuses are `planning`, `in_progress`,
   `in_review` and `done`. `search_tasks` without a status returns the first page
   of each. Dates are `YYYY-MM-DD` in the instance time zone that `list_projects`
   returns.
 - **Mentions.** A mention names the member by ID and marks its place in the
-  text. A name alone doesn't notify anyone. Each person can use `@everyone` once
-  a minute in each project.
-- **Files.** Upload and download tickets work once and expire after five
-  minutes. Send the bytes to the returned `url` with the returned
+  text. A name alone doesn't notify anyone. `@everyone` has a
+  [rate limit](reference.md#limits) in each project.
+- **Files.** Upload and download tickets work once and
+  [expire](reference.md#limits) soon. Send the bytes to the returned `url` with the returned
   `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload, within the
   [file limits](reference.md#limits), or `GET` to download. Never send a local
   file path. To retry a failed upload, ask for a new ticket with the same

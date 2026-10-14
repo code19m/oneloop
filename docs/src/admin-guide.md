@@ -97,8 +97,9 @@ people change the files in Git, with the review your team already uses.
 Connect one with **Connect repository** under **Knowledge base** in the
 project's **Settings**. **Folder** starts as `docs`; clear it to show the
 whole repository.
-The first sync starts at once. After that, oneloop checks the branch every
-minute and downloads the folder again only when it has changed.
+The first sync starts at once. After that, oneloop checks the branch
+[regularly](reference.md#limits) and downloads the folder again only when it
+has changed.
 
 Any Git host works, such as GitLab, GitHub, Gitea, Bitbucket or your own
 server. The URL decides how oneloop signs in:
@@ -123,8 +124,8 @@ server. The URL decides how oneloop signs in:
   changes later, syncs fail until you check why; see
   [Troubleshooting](troubleshooting.md#knowledge-sync).
 
-If a sync fails, **Settings** shows why, and oneloop tries again every 5
-minutes. People keep reading the last synced files. **Retry sync** on the
+If a sync fails, **Settings** shows why, and oneloop tries again
+[later](reference.md#limits). People keep reading the last synced files. **Retry sync** on the
 **Knowledge base** page tries at once.
 
 Changing the URL, branch or folder removes the old files at once; the new ones
@@ -143,4 +144,5 @@ The **Storage** page shows how much space uploaded files use, in total and for
 each project. When storage runs low, oneloop removes old temporary files by
 itself, and **Clean up now** does it at once. [Storage](reference.md#storage)
 explains the rules. When storage is full, uploads fail. Then delete files, which
-frees their space about 5 minutes later, or raise `ONELOOP_STORAGE_LIMIT`.
+frees their space after the [Undo window](reference.md#limits), or raise
+`ONELOOP_STORAGE_LIMIT`.
