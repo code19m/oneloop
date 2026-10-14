@@ -1702,40 +1702,41 @@ impl OAuthError {
         let mut mapped = Self::invalid(code);
         if error.status().is_server_error() || matches!(error, AppError::RateLimited { .. }) {
             mapped.status = error.status();
-            mapped.description = error.client_message();
-            if let Some(reference) = error.log_server_error() {
-                mapped
-                    .description
-                    .push_str(&format!(" (reference: {reference})"));
-            }
+            mapped.description = error.reported_message().0;
         }
-        mapped.retry_after = match error {
-            AppError::RateLimited { retry_after } => Some(retry_after),
-            AppError::Unavailable(_) => Some(1),
-            _ => None,
-        };
+        mapped.retry_after = error.retry_after();
         mapped
+    }
+
+    /// The error as the authorization page shows it to a person.
+    fn page(self) -> Response {
+        let page = Html(format!(
+            "<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>",
+            escape(&self.description)
+        ));
+        self.respond(page)
+    }
+
+    fn respond(self, body: impl IntoResponse) -> Response {
+        let mut response = (self.status, body).into_response();
+        if let Some(seconds) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }
 impl IntoResponse for OAuthError {
     fn into_response(self) -> Response {
-        let mut response = (
-            self.status,
-            Json(serde_json::json!({
-                "error": self.code, "error_description": self.description
-            })),
-        )
-            .into_response();
+        let body = Json(serde_json::json!({
+            "error": self.code, "error_description": &self.description
+        }));
+        let mut response = self.respond(body);
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             header::HeaderValue::from_static("no-store"),
         );
-        if let Some(seconds) = self.retry_after {
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                seconds.to_string().parse().expect("integer header"),
-            );
-        }
         response
     }
 }
@@ -1810,19 +1811,7 @@ async fn authorize(
             "invalid authorization request",
         )),
     };
-    match result {
-        Ok(response) => response,
-        Err(error) => {
-            let mapped = OAuthError::from_app(error, false);
-            let mut response = (mapped.status, Html(format!("<!doctype html><title>Authorization failed</title><h1>Authorization failed</h1><p>{}</p>", escape(&mapped.description)))).into_response();
-            if let Some(seconds) = mapped.retry_after {
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, header::HeaderValue::from(seconds));
-            }
-            response
-        }
-    }
+    result.unwrap_or_else(|error| OAuthError::from_app(error, false).page())
 }
 
 // SQL is kept outside calls so rustfmt can format the surrounding control flow.

@@ -187,6 +187,34 @@ impl AppError {
         }
     }
 
+    /// How many seconds a client should wait before it tries again.
+    pub(crate) fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited { retry_after } => Some(*retry_after),
+            Self::Unavailable(_)
+            | Self::Rule {
+                kind: RuleKind::StorageFull,
+                ..
+            } => Some(1),
+            Self::Rule {
+                kind: RuleKind::BroadcastCooldown,
+                ..
+            } => Some(60),
+            _ => None,
+        }
+    }
+
+    /// The message for clients. A server fault is logged first, and its
+    /// message ends with the log entry's reference, which is also returned.
+    pub(crate) fn reported_message(&self) -> (String, Option<String>) {
+        let reference = self.log_server_error();
+        let mut message = self.client_message();
+        if let Some(reference) = &reference {
+            message.push_str(&format!(" (reference: {reference})"));
+        }
+        (message, reference)
+    }
+
     pub(crate) fn client_message(&self) -> String {
         match self {
             Self::NotFound { .. } => "Resource was not found".to_owned(),
@@ -268,26 +296,8 @@ struct ErrorDetail {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = self.status();
-        let retry_after = match &self {
-            Self::RateLimited { retry_after } => Some(*retry_after),
-            Self::Unavailable(_)
-            | Self::Rule {
-                kind: RuleKind::StorageFull,
-                ..
-            } => Some(1),
-            Self::Rule {
-                kind: RuleKind::BroadcastCooldown,
-                ..
-            } => Some(60),
-            _ => None,
-        };
         let details = self.client_details();
-        let reference = self.log_server_error();
-        let mut message = self.client_message();
-        if let Some(reference) = &reference {
-            message.push_str(&format!(" (reference: {reference})"));
-        }
+        let (message, reference) = self.reported_message();
         let body = ErrorBody {
             error: ErrorDetail {
                 code: self.code(),
@@ -296,13 +306,11 @@ impl IntoResponse for AppError {
                 reference,
             },
         };
-        let mut response = (status, Json(body)).into_response();
-        if let Some(seconds) = retry_after
-            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
-        {
+        let mut response = (self.status(), Json(body)).into_response();
+        if let Some(seconds) = self.retry_after() {
             response
                 .headers_mut()
-                .insert(axum::http::header::RETRY_AFTER, value);
+                .insert(axum::http::header::RETRY_AFTER, seconds.into());
         }
         response
     }

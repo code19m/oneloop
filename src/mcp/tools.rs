@@ -1234,22 +1234,12 @@ impl rmcp::handler::server::tool::IntoCallToolResult for ToolError {
         match self {
             Self::Protocol(error) => Err(error),
             Self::Application(error) => {
-                let reference = error.log_server_error();
-                let retry_after = match &error {
-                    AppError::RateLimited { retry_after } => Some(*retry_after),
-                    AppError::Unavailable(_) => Some(1),
-                    AppError::Rule {
-                        kind: crate::error::RuleKind::StorageFull,
-                        ..
-                    } => Some(1),
-                    AppError::Rule {
-                        kind: crate::error::RuleKind::BroadcastCooldown,
-                        ..
-                    } => Some(60),
-                    _ => None,
-                };
                 let data = json!({
-                "code": error.code(), "message": error.client_message(), "details": error.client_details(), "reference": reference, "retryAfter": retry_after
+                    "code": error.code(),
+                    "message": error.client_message(),
+                    "details": error.client_details(),
+                    "reference": error.log_server_error(),
+                    "retryAfter": error.retry_after(),
                 });
                 if matches!(
                     error,
