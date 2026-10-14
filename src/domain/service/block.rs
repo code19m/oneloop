@@ -24,7 +24,7 @@ pub(super) fn block_task(
     if open {
         return Err(AppError::Conflict("task is already blocked".into()));
     }
-    let reason = mention_text(&input.reason)?;
+    let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
     let mentions = validate_mentions(tx, &task.project_id, &reason, input.mentions, &[])?;
     let block_id = Uuid::now_v7().to_string();
     tx.execute(
@@ -111,7 +111,7 @@ pub(super) fn update_block_reason(
         .ok_or_else(|| not_found("active task block"))?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     ensure_revision(before.revision, expected)?;
-    let reason = mention_text(&input.reason)?;
+    let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
     let old_mentions = mentions::load(tx, Mentioned::Block(&input.block_id))?;
     let retained: Vec<_> = old_mentions
         .iter()
@@ -204,7 +204,7 @@ pub(super) fn unblock_task(
     let resolution = input
         .resolution
         .as_deref()
-        .map(|v| optional_text(v, "resolution", BLOCK_RESOLUTION_MAX))
+        .map(|v| text::optional(v, "resolution", BLOCK_RESOLUTION_MAX))
         .transpose()?
         .filter(|v| !v.is_empty());
     tx.execute(

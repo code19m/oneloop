@@ -8,7 +8,7 @@ pub(super) fn create_project(
     now: i64,
 ) -> AppResult<Mutation> {
     actor.require_admin()?;
-    let name = text(&input.name, "name", NAME_MAX)?;
+    let name = text::single_line(&input.name, "name", NAME_MAX)?;
     let prefix = normalize_prefix(&input.task_prefix)?;
     let reserved: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM project_prefixes WHERE prefix=?1)",
@@ -76,7 +76,7 @@ pub(super) fn update_project(
     let name = input
         .name
         .as_deref()
-        .map(|value| text(value, "name", NAME_MAX))
+        .map(|value| text::single_line(value, "name", NAME_MAX))
         .transpose()?
         .unwrap_or(before.0.clone());
     let prefix = input

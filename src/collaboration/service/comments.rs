@@ -7,7 +7,7 @@ pub(super) fn create_comment(
     input: CommentCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    let content = canonical_comment(&input.content)?;
+    let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let project_id: String = tx
         .query_row(
             "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
@@ -129,7 +129,7 @@ pub(super) fn edit_comment(
         ));
     }
     ensure_revision(before.revision, expected_revision)?;
-    let content = canonical_comment(&input.content)?;
+    let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let retained: Vec<_> = before
         .mentions
         .iter()

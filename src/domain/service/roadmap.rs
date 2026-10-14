@@ -8,8 +8,8 @@ pub(super) fn create_track(
     now: i64,
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
-    let name = text(&input.name, "name", NAME_MAX)?;
-    let description = optional_text(&input.description, "description", TRACK_DESCRIPTION_MAX)?;
+    let name = text::single_line(&input.name, "name", NAME_MAX)?;
+    let description = text::optional(&input.description, "description", TRACK_DESCRIPTION_MAX)?;
     let position: i64 = tx.query_row(SELECT_TRACKS_SQL, [&input.project_id], |row| row.get(0))?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
@@ -75,13 +75,13 @@ pub(super) fn update_track(
     let name = input
         .name
         .as_deref()
-        .map(|v| text(v, "name", NAME_MAX))
+        .map(|v| text::single_line(v, "name", NAME_MAX))
         .transpose()?
         .unwrap_or(before.name.clone());
     let description = input
         .description
         .as_deref()
-        .map(|v| optional_text(v, "description", TRACK_DESCRIPTION_MAX))
+        .map(|v| text::optional(v, "description", TRACK_DESCRIPTION_MAX))
         .transpose()?
         .unwrap_or(before.description.clone());
     if name == before.name && description == before.description {
@@ -241,8 +241,8 @@ pub(super) fn create_epic(
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
     ensure_track_project(tx, &input.track_id, &input.project_id)?;
-    let title = text(&input.title, "title", EPIC_TITLE_MAX)?;
-    let description = optional_text(&input.description, "description", EPIC_DESCRIPTION_MAX)?;
+    let title = text::single_line(&input.title, "title", EPIC_TITLE_MAX)?;
+    let description = text::optional(&input.description, "description", EPIC_DESCRIPTION_MAX)?;
     let start = date(&input.start_date, "startDate")?;
     let end = optional_date(input.end_date, "endDate")?;
     if end.as_deref().is_some_and(|value| value < start.as_str()) {
@@ -337,13 +337,13 @@ pub(super) fn update_epic(
     let title = input
         .title
         .as_deref()
-        .map(|v| text(v, "title", EPIC_TITLE_MAX))
+        .map(|v| text::single_line(v, "title", EPIC_TITLE_MAX))
         .transpose()?
         .unwrap_or(before.title.clone());
     let description = input
         .description
         .as_deref()
-        .map(|v| optional_text(v, "description", EPIC_DESCRIPTION_MAX))
+        .map(|v| text::optional(v, "description", EPIC_DESCRIPTION_MAX))
         .transpose()?
         .unwrap_or(before.description.clone());
     let start = input
@@ -601,8 +601,8 @@ pub(super) fn create_milestone(
     now: i64,
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Roadmap, false)?;
-    let title = text(&input.title, "title", NAME_MAX)?;
-    let description = optional_text(&input.description, "description", MILESTONE_DESCRIPTION_MAX)?;
+    let title = text::single_line(&input.title, "title", NAME_MAX)?;
+    let description = text::optional(&input.description, "description", MILESTONE_DESCRIPTION_MAX)?;
     let milestone_date = date(&input.milestone_date, "milestoneDate")?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
@@ -667,13 +667,13 @@ pub(super) fn update_milestone(
     let title = input
         .title
         .as_deref()
-        .map(|v| text(v, "title", NAME_MAX))
+        .map(|v| text::single_line(v, "title", NAME_MAX))
         .transpose()?
         .unwrap_or(before.title.clone());
     let description = input
         .description
         .as_deref()
-        .map(|v| optional_text(v, "description", MILESTONE_DESCRIPTION_MAX))
+        .map(|v| text::optional(v, "description", MILESTONE_DESCRIPTION_MAX))
         .transpose()?
         .unwrap_or(before.description.clone());
     let milestone_date = input

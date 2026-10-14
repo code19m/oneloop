@@ -10,8 +10,8 @@ pub(super) fn create_task(
 ) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Board, false)?;
     ensure_open_epic(tx, &input.epic_id, &input.project_id)?;
-    let title = text(&input.title, "title", TASK_TITLE_MAX)?;
-    let description = optional_text(&input.description, "description", TASK_DESCRIPTION_MAX)?;
+    let title = text::single_line(&input.title, "title", TASK_TITLE_MAX)?;
+    let description = text::optional(&input.description, "description", TASK_DESCRIPTION_MAX)?;
     let deadline = optional_date(input.deadline, "deadline")?;
     let assignees = validate_assignees(tx, &input.project_id, input.assignee_ids)?;
     let (number, prefix): (i64, String) = tx
@@ -101,13 +101,13 @@ pub(super) fn update_task(
     let title = input
         .title
         .as_deref()
-        .map(|v| text(v, "title", TASK_TITLE_MAX))
+        .map(|v| text::single_line(v, "title", TASK_TITLE_MAX))
         .transpose()?
         .unwrap_or(before.title.clone());
     let description = input
         .description
         .as_deref()
-        .map(|v| optional_text(v, "description", TASK_DESCRIPTION_MAX))
+        .map(|v| text::optional(v, "description", TASK_DESCRIPTION_MAX))
         .transpose()?
         .unwrap_or(before.description.clone());
     let deadline = match input.deadline {

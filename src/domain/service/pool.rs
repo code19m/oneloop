@@ -8,8 +8,8 @@ pub(super) fn create_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     require_pool_scope(tx, actor, &input.project_id, &input.scope, false)?;
-    let title = text(&input.title, "title", TASK_TITLE_MAX)?;
-    let description = optional_text(&input.description, "description", POOL_DESCRIPTION_MAX)?;
+    let title = text::single_line(&input.title, "title", TASK_TITLE_MAX)?;
+    let description = text::optional(&input.description, "description", POOL_DESCRIPTION_MAX)?;
     let id = Uuid::now_v7().to_string();
     let owner = matches!(input.scope, PoolScope::Personal).then(|| actor.user_id.clone());
     tx.execute(
@@ -90,13 +90,13 @@ pub(super) fn update_pool_item(
     let title = input
         .title
         .as_deref()
-        .map(|v| text(v, "title", TASK_TITLE_MAX))
+        .map(|v| text::single_line(v, "title", TASK_TITLE_MAX))
         .transpose()?
         .unwrap_or(before.3.clone());
     let description = input
         .description
         .as_deref()
-        .map(|v| optional_text(v, "description", POOL_DESCRIPTION_MAX))
+        .map(|v| text::optional(v, "description", POOL_DESCRIPTION_MAX))
         .transpose()?
         .unwrap_or(before.4.clone());
     if title == before.3 && description == before.4 {

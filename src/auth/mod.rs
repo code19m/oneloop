@@ -462,15 +462,7 @@ pub fn normalize_username(value: &str) -> AppResult<String> {
 }
 
 fn normalize_display_name(value: &str) -> AppResult<String> {
-    crate::text::validate(value, "displayName", crate::text::Lines::Single, true)?;
-    let value = value.trim();
-    if value.is_empty() || value.encode_utf16().count() > 80 {
-        return Err(AppError::validation(
-            "displayName",
-            "must contain 1–80 characters",
-        ));
-    }
-    Ok(value.to_owned())
+    crate::text::single_line(value, "displayName", 80)
 }
 
 pub fn security_event(

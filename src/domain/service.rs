@@ -19,6 +19,7 @@ use validation::*;
 use crate::{
     clock::unix_now,
     idempotency::{Envelope, Mutation},
+    text,
 };
 use std::collections::{BTreeSet, HashSet};
 
@@ -492,17 +493,6 @@ const SELECT_TASK_BLOCKS_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.r
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
 const SELECT_POOL_ITEMS_SQL: &str =
     "SELECT project_id,scope,owner_user_id,title,description,revision FROM pool_items WHERE id=?1";
-
-fn mention_text(value: &str) -> AppResult<String> {
-    crate::text::validate(value, "reason", crate::text::Lines::Multi, true)?;
-    if value.trim().is_empty() || value.encode_utf16().count() > BLOCK_REASON_MAX {
-        return Err(AppError::validation(
-            "reason",
-            "must contain 1–500 characters",
-        ));
-    }
-    Ok(value.to_owned())
-}
 
 struct TrackRow {
     project_id: String,

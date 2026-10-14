@@ -36,6 +36,7 @@ use super::{
 };
 
 pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+const COMMENT_MAX: usize = 2_000;
 const DEFAULT_PAGE_SIZE: usize = 50;
 /// Deleted comments whose text the Undo window no longer needs.
 const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
@@ -573,20 +574,6 @@ fn comment_fingerprint(content: &str, mentions: &[MentionToken]) -> AppResult<St
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| AppError::internal(format!("serialize comment fingerprint: {error}")))?;
     Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-fn canonical_comment(value: &str) -> AppResult<String> {
-    crate::text::validate(value, "content", crate::text::Lines::Multi, true)?;
-    // Selected mention offsets address this exact UTF-16 content. Trimming or
-    // rewriting line endings would shift a valid selection to another range.
-    let count = value.encode_utf16().count();
-    if value.trim().is_empty() || !(1..=2_000).contains(&count) {
-        return Err(AppError::validation(
-            "content",
-            "must contain 1–2000 characters",
-        ));
-    }
-    Ok(value.to_owned())
 }
 
 fn truncate_excerpt(value: &str, max: usize) -> String {
