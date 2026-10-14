@@ -160,7 +160,10 @@ fn handbook() -> Repository {
     );
     repository.write("docs/diagram.png", PNG);
     repository.write("docs/run.sh", b"#!/bin/sh\necho ready\n");
-    repository.write("docs/page.html", b"<!doctype html><p>Hello</p>");
+    repository.write(
+        "docs/page.html",
+        br#"<!doctype html><meta http-equiv="refresh" content="0;url=https://example.com"><base href="https://example.com"><iframe src="https://example.com"></iframe><p>Hello</p>"#,
+    );
     repository.write("other/secret.md", b"# Not shared\n");
     #[cfg(unix)]
     {
@@ -684,6 +687,12 @@ async fn files_follow_the_attachment_safety_rules() {
         preview.headers()["content-security-policy"],
         crate::files::http::PREVIEW_POLICY
     );
+    // The sanitizer backs up the policy: navigation and frames are gone.
+    let html = String::from_utf8(body_bytes(preview).await.to_vec()).unwrap();
+    assert!(html.contains("<p>Hello</p>"), "{html}");
+    for removed in ["http-equiv", "<base", "<iframe"] {
+        assert!(!html.contains(removed), "{removed} in {html}");
+    }
 
     let script = fixture
         .app
