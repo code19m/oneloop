@@ -149,9 +149,11 @@ pub async fn run(cli: Cli) -> AppResult<()> {
 
 async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let config = Config::from_env()?;
+    // Before any warning: tracing ignores a standard error that nobody reads.
+    init_tracing(config.log_level);
     if config.public_url.scheme() == "https" && config.trusted_proxies.is_empty() {
-        eprintln!(
-            "warning: HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
+        tracing::warn!(
+            "HTTPS public URL with no trusted proxies; configure ONELOOP_TRUSTED_PROXIES to avoid shared proxy login limits"
         );
     }
     if config.mcp_client_metadata_documents {
@@ -184,8 +186,6 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
 
     let db = Db::open(&config.data_dir).map_err(|error| startup_error(error, &config.data_dir))?;
     let _server_lock = db.layout().try_server_lock()?;
-
-    init_tracing(config.log_level);
     tracing::info!(public_url = %config.public_url, trusted_proxies = ?config.trusted_proxies, "proxy configuration");
     let listen = config.listen;
     let trusted_proxies = config.trusted_proxies.clone();

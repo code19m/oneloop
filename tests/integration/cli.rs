@@ -412,6 +412,18 @@ fn output_to_a_reader_that_stopped_is_not_an_error() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
+    // A warning to a standard error that nobody reads is not an error.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_oneloop"))
+        .env_clear()
+        .env("ONELOOP_PUBLIC_URL", "https://work.example.com")
+        .env("ONELOOP_DATA_DIR", root.path())
+        .args(["serve", "--check"])
+        .stderr(writer)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
     // An error keeps its exit code when nothing reads standard error.
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
