@@ -1,12 +1,10 @@
 /* Shared comments and private inbox behavior. */
 (() => {
  const D=window.DATA,esc=UIEscape;
- const params=new URLSearchParams(location.search),scenario=params.get('scenario')||'',STORE='oneloop.collaboration.v1'+(scenario?'.'+scenario:'');
- const production=!!window.OneloopTransport;
  const id=prefix=>prefix+'-'+(crypto.randomUUID?.()||Date.now()+'-'+Math.random().toString(36).slice(2));
  const setHTML=UIHTML;
- let app,hooks,productionApi=null,mention=null,pendingTarget=null,storageWarning=false,inboxSampleVersion=0;
- let commentEditor=null,blockEditor=null,editorScope=null,commentMode={mode:'comment',target:null},broadcasts={},expanded=new Set(),expandedCommentBodies=new Set(),commentResizeObserver=null,commentResizeFrame=0,filter={projects:[],archived:false,unread:false,limit:50};
+ let app,hooks,controller=null,mention=null,pendingTarget=null;
+ let commentEditor=null,blockEditor=null,editorScope=null,commentMode={mode:'comment',target:null},expanded=new Set(),expandedCommentBodies=new Set(),commentResizeObserver=null,commentResizeFrame=0,filter={projects:[],archived:false,unread:false};
  let inboxMeta={unreadCount:null,filteredCount:null,nextCursor:null,loaded:false,loading:false,error:false},taskPages=new Map(),renderedUserId=null;
  /** @type {{taskId:string,data:string,meta:string}|null} */
  let feedSnapshot=null;
@@ -30,17 +28,6 @@
  const projectOf=t=>D.projects.find(p=>p.id===(t?.projectId||D.tracks.find(r=>r.id===D.epics.find(e=>e.id===t?.epicId)?.trackId)?.projectId));
  const members=p=>(p?.members||[]).map(m=>userById(typeof m==='string'?m:m.userId)).filter(u=>u?.active);
  const canComment=t=>{const actor=me(),project=projectOf(t);return !!(actor?.active&&project&&(actor.admin||project.members?.some((/** @type {string|{userId:string}} */ member)=>(typeof member==='string'?member:member.userId)===actor.id)));};
- if(!production)try { for(const key of Object.keys(localStorage)) if(key.startsWith('oneloop.collaboration.v1')) { const saved=JSON.parse(localStorage.getItem(key));if(saved&&Object.hasOwn(saved,'drafts')){delete saved.drafts;localStorage.setItem(key,JSON.stringify(saved));} } } catch {}
- D.notifications ||= [];
- function normalize(){for(const t of D.tasks){for(const f of t.attachments||[])delete f.commentId;for(const [i,c] of (t.comments||[]).entries()){c.id ||= 'comment-'+t.id+'-'+i;c.mentions ||= [];delete c.attachments;if(!production)c.notifiedRecipients ||= [];}}}
- normalize();
- if(!production)try{const saved=JSON.parse(localStorage.getItem(STORE)||'null');if(saved?.version===1){inboxSampleVersion=saved.inboxSampleVersion||0;D.notifications=Array.isArray(saved.notifications)?saved.notifications.filter(n=>n&&typeof n.id==='string'&&typeof n.recipientId==='string'&&Number.isFinite(n.createdAt)):[];broadcasts=saved.broadcasts||{};for(const t of D.tasks)if(Array.isArray(saved.comments?.[t.id]))t.comments=saved.comments[t.id];normalize();}}catch{}
- function persist(){
-  if(production)return true;
-  normalize();
-  const now=Date.now();D.notifications=D.notifications.filter(n=>!n.archivedAt||now-n.archivedAt<90*864e5);
-  try{localStorage.setItem(STORE,JSON.stringify({version:1,inboxSampleVersion,notifications:D.notifications,comments:Object.fromEntries(D.tasks.map(t=>[t.id,t.comments||[]])),broadcasts}));return true;}catch{if(app&&!storageWarning){storageWarning=true;app.toast('Changes are available in this tab, but local persistence is full.','error');}return false;}
- }
  // Only the currently open editors hold input state; nothing is cached for reopening.
  const context=()=>commentMode;
  const keyFor=(t,c=context())=>JSON.stringify([me()?.id,t.id,c.mode,c.target]);
@@ -51,7 +38,7 @@
  function blockInputState(t){const key=JSON.stringify([me()?.id,t.id,t.block?.id||'new']);if(blockEditor?.key!==key)blockEditor={key,text:t.block?.reason||'',mentions:structured(legacyMentions(t.block?.mentions))};return blockEditor;}
  function beforeRender(next){
   capture();
-  if(production&&renderedUserId!==next.userId){taskPages.clear();feedSnapshot=null;inboxMeta={unreadCount:Number.isFinite(D.inboxUnreadCount)?D.inboxUnreadCount:null,filteredCount:null,nextCursor:null,loaded:false,loading:false,error:false};renderedUserId=next.userId;}
+  if(renderedUserId!==next.userId){taskPages.clear();feedSnapshot=null;inboxMeta={unreadCount:Number.isFinite(D.inboxUnreadCount)?D.inboxUnreadCount:null,filteredCount:null,nextCursor:null,loaded:false,loading:false,error:false};renderedUserId=next.userId;}
   // A kept comment that is still waiting goes when its writer signs out or someone else signs in.
   if(resumedComment&&resumedComment.userId!==next.userId)resumedComment=null;
   const scope=next.userId&&next.view==='task'?JSON.stringify([next.userId,next.projectId,next.taskId]):null;
@@ -60,7 +47,7 @@
   editorScope=scope;mountedTaskId=scope?next.taskId:null;
   const block=document.getElementById('block-reason');
   if(!next.userId||next.modal?.type!=='block'||block?.dataset.blockTask!==next.modal.id||block?.dataset.blockOwner!==next.userId)blockEditor=null;
-  productionApi?.beforeRender?.(next);
+  controller?.beforeRender?.(next);
  }
  function blockReasonHtml(t){const d=blockInputState(t);return `<textarea class="ctl" id="block-reason" name="reason" data-block-task="${UIEscape(t.id)}" data-block-owner="${UIEscape(me()?.id)}" maxlength="500" placeholder="What is preventing progress? @ to mention" ${UIAction.on('input','blockReasonInput',UIAction.event,t.id)} ${UIAction.on('keydown','commentKey',UIAction.event)}>${esc(d.text)}</textarea><small class="block-mention-hint"></small><div class="block-mention-feedback" role="alert"></div>`;}
  function blockHint(t){const el=document.querySelector('.block-mention-hint');if(el)el.textContent=blockInputState(t).mentions.some(m=>m.id==='everyone')?`Notify ${members(projectOf(t)).filter(u=>u.id!==me()?.id).length} project members`:'';}
@@ -68,15 +55,7 @@
  function prepareBlock(t,raw,reason){const d=updateText(t,raw,'block'),eligible=new Set(members(projectOf(t)).map(u=>u.id));
   const selected=validTokens(raw,d.mentions).map(m=>{const start=hooks.clean(raw.slice(0,m.start)+'X',Number.MAX_SAFE_INTEGER).length-1;return {...m,start,end:start+m.label.length+1};});
   const mentions=validTokens(reason,selected);if(hasInvalidMention(mentions,eligible,t.block?.mentions)){blockFeedback('A mentioned person is no longer an active project member. Remove that mention before saving.');return null;}
-  const broadcast=mentions.some(m=>m.id==='everyone')&&!t.block?.broadcastSent;
-  if(broadcast&&Date.now()-(broadcasts[me().id+':'+projectOf(t).id]||0)<60000){blockFeedback('Please wait a minute before mentioning everyone again.');return null;}
-  return {mentions:production?wireMentions(reason,mentions):mentions,broadcast};
- }
- function blockSaved(t,created,prepared){const b=t.block,eligible=new Set(members(projectOf(t)).map(u=>u.id)),recipients=new Map();b.notifiedRecipients ||= [];
-  if(prepared.broadcast){for(const uid of eligible)recipients.set(uid,'block-everyone');b.broadcastSent=true;broadcasts[me().id+':'+projectOf(t).id]=Date.now();}
-  for(const m of b.mentions||[])if(m.id!=='everyone')recipients.set(m.id,'block-mention');
-  for(const [uid,reason] of recipients)if(uid!==me().id&&D.users.some(u=>u.id===uid&&u.active)&&!b.notifiedRecipients.includes(uid)){notify('block:'+b.id,t,[uid],reason,null,null,b.id);b.notifiedRecipients.push(uid);}
-  blockEditor=null;const input=document.getElementById('block-reason');if(input)input.dataset.blockSaved='true';closeMentions();persist();
+  return {mentions:wireMentions(reason,mentions)};
  }
  function blockText(b){return renderText({text:b.reason,mentions:legacyMentions(b.mentions)});}
 
@@ -109,8 +88,6 @@
   const widths=new WeakMap();commentResizeObserver=new ResizeObserver(entries=>{let changed=false;for(const {target} of entries){if(widths.get(target)!==target.clientWidth){widths.set(target,target.clientWidth);changed=true;}}if(changed){cancelAnimationFrame(commentResizeFrame);commentResizeFrame=requestAnimationFrame(()=>{commentResizeFrame=0;sizeCommentBodies();});}});
   document.querySelectorAll('.comment-reading').forEach(section=>{widths.set(section,section.clientWidth);commentResizeObserver.observe(section);});
  }
- function notify(eventId,task,recipients,reason,commentId=null,rootId=null,blockId=null){const project=projectOf(task),actor=me();if(!project||!actor)return;for(const userId of new Set(recipients)){if(userId===actor.id||!D.users.some(u=>u.id===userId&&u.active&&(u.admin||members(project).some(m=>m.id===u.id))))continue;if(D.notifications.some(n=>n.eventId===eventId&&n.recipientId===userId))continue;D.notifications.push({id:id('notice'),eventId,recipientId:userId,actorId:actor.id,projectId:project.id,taskId:task.id,commentId,rootId,blockId,reason,createdAt:Date.now(),readAt:null,archivedAt:null});}persist();badge();}
- function taskEvent(task,reason,recipients=task.assignees||[]){notify(id('event'),task,recipients,reason);}
  function sameMarkup(old,next,outer=false){
   if(!old||!next)return false;
   const current=outer?old.outerHTML:old.innerHTML,expected=outer?next.outerHTML:next.innerHTML;
@@ -164,11 +141,11 @@
   else {oldMore?.remove();if(more)page.append(more);}
   page.querySelector('.inbox-refresh-notice')?.remove();badge();
  }
- function inboxWritable(){if(window.Recovery?.enforceSession()){hooks.refresh();return false;}return !window.Recovery||Recovery.ensureOnline();}
+ const inboxWritable=()=>!window.Recovery||Recovery.ensureOnline();
  // The exact time shows as a tooltip on hover, focus and tap.
  function exactTimeAttributes(/** @type {number} */ value){const exact=esc(hooks.instant(value));return `aria-label="${exact}" data-tip="${esc(hooks.instant(value))}"`;}
- const own=()=>me()?.active?(production?D.notifications:D.notifications.filter(n=>n.recipientId===me().id)):[];
- const unread=()=>production&&inboxMeta.unreadCount!==null?inboxMeta.unreadCount:own().filter(n=>!n.readAt&&!n.archivedAt).length;
+ const own=()=>me()?.active?D.notifications:[];
+ const unread=()=>inboxMeta.unreadCount??own().filter(n=>!n.readAt&&!n.archivedAt).length;
  function badge(){const count=unread();document.querySelectorAll('[data-inbox-dot]').forEach(el=>el.hidden=!count);document.querySelectorAll('.inbox-nav').forEach(el=>{el.setAttribute('aria-label','Inbox'+(count?', '+count+' unread':''));el.title='Inbox'+(count?' · '+count+' unread':'');});}
  function inboxNav(view){const count=unread();return `<button type="button" class="nav-item inbox-nav inbox-icon ${view==='inbox'?'on':''}" ${view==='inbox'?'aria-current="page"':''} ${UIAction('nav','inbox')} title="Inbox${count?' · '+count+' unread':''}" aria-label="Inbox${count?', '+count+' unread':''}"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3h12l2 8v4H1v-4L3 3Z" stroke-linejoin="round"/><path d="M1 11h4l1.5 2h5L13 11h4"/></svg><span class="inbox-dot" data-inbox-dot ${count?'':'hidden'}></span></button>`;}
  function matching(){return own().filter(n=>!!n.archivedAt===filter.archived&&(!filter.projects.length||filter.projects.includes(n.projectId))&&(!filter.unread||!n.readAt)).sort((a,b)=>b.createdAt-a.createdAt);}
@@ -178,19 +155,19 @@
  /** @param {{items?:any[]|null,lastGroup?:string,oldRows?:Map<string,HTMLElement>|null}} options */
  function inboxHtml({items=null,lastGroup='',oldRows=null}={}){
   const projects=hooks.projects();filter.projects=filter.projects.filter(id=>projects.some(p=>p.id===id));
-  const list=matching(),visible=items??(production?(inboxMeta.loaded?list:[]):list.slice(0,filter.limit)),unreadCount=production&&!inboxMeta.loaded?0:list.filter(n=>!n.readAt).length,total=production&&!inboxMeta.loaded?0:production&&inboxMeta.filteredCount!==null?inboxMeta.filteredCount:list.length;
+  const list=matching(),visible=items??(inboxMeta.loaded?list:[]),unreadCount=inboxMeta.loaded?list.filter(n=>!n.readAt).length:0,total=!inboxMeta.loaded?0:inboxMeta.filteredCount??list.length;
   const today=hooks.dateKey(),yesterday=hooks.previousDate(today);
-  const inboxEmpty=production&&!inboxMeta.loaded?(inboxMeta.error?`<div class="page-empty inbox-empty" data-inbox-key="empty" role="alert"><h2>Could not load notifications</h2><button class="btn quiet" ${UIAction('retryInbox')}>Retry</button></div>`:'<div class="page-empty inbox-empty" data-inbox-key="empty" role="status"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-card"></div><span class="sr-only">Loading notifications</span></div>'):'';
-  const refreshNotice=production&&inboxMeta.loaded&&inboxMeta.error?`<div class="access-note inbox-refresh-notice" role="alert">Could not refresh notifications. <button class="btn quiet" ${UIAction('retryInbox')}>Retry</button></div>`:'';
+  const inboxEmpty=!inboxMeta.loaded?(inboxMeta.error?`<div class="page-empty inbox-empty" data-inbox-key="empty" role="alert"><h2>Could not load notifications</h2><button class="btn quiet" ${UIAction('retryInbox')}>Retry</button></div>`:'<div class="page-empty inbox-empty" data-inbox-key="empty" role="status"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-card"></div><span class="sr-only">Loading notifications</span></div>'):'';
+  const refreshNotice=inboxMeta.loaded&&inboxMeta.error?`<div class="access-note inbox-refresh-notice" role="alert">Could not refresh notifications. <button class="btn quiet" ${UIAction('retryInbox')}>Retry</button></div>`:'';
   const rows=visible.map(n=>{
-    const project=projects.find(p=>p.id===n.projectId),task=project?hooks.task(n.taskId):null,comment=task?.comments?.find(c=>c.id===n.commentId),available=production?!!n.destinationAvailable:!!(task&&project),block=[task?.block,...(task?.blockHistory||[])].find(b=>b?.id===n.blockId),actor=userById(n.actorId);
-    const excerpt=!available?'This item is no longer available':production?(n.excerpt||''):n.blockId?(block?.reason||'Block details unavailable'):n.commentId?(comment&&!comment.deleted?comment.text:'Comment removed'):'';
+    const project=projects.find(p=>p.id===n.projectId),task=project?hooks.task(n.taskId):null,available=!!n.destinationAvailable,actor=userById(n.actorId);
+    const excerpt=available?n.excerpt||'':'This item is no longer available';
     const group=hooks.dateKey(n.createdAt)===today?'Today':hooks.dateKey(n.createdAt)===yesterday?'Yesterday':'Earlier';const heading=group!==lastGroup?`<h2 class="inbox-group-heading" data-inbox-key="group-${UIEscape(group)}">${group}</h2>`:'';lastGroup=group;
     const age=hooks.ago(n.createdAt),sig=JSON.stringify([n,available,excerpt,project?.name,task?.title,task?.id,actor?.name,actor?.avatar,age]);
     if(oldRows?.get(n.id)?.dataset.sig===sig)return `${heading}<article data-inbox-key="row-${esc(n.id)}" data-notification-id="${esc(n.id)}" data-sig="${esc(sig)}"></article>`;
     return `${heading}<article id="inbox-row-${esc(n.id)}" data-sig="${esc(sig)}" data-inbox-key="row-${esc(n.id)}" data-notification-id="${esc(n.id)}" class="inbox-row ${n.readAt?'read':'unread'}"><button class="inbox-open" ${UIAction('openNotification',n.id)}><span class="inbox-person">${hooks.avatar(n.actorId,32)}${!n.readAt?'<span class="inbox-unread-dot"><span class="sr-only">Unread</span></span>':''}</span><span class="inbox-copy"><span class="inbox-event"><strong>${esc(n.actorName||actor?.name||'Former user')}</strong> ${reasons[n.reason]||'updated a task'}</span><span class="inbox-task-title">${esc(n.taskTitle||task?.title||'Task unavailable')}</span>${excerpt?`<span class="inbox-excerpt">${esc(excerpt)}</span>`:''}</span></button><div class="inbox-row-footer"><span class="inbox-context"><span>${esc(n.projectName||project?.name||'Unavailable project')}</span><span class="inbox-task-key">${esc(available?(n.taskKey||task?.id||n.taskId):'Unavailable')}</span><time class="inbox-time" datetime="${new Date(n.createdAt).toISOString()}" ${exactTimeAttributes(n.createdAt)}>${age}</time></span><div class="inbox-row-actions"><button class="btn quiet" aria-label="Mark notification ${n.readAt?'unread':'read'}" title="Mark ${n.readAt?'unread':'read'}" ${UIAction('setNotificationRead',n.id,!!n.readAt)}>${n.readAt?inboxIcons.unread:inboxIcons.read}<span>Mark ${n.readAt?'unread':'read'}</span></button><button class="btn quiet" aria-label="${n.archivedAt?'Restore':'Archive'} notification" title="${n.archivedAt?'Restore':'Archive'}" ${UIAction('archiveNotification',n.id)}>${n.archivedAt?inboxIcons.restore:inboxIcons.archive}<span>${n.archivedAt?'Restore':'Archive'}</span></button></div></div></article>`;
   }).join('');
-  return `<div class="workspace-page inbox-page"><div class="inbox-controls"><div class="seg" role="group" aria-label="Notification view"><button class="${!filter.archived?'on':''}" aria-pressed="${!filter.archived}" ${UIAction('inboxFilter','archived',false)}>Inbox</button><button class="${filter.archived?'on':''}" aria-pressed="${filter.archived}" ${UIAction('inboxFilter','archived',true)}>Archived</button></div><div class="inbox-filter-group">${hooks.multi('inboxProjects',{label:'Filter inbox by project',width:200,options:projects.map(p=>({v:p.id,l:p.name})),search:projects.length>6,values:()=>filter.projects,toggle:value=>{const index=filter.projects.indexOf(value);index<0?filter.projects.push(value):filter.projects.splice(index,1);filter.limit=50;if(production)productionApi?.loadInbox?.(filter);else refreshInbox();},clear:()=>{filter.projects.length=0;filter.limit=50;if(production)productionApi?.loadInbox?.(filter);else refreshInbox();},summary:()=>filter.projects.length===0?'All projects':filter.projects.length===1?projects.find(p=>p.id===filter.projects[0])?.name||'All projects':`${filter.projects.length} projects`})}<button class="btn inbox-unread-filter" aria-pressed="${filter.unread}" ${UIAction('inboxFilter','unread',!filter.unread)}>${inboxIcons.unread}Unread</button></div></div><div class="inbox-bulk"><span>${total} ${total===1?'notification':'notifications'}</span><div><button class="btn" ${!unreadCount?'disabled':''} ${UIAction('inboxBulk','read')}>${inboxIcons.read}Mark ${filter.projects.length||filter.unread?'filtered':'all'} as read</button>${!filter.archived?`<button class="btn" ${!total?'disabled':''} ${UIAction('inboxBulk','archive')}>${inboxIcons.archive}Archive ${filter.projects.length||filter.unread?'filtered':'all'}</button>`:''}</div></div>${refreshNotice}<div class="inbox-list">${rows||inboxEmpty||`<div class="page-empty inbox-empty" data-inbox-key="empty"><span class="inbox-empty-icon">${inboxIcons.inbox}</span><h2>${filter.unread?'No unread notifications':filter.archived?'No archived notifications':'You’re all caught up'}</h2><p>${filter.projects.length?'Nothing here for the selected projects.':filter.archived?'Archived notifications will appear here.':'Mentions, replies and task updates will appear here.'}</p></div>`}</div>${production?inboxMeta.nextCursor?`<button class="btn quiet inbox-load-more" ${UIAction('moreInbox')}>Load more</button>`:'':list.length>filter.limit?`<button class="btn quiet inbox-load-more" ${UIAction('moreInbox')}>Load more</button>`:''}</div>`;
+  return `<div class="workspace-page inbox-page"><div class="inbox-controls"><div class="seg" role="group" aria-label="Notification view"><button class="${!filter.archived?'on':''}" aria-pressed="${!filter.archived}" ${UIAction('inboxFilter','archived',false)}>Inbox</button><button class="${filter.archived?'on':''}" aria-pressed="${filter.archived}" ${UIAction('inboxFilter','archived',true)}>Archived</button></div><div class="inbox-filter-group">${hooks.multi('inboxProjects',{label:'Filter inbox by project',width:200,options:projects.map(p=>({v:p.id,l:p.name})),search:projects.length>6,values:()=>filter.projects,toggle:value=>{const index=filter.projects.indexOf(value);index<0?filter.projects.push(value):filter.projects.splice(index,1);controller?.loadInbox?.(filter);},clear:()=>{filter.projects.length=0;controller?.loadInbox?.(filter);},summary:()=>filter.projects.length===0?'All projects':filter.projects.length===1?projects.find(p=>p.id===filter.projects[0])?.name||'All projects':`${filter.projects.length} projects`})}<button class="btn inbox-unread-filter" aria-pressed="${filter.unread}" ${UIAction('inboxFilter','unread',!filter.unread)}>${inboxIcons.unread}Unread</button></div></div><div class="inbox-bulk"><span>${total} ${total===1?'notification':'notifications'}</span><div><button class="btn" ${!unreadCount?'disabled':''} ${UIAction('inboxBulk','read')}>${inboxIcons.read}Mark ${filter.projects.length||filter.unread?'filtered':'all'} as read</button>${!filter.archived?`<button class="btn" ${!total?'disabled':''} ${UIAction('inboxBulk','archive')}>${inboxIcons.archive}Archive ${filter.projects.length||filter.unread?'filtered':'all'}</button>`:''}</div></div>${refreshNotice}<div class="inbox-list">${rows||inboxEmpty||`<div class="page-empty inbox-empty" data-inbox-key="empty"><span class="inbox-empty-icon">${inboxIcons.inbox}</span><h2>${filter.unread?'No unread notifications':filter.archived?'No archived notifications':'You’re all caught up'}</h2><p>${filter.projects.length?'Nothing here for the selected projects.':filter.archived?'Archived notifications will appear here.':'Mentions, replies and task updates will appear here.'}</p></div>`}</div>${inboxMeta.nextCursor?`<button class="btn quiet inbox-load-more" ${UIAction('moreInbox')}>Load more</button>`:''}</div>`;
  }
 
  const commentIcons={reply:inboxIcon('<path d="m9 5-6 6 6 6M3 11h10a7 7 0 0 1 7 7v2"/>'),edit:inboxIcon('<path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15l-1 5Z"/>'),remove:inboxIcon('<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>'),more:inboxIcon('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),chevron:inboxIcon('<path d="m9 5 7 7-7 7"/>')};
@@ -204,9 +181,9 @@
   const label=total>replies.length?`${replies.length} of ${total} replies`:`${total} ${total===1?'reply':'replies'}`;
   return `<span class="reply-chevron" aria-hidden="true">${commentIcons.chevron}</span><span class="reply-participants" aria-hidden="true">${people.map(who=>hooks.avatar(who,18)).join('')}</span><span>${open?'Hide ':''}${label}</span><span class="reply-latest">${hooks.ago(replies.at(-1).ts)}</span>`;
  }
- function feedHtml(task,limit=50){normalize();const allowed=canComment(task),roots=(task.comments||[]).filter(c=>!c.parentId),items=[...Activity.visible(task.activity).map(a=>({...a,kind:'activity'})),...roots.map(c=>({...c,kind:'comment'}))].sort(chronological),hasMore=production?taskPages.get(task.id)?.hasMore:items.length>limit;
+ function feedHtml(task){const allowed=canComment(task),roots=(task.comments||[]).filter(c=>!c.parentId),items=[...(task.activity||[]).map(a=>({...a,kind:'activity'})),...roots.map(c=>({...c,kind:'comment'}))].sort(chronological),hasMore=taskPages.get(task.id)?.hasMore;
   // A feed key keeps this button across timeline refreshes, so a click that spans a live update still lands.
-  return (hasMore?`<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity',task.id)}>Load older activity</button>`:'')+(production?items:items.slice(-limit)).map(item=>{
+  return (hasMore?`<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity',task.id)}>Load older activity</button>`:'')+items.map(item=>{
    if(item.kind==='activity')return `<div class="tl-act${/^(attached |deleted attachment: |restored attachment: |made .+ (temporary|permanent)$|Temporary file removed during storage cleanup: )/.test(item.text)?' attachment-activity':''}" ${item.blockId?`data-block-id="${esc(item.blockId)}" tabindex="-1"`:''} data-feed-key="activity-${esc(item.id||item.ts+':'+item.who+':'+item.text)}">${hooks.avatar(item.who,16)}<span data-tip="${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}" data-tip-overflow><b>${esc(userById(item.who)?.name||item.actorName||(item.who==='system'?'System':item.who))}</b> ${esc(item.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span>${item.actorAppName?`<span class="act-time activity-source">via ${esc(item.actorAppName)}</span>`:''}<time class="act-time" datetime="${new Date(item.ts).toISOString()}" ${exactTimeAttributes(item.ts)}>· ${hooks.ago(item.ts)}</time></div>`;
    const replies=task.comments.filter(c=>c.parentId===item.id).sort(chronological),target=task.comments.find(c=>c.id===commentMode.target),replying=commentMode.mode==='reply'&&(target?.parentId||target?.id)===item.id,editingReply=allowed&&!target?.deleted&&(target?.who===me()?.id||me()?.admin)&&commentMode.mode==='edit'&&target?.parentId===item.id,open=expanded.has(item.id);
    return `<div class="comment-conversation" data-feed-key="comment-${esc(item.id)}">${commentRow(task,item,false,allowed)}${replies.length?`<button type="button" class="btn quiet reply-toggle" data-reply-root="${esc(item.id)}" aria-expanded="${open}" aria-controls="replies-${esc(item.id)}" ${editingReply?'disabled title="Save or cancel your edit before hiding replies"':''} ${UIAction('toggleReplies',task.id,item.id)}>${replySummary(task,item,replies,open)}</button><div class="comment-thread-wrap${open?' is-expanded':''}" id="replies-${esc(item.id)}" data-thread-root="${esc(item.id)}" aria-hidden="${!open}" ${open?'':'inert'}><div><div class="comment-thread">${replies.map(c=>commentRow(task,c,true,allowed)).join('')}</div></div></div>`:''}${replying?`<div class="thread-composer">${composerHtml(task,true)}</div>`:''}</div>`;
@@ -220,7 +197,7 @@
 
  function feedback(message){const el=document.querySelector('.comment-feedback');if(el)el.textContent=message;}
  function refreshComments(task,composer=false){hooks.refreshComments(task.id,composer);mount();}
- function taskFeedState(id){return production?(taskPages.get(id)||{loaded:false,loading:true,error:false}):{loaded:true,loading:false,error:false};}
+ function taskFeedState(id){return taskPages.get(id)||{loaded:false,loading:true,error:false};}
  // Retain one serialization for the mounted task; metadata does not duplicate the feed.
  function feedSnapshotFor(task,meta=taskFeedState(task.id)){
   return {taskId:task.id,data:JSON.stringify([task.comments,task.activity,commentMode.mode,commentMode.target,[...expanded]]),meta:JSON.stringify([meta.loaded,meta.loading,meta.error,meta.hasMore])};
@@ -236,7 +213,7 @@
  function setMode(taskId,mode,target){const t=hooks.task(taskId);if(!t||!canComment(t))return;if(commentMode.mode===mode&&commentMode.target===target){const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);return;}capture();const c=t.comments.find(c=>c.id===target);if(target&&(!c||c.deleted))return;if(mode==='edit'&&(c.who!==me().id&&!me().admin))return;commentMode={mode,target};commentEditor=null;if(mode==='edit')Object.assign(editor(t),{text:c.text,mentions:structured(c.mentions),revision:c.revision});if(mode==='reply')expanded.add(c.parentId||c.id);else if(c?.parentId)expanded.add(c.parentId);refreshComments(t,true);const input=document.getElementById('cmtIn');input?.focus({preventScroll:true});scrollWithinTask(input?.closest('.collaboration-composer')||input);}
  const structured=v=>JSON.parse(JSON.stringify(v||[]));
  function closeMentions(silent=false){const panel=document.querySelector('.mention-picker');if(panel&&!silent)hooks?.exit?.(panel);panel?.remove();const input=mention?.input;input?.removeAttribute('aria-controls');input?.removeAttribute('aria-activedescendant');mention=null;}
- function pickMention(index){if(!mention)return;const {taskId,start,end,options,input,kind}=mention,option=options[index],task=hooks.task(taskId);if(!option||!task||!input?.isConnected)return;const value=input.value.slice(0,start)+'@'+option.label+' '+input.value.slice(end);if(value.length>input.maxLength){(kind==='block'?blockFeedback:feedback)(`The ${kind==='block'?'reason':'comment'} is too long to add this mention.`);closeMentions();return;}const d=updateText(task,value,kind);d.mentions.push({start,end:start+option.label.length+1,id:option.id,label:option.label});input.value=value;const caret=start+option.label.length+2;closeMentions();input.focus();input.setSelectionRange(caret,caret);persist();if(kind==='block')blockHint(task);else notifyHint(task);}
+ function pickMention(index){if(!mention)return;const {taskId,start,end,options,input,kind}=mention,option=options[index],task=hooks.task(taskId);if(!option||!task||!input?.isConnected)return;const value=input.value.slice(0,start)+'@'+option.label+' '+input.value.slice(end);if(value.length>input.maxLength){(kind==='block'?blockFeedback:feedback)(`The ${kind==='block'?'reason':'comment'} is too long to add this mention.`);closeMentions();return;}const d=updateText(task,value,kind);d.mentions.push({start,end:start+option.label.length+1,id:option.id,label:option.label});input.value=value;const caret=start+option.label.length+2;closeMentions();input.focus();input.setSelectionRange(caret,caret);if(kind==='block')blockHint(task);else notifyHint(task);}
  function paintMentions(){const panel=document.querySelector('.mention-picker');if(!panel||!mention)return;setHTML(panel,mention.options.map((o,i)=>`<button type="button" role="option" aria-selected="${i===mention.index}" id="mention-choice-${UIEscape(i)}" data-mention-index="${UIEscape(i)}"><strong>${esc(o.label==='everyone'?'@everyone':o.name)}</strong><small>${o.id==='everyone'?'All active project members':'@'+esc(o.label)}</small></button>`).join(''));panel.querySelectorAll('button').forEach((b,i)=>{b.onpointerdown=e=>e.preventDefault();b.onclick=()=>pickMention(i);});mention.input?.setAttribute('aria-activedescendant','mention-choice-'+mention.index);}
  function suggest(input,task,kind='comment'){const before=input.value.slice(0,input.selectionStart),line=before.split('\n').at(-1),match=before.match(/(?:^|\s)@([a-z0-9._-]*)$/i);if(!match||before.split('```').length%2===0||line.split('`').length%2===0||/^\s*>/.test(line)){closeMentions();return;}const q=match[1].toLowerCase(),options=[{id:'everyone',label:'everyone',name:'Everyone'},...members(projectOf(task)).map(u=>({id:u.id,label:u.username||u.id,name:u.name}))].filter(o=>o.label.toLowerCase().includes(q)||o.name.toLowerCase().includes(q)).sort((a,b)=>Number(b.label.toLowerCase().startsWith(q))-Number(a.label.toLowerCase().startsWith(q)));if(!options.length){closeMentions();return;}
   const replacing=!!document.querySelector('.mention-picker');closeMentions(true);mention={input,kind,taskId:task.id,start:input.selectionStart-q.length-1,end:input.selectionStart,options,index:0};const el=document.createElement('div');el.className='mention-picker';el.id='mention-picker';el.setAttribute('role','listbox');el.setAttribute('aria-label','Mention project members');document.body.append(el);input.setAttribute('aria-controls',el.id);paintMentions();const r=input.getBoundingClientRect();el.style.width=Math.min(320,innerWidth-16)+'px';el.style.left=Math.max(8,Math.min(r.left,innerWidth-el.offsetWidth-8))+'px';el.style.top=Math.max(8,r.bottom+el.offsetHeight+8<innerHeight?r.bottom+6:r.top-el.offsetHeight-6)+'px';if(!replacing)UIMotion.enter(el);
@@ -261,23 +238,12 @@
   const existing=cxt.mode==='edit'?task.comments.find(c=>c.id===cxt.target):null,target=cxt.mode==='reply'?task.comments.find(c=>c.id===cxt.target):null;
   if(cxt.mode==='edit'&&(!existing||existing.deleted||existing.who!==me().id&&!me().admin)||cxt.mode==='reply'&&(!target||target.deleted)){feedback('That comment is no longer available.');return false;}
   const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(hasInvalidMention(selected,eligible,existing?.mentions)){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
-  const fingerprint=(value,tokens)=>sha256(JSON.stringify({text:value,mentions:tokens.map(({start,end,id,label})=>({start,end,id,label}))}));
-  const before=existing?fingerprint(existing.text,existing.mentions||[]):null,after=fingerprint(text,selected),changed=!existing||before!==after;
-  const hasEveryone=selected.some(m=>m.id==='everyone'),broadcast=changed&&hasEveryone&&!existing?.broadcastSent,rateKey=me().id+':'+projectOf(task).id;
-  if(broadcast&&Date.now()-(broadcasts[rateKey]||0)<60000){feedback('Please wait a minute before mentioning everyone again.');return false;}
-  if(production&&productionApi){
-   // A new comment or reply leaves the box at once: what is typed next is a
-   // new one, never joined to this one or sent with it again. It comes back
-   // if it can't be sent. An edit stays until it is saved.
-   const interaction=d.interactionId,leaves=!existing,pending={userId:me()?.id,taskId:task.id,mode:cxt.mode,target:cxt.target,text,mentions:structured(selected),revision:d.revision,interactionId:interaction,leaves};
-   sendingComments.set(interaction,pending);if(leaves)emptyComposer(task);
-   Promise.resolve(productionApi.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction,unsent:(error)=>{if(leaves)returnUnsent(pending,error);}})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;
-  }
-  const c=existing||{id:id('comment'),who:me().id,ts:Date.now(),parentId:target?(target.parentId||target.id):null,replyToId:target?.id||null,notifiedRecipients:[]};
-  c.text=text;c.mentions=selected;if(existing){if(changed){c.editedAt=Date.now();hooks.log?.(task,'edited a comment',{field:'comment-content:'+c.id,before,after});}}else(task.comments ||= []).push(c);
-  const recipients=new Map();if(broadcast){for(const uid of eligible)recipients.set(uid,'everyone');broadcasts[rateKey]=Date.now();c.broadcastSent=true;}if(target)recipients.set(target.who,'reply');for(const m of selected)if(changed&&m.id!=='everyone')recipients.set(m.id,'mention');
-  for(const [uid,reason] of recipients)if(!(c.notifiedRecipients||[]).includes(uid)){notify(c.id,task,[uid],reason,c.id,c.parentId||c.id);c.notifiedRecipients.push(uid);}
-  persist();savedComment(task,c,cxt.mode,changed);return true;
+  // A new comment or reply leaves the box at once: what is typed next is a
+  // new one, never joined to this one or sent with it again. It comes back
+  // if it can't be sent. An edit stays until it is saved.
+  const interaction=d.interactionId,leaves=!existing,pending={userId:me()?.id,taskId:task.id,mode:cxt.mode,target:cxt.target,text,mentions:structured(selected),revision:d.revision,interactionId:interaction,leaves};
+  sendingComments.set(interaction,pending);if(leaves)emptyComposer(task);
+  Promise.resolve(controller?.saveComment({task,mode:cxt.mode,targetId:target?.id||null,commentId:existing?.id||null,revision:d.revision,text,mentions:selected,editorId:d.editorId,interactionId:interaction,unsent:(error)=>{if(leaves)returnUnsent(pending,error);}})).catch(()=>{}).finally(()=>sendingComments.delete(interaction));return false;
  }
  // A comment being written when the session ended, kept for the same person's next sign-in.
  let resumedComment=null;
@@ -367,15 +333,15 @@
   refreshComments(task,true);
   const input=document.getElementById('cmtIn');if(input){input.focus({preventScroll:true});input.setSelectionRange(input.value.length,input.value.length);scrollWithinTask(input.closest('.collaboration-composer')||input);}
  }
- function mount(updateSnapshot=true){badge();mountCommentBodies();if(mention&&!mention.input.isConnected)closeMentions();const blockInput=document.getElementById('block-reason'),blockTask=hooks?.task(blockInput?.dataset.blockTask);if(blockTask)blockHint(blockTask);const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);if(task)notifyHint(task);if(updateSnapshot)feedSnapshot=task?feedSnapshotFor(task):null;productionApi?.mount?.({view:hooks?.view?.(),taskId:task?.id});
+ function mount(updateSnapshot=true){badge();mountCommentBodies();if(mention&&!mention.input.isConnected)closeMentions();const blockInput=document.getElementById('block-reason'),blockTask=hooks?.task(blockInput?.dataset.blockTask);if(blockTask)blockHint(blockTask);const host=document.querySelector('[data-comment-task]'),task=hooks?.task(host?.dataset.commentTask);if(task)notifyHint(task);if(updateSnapshot)feedSnapshot=task?feedSnapshotFor(task):null;controller?.mount?.({view:hooks?.view?.(),taskId:task?.id});
   if(pendingTarget&&hooks.view()==='task'){const p=pendingTarget;setTimeout(()=>{if(pendingTarget===p)pendingTarget=null;},5000);const el=p.blockId?[...document.querySelectorAll('[data-block-id]')].find(el=>el.dataset.blockId===p.blockId):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===p.commentId);if(el){pendingTarget=null;el.classList.add('comment-highlight');scrollWithinTask(el,true);el.focus({preventScroll:true});}}
   if(resumedComment)resumeComment();
   returnComments();
  }
- window.Collab={userById,blockReasonHtml,prepareBlock,blockSaved,blockText,canComment,feedHtml,composerHtml,inboxHtml,inboxNav,unread,taskEvent,mount,beforeRender,taskFeedState,retryTaskPage(id){return productionApi?.loadTaskPage?.(id);},retryInbox(){return productionApi?.loadInbox?.(filter);},
+ window.Collab={userById,blockReasonHtml,prepareBlock,blockText,canComment,feedHtml,composerHtml,inboxHtml,inboxNav,unread,mount,beforeRender,taskFeedState,retryTaskPage(id){return controller?.loadTaskPage?.(id);},retryInbox(){return controller?.loadInbox?.(filter);},
   bind(api,callbacks){app=api;hooks=callbacks;
-   if(production&&window.OneloopCollaboration){
-    productionApi=window.OneloopCollaboration.bind(app,hooks,{
+   if(window.OneloopCollaboration){
+    controller=window.OneloopCollaboration.bind(app,hooks,{
      filter:()=>({projects:[...filter.projects],archived:filter.archived,unread:filter.unread}),
      feedback,
      unreadCount(value){inboxMeta.unreadCount=Number(value)||0;badge();},
@@ -390,18 +356,17 @@
       Object.assign(commentEditor,{text:comment.text,mentions:structured(comment.mentions),revision:comment.revision,interactionId:id('interaction')});
       input.value=comment.text;closeMentions();feedback('');notifyHint(submitted.task);
      },
-     commentDeleted(taskId,commentId){const task=hooks.task(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);if(comment)app.offerUndo('Comment deleted',again=>productionApi?.restoreComment?.({task,comment,again}));else app.toast('Comment deleted');},
+     commentDeleted(taskId,commentId){const task=hooks.task(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);if(comment)app.offerUndo('Comment deleted',again=>controller?.restoreComment?.({task,comment,again}));else app.toast('Comment deleted');},
      commentRestored(taskId){const task=hooks.task(taskId);if(task){refreshComments(task);app.toast('Comment restored');}},
      canonicalTask(){const active=document.activeElement,editing=commentMode.mode!=='comment'||!!commentEditor?.text||!!blockEditor||active?.matches?.('input,textarea,select,[contenteditable="true"]')||document.querySelector('.modal,.pop');if(hooks.refreshBackground)hooks.refreshBackground();else if(!editing)hooks.refresh();},
      target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},
     });
-    app.loadOlderActivity=(taskId)=>productionApi?.moreTask?.(taskId);
+    app.loadOlderActivity=(taskId)=>controller?.moreTask?.(taskId);
    }
-   persist();
    // Leaving oneloop would lose comments kept for an empty box. While no one
    // is signed in, that is any of them, and any comment still on its way when
    // the session ended, which comes back if it isn't saved.
-   if(production)window.Recovery?.trackUnsaved?.(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
+   window.Recovery?.trackUnsaved?.(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
    Object.assign(app,{
     commentDraft,restoreCommentDraft(draft){resumedComment=draft;mount(false);},
     addComment:post,replyComment:(taskId,target)=>setMode(taskId,'reply',target),editComment:(taskId,target)=>setMode(taskId,'edit',target),
@@ -410,7 +375,7 @@
     toggleReplies(taskId,rootId){if(commentMode.mode==='edit'&&hooks.task(taskId)?.comments.find(c=>c.id===commentMode.target)?.parentId===rootId)return;const open=!expanded.has(rootId);open?expanded.add(rootId):expanded.delete(rootId);const task=hooks.task(taskId),thread=[...document.querySelectorAll('[data-thread-root]')].find(el=>el.dataset.threadRoot===rootId),button=[...document.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===rootId),root=task?.comments.find(c=>c.id===rootId);if(!thread||!button||!root){refreshComments(task);return;}thread.classList.toggle('is-expanded',open);thread.setAttribute('aria-hidden',String(!open));thread.inert=!open;button.setAttribute('aria-expanded',String(open));const replies=task.comments.filter(c=>c.parentId===rootId).sort(chronological);setHTML(button,replySummary(task,root,replies,open));if(open)(globalThis.requestAnimationFrame||setTimeout)(()=>sizeCommentBodies());},
     commentMenu(ev,taskId,commentId){const task=hooks.task(taskId),comment=task?.comments.find(c=>c.id===commentId);if(!comment||comment.deleted||!canComment(task)||comment.who!==me()?.id&&!me()?.admin)return;const r=ev.currentTarget.getBoundingClientRect();app._openMenu([{label:'Edit',icon:commentIcons.edit,fn:()=>{app.closeOverlays();setMode(taskId,'edit',commentId);}},{label:'Delete',icon:commentIcons.remove,danger:true,fn:()=>{app.closeOverlays();app.deleteComment(taskId,commentId);}}],r.right,r.bottom+4,{commentId,trigger:ev.currentTarget});},
     jumpToComment(taskId,commentId){const task=hooks.task(taskId),comment=task?.comments.find(c=>c.id===commentId);if(!comment)return;if(comment.parentId&&!expanded.has(comment.parentId)){expanded.add(comment.parentId);refreshComments(task);}const el=[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===commentId);if(el){el.classList.add('comment-highlight');el.focus({preventScroll:true});scrollWithinTask(el,true);}},
-    deleteComment(taskId,commentId){const task=hooks.task(taskId),c=task?.comments?.find(c=>c.id===commentId);if(!task||!c||c.deleted){app.toast('This comment is no longer available','error');return;}if(!canComment(task)||c.who!==me().id&&!me().admin){app.toast('You no longer have permission to delete this comment','error');return;}hooks.confirm({title:'Delete comment?',text:production?'Replies will remain. You can undo this right after.':'Replies will remain. The comment text and its inbox excerpts will be removed.',action:'Delete comment',confirm:()=>{if(hooks.task(taskId)!==task||c.deleted){app.toast('This comment is no longer available','error');return;}if(!canComment(task)||c.who!==me().id&&!me().admin){app.toast('You no longer have permission to delete this comment','error');return;}if(production&&productionApi){productionApi.deleteComment({task,comment:c});return;}c.deleted=true;c.text='';c.mentions=[];c.deletedAt=Date.now();hooks.log?.(task,'removed a comment');const saved=persist();refreshComments(task);if(saved)app.toast('Comment deleted');}});},
+    deleteComment(taskId,commentId){const task=hooks.task(taskId),c=task?.comments?.find(c=>c.id===commentId);if(!task||!c||c.deleted){app.toast('This comment is no longer available','error');return;}if(!canComment(task)||c.who!==me().id&&!me().admin){app.toast('You no longer have permission to delete this comment','error');return;}hooks.confirm({title:'Delete comment?',text:'Replies will remain. You can undo this right after.',action:'Delete comment',confirm:()=>{if(hooks.task(taskId)!==task||c.deleted){app.toast('This comment is no longer available','error');return;}if(!canComment(task)||c.who!==me().id&&!me().admin){app.toast('You no longer have permission to delete this comment','error');return;}controller?.deleteComment({task,comment:c});}});},
     delComment(taskId,index){const c=hooks.task(taskId)?.comments?.[index];if(c)app.deleteComment(taskId,c.id);},
     blockReasonInput(ev,taskId){const task=hooks.task(taskId);if(!task||!hooks.canBoard(task))return;updateText(task,ev.currentTarget.value,'block');blockFeedback('');suggest(ev.currentTarget,task,'block');blockHint(task);},
     commentInput(ev,taskId){const task=hooks.task(taskId);if(!task)return;updateText(task,ev.currentTarget.value);feedback('');suggest(ev.currentTarget,task);notifyHint(task);},
@@ -433,18 +398,17 @@
       app.addComment(composer.dataset.commentTask);
     },
 
-    inboxFilter(name,value){if(!['projects','archived','unread'].includes(name))return;if(name==='projects'){if(!Array.isArray(value))return;filter.projects=[...new Set(value)].filter(id=>hooks.projects().some(p=>p.id===id));}else {if(filter[name]===value)return;filter[name]=value;}filter.limit=50;if(production&&productionApi){inboxMeta.loaded=false;productionApi.loadInbox(filter);return;}refreshInbox();},
-    retryInbox(){return productionApi?.loadInbox?.(filter);},
-    moreInbox(){if(production&&productionApi){productionApi.moreInbox(filter);return;}filter.limit+=50;refreshInbox();},
-    setNotificationRead(id,unread){if(!inboxWritable())return;const n=own().find(n=>n.id===id);if(!n)return;if(production&&productionApi){productionApi.setRead(id,unread);return;}n.readAt=unread?null:Date.now();persist();refreshInbox();},
-    archiveNotification(id){if(!inboxWritable())return;const n=own().find(n=>n.id===id);if(!n)return;if(production&&productionApi){productionApi.setArchived(id,!!n.archivedAt);return;}n.archivedAt=n.archivedAt?null:Date.now();if(n.archivedAt)n.readAt ||= Date.now();persist();refreshInbox();},
-    inboxBulk(action){if(!['read','archive'].includes(action)||action==='archive'&&filter.archived||!inboxWritable())return;if(production&&productionApi){productionApi.bulk(action,filter);return;}for(const n of matching()){if(action==='read')n.readAt=Date.now();else if(action==='archive'){n.archivedAt=Date.now();if(n.archivedAt)n.readAt ||= Date.now();}}persist();refreshInbox();},
-    openNotification(id){const n=own().find(n=>n.id===id);if(!n)return;if(production&&productionApi){productionApi.openNotification(n);return;}if(window.Recovery?.connection!=='offline'){if(!inboxWritable())return;n.readAt ||= Date.now();persist();badge();}const task=hooks.task(n.taskId);if(!task||!hooks.canRead(n.projectId)||!D.projects.some(p=>p.id===n.projectId)){app.toast('This item is no longer available','info');hooks.refresh();return;}if(n.rootId)expanded.add(n.rootId);pendingTarget={commentId:n.commentId,blockId:n.blockId};if(n.blockId)hooks.revealBlockActivity?.(task.id,n.blockId);app.openTask(task.id);}
+    inboxFilter(name,value){if(!['projects','archived','unread'].includes(name))return;if(name==='projects'){if(!Array.isArray(value))return;filter.projects=[...new Set(value)].filter(id=>hooks.projects().some(p=>p.id===id));}else {if(filter[name]===value)return;filter[name]=value;}inboxMeta.loaded=false;controller?.loadInbox(filter);},
+    retryInbox(){return controller?.loadInbox?.(filter);},
+    moreInbox(){controller?.moreInbox(filter);},
+    setNotificationRead(id,unread){if(!inboxWritable())return;const n=own().find(n=>n.id===id);if(n)controller?.setRead(id,unread);},
+    archiveNotification(id){if(!inboxWritable())return;const n=own().find(n=>n.id===id);if(n)controller?.setArchived(id,!!n.archivedAt);},
+    inboxBulk(action){if(!['read','archive'].includes(action)||action==='archive'&&filter.archived||!inboxWritable())return;controller?.bulk(action,filter);},
+    openNotification(id){const n=own().find(n=>n.id===id);if(n)controller?.openNotification(n);}
    });
   }
  };
  window.addEventListener('hashchange',closeMentions);
  document.addEventListener('pointerdown',e=>{if(mention&&!e.target.closest('.mention-picker')&&e.target!==mention.input)closeMentions();});
  document.addEventListener('scroll',e=>{if(mention&&!e.target.closest?.('.mention-picker'))closeMentions();},true);
- if(!production)window.addEventListener('storage',e=>{if(e.key!==STORE)return;try{const value=JSON.parse(e.newValue);if(Array.isArray(value?.notifications)){D.notifications=value.notifications;badge();if(hooks?.view()==='inbox')hooks.refresh();}}catch{}});
 })();

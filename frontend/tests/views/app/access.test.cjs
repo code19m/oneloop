@@ -30,7 +30,7 @@ const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = 
 
 /** A projection with a second project the viewer cannot access. */
 function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}, options = {}) {
-  return bootApp({ ...options, route, media: () => true, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
+  return bootApp({ ...options, route, media: () => true, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', 'uploads', 'collaboration', 'app'], prepare: D => {
     D.session.userId = user; const p = D.projects.find(item => item.id === 'p2'); p.name = 'Secret project'; p.members = [];
     D.tracks.push({ id: 'secret-track', projectId: p.id, name: 'Secret track', order: 1 }); D.epics.push({ id: 'secret-epic', trackId: 'secret-track', title: 'Secret epic', state: 'active', start: '2026-01-01', end: '2026-12-01', done: 0, total: 1 });
     D.tasks.push({ id: 'SEC-001', epicId: 'secret-epic', title: 'Secret task', state: 'planning', created: Date.now(), attachments: [{ id: 'secret-file', name: 'private.png', size: 10, previewKind: 'image', url: 'blob:private' }] });
@@ -54,11 +54,13 @@ test('direct routes to a hidden task are denied to members but open for administ
  const admin=withSecretProject('taylorwu','task/SEC-001');assert.equal(admin.d.querySelector('.tp-title').value,'Secret task');admin.A.previewAttachment('SEC-001','secret-file');assert(admin.d.querySelector('.file-dialog'));
 });
 
-test('losing membership closes previews, redacts Inbox rows and leaves account pages usable', () => {
- const t=withSecretProject('blairq','task/BIR-079',()=>{},{production:false});t.D.notifications.push({id:'retained',eventId:'old',recipientId:'blairq',actorId:'taylorwu',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:Date.now()});
+test('losing membership closes previews, redacts Inbox rows and leaves account pages usable', async () => {
+ const t=withSecretProject();
  t.A.previewAttachment('BIR-079','member-file');t.D.projects[0].members=t.D.projects[0].members.filter(m=>m.userId!=='blairq');t.A.refresh();assert(!t.d.querySelector('.file-dialog'));assert(!t.d.querySelector('.tp-title'));
- t.A.nav('inbox');const page=t.d.querySelector('.inbox-page');assert(page);assert(page.textContent.includes('Task unavailable'));assert(!page.textContent.includes('Birch Grove'));assert(!page.textContent.includes('BIR-079'));assert(!page.textContent.includes('Flexible reading'));
- t.A.openNotification('retained');assert(!t.d.querySelector('.tp-title'));t.A.nav('roadmap');assert(t.d.querySelector('.page-empty').textContent.includes('No projects available'));t.A.openModal('pool');assert(!t.d.querySelector('.modal'));t.A.nav('profile');assert(t.d.querySelector('[name="name"]'));
+ // The server sends an unavailable notification without its task's or project's names; the page adds none it still knows.
+ t.A.nav('inbox');t.answer('inbox',{items:[{id:'retained',eventType:'task.assigned',actorUserId:'taylorwu',projectId:'p1',taskId:'bir-079',destinationAvailable:false,createdAt:Math.floor(Date.now()/1000)}],nextCursor:null,unreadCount:1,filteredCount:1});await settle();
+ const page=t.d.querySelector('.inbox-page');assert(page.textContent.includes('Task unavailable'));assert(!page.textContent.includes('Birch Grove'));assert(!page.textContent.includes('BIR-079'));assert(!page.textContent.includes('Flexible reading'));
+ t.A.nav('roadmap');assert(t.d.querySelector('.page-empty').textContent.includes('No projects available'));t.A.openModal('pool');assert(!t.d.querySelector('.modal'));t.A.nav('profile');assert(t.d.querySelector('[name="name"]'));
 });
 
 for(const [route,page] of [['board','.board .card[data-task="BIR-079"]'],['roadmap','#rmScroll']])test(`a first project replaces the empty ${route} page when it arrives`, () => {
@@ -91,16 +93,12 @@ test('row actions open the right editor, Pool promotion keeps its title and navi
 const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');d.querySelector('.pool-promote').click();assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
 });
 
-test('a reserved task prefix is rejected inline and a new prefix keeps the old one reserved', () => {
-const {d,A,D}=bootApp({route:'settings',production:false});const prefix=d.querySelector('[name="key"]');prefix.value='ONE';A.updateProjectField(prefix);assert.equal(D.projects[0].key,'BIR');assert(d.querySelector('.ferr'));prefix.value='NEW';A.updateProjectField(prefix);assert.equal(D.prefixRegistry.BIR,'p1');assert.equal(D.prefixRegistry.NEW,'p1');
-});
-
-test('Users pages load 50 at a time and project Settings keep member access separate', () => {
- const t=bootApp({route:'users',production:false,prepare:D=>{
-  for(let i=0;i<110;i++)D.users.push({id:'page-user-'+i,name:'Page user '+i,active:true,admin:false});
- }});
- assert.equal(t.d.querySelectorAll('.user-row').length,50);
- t.A.loadMoreUsers();assert.equal(t.d.querySelectorAll('.user-row').length,100);
+test('Users pages load 50 at a time and project Settings keep member access separate', async () => {
+ const account=i=>({id:'page-user-'+i,username:'page-user-'+String(i).padStart(3,'0'),displayName:'Page user '+i,isActive:true,isAdmin:false,revision:1});
+ const users=async({afterUsername})=>afterUsername?{users:Array.from({length:50},(_,i)=>account(i+50)),nextCursor:'page-user-099'}:{users:Array.from({length:50},(_,i)=>account(i)),nextCursor:'page-user-049'};
+ const t=bootApp({route:'users',api:{users}});
+ await t.bridge.loadCurrentRoute();assert.equal(t.d.querySelectorAll('.user-row').length,50);
+ t.A.loadMoreUsers();await settle();assert.equal(t.d.querySelectorAll('.user-row').length,100);
  t.A.userMenu({currentTarget:t.d.querySelector('.me-chip')});assert(t.d.querySelector('.profile-menu').textContent.includes('Users'));
  t.A.nav('settings');assert(!t.d.querySelector('.topbar .seg'));assert(t.d.querySelector('.member-access-list'));
 });
@@ -114,8 +112,9 @@ test('Enter in a project field saves it and leaves it, but not while text is bei
  assert.notEqual(t.d.activeElement,name);assert(commands().length);for(const command of commands())assert.deepEqual(command,['project.update',{projectId:'p1',name:'Renamed project'}]);
 });
 
-test('Enter in the profile name saves through the blur path', () => {
- const t=bootApp({route:'profile',actions:true,production:false}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);assert.equal(t.D.users.find(u=>u.id==='taylorwu').name,'Taylor Updated');
+test('Enter in the profile name saves through the blur path', async () => {
+ const t=bootApp({route:'profile',actions:true}),name=t.d.querySelector('input[name=name]');name.focus();name.value='Taylor Updated';const enter=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});name.dispatchEvent(enter);assert(enter.defaultPrevented);assert.notEqual(t.d.activeElement,name);
+ await settle();assert.deepEqual(t.calls.filter(call=>call.method==='updateProfile').map(call=>call.args[0]),['Taylor Updated']);
 });
 
 test('project Settings bound member rows, update loading state in place and search all members', () => {
@@ -233,17 +232,13 @@ test('text typed when the session ends waits for the same person to sign in agai
 });
 
 test('a comment still being sent when the session ends is kept for its writer, and closing the tab asks first', async () => {
- let send;
- const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
-  w.OneloopTransport = {};
-  w.OneloopCollaboration = { bind() { return { saveComment(input) { return new Promise(resolve => { send = { input, resolve }; }); } }; } };
- } });
- t.d.getElementById('cmtIn').value = 'Sent as the session ended'; t.A.addComment('BIR-079');
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Sent as the session ended'; t.A.addComment('BIR-079'); await settle();
  const session = endSession(t);
  assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in again to keep what you typed.');
  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'closing the tab asks first while it is on its way');
  // The send meets the end of the session, so the comment waits.
- send.input.unsent(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); send.resolve(false); await settle();
+ t.commands[0].reject(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); await settle();
  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'and while it waits');
  assert.equal(t.w.Recovery.keepsInput, true);
  signInAgain(t, { ...session, id: 'next-session' });

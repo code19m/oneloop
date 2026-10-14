@@ -142,17 +142,13 @@ test('a link to the page that shows never asks', () => {
 });
 
 test('a comment that is being sent does not count, and counts again if the send fails', async () => {
-  let finish;
-  const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
-    w.OneloopTransport = {};
-    w.OneloopCollaboration = { bind() { return { saveComment(input) { return new Promise(resolve => { finish = saved => { if (!saved) input.unsent(); resolve(saved); }; }); } }; } };
-  } });
+  const t = bootApp({ route: 'task/BIR-079' });
   type(t.d.getElementById('cmtIn'), 'On its way');
   assert.equal(pageWarns(t), true);
   t.A.addComment('BIR-079');
   assert.equal(t.d.getElementById('cmtIn').value, '', 'the text left the box as it was sent');
   assert.equal(pageWarns(t), false, 'the comment is being sent');
-  finish(false); await settle();
+  await settle(); t.commands[0].reject(new t.w.TestApiError('The service is busy', { status: 503, code: 'unavailable' })); await settle();
   assert.equal(t.d.getElementById('cmtIn').value, 'On its way', 'a send that failed brings it back');
   assert.equal(pageWarns(t), true, 'the person keeps the text of a send that failed');
 });

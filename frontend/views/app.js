@@ -62,6 +62,8 @@
   const humanShort = dt => dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
   const humanInstant = (value) => {timeFormatters();return shortInstantFormatter.format(new Date(value));};
   const instanceNow = () => bootWindow.OneloopRuntime?.now?.() ?? Date.now();
+  /** Run a server-backed action of the runtime; it reports a failure itself. */
+  const invoke = (action, payload = {}) => bootWindow.OneloopRuntime.invoke(action, payload).catch(bootWindow.OneloopRuntime.report);
   const instanceToday = () => d(instanceDateKey(instanceNow()));
   const today = instanceToday();
   const TOUCH = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
@@ -77,7 +79,7 @@
     rmScrollLeft: null, rmScrollTop: 0,
     boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
     peek: null, modal: null, menu: null,
-    boardLimits:{planning:50,progress:50,review:50,done:50}, activityLimits:{}, usersLimit:50,
+    boardLimits:{planning:50,progress:50,review:50,done:50}, usersLimit:50,
   };
   const locallyRenderedHashes = [];
   function setLocalHash(hash) {
@@ -85,20 +87,13 @@
     location.hash = hash;
     locallyRenderedHashes.push(location.href);
   }
-  let seq = 100;
-  const uid = (p) => p + (++seq);
-
-  D.prefixRegistry ||= Object.fromEntries(D.projects.map(p=>[p.key,p.id]));
-  D.taskCounters ||= {};
-  D.tasks.forEach(task=>{ task.internalId ||= 'task-'+task.id; const epic=D.epics.find(e=>e.id===task.epicId),track=D.tracks.find(t=>t.id===epic?.trackId);if(track)D.taskCounters[track.projectId]=Math.max(D.taskCounters[track.projectId]||100,Number(task.id.split('-').at(-1))||0); });
-
   // ---------- project-scoped accessors ----------
   const project = () => D.projects.find((p) => p.id === state.projectId && canReadProject(p.id));
   const tracks = () => D.tracks.filter((t) => t.projectId === state.projectId && canReadProject(t.projectId)).sort((a, b) => a.order - b.order);
   const epics = () => { const tids = new Set(tracks().map((t) => t.id)); return D.epics.filter((e) => tids.has(e.trackId)); };
   const epicById = (id) => D.epics.find((e) => e.id === id);
   const trackById = (id) => D.tracks.find((t) => t.id === id);
-  const milestones = () => D.milestones.filter((m) => (m.projectId || 'p1') === state.projectId && canReadProject(m.projectId || 'p1'));
+  const milestones = () => D.milestones.filter((m) => m.projectId === state.projectId && canReadProject(m.projectId));
   const tasks = () => { const eids = new Set(epics().map((e) => e.id)); return D.tasks.filter((t) => eids.has(t.epicId)); };
   const taskById = (id) => D.tasks.find((t) => t.id === id || t.internalId === id);
   const poolItems = (scope) => D.pool.filter((p) => p.projectId === state.projectId && canReadProject(p.projectId) && (scope ? p.scope === scope : true) && (p.scope !== 'mine' || p.ownerId === (me() || {}).id));
@@ -134,7 +129,6 @@
     const initial=(u?.name||u?.username||uid||'?').trim()[0]||'?';
     return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.55)}px">${esc(initial.toUpperCase())}</span>`;
   };
-  const genPassword = () => { const a = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let out = ''; for (let i = 0; i < 12; i++) out += a[Math.floor(Math.random() * a.length)]; return out; };
   const STATUS = { planning: 'Planning', progress: 'In Progress', review: 'In Review', done: 'Done' };
   const ago = (ts) => {
     const m = Math.round((Date.now() - ts) / 60000);
@@ -144,8 +138,7 @@
     return Math.round(m / 1440) + 'd ago';
   };
   const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
-  const logAct = (obj, text, change, context) => Activity.record(obj, me()?.id || 'system', text, change, undefined, context);
-  const actFeed = (list, limit) => Activity.visible(list).slice(-(limit || 8)).reverse().map((a) =>
+  const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
     `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
     || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
 
@@ -452,11 +445,6 @@
       target?.focus({preventScroll:true});
     }
     if (!toastQueue.length) { setToastPause('hover', false); setToastPause('focus', false); }
-  }
-  function clearToasts() {
-    toastQueue.forEach(toast => { clearTimeout(toast.timer); uiAnimations.get(toast.el)?.cancel(); });
-    toastQueue.length = 0; document.getElementById('toast-region')?.remove();
-    toastPaused.clear(); if (document.hidden) toastPaused.add('hidden');
   }
   document.addEventListener('visibilitychange', () => setToastPause('hidden', document.hidden));
 
@@ -1170,7 +1158,7 @@
   }
 
   function submitTaskMove(change,onRollback=()=>render()) {
-    if (!change || !bootWindow.OneloopRuntime) return;
+    if (!change) return;
     const pending={};App._boardMovePending=pending;
     bootWindow.OneloopRuntime.invoke('task.move',change.payload).catch((error)=>{
       if(!error?.uncertain&&rollbackTaskMove(change)&&state.view==='board'&&state.projectId===change.projectId)onRollback();
@@ -1183,19 +1171,8 @@
     if (App._boardMovePending) return false;
     if (t.state === col) return;
     if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
-    if (bootWindow.OneloopRuntime) {
-      // A column that does not show its end takes the card at the top, where it stays in view.
-      const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);return;
-    }
-    const prev = t.state;
-    t.state = col;
-    const pe = epicById(t.epicId);
-    if (pe) {
-      if (col === 'done') pe.done += 1;
-      if (prev === 'done') pe.done = Math.max(pe.done - 1, 0);
-      if (col !== 'planning' && pe.state === 'planning') pe.state = 'active';
-    }
-    logAct(t, `moved it to ${STATUS[col]}`, {field:'state',before:prev,after:col});
+    // A column that does not show its end takes the card at the top, where it stays in view.
+    const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);
   }
 
   // Scroll a lane's head into the Roadmap's view, below its sticky date axis.
@@ -1275,9 +1252,9 @@
           </div></div>`;
       }).join('');
       return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' && bootWindow.OneloopRuntime ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
+        <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
         </div>
-        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor || !bootWindow.OneloopRuntime && list.length > (state.boardLimits[c.key] || 50) ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
+        <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
     }).join('');
     return `<div class="board">${cols}</div>`;
   }
@@ -1338,7 +1315,7 @@
     if (!fromServer) cancelBoardSearch();
     updateDocumentTitle();
     if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
-    if(bootWindow.OneloopRuntime&&!fromServer){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}
+    if(!fromServer){invoke('board.filter',App.context().board);return;}
     const board = document.querySelector('.board');
     if (!board || state.view !== 'board') return;
     const snapshot = boardSnapshot();
@@ -1496,21 +1473,7 @@
     }
   }
 
-  function currentBrowserSession() {
-    if (!D.session) return null;
-    D.browserSessions ||= [];
-    let current = D.browserSessions.find(item => item.id === D.session.id && item.userId === D.session.userId && item.revokedAt == null);
-    if (!current && !D.session.id) {
-      current = { id:uid('web'), userId:D.session.userId, device:'This browser', browser:null, ip:null, createdAt:Date.now(), lastActiveAt:Date.now() };
-      D.session.id = current.id; D.browserSessions.push(current);
-    }
-    return current;
-  }
-  function revokeAccountAccess(userId, keepSessionId = null, revokeApps = true) {
-    const now = Date.now();
-    (D.browserSessions || []).forEach(item => { if (item.userId === userId && item.id !== keepSessionId && item.revokedAt == null) item.revokedAt = now; });
-    if (revokeApps) (D.appGrants || []).forEach(item => { if (item.userId === userId && item.revokedAt == null) item.revokedAt = now; });
-  }
+  const currentBrowserSession = () => D.session ? (D.browserSessions || []).find(item => item.id === D.session.id && item.userId === D.session.userId && item.revokedAt == null) : null;
   function renderProfileAccess() {
     const current = currentBrowserSession(), userId = me().id;
     const sessions = (D.browserSessions || []).filter(item => item.userId === userId && (window.Recovery ? Recovery.sessionActive(item) : item.revokedAt == null)).sort((a,b) => Number(b.id === current?.id) - Number(a.id === current?.id) || b.lastActiveAt - a.lastActiveAt);
@@ -1607,13 +1570,13 @@
   }
   function updateDocumentTitle(){const title=documentTitle();if(document.title!==title)document.title=title;}
   function awaitingServerTask() {
-    return !!(window.OneloopTransport && (state.view === 'notfound'||state.view==='task'&&taskById(state.taskId)?.detailsLoaded===false) && state.taskId &&
+    return !!((state.view === 'notfound'||state.view==='task'&&taskById(state.taskId)?.detailsLoaded===false) && state.taskId &&
       location.hash.startsWith('#/task/') && !['403','404','deleted'].includes(window.Recovery?.pageError));
   }
 
   // ---------- task page ----------
   function taskActivityHtml(task){
-    const feed=taskFeedHtml(task,canBoard()),state=collaboration?.taskFeedState?.(task.id);
+    const feed=collaboration.feedHtml(task),state=collaboration.taskFeedState(task.id);
     const retry=`<button class="btn quiet" ${UIAction('retryTaskActivity', task.id)}>Retry</button>`;
     if(!feed)return state?.error?`<div class="access-note" role="alert">Could not load activity. ${retry}</div>`:state?.loaded===false?'<div class="access-note" role="status">Loading activity…</div>':'<div class="access-note">No activity yet</div>';
     return state?.error?`<div class="access-note" role="alert">Could not refresh activity. ${retry}</div>${feed}`:feed;
@@ -1642,18 +1605,6 @@
     UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-feed-key]','data-feed-key',rows);
   }
 
-  function taskFeedHtml(t, canEdit) {
-    if(collaboration)return Collab.feedHtml(t,state.activityLimits[t.id]||50);
-    // one timeline: activity lines and comment blocks, oldest first
-    const items = [...Activity.visible(t.activity).map((a) => ({ k: 'act', ...a })), ...(t.comments || []).map((c, i) => ({ k: 'cmt', i, ...c }))].sort((a, b) => a.ts - b.ts);
-    const limit = state.activityLimits[t.id] || 50;
-    return (items.length > limit ? `<button class="btn quiet" data-feed-key="load-older" ${UIAction('loadOlderActivity', t.id)}>Load older activity</button>` : '') + items.slice(-limit).map((it) => it.k === 'act'
-      ? `<div class="tl-act">${avatarHtml(it.who, 16)}<span><b>${esc((userById(it.who) || { name: it.who }).name)}</b> ${esc(it.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><span class="act-time">· ${ago(it.ts)}</span></div>`
-      : `<div class="tl-cmt"><div class="cmt-head">${avatarHtml(it.who, 20)}<b>${esc((userById(it.who) || { name: it.who }).name)}</b><span class="act-time" title="${new Date(it.ts).toISOString()}">${ago(it.ts)}</span>
-          ${canEdit && (it.who === me().id || isAdmin()) ? `<button type="button" class="row-x icon-button" aria-label="Delete comment" ${UIAction('delComment', t.id, it.i)}>${I.close}</button>` : ''}</div>
-          <div class="cmt-body">${esc(it.text)}</div></div>`).join('');
-
-  }
   // A title or description that is not saved yet stays as typed, with Save.
   const taskDraft = (t, field) => bootWindow.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
   function taskDraftNote(t, field) {
@@ -1708,7 +1659,7 @@
       icon: () => { const a = (taskById(taskId)?.assignees || []).filter(userById); return a.length ? `<span class="avs">${a.slice(0, 3).map((x) => avatarHtml(x, 16)).join('')}</span>` : I.person; },
       options: projectMembers().map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) })),
       values: () => taskById(taskId)?.assignees || [],
-      toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} t.assignees = t.assignees || []; const i = t.assignees.indexOf(v); if(bootWindow.OneloopRuntime){const assigneeIds=i===-1?[...t.assignees,v]:t.assignees.filter(id=>id!==v);bootWindow.OneloopRuntime.invoke('task.assignees',{taskId:t.internalId||t.id,assigneeIds}).catch(bootWindow.OneloopRuntime.report);return;} if (i === -1) { t.assignees.push(v); logAct(t, `assigned ${v}`, {field:'assignee:'+v,before:false,after:true}); collaboration?.taskEvent(t,'assigned',[v]); } else { t.assignees.splice(i, 1); logAct(t, `unassigned ${v}`, {field:'assignee:'+v,before:true,after:false}); } taskSaved(taskId); },
+      toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} invoke('task.assignees',{taskId:t.internalId,assigneeIds:t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]}); },
       summary: () => { const a = taskById(taskId)?.assignees || []; return a.length ? a.map((x) => (userById(x) || { name: x }).name).join(', ') : 'Unassigned'; },
       onClose: () => render(),
     });
@@ -1778,9 +1729,9 @@
   }
 
   function usersCountLabel() {
-    if(window.OneloopTransport&&!D.adminUsers?.loaded)return D.adminUsers?.loading?'…':'';
+    if(!D.adminUsers?.loaded)return D.adminUsers?.loading?'…':'';
     // While more pages wait on the server, the loaded count is only a lower bound.
-    return D.adminUsers?.loaded?`${D.adminUsers.ids.length}${D.adminUsers.nextCursor?'+':''}`:String(D.users.length);
+    return `${D.adminUsers.ids.length}${D.adminUsers.nextCursor?'+':''}`;
   }
   function renderUsers() {
     const awaiting = D.adminUsers?.loading && !D.adminUsers.loaded;
@@ -2090,7 +2041,7 @@
       body = window.OneloopKnowledge?.modalHtml() || '';
     } else if (m.type === 'confirm') {
       body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
-      <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${m.blocked ? '' : `<button class="btn danger" ${UIAction('confirmYes')}>${esc(m.action)}</button>`}</div>`;
+      <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button></div>`;
     }
     body = body.replace('<h2', '<h2 id="modal-title"');
     // The dialog's wrapper covers the backdrop, so a click beside the dialog does nothing.
@@ -2355,7 +2306,6 @@
     if(state.modal?.type==='temppw'&&(!D.session||state.modal.ownerSession!==D.session.id||state.modal.ownerId!==me()?.id||!isAdmin()))state.modal=null;
     if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
     today.setTime(instanceToday().getTime());
-    window.Recovery?.enforceSession();
     if (pendingConfirmation && (pendingConfirmation.session !== D.session?.id || pendingConfirmation.hash !== location.hash || !D.session)) pendingConfirmation.close(false, false);
     window.Uploads?.validateAccess();
     collaboration?.beforeRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
@@ -3010,56 +2960,11 @@
       document.querySelector('.menu-btn').setAttribute('aria-expanded', String(!state.rail));
       try { localStorage.setItem('oneloop.sidebar', state.rail ? 'rail' : 'full'); } catch {}
     },
-    // auth & profile
-    login(ev) {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      const uname = String(f.get('username') || '').trim().toLowerCase();
-      const u = userById(uname);
-      if (!u) return failField(ev.target, 'username', 'No such user.');
-      if (!u.active) return failField(ev.target, 'username', 'This account is deactivated.');
-      if (!f.get('password')) return failField(ev.target, 'password', 'Enter your password.');
-      const complete = () => { D.session = { userId:u.id,authenticatedAt:Date.now() }; currentBrowserSession(); state.rmScrollLeft = null; const target=window.Recovery?.consumeReturn() || '#/roadmap'; setLocalHash(target); resolveRoute(); render(); };
-      if (window.Recovery) Recovery.loginAtLimit(u,complete); else complete(); return false;
-    },
     /** What Sign out asks, which says when typed text would be lost. */
     signOutText() {
       return window.Recovery?.hasUnsavedInput?.() ? 'End your current browser session. Text you typed and have not saved will be lost.' : 'End your current browser session.';
     },
-    logout() {
-      if (!D.session) return;
-      const userId = me().id, sessionId = D.session.id;
-      askConfirmation({ title:'Sign out?', text:App.signOutText(), action:'Sign out', confirm:() => {
-        if (!D.session || me().id !== userId || D.session.id !== sessionId) return;
-        const current = currentBrowserSession(); if (current) current.revokedAt = Date.now();
-        window.Uploads?.clearAccount(userId); clearToasts(); D.session = null; state.modal = null; state.menu = null; state.peek = null; render();
-      } });
-    },
-    setPassword(ev) {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      if ([...String(f.get('pw') || '')].length < 5) return failField(ev.target, 'pw', 'Use at least 5 characters.');
-      if (f.get('pw') !== f.get('pw2')) return failField(ev.target, 'pw2', 'Passwords do not match.');
-      me().mustChange = false; App.toast('Password set'); render(); return false;
-    },
-    changePassword(ev) {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      if (!f.get('cur')) return failField(ev.target, 'cur', 'Enter your current password.');
-      if ([...String(f.get('pw') || '')].length < 5) return failField(ev.target, 'pw', 'Use at least 5 characters.');
-      if (f.get('pw') !== f.get('pw2')) return failField(ev.target, 'pw2', 'Passwords do not match.');
-      D.session.authenticatedAt=Date.now(); revokeAccountAccess(me().id, currentBrowserSession()?.id);
-      App.toast('Password changed. Other sessions and app access revoked'); render(); return false;
-    },
-    updMe(v) { const nv = cleanStr(v, 80); if (!nv) return failField(document.querySelector('.settings'), 'name', 'Enter your full name.'); me().name = nv; const chip = document.querySelector('.me-chip'); if (chip) { chip.title = nv; chip.querySelector('.uname').textContent = nv; } App.toast('Profile saved'); },
     chooseAvatar() { document.getElementById('avIn')?.click(); },
-    setAvatar(input) {
-      const file = input.files[0]; if (!file) return;
-      const r = new FileReader();
-      r.onload = () => { me().avatar = r.result; App.toast('Avatar updated'); render(); };
-      r.readAsDataURL(file);
-    },
-    removeAvatar() { const userId = me().id; askConfirmation({ title:'Remove avatar?', text:'Your account will use its default avatar.', action:'Remove avatar', confirm:() => { if (me()?.id !== userId) return; me().avatar = null; render(); } }); },
     userMenu(ev) {
       const r = ev.currentTarget.getBoundingClientRect();
       App._openMenu([
@@ -3104,166 +3009,8 @@
       else expandedDescriptions.add(id);
       sizeDescription(true);
     },
-    revokeSession(id) {
-      if (!D.session || id === D.session.id) return false;
-      const item = (D.browserSessions || []).find(item => item.id === id && item.userId === me().id && item.revokedAt == null);
-      if (!item) return false;
-      return askConfirmation({ title:'Revoke session?', text:`${item.device || 'This device'} will need to sign in again.`, action:'Revoke session', confirm:() => {
-        if (!D.session || item.userId !== me().id || id === D.session.id || item.revokedAt != null) return;
-        item.revokedAt = Date.now(); refreshProfileAccess(); App.toast('Session revoked');
-      } });
-    },
-    revokeOtherSessions() {
-      if (!D.session) return false;
-      const current = currentBrowserSession();
-      if (!current || !(D.browserSessions || []).some(item => item.userId === me().id && item.id !== current.id && item.revokedAt == null)) return false;
-      return askConfirmation({ title:'Sign out other sessions?', text:'All other browser sessions will end. Connected apps will keep their access.', action:'Sign out other sessions', confirm:() => {
-        if (!D.session || me().id !== current.userId || D.session.id !== current.id) return;
-        revokeAccountAccess(me().id, current.id, false); refreshProfileAccess(); App.toast('Other sessions signed out');
-      } });
-    },
-    revokeAppAccess(id) {
-      if (!D.session) return false;
-      const grant = (D.appGrants || []).find(item => item.id === id && item.userId === me().id && item.revokedAt == null);
-      if (!grant) return false;
-      return askConfirmation({ title:`Revoke ${grant.clientName} access?`, text:'This app will lose access to its authorized projects until you reconnect it.', action:'Revoke access', confirm:() => {
-        if (!D.session || me().id !== grant.userId || grant.revokedAt != null) return;
-        grant.revokedAt = Date.now(); refreshProfileAccess(); App.toast(`${grant.clientName} access revoked`);
-      } });
-    },
-
-    // users (admin)
-    saveUser(ev, id) {
-      ev.preventDefault();
-      if (!isAdmin()) return false;
-      const f = new FormData(ev.target);
-      const name = cleanStr(f.get('name'), 80);
-      if (id) {
-        const u = userById(id);
-        const wantAdmin = ev.target.elements.admin.disabled ? u.admin : f.get('admin') !== null;
-        const wantActive = ev.target.elements.active.disabled ? u.active : f.get('active') !== null;
-        if (u.admin && u.active && activeAdmins().length === 1 && (!wantAdmin || !wantActive)) return failField(ev.target, 'name', 'This is the last active admin.');
-        if (!name) return failField(ev.target, 'name', 'Give the user a name.');
-        const apply = () => {
-          if (!isAdmin()) return;
-          if (u.admin && u.active && activeAdmins().length === 1 && (!wantAdmin || !wantActive)) return;
-          Object.assign(u, { name, admin: wantAdmin, active: wantActive });
-          if (!wantActive) revokeAccountAccess(u.id);
-          if (u.id === me().id && !wantActive) { D.session = null; state.modal = null; render(); return; }
-          App.toast(`${u.id} saved`); state.modal = null; render();
-        };
-        if (u.active && !wantActive) askConfirmation({title:'Deactivate user?',text:`${u.name} will lose access, including existing sessions and connected apps.`,action:'Deactivate user',confirm:apply});
-        else if (u.admin && !wantAdmin) askConfirmation({title:'Remove admin access?',text:`${u.name} will keep only their project permissions.`,action:'Remove admin access',confirm:apply});
-        else apply();
-        return false;
-      }
-      const uname = String(f.get('username') || '');
-      if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(uname)) return failField(ev.target, 'username', '3–32 characters: a–z, 0–9, dots, dashes.');
-      if (userById(uname)) return failField(ev.target, 'username', 'That username is taken.');
-      if (!name) return failField(ev.target, 'name', 'Give the user a name.');
-      const pw = genPassword();
-      D.users.push({ id: uname, name, admin: f.get('admin') !== null, active: true, avatar: null, mustChange: true });
-      App.showTemporaryPassword(uname,pw); return false;
-    },
-    resetPassword(id) {
-      if (!isAdmin() || !userById(id)) return;
-      askConfirmation({ title:'Reset password?', text:`${userById(id).name}'s sessions and app access will be revoked. A temporary password will be created.`, action:'Reset password', confirm:() => {
-        if (!isAdmin()) return;
-        const u = userById(id); if (!u) return;
-        const pw = genPassword(); u.mustChange = true; revokeAccountAccess(id);
-        App.showTemporaryPassword(id,pw);
-      } });
-    },
-
-    // members (admin)
-    addMember(uid) {
-      if (!isAdmin()) return;
-      const p = project();
-      p.members = p.members || [];
-      if (!memberRecord(uid)) p.members.push({ userId: uid, permissions: [] });
-      App.toast(`${uid} added — read only`); render();
-    },
-    setMemberPermission(userId, permission, enabled, input) {
-      if (!isAdmin() || !['manage_board','manage_roadmap'].includes(permission)) return;
-      const p = project(), membership = memberRecord(userId);
-      if (!membership) return;
-      const apply = () => {
-        if (!isAdmin() || project().id !== p.id || !memberRecord(userId)) return;
-        let record = memberRecord(userId);
-        if ((p.members || []).includes(userId)) { record = {userId,permissions:[]}; p.members[p.members.indexOf(userId)] = record; }
-        record.permissions ||= [];
-        if (enabled && !record.permissions.includes(permission)) record.permissions.push(permission);
-        if (!enabled) record.permissions = record.permissions.filter(item => item !== permission);
-        App.toast(`${userId} access updated`); render();
-      };
-      if (!enabled && (membership.permissions || []).includes(permission)) {
-        askConfirmation({ title:'Remove permission?', text:`${userById(userId)?.name || userId} will lose permission to manage ${permission === 'manage_board' ? 'Board' : 'Roadmap'} in ${p.name}.`, action:'Remove permission', cancel:() => { if (input?.isConnected) input.checked = true; }, confirm:apply });
-      } else apply();
-    },
-    removeMember(uid) {
-      if (!isAdmin()) return;
-      const assigned = tasks().filter((t) => t.state !== 'done' && (t.assignees || []).includes(uid));
-      if (assigned.length) {
-        state.modal = { type: 'confirm', title: 'Member has open work', text: `Reassign ${assigned.length} open task${assigned.length === 1 ? '' : 's'} before removing ${uid} from this project.`, blocked: true };
-        render(); return;
-      }
-      const p = project();
-      askConfirmation({ title:'Remove member?', text:`Remove ${userById(uid)?.name || uid} from ${p.name}?`, action:'Remove member', confirm:() => {
-        if (!isAdmin() || project().id !== p.id || tasks().some(t => t.state !== 'done' && (t.assignees || []).includes(uid))) return;
-        p.members = (p.members || []).filter(m => (typeof m === 'string' ? m : m.userId) !== uid);
-        App.toast(`${uid} removed`); render();
-      } });
-    },
 
     openTask(id) { const target=taskById(id),track=trackById(epicById(target?.epicId)?.trackId);if(!target||!track)return;if(!canReadTask(target)){state.view='forbidden';state.peek=null;state.modal=null;render();return;}state.projectId=track.projectId;state.sideOpen = false; state.view = 'task'; state.taskId = id; state.menu = null; setLocalHash('#/task/' + id); render(); },
-    updTask(id, f, v) {
-      if(rendering)return false;
-      if (!App.require('manage_board')) return;
-      const t = taskById(id);
-      if (!t) { App.toast('This task is no longer available','error');return false; }
-      if(f==='start'||f==='created'){App.toast('The creation date is read only','info');return false;}
-      if (f === 'deadline') {
-        const value = parseDateInput(v);
-        const error = dateError({ clearable: true }, value);
-        if (error) {
-          const wrap = document.querySelector('[data-date-key="tpDl"]');
-          if (wrap) dateFieldError(wrap, error);
-          return false;
-        }
-        v = value;
-      }
-      const before = f === 'desc' ? t.desc || '' : t[f] ?? null;
-      if (f === 'title') { const nv = cleanStr(v, 140); if (!nv) return failField(document.querySelector('.task-page'), 'title', 'Enter a task title.'); if (nv !== t.title) { t.title = nv; logAct(t, 'renamed the task', {field:f,before,after:nv}); } }
-      else if (f === 'desc') { const nv = cleanStr(v, 4000); if (nv !== (t.desc || '')) { t.desc = nv; logAct(t, 'updated the description', {field:f,before,after:nv}); } }
-      else if (f === 'deadline') { if (v !== (t.deadline || '')) { t.deadline = v || null; logAct(t, v ? `set the deadline to ${human(d(v))}` : 'cleared the deadline', {field:f,before,after:v||null}); } }
-      else if (f === 'state') { if(setTaskState(t, v)===false)return false; }
-      else if (f === 'epicId') {
-        if (v !== t.epicId) {
-          const oldE = epicById(t.epicId), newE = taskDestinationEpics().find(epic => epic.id === v);
-          if (!newE) {
-            const control = document.querySelector('#select-tpEpic');
-            if (control && oldE) { control.querySelector('.sel-label').textContent = oldE.title; control.dataset.tip = oldE.title; }
-            if (SELS.tpEpic) SELS.tpEpic.value = t.epicId;
-            App.toast('Choose an open epic. Completed epics must be reopened first.', 'error'); return false;
-          }
-          if (oldE) { oldE.total = Math.max(oldE.total - 1, 0); if (t.state === 'done') oldE.done = Math.max(oldE.done - 1, 0); }
-          if (newE) { newE.total += 1; if (t.state === 'done') newE.done += 1; }
-          t.epicId = v;
-          logAct(t, `moved it to “${newE ? newE.title : v}”`, {field:f,before,after:v});
-        }
-      }
-      const after = f === 'desc' ? t.desc || '' : t[f] ?? null;
-      if(before!==after)taskSaved(id);
-      if(f==='title')updateDocumentTitle();
-      if (f === 'deadline' || f === 'desc' || f === 'title') {
-        const timeline = document.querySelector('.task-page .timeline');
-        if (timeline) setHTML(timeline,taskFeedHtml(t, canBoard()));
-        document.querySelector('.task-overdue')?.toggleAttribute('hidden', !overdue(t));
-        document.querySelector('[data-date-key="tpDl"]')?.closest('.prop-row').classList.toggle('late', !!overdue(t));
-        return true;
-      }
-      render();
-    },
     popMulti(ev, key) {
       ev.preventDefault();
       if (POP.id === 'ms:' + key) { closePop(); return; }
@@ -3306,66 +3053,6 @@
         else if((e.key==='Enter'||e.key===' ')&&document.activeElement?.matches('.pop-opt.multi')&&el.contains(document.activeElement)){e.preventDefault();document.activeElement.click();}
       };
       document.addEventListener('keydown', POP.onKey, true);
-    },
-    attachFiles(id, input) {
-      if (!App.require('manage_board')) return;
-      const t = taskById(id);
-      t.attachments = t.attachments || [];
-      [...input.files].forEach((f) => { t.attachments.push({ name: f.name, size: f.size }); logAct(t, `attached ${f.name}`); });
-      render();
-    },
-    delAttachment(id, i) {
-      if (!App.require('manage_board')) return;
-      const task = taskById(id), attachment = task?.attachments?.[i]; if (!attachment) return;
-      askConfirmation({ title:'Remove attachment?', text:attachment.name, action:'Remove attachment', confirm:() => {
-        if (!canBoard() || taskById(id) !== task) return;
-        const index = task.attachments.indexOf(attachment); if (index < 0) return;
-        logAct(task, `removed ${attachment.name}`); task.attachments.splice(index,1); render();
-      } });
-    },
-    delComment(id, i) {
-      if (!App.require('manage_board')) return;
-      const task = taskById(id), comment = task?.comments?.[i];
-      if (!comment || (comment.who !== me().id && !isAdmin())) return;
-      askConfirmation({ title:'Delete comment?', text:'This comment will be permanently removed.', action:'Delete comment', confirm:() => {
-        if (!canBoard() || taskById(id) !== task || (comment.who !== me().id && !isAdmin())) return;
-        const index = task.comments.indexOf(comment); if (index < 0) return;
-        task.comments.splice(index,1); render();
-      } });
-    },
-    addComment(id) {
-      if (!App.require('manage_board')) return;
-      const text = cleanStr(document.getElementById('cmtIn').value, 2000);
-      if (!text) return;
-      const t = taskById(id);
-      (t.comments = t.comments || []).push({ who: me().id, ts: Date.now(), text });
-      render();
-    },
-    saveBlock(ev,id,mode) {
-      ev.preventDefault();const task=taskById(id);
-      if(!task){App.toast('This task is no longer available','error');return false;}
-      if(!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline())return false;
-      let message='';
-      const reason=cleanStr(new FormData(ev.target).get('reason'),500);
-      if(mode==='block'){
-        if(task.state==='done'){App.toast('Completed tasks cannot be blocked','error');return false;}
-        if(!reason)return failField(ev.target,'reason','Explain what is preventing progress.');
-        const prepared=collaboration?.prepareBlock(task,new FormData(ev.target).get('reason'),reason);if(!prepared)return false;
-        const created=!task.block;
-        const changed=created||task.block.reason!==reason||JSON.stringify(task.block.mentions||[])!==JSON.stringify(prepared.mentions);
-        if(changed)message=created?'Task blocked':'Block reason updated';
-        if(task.block){const before={reason:task.block.reason,mentions:task.block.mentions||[]};task.block.reason=reason;task.block.mentions=prepared.mentions;logAct(task,'updated the block reason: '+reason,{field:'block-reason:'+task.block.id,before,after:{reason,mentions:prepared.mentions}},{blockId:task.block.id});}
-        else {task.block={id:'block-'+(crypto.randomUUID?.()||Date.now()+'-'+uid('block')),reason,mentions:prepared.mentions,by:me().id,at:Date.now()};logAct(task,'blocked the task: '+reason,null,{blockId:task.block.id});}
-        Collab.blockSaved(task,created,prepared);
-      }else if(['unblock','completeBlocked'].includes(mode)){
-        if(!task.block){App.toast('This block has already been resolved','info');return false;}
-        const blockId=task.block.id;
-        (task.blockHistory ||= []).push({...task.block,resolvedAt:Date.now(),resolvedBy:me().id,resolution:reason});task.block=null;
-        logAct(task,'unblocked the task'+(reason?': '+reason:''),null,{blockId});collaboration?.taskEvent(task,'unblocked');
-        if(mode==='completeBlocked')setTaskState(task,'done');
-        message=mode==='completeBlocked'?'Task unblocked and completed':'Task unblocked';
-      }else return false;
-      state.modal=null;render();if(message)App.toast(message);return false;
     },
     setBlockedFilter(button){state.boardBlocked=!state.boardBlocked;button?.setAttribute('aria-pressed',String(state.boardBlocked));applyBoardFilters();},
     /** Zoom the Roadmap to a fixed scale, in place, keeping the selected epic or today where it is. */
@@ -3428,18 +3115,17 @@
       if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
       state.sideOpen = false;
       state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') { App._poolScroll = {}; App._focusPool = true; } renderOverlays();
-      if(type==='pool'&&bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.open',{}).catch(bootWindow.OneloopRuntime.report);
+      if(type==='pool')invoke('pool.open');
     },
     toast: pushToast,
     offerUndo,
     announce,
     dismissToast,
 
-
     // menus
     projectMenu(ev) {
       const r = ev.currentTarget.getBoundingClientRect();
-      const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => { if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('workspace.select',{projectId:p.id}).catch(bootWindow.OneloopRuntime.report);return;}App.selectProject(p.id); } }));
+      const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => invoke('workspace.select',{projectId:p.id}) }));
       if (isAdmin()) items.push({ sep: true }, { label: 'New project', icon:I.plus, fn: () => { state.modal = { type: 'project' }; renderOverlays(); } });
       App._openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
     },
@@ -3462,205 +3148,8 @@
     // The action starts from the menu's button, so a dialog it opens returns focus there.
     menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
 
-    // CRUD — epics
-    saveEpic(ev, id) {
-      ev.preventDefault();
-      if (!App.require('manage_roadmap')) return false;
-      const f = new FormData(ev.target);
-      const title = cleanStr(f.get('title'), 120);
-      if (!title) return failField(ev.target, 'title', 'Give the epic a title.');
-      if (!tracks().some((track) => track.id === f.get('trackId'))) return failField(ev.target, 'trackId', 'Choose a track.');
-      if (!validateFormDates(ev.target)) return false;
-      const dates = new FormData(ev.target);
-      const start = parseDateInput(dates.get('start')), end = parseDateInput(dates.get('end')) || null;
-      if (!start || (end && end < start)) return failField(ev.target, 'end', 'End date cannot be before the start date.');
-      const desc = cleanStr(f.get('desc'), 2000);
-      if (id) {
-        const e0 = epicById(id);
-        const values = { title, trackId: f.get('trackId'), start, end, desc };
-        const labels = {title:'title',trackId:'track',start:'start date',end:'end date',desc:'description'};
-        for (const [field,after] of Object.entries(values)) logAct(e0, 'updated the epic '+labels[field], {field,before:field==='desc'?e0[field]||'':e0[field]??null,after});
-        Object.assign(e0, values);
-        App.toast('Epic updated');
-      } else {
-        const ne = { id: uid('e'), trackId: f.get('trackId'), title, start, end, state: 'planning', done: 0, total: 0, desc, activity: [] };
-        logAct(ne, 'created the epic');
-        D.epics.push(ne);
-        App.toast('Epic created');
-      }
-      state.modal = null; render(); return false;
-    },
-    closeEpic(id) {
-      if (!App.require('manage_roadmap')) return;
-      const e = epicById(id);
-      const open = tasks().filter((t) => t.epicId === id && t.state !== 'done').length;
-      const mark = () => { const before=e.state;e.state = 'done'; logAct(e, 'marked the epic as done', {field:'state',before,after:e.state}); App.toast('Epic marked as done'); };
-      if (open) {
-        state.modal = { type: 'confirm', title: 'Open tasks remain', text: `${open} open task${open > 1 ? 's' : ''} stay${open > 1 ? '' : 's'} where ${open > 1 ? 'they are' : 'it is'}.`, action: 'Mark as done', fn: mark };
-      } else mark();
-      render();
-    },
-    reopenEpic(id) {
-      if (!App.require('manage_roadmap')) return;
-      const e = epicById(id);
-      const before = e.state;
-      e.state = tasks().some((t) => t.epicId === id && t.state !== 'planning' && t.state !== 'done') ? 'active' : 'planning';
-      logAct(e, 'reopened the epic', {field:'state',before,after:e.state});
-      App.toast('Epic reopened');
-      render();
-    },
-    deleteEpic(id) {
-      if (!App.require('manage_roadmap')) return;
-      const n = tasks().filter((t) => t.epicId === id).length;
-      state.modal = n
-        ? { type: 'confirm', title: 'This epic has tasks', text: `Move ${n} task${n > 1 ? 's' : ''} to another epic first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete epic?', text: `“${epicById(id).title}” will be removed.`, action: 'Delete epic', fn: () => { D.epics = D.epics.filter((e) => e.id !== id); state.peek = null; App.toast('Epic deleted'); } };
-      render();
-    },
-
-    // CRUD — milestones
-    saveMilestone(ev, id) {
-      ev.preventDefault();
-      if (!App.require('manage_roadmap')) return false;
-      const f = new FormData(ev.target);
-      const name = cleanStr(f.get('name'), 60);
-      if (!name) return failField(ev.target, 'name', 'Give the milestone a name.');
-      if (!validateFormDates(ev.target)) return false;
-      const date = parseDateInput(new FormData(ev.target).get('date'));
-      if (!date) return failField(ev.target, 'date', 'Enter a valid date.');
-      const data = { name, date, desc: cleanStr(f.get('desc'), 500), projectId: state.projectId };
-      if (id) { Object.assign(D.milestones.find((m) => m.id === id), data); App.toast('Milestone updated'); }
-      else { D.milestones.push({ id: uid('m'), ...data }); App.toast('Milestone created'); }
-      state.modal = null; render(); return false;
-    },
-    deleteMilestone(id) {
-      if (!App.require('manage_roadmap')) return;
-      state.modal = { type: 'confirm', title: 'Delete milestone?', text: `“${D.milestones.find((m) => m.id === id).name}” will be removed.`, action: 'Delete', fn: () => { D.milestones = D.milestones.filter((m) => m.id !== id); App.toast('Milestone deleted'); } };
-      render();
-    },
-
-    // CRUD — tracks
-    saveTrack(ev, id) {
-      ev.preventDefault();
-      if (!App.require('manage_roadmap')) return false;
-      const name = cleanStr(new FormData(ev.target).get('name'), 60);
-      if (!name) return failField(ev.target, 'name', 'Give the track a name.');
-      if (id) { trackById(id).name = name; App.toast('Track renamed'); }
-      else { D.tracks.push({ id: uid('t'), projectId: state.projectId, name, order: tracks().length + 1 }); App.toast('Track created'); }
-      state.modal = null; render(); return false;
-    },
-    deleteTrack(id) {
-      if (!App.require('manage_roadmap')) return;
-      const n = epics().filter((e) => e.trackId === id).length;
-      state.modal = n
-        ? { type: 'confirm', title: 'This track has epics', text: `Move ${n} epic${n > 1 ? 's' : ''} to another track first.`, blocked: true }
-        : { type: 'confirm', title: 'Delete track?', text: `“${trackById(id).name}” will be removed.`, action: 'Delete track', fn: () => { D.tracks = D.tracks.filter((t) => t.id !== id); App.toast('Track deleted'); } };
-      render();
-    },
-
-    // CRUD — tasks
-    saveTask(ev) {
-      ev.preventDefault();
-      if (!App.require('manage_board')) return false;
-      const f = new FormData(ev.target);
-      const title = cleanStr(f.get('title'), 140);
-      if (!title) return failField(ev.target, 'title', 'Give the task a title.');
-      const destination = epics().find(epic => epic.id === f.get('epicId'));
-      if (!destination) return failField(ev.target, 'epicId', 'Choose an epic.');
-      if (destination.state === 'done') return failField(ev.target, 'epicId', 'This epic is completed. Reopen it before adding tasks.');
-      if(!validateFormDates(ev.target))return false;
-      const deadline=parseDateInput(new FormData(ev.target).get('deadline'))||null,assignees=[...new Set(f.getAll('assignees'))],eligible=new Set(projectMembers().map(u=>u.id));
-      if(assignees.some(id=>!eligible.has(id)))return failField(ev.target,'assignees','Choose active project members. A selected person is no longer available.');
-      const p = project();
-      let n = (D.taskCounters[p.id] || 0) + 1; while(D.tasks.some(task=>task.id===`${p.key}-${String(n).padStart(3,'0')}`))n++; D.taskCounters[p.id]=n;
-      const nt = { internalId: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : uid('task'), id: `${p.key}-${String(n).padStart(3, '0')}`, created: Date.now(), deadline, assignees, epicId: f.get('epicId'), title, state: 'planning', desc: cleanStr(f.get('desc'), 4000), activity: [] };
-      logAct(nt, 'created the task');
-      D.tasks.push(nt);
-      if(assignees.length)collaboration?.taskEvent(nt,'assigned',assignees);
-      const e = epicById(f.get('epicId'));
-      if (e) e.total += 1;
-      const fromPool = !!state.modal.poolId;
-      if (fromPool) D.pool = D.pool.filter((x) => x.id !== state.modal.poolId);
-      if (fromPool) {
-        App.returnToPool();
-        if (state.view === 'board') {
-          const oldBoard = document.querySelector('.board');
-          const left = oldBoard?.scrollLeft || 0;
-          const scrolls = [...document.querySelectorAll('.col-cards')].map((el) => [el.closest('.col').dataset.col, el.scrollTop]);
-          setHTML(document.querySelector('.content'),renderBoard());
-          document.querySelector('.board').scrollLeft = left;
-          scrolls.forEach(([key, top]) => { document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`).scrollTop = top; });
-        }
-        const count = counts();
-        const navCount = document.querySelector('.nav-item[title="Board"] .end');
-        if (navCount) navCount.textContent = count.open;
-        App.toast(`${nt.id} planning`);
-        document.getElementById('poolAdd')?.focus();
-      } else {
-        state.modal = null; render();
-        App.toast(`${nt.id} planning`);
-      }
-      return false;
-    },
-
-    // CRUD — project
     /** Enter saves a project field, then leaves it. */
     leaveProjectField(event, input) { event.preventDefault(); App.updateProjectField(input); input.blur(); },
-    updateProjectField(input) {
-      if (!isAdmin() || !['name','key'].includes(input.name)) return false;
-      const value = input.name === 'name' ? cleanStr(input.value, 60) : input.value.toUpperCase();
-      const error = input.name === 'name' ? (!value && 'The project needs a name.') : (!/^[A-Z0-9]{2,4}$/.test(value) && '2–4 letters or digits.');
-      if (error) return failField(input.closest('.project-fields'), input.name, error);
-      if(input.name==='key' && D.prefixRegistry[value] && D.prefixRegistry[value]!==project().id) return failField(input.closest('.project-fields'),'key','This prefix is reserved by another project.');
-      const changed = project()[input.name] !== value;
-      if(input.name==='key')D.prefixRegistry[value]=project().id;
-      project()[input.name] = value; input.value = value; clearFieldError(input);
-      if (input.name === 'name') {
-        updateDocumentTitle();
-        const trigger = document.querySelector('.switcher-btn');
-        if (trigger) {
-          trigger.title = value;
-          trigger.querySelector('.project-name').textContent = value;
-          trigger.querySelector('.avatar').textContent = value[0].toUpperCase();
-        }
-      }
-      if (changed) App.toast(input.name === 'name' ? 'Project name updated' : 'Task prefix updated');
-      return true;
-    },
-    saveProjectNew(ev) {
-      ev.preventDefault();
-      if (!isAdmin()) return false;
-      const f = new FormData(ev.target);
-      const name = cleanStr(f.get('name'), 60);
-      if (!name) return failField(ev.target, 'name', 'The project needs a name.');
-      const key = (f.get('key') || '').toUpperCase();
-      if (!/^[A-Z0-9]{2,4}$/.test(key)) return failField(ev.target, 'key', '2–4 letters or digits.');
-      if(D.prefixRegistry[key])return failField(ev.target,'key','This prefix is already reserved.');
-      const id = uid('p'); D.prefixRegistry[key]=id; D.taskCounters[id]=0;
-      D.projects.push({ id, key, name, members: [{ userId: me().id, permissions: [] }] });
-      state.projectId = id; state.modal = null; state.rmScrollLeft = null; state.view = 'roadmap';
-      App.toast('Project created'); render(); return false;
-    },
-    deleteProject() {
-      if (!isAdmin()) return;
-      if (D.projects.length === 1) { App.toast('The last project cannot be deleted', 'error'); return; }
-      const target = project(), name = target.name;
-      askConfirmation({ title:'Delete project?', text:'This permanently removes the project, tracks, epics, tasks, milestones, and Pool items. This cannot be undone.', action:'Delete project', match:name, confirm:() => {
-        if (!isAdmin()) return;
-        if (D.projects.length <= 1) { App.toast('The last project cannot be deleted', 'error'); return; }
-        if (!D.projects.includes(target) || target.name !== name) { App.toast('The project changed. Review it before deleting.', 'error'); return; }
-        const trackIds = new Set(D.tracks.filter(t => t.projectId === target.id).map(t => t.id));
-        const epicIds = new Set(D.epics.filter(e => trackIds.has(e.trackId)).map(e => e.id));
-        D.tasks = D.tasks.filter(t => !epicIds.has(t.epicId));
-        D.epics = D.epics.filter(e => !epicIds.has(e.id)); D.tracks = D.tracks.filter(t => !trackIds.has(t.id));
-        D.milestones = D.milestones.filter(m => m.projectId !== target.id); D.pool = D.pool.filter(item => item.projectId !== target.id);
-        (D.appGrants || []).forEach(grant => { if (!(grant.access || []).some(access => access.projectId === target.id)) return; grant.access = grant.access.filter(access => access.projectId !== target.id); if (!grant.access.length && grant.revokedAt == null) grant.revokedAt = Date.now(); });
-        D.projects = D.projects.filter(p => p.id !== target.id);
-        if (state.projectId === target.id) { state.projectId = D.projects[0].id; state.rmScrollLeft = null; state.peek = null; state.modal = null; state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false; if (state.view === 'task') { state.view = 'roadmap'; state.taskId = null; setLocalHash('#/roadmap'); } }
-        App.toast('Project deleted'); render();
-      } });
-    },
-    confirmYes() { if(window.Recovery && !Recovery.ensureOnline())return false; if (state.modal?.type !== 'confirm' || state.modal.blocked || typeof state.modal.fn !== 'function') return false; const fn = state.modal.fn; state.modal = null; fn(); render(); return true; },
 
     // Drag destinations and mutations retain their existing behavior.
     _ind() { return document.getElementById('dropInd'); },
@@ -3757,31 +3246,14 @@
       const t = taskById(id);
       if (!t || id === beforeId) { App.dragEnd(); return; }
       if(t.block && col==='done'){App.dragEnd();App.openModal('completeBlocked',id);return;}
-      if(bootWindow.OneloopRuntime){
-        const before=motionRects('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
-        const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
-        const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
-        App.dragEnd(false);if(!change)return;
-        App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
-        scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
-        animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
-        submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
-        return;
-      }
-      const before = motionRects('.card[data-task]');
-      const from = { left: ev.clientX - App._drag.offsetX, top: ev.clientY - App._drag.offsetY };
-      const scrolls = [...document.querySelectorAll('.col-cards')].map((el) => [el.closest('.col').dataset.col, el.scrollTop]);
-      const boardLeft = document.querySelector('.board').scrollLeft;
-      App.dragEnd(false);
-      D.tasks.splice(D.tasks.indexOf(t), 1);
-      const at = beforeId ? D.tasks.indexOf(taskById(beforeId)) : -1;
-      if (at === -1) D.tasks.push(t); else D.tasks.splice(at, 0, t);
-      setTaskState(t, col);
-      render();
-      document.querySelector('.board').scrollLeft = boardLeft;
-      scrolls.forEach(([key, top]) => { document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`).scrollTop = top; });
-      animateLayout(before, '.card[data-task]', id);
-      settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`), from);
+      const before=motionRects('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
+      const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
+      const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
+      App.dragEnd(false);if(!change)return;
+      App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
+      scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
+      animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
+      submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
     },
 
     trackDragStart(ev, id) {
@@ -3840,14 +3312,12 @@
       render();
       focusMovedTrack(id);
       animateLayout(before, '.lane');
-      if(bootWindow.OneloopRuntime){
-        const pending={};App._roadmapMovePending=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
-        bootWindow.OneloopRuntime.invoke('track.reorder',{trackId:id,position:to,optimistic:true}).catch((error)=>{
-          const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
-          if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');render();animateLayout(rollbackBefore,'.lane');}}
-          bootWindow.OneloopRuntime.report(error);
-        }).finally(()=>{if(App._roadmapMovePending===pending)App._roadmapMovePending=false;});
-      }
+      const pending={};App._roadmapMovePending=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
+      bootWindow.OneloopRuntime.invoke('track.reorder',{trackId:id,position:to,optimistic:true}).catch((error)=>{
+        const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
+        if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');render();animateLayout(rollbackBefore,'.lane');}}
+        bootWindow.OneloopRuntime.report(error);
+      }).finally(()=>{if(App._roadmapMovePending===pending)App._roadmapMovePending=false;});
     },
 
     taskActions(ev,id) {
@@ -3855,35 +3325,7 @@
       const r=ev.currentTarget.getBoundingClientRect();
       App._openMenu([{label:'Delete task',danger:true,fn:()=>App.deleteTask(id)}],r.right,r.bottom+4,{taskActions:true,trigger:ev.currentTarget});
     },
-    deleteTask(id) {
-      if (!App.require('manage_board')) return;
-      const t = taskById(id);
-      if(!t){App.toast('This task is no longer available','error');return;}
-      state.modal = { type: 'confirm', title: 'Delete task?', text: `${t.id} will be removed.`, action: 'Delete task', fn: () => {
-        if(!D.tasks.includes(t)){App.toast('This task is no longer available','error');return;}
-        if(!hasPermission('manage_board',trackById(epicById(t.epicId)?.trackId)?.projectId)){App.toast('You no longer have permission to delete this task','error');return;}
-        const e = epicById(t.epicId);
-        if (e) { e.total = Math.max(e.total - 1, 0); if (t.state === 'done') e.done = Math.max(e.done - 1, 0); }
-        D.tasks = D.tasks.filter((x) => x.id !== id);
-        if (state.view === 'task') { state.view = 'board'; setLocalHash('#/board'); }
-        App.toast(`${t.id} deleted`);
-      } };
-      render();
-    },
 
-    // Pool owns its mounted view; local actions never rebuild the dialog shell.
-    poolKey(ev) {
-      if (ev.key !== 'Enter' || ev.isComposing || ev.keyCode===229 || ev.repeat || ev.shiftKey || ev.altKey) return;
-      ev.preventDefault();
-      if (state.poolTab === 'project' && !App.require('manage_board')) return;
-      const title = cleanStr(ev.target.value, 140),desc=cleanStr(document.getElementById('poolNewDesc')?.value,2000);
-      if (!title){ev.target.focus();return;}
-      D.pool.push(state.poolTab === 'mine'
-        ? { id: uid('pl'), projectId: state.projectId, scope: 'mine', ownerId: me().id, title, desc }
-        : { id: uid('pl'), projectId: state.projectId, scope: 'project', title, desc });
-      ev.target.value = '';resetPoolCapture();
-      updatePool();ev.target.focus({preventScroll:true});
-    },
     togglePoolDescription(){const capture=document.querySelector('.pool-capture');if(!capture||capture.hidden)return;const open=!capture.classList.contains('is-expanded');if(!open){resetPoolCapture();document.getElementById('poolAdd').focus();return;}capture.classList.add('is-expanded');const content=capture.querySelector('.pool-capture-notes');content.inert=false;content.setAttribute('aria-hidden','false');const toggle=capture.querySelector('.pool-capture-toggle');toggle.setAttribute('aria-expanded','true');toggle.setAttribute('aria-label','Remove description');toggle.title='Remove description';setHTML(toggle,I.close);document.getElementById('poolNewDesc').focus();},
     addPoolItem(){const input=document.getElementById('poolAdd');if(input&&!input.hidden)App.poolKey({key:'Enter',target:input,preventDefault(){}});},
     poolDescriptionKey(ev,id){
@@ -3894,7 +3336,6 @@
     },
     editPoolDescription(ev,id){ev.stopPropagation();const item=poolItems(state.poolTab).find(p=>p.id===id),row=ev.currentTarget.closest('[data-pool-item]');if(!item||!row)return;const existing=row.querySelector('.pool-description-editor');if(existing){App.cancelPoolDescription(id);return;}document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));const writable=item.scope==='mine'?item.ownerId===me()?.id:canBoard(),editor=document.createElement('div');editor.className='pool-description-editor';const before=row.getBoundingClientRect().height;setHTML(editor,writable?`<form novalidate ${UIAction.on('submit','savePoolDescription',UIAction.event,id)}><label for="pool-desc-${UIEscape(id)}">Description ${optionalMark}</label><textarea class="ctl" id="pool-desc-${UIEscape(id)}" name="desc" maxlength="2000" ${UIAction.on('keydown','poolDescriptionKey',UIAction.event,id)} placeholder="A little context for later…">${esc(item.desc||'')}</textarea><div class="pool-description-actions"><button type="button" class="btn quiet" ${UIAction('cancelPoolDescription',id)}>Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`:`<div class="pool-note-read" tabindex="-1" role="group" aria-label="Description for ${esc(item.title)}">${esc(item.desc||'')}</div>`);row.append(editor);const reader=editor.querySelector('.pool-note-read');if(reader&&reader.scrollHeight>reader.clientHeight)reader.setAttribute('tabindex','0');ev.currentTarget.setAttribute('aria-expanded','true');UIMotion.height(row,before);editor.querySelector('textarea,.pool-note-read')?.focus({preventScroll:true});},
     cancelPoolDescription(id,focus=true){const row=document.querySelector(`[data-pool-item="${UIEscape(id)}"]`);if(!row)return;const before=row.getBoundingClientRect().height;row.querySelector('.pool-description-editor')?.remove();const toggle=row.querySelector('.pool-note-toggle');toggle?.setAttribute('aria-expanded','false');UIMotion.height(row,before);if(focus)toggle?.focus({preventScroll:true});},
-    savePoolDescription(ev,id){ev.preventDefault();const item=poolItems(state.poolTab).find(p=>p.id===id);if(!item||!me()?.active||(item.scope==='mine'?item.ownerId!==me().id:!canBoard())){App.toast('You no longer have permission to edit this item','error');return false;}const desc=cleanStr(new FormData(ev.target).get('desc'),2000);if(desc!==item.desc){item.desc=desc;App.toast('Description saved');}const row=ev.target.closest('[data-pool-item]'),next=document.createElement('template');setHTML(next,poolRowHtml(item));row.replaceWith(next.content);document.querySelector(`[data-pool-item="${UIEscape(id)}"] .pool-note-toggle`)?.focus({preventScroll:true});return false;},
     promotePool(id) {
       if (!App.require('manage_board')) return;
       const item = poolItems(state.poolTab).find((x) => x.id === id);
@@ -3926,20 +3367,6 @@
       fadeContent(view);
       view.querySelector('#poolAdd')?.focus();
     },
-    delPool(ev, id) {
-      ev.stopPropagation();
-      const item = poolItems(state.poolTab).find((x) => x.id === id);
-      if (!item || (item.scope === 'project' && !App.require('manage_board'))) return;
-      if (item.scope === 'mine' && item.ownerId !== me().id) return;
-      const row = ev.currentTarget.closest('[data-pool-item]');
-      const nextId = (row?.nextElementSibling || row?.previousElementSibling)?.dataset.poolItem;
-      askConfirmation({ title:'Delete Pool item?', text:item.title, action:'Delete item', confirm:() => {
-        if (!D.session || !poolItems(state.poolTab).includes(item) || (item.scope === 'mine' ? item.ownerId !== me().id : !canBoard())) return;
-        D.pool = D.pool.filter(x => x.id !== id); updatePool();
-        const next = nextId && document.querySelector(`[data-pool-item="${UIEscape(nextId)}"] .pool-delete`);
-        (next || document.getElementById('poolAdd'))?.focus();
-      } });
-    },
     setPoolTab(k) {
       if (!['mine', 'project'].includes(k) || k === state.poolTab) return;
       const list = document.querySelector('.pool-list');
@@ -3947,9 +3374,9 @@
       state.poolTab = k;
       updatePool();
       list.scrollTop = App._poolScroll[k] || 0;
-      if(bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.select',{scope:k}).catch(bootWindow.OneloopRuntime.report);
+      invoke('pool.select',{scope:k});
     },
-    loadMorePool(){if(bootWindow.OneloopRuntime)bootWindow.OneloopRuntime.invoke('pool.more',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
+    loadMorePool(){invoke('pool.more',{scope:state.poolTab});},
 
     // popover components
     popSelect(ev, key) {
@@ -4093,12 +3520,10 @@
     /** Draw the open dialog again from the saved values, dropping what was typed in it. */
     redrawDialog(){if(state.modal)renderOverlays();},
     isRendering:()=>rendering,
-    clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.filter',App.context().board).catch(bootWindow.OneloopRuntime.report);return;}render();},
-    retryPool(){bootWindow.OneloopRuntime?.invoke('pool.select',{scope:state.poolTab}).catch(bootWindow.OneloopRuntime.report);},
-    toggleDoneOrder(){bootWindow.OneloopRuntime?.invoke('board.doneOrder',{order:doneNewest()?'manual':'completed'}).catch(bootWindow.OneloopRuntime.report);},
-    loadMoreBoard(col){if(bootWindow.OneloopRuntime){bootWindow.OneloopRuntime.invoke('board.more',{status:col}).catch(bootWindow.OneloopRuntime.report);return;}state.boardLimits[col]=(state.boardLimits[col]||50)+50;applyBoardFilters(false);},
-    loadMoreUsers(){const count=document.querySelectorAll('.user-row').length;state.usersLimit+=50;render();[...document.querySelectorAll('.user-row')].slice(count).forEach(el=>UIMotion.enter(el));},
-    loadOlderActivity(id){state.activityLimits[id]=(state.activityLimits[id]||50)+50;const timeline=document.querySelector('.task-page .timeline'),task=taskById(id);if(timeline&&task){const scroll=document.querySelector('.task-page'),before=scroll.scrollHeight;setHTML(timeline,taskFeedHtml(task,canBoard()));scroll.scrollTop+=scroll.scrollHeight-before;fadeContent(timeline);}},
+    clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};invoke('board.filter',App.context().board);},
+    retryPool(){invoke('pool.select',{scope:state.poolTab});},
+    toggleDoneOrder(){invoke('board.doneOrder',{order:doneNewest()?'manual':'completed'});},
+    loadMoreBoard(col){invoke('board.more',{status:col});},
     taskMoveMenu(event,id){
       event.stopPropagation(); // The card around the button would open the task.
       if(App._boardMovePending)return;
@@ -4406,16 +3831,15 @@
     }, 120);
   });
 
-  collaboration?.bind(App,{task:taskById,canRead:canReadProject,projects:visibleProjects,view:()=>state.view,canBoard:task=>hasPermission('manage_board',trackById(epicById(task?.epicId)?.trackId)?.projectId),confirm:askConfirmation,refresh:render,refreshBackground,refreshActivity:refreshTaskActivity,exit:exitVisual,multi:multiHtml,log:logAct,clean:cleanStr,ago,instant:formatInstant,dateKey:instanceDateKey,previousDate,avatar:avatarHtml,
-    revealBlockActivity:(id,blockId)=>{const task=taskById(id);if(!task)return;const items=[...Activity.visible(task.activity),...(task.comments||[]).filter(c=>!c.parentId)].sort((a,b)=>a.ts-b.ts),index=items.findIndex(item=>item.blockId===blockId);if(index>=0)state.activityLimits[id]=Math.max(state.activityLimits[id]||50,items.length-index);},
-    refreshComments:(id,composer=false)=>{if(state.view!=='task'||state.taskId!==id)return;const task=taskById(id),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment'),focused=document.activeElement?.dataset.replyRoot;if(timeline){setHTML(timeline,taskFeedHtml(task,canBoard()));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);if(focused)[...timeline.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===focused)?.focus({preventScroll:true});}if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,Collab.composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}},
+  collaboration?.bind(App,{task:taskById,projects:visibleProjects,view:()=>state.view,canBoard:task=>hasPermission('manage_board',trackById(epicById(task?.epicId)?.trackId)?.projectId),confirm:askConfirmation,refresh:render,refreshBackground,refreshActivity:refreshTaskActivity,exit:exitVisual,multi:multiHtml,clean:cleanStr,ago,instant:formatInstant,dateKey:instanceDateKey,previousDate,avatar:avatarHtml,
+    refreshComments:(id,composer=false)=>{if(state.view!=='task'||state.taskId!==id)return;const task=taskById(id),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment'),focused=document.activeElement?.dataset.replyRoot;if(timeline){setHTML(timeline,collaboration.feedHtml(task));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);if(focused)[...timeline.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===focused)?.focus({preventScroll:true});}if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,Collab.composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}},
   });
-  window.Recovery?.bind(App,{refresh:render,context:()=>({userId:me()?.id,projectId:state.projectId,taskId:state.taskId,view:state.view}),canWrite:(name,args)=>{if(!me()?.active)return false;if(['saveUser','saveProjectNew','updateProjectField'].includes(name))return isAdmin();if(['saveEpic','saveMilestone','saveTrack'].includes(name))return canRoadmap();if(['saveTask','poolKey'].includes(name))return name==='poolKey'&&state.poolTab==='mine'&&canReadProject(state.projectId)||canBoard();if(name==='saveBlock'){const task=taskById(args[1]);return !!task&&hasPermission('manage_board',trackById(epicById(task.epicId)?.trackId)?.projectId);}if(name==='addComment')return !!collaboration?.canComment(taskById(args[0]));if(['updTask'].includes(name)){const task=taskById(args[0]);return !!task&&hasPermission('manage_board',trackById(epicById(task.epicId)?.trackId)?.projectId);}return true;}});
-  window.Uploads?.bind(App,{confirm:askConfirmation,task:taskById,canRead:id=>canReadTask(taskById(id)),can:id=>hasPermission('manage_board',trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId),log:logAct,refresh:render,me,instant:formatInstant,refreshActivity:refreshTaskActivity,refreshAttachments:id=>{if(state.view!=='task'||state.taskId!==id)return;const template=document.createElement('template');setHTML(template,renderTask());const oldAttachments=document.querySelector('.task-attachments'),before=oldAttachments?.getBoundingClientRect().height,rows=UIMotion.rows(oldAttachments,'[data-attachment-id]','data-attachment-id');oldAttachments?.replaceWith(template.content.querySelector('.task-attachments'));const nextAttachments=document.querySelector('.task-attachments');UIMotion.height(nextAttachments,before);UIMotion.reflow(nextAttachments,'[data-attachment-id]','data-attachment-id',rows);refreshTaskActivity(id);window.Uploads.mount(id);}});
+  window.Recovery?.bind(App,{refresh:render});
+  window.Uploads?.bind(App,{confirm:askConfirmation,task:taskById,canRead:id=>canReadTask(taskById(id)),can:id=>hasPermission('manage_board',trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId),refresh:render,me,instant:formatInstant,refreshAttachments:id=>{if(state.view!=='task'||state.taskId!==id)return;const template=document.createElement('template');setHTML(template,renderTask());const oldAttachments=document.querySelector('.task-attachments'),before=oldAttachments?.getBoundingClientRect().height,rows=UIMotion.rows(oldAttachments,'[data-attachment-id]','data-attachment-id');oldAttachments?.replaceWith(template.content.querySelector('.task-attachments'));const nextAttachments=document.querySelector('.task-attachments');UIMotion.height(nextAttachments,before);UIMotion.reflow(nextAttachments,'[data-attachment-id]','data-attachment-id',rows);refreshTaskActivity(id);window.Uploads.mount(id);}});
   setInterval(()=>{
     const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));
     if(!D.session||me()?.mustChange)return;
-    if ((state.view==='roadmap'||state.peek) && bootWindow.OneloopRuntime) bootWindow.OneloopRuntime.invoke('date.rollover',{}).catch(()=>{});
+    if (state.view==='roadmap'||state.peek) bootWindow.OneloopRuntime.invoke('date.rollover',{}).catch(()=>{});
     if(state.view==='task'){
       const late=overdue(taskById(state.taskId)),row=document.querySelector('.task-property-date');
       row?.classList.toggle('late',late);const label=row?.querySelector('.task-overdue');if(label)label.hidden=!late;

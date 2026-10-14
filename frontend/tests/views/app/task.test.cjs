@@ -16,51 +16,55 @@ function taskPage(options) {
 const event=target=>({target,preventDefault(){}});
 function block(t,mode,reason){t.A.openModal(mode,'BIR-079');const form=t.d.querySelector('.modal form');form.querySelector('[name=reason]').value=reason;t.A.saveBlock(event(form),'BIR-079',mode);}
 
-test('field saves show a quiet Saved status and block actions announce once', () => {
- const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
- t.A.updTask(task.id,'title','Changed title');assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
- // No-op command feedback is covered by view-bridge tests against the production command gateway.
- t.A.updTask(task.id,'state','progress');assert.equal(status(),'Saved');
+const accept = (t, entities = []) => { t.commands.at(-1).resolve({ entities, events: [] }); return settle(); };
+const sent = t => t.commands.map(command => [command.operation, command.payload]);
+
+test('field saves show a quiet Saved status once accepted, and a block needs a reason', async () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),status=()=>t.d.querySelector('.task-save-status').textContent;
+ t.A.updTask(task.id,'title','Changed title');await accept(t,[{entityType:'task',id:task.internalId,title:'Changed title',revision:2}]);assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
  t.d.querySelector('.tp-title').dispatchEvent(new t.w.Event('input',{bubbles:true}));assert.equal(status(),'');
- t.A.updTask(task.id,'deadline','bad');assert.equal(status(),'');assert(t.d.querySelector('.date-error'));
- const button=t.d.querySelector('[data-action="popMulti"][data-args*=\'"tpAssign"\']');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
- block(t,'block','');assert.equal(t.notices.length,0);block(t,'block','Waiting');assert.equal(t.notices.at(-1).text,'Task blocked');
- const count=t.notices.length;block(t,'block','Waiting');assert.equal(t.notices.length,count);block(t,'block','Waiting for review');assert.equal(t.notices.at(-1).text,'Block reason updated');
- block(t,'completeBlocked','Ready');assert.equal(t.notices.at(-1).text,'Task unblocked and completed');assert.equal(task.state,'done');assert.equal(t.notices.length,count+2);
+ const button=t.d.querySelector('[data-action="popMulti"][data-args*=\'"tpAssign"\']');t.A.popMulti({currentTarget:button,preventDefault(){}},'tpAssign');t.d.querySelector('[data-v="robin"]').click();
+ assert.deepEqual(sent(t).at(-1),['task.update',{taskId:task.internalId,assigneeIds:['robin']}]);await accept(t,[{entityType:'task',id:task.internalId,assigneeIds:['robin'],revision:3}]);assert.equal(status(),'Saved');assert.equal(t.notices.length,0);
+ const count=t.commands.length;block(t,'block','');assert.equal(t.commands.length,count);assert.match(t.d.querySelector('.modal').textContent,/Explain what is preventing progress/);assert.equal(t.notices.length,0);
 });
 
-
-test('attachment actions announce changes, stay quiet on cancel or no change and report stale permissions', () => {
- const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079');task.attachments=[{id:'one',name:'one.txt',size:1},{id:'two',name:'two.txt',size:1}];t.A.refresh();
- t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.at(-1).text,'Attachment marked temporary');assert(!task.attachments[1].ephemeral);let count=t.notices.length;t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.length,count);
- t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-cancel]').click();assert.equal(t.notices.length,count);t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Attachment deleted');
- assert.equal(task.attachments.length,1);t.A.delAttachment(task.id,0);t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).kind,'error');assert.notEqual(task.attachments[0].state,'removed');
+test('attachment actions announce changes, stay quiet on cancel or no change and report stale permissions', async () => {
+ const file=(id,overrides={})=>({id,name:`${id}.txt`,size:1,mediaType:'text/plain',previewKind:'text',isEphemeral:false,uploadedBy:'taylorwu',uploadedAt:1,lastAccessedAt:1,state:'available',revision:1,...overrides});
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079');t.answer('attachments',{items:[file('one'),file('two')]});await settle();
+ const answer=(method,value)=>{t.answer(method,value);return settle();};
+ t.A.setAttachmentTemporary(task.id,'one',true);await answer('updateAttachment',file('one',{isEphemeral:true,revision:2}));assert.equal(t.notices.at(-1).text,'Attachment marked temporary');assert(!task.attachments[1].ephemeral);
+ let count=t.notices.length;t.A.setAttachmentTemporary(task.id,'one',true);assert.equal(t.notices.length,count);assert.equal(t.calls.filter(call=>call.method==='updateAttachment').length,1);
+ t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-cancel]').click();assert.equal(t.notices.length,count);assert.equal(t.calls.filter(call=>call.method==='deleteAttachment').length,0);
+ t.A.delAttachment(task.id,0);t.d.querySelector('[data-confirm-accept]').click();await answer('deleteAttachment',{});assert.equal(t.notices.at(-1).text,'Attachment deleted');
+ assert.equal(task.attachments.length,1);t.A.delAttachment(task.id,0);t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).kind,'error');assert.equal(t.calls.filter(call=>call.method==='deleteAttachment').length,1);
 });
 
-test('deleting a comment announces once and deleting it again reports an error', () => {
- const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079');task.comments=[{id:'test-comment',who:'taylorwu',text:'Hello',ts:Date.now(),mentions:[],attachments:[]}];t.A.refresh();t.A.deleteComment(task.id,'test-comment');t.d.querySelector('[data-confirm-accept]').click();assert.equal(t.notices.at(-1).text,'Comment deleted');t.A.deleteComment(task.id,'test-comment');assert.equal(t.notices.at(-1).kind,'error');
-});
-
-test('the deadline field saves on blur and rejects invalid text, and task actions follow permissions', () => {
- const t=taskPage({production:false}),task=t.D.tasks.find(x=>x.id==='BIR-079'),input=t.d.getElementById('tpDl-input');
- input.value='2026-09-01';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert(!t.d.querySelector('.date-display'));assert.equal(input.value,'2026-09-01');
- input.value='bad';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,'2026-09-01');assert.equal(input.getAttribute('aria-invalid'),'true');
- input.value='';t.A.dateBlur(event(input),'tpDl');assert.equal(task.deadline,null);assert.equal(input.value,'');
- const actions=t.d.querySelector('.task-actions-button');t.A.taskActions({currentTarget:actions},task.id);assert(t.d.querySelector('.menu').textContent.includes('Delete task'));t.A.menuAction(0);assert(t.d.querySelector('.modal').textContent.includes('Delete task?'));assert(t.D.tasks.includes(task));t.A.closeOverlays();
+test('the deadline field saves on blur and rejects invalid text, and task actions follow permissions', async () => {
+ const t=taskPage(),task=t.D.tasks.find(x=>x.id==='BIR-079'),field=()=>t.d.getElementById('tpDl-input');
+ // A save draws the page again, so each step finds the field anew.
+ let input=field();input.value='2026-09-01';t.A.dateBlur(event(input),'tpDl');assert.deepEqual(sent(t),[['task.update',{taskId:task.internalId,deadline:'2026-09-01'}]]);await accept(t,[{entityType:'task',id:task.internalId,deadline:'2026-09-01',revision:2}]);assert.equal(task.deadline,'2026-09-01');assert(!t.d.querySelector('.date-display'));assert.equal(field().value,'2026-09-01');
+ input=field();input.value='bad';t.A.dateBlur(event(input),'tpDl');assert.equal(t.commands.length,1);assert.equal(input.getAttribute('aria-invalid'),'true');
+ input=field();input.value='';t.A.dateBlur(event(input),'tpDl');assert.deepEqual(sent(t)[1],['task.update',{taskId:task.internalId,deadline:null}]);await accept(t,[{entityType:'task',id:task.internalId,deadline:null,revision:3}]);assert.equal(task.deadline,null);assert.equal(field().value,'');
+ const actions=t.d.querySelector('.task-actions-button');t.A.taskActions({currentTarget:actions},task.id);assert(t.d.querySelector('.menu').textContent.includes('Delete task'));t.A.menuAction(0);assert(t.d.querySelector('.confirmation-layer').textContent.includes('Delete task?'));t.d.querySelector('[data-confirm-cancel]').click();assert(t.D.tasks.includes(task));assert.equal(t.commands.length,2);
  t.D.users.find(u=>u.id==='taylorwu').admin=false;t.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];t.A.refresh();assert(!t.d.querySelector('.task-actions-button'));t.A.taskActions({currentTarget:actions},task.id);assert(!t.d.querySelector('.menu'));
 });
 
-test('new tasks and Pool promotions save their deadline and assignees and validate both', () => {
- const t=taskPage({production:false}),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
- assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);
+test('new tasks and Pool promotions send their deadline and assignees and validate both', () => {
+ const t=taskPage(),existing=t.D.tasks.find(x=>x.id==='BIR-079'),created=existing.created;
+ assert(!t.d.querySelector('[data-date-key="tpStart"]'));assert.match(t.d.querySelector('.task-created-at').firstChild.textContent,/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);assert.equal(t.A.updTask(existing.id,'created',created+1),false);assert.equal(existing.created,created);assert.equal(t.A.updTask(existing.id,'start','2026-01-01'),false);assert.equal(t.commands.length,0);
  const fill=(deadline,assignee)=>{const form=t.d.querySelector('.modal form');form.querySelector('[name="epicId"]').value='e4';const input=form.querySelector('.date-text');input.value=deadline;const button=form.querySelector('[data-filter-key="mTaskAssignees"]');t.A.popMulti({currentTarget:button,preventDefault(){}},'mTaskAssignees');t.d.querySelector(`[data-v="${assignee}"]`).click();t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return form;};
- t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';const count=t.D.tasks.length;t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);const task=t.D.tasks.at(-1);assert.equal(task.deadline,'2026-10-15');assert.deepEqual([...task.assignees],['robin']);assert(Number.isFinite(task.created));assert(t.D.notifications.some(n=>n.taskId===task.id&&n.recipientId==='robin'&&n.reason==='assigned'));
- t.A.openModal('task');form=fill('2026-99-99','robin');form.querySelector('[name="title"]').value='Invalid';t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);assert(t.d.querySelector('.date-error'));form.querySelector('.date-text').value='';t.D.users.find(u=>u.id==='robin').active=false;t.A.saveTask(event(form));assert.equal(t.D.tasks.length,count+1);assert(t.d.querySelector('.modal').textContent.includes('no longer available'));t.D.users.find(u=>u.id==='robin').active=true;t.A.closeOverlays();
- t.A.openModal('pool');const item=t.D.pool.find(x=>x.id==='pl1'),title=item.title,desc=item.desc;t.A.promotePool(item.id);form=fill('2026-11-01','taylorwu');assert.equal(form.querySelector('[name="title"]').value,title);assert.equal(form.querySelector('[name="desc"]').value,desc);t.A.saveTask(event(form));const promoted=t.D.tasks.at(-1);assert.equal(promoted.deadline,'2026-11-01');assert.deepEqual([...promoted.assignees],['taylorwu']);assert.equal(promoted.desc,desc);assert(!t.D.pool.includes(item));
+ t.A.openModal('task');let form=fill('2026-10-15','robin');form.querySelector('[name="title"]').value='Assigned at creation';t.A.saveTask(event(form));
+ assert.deepEqual(sent(t),[['task.create',{projectId:'p1',epicId:'e4',title:'Assigned at creation',description:'',deadline:'2026-10-15',assigneeIds:['robin']}]]);t.A.closeOverlays();
+ t.A.openModal('task');form=fill('2026-99-99','robin');form.querySelector('[name="title"]').value='Invalid';t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.date-error'));form.querySelector('.date-text').value='';t.D.users.find(u=>u.id==='robin').active=false;t.A.saveTask(event(form));assert.equal(t.commands.length,1);assert(t.d.querySelector('.modal').textContent.includes('no longer available'));t.D.users.find(u=>u.id==='robin').active=true;t.A.closeOverlays();
+ // The title and description the person left as the item had them follow the item.
+ t.A.openModal('pool');t.A.promotePool('pl1');form=fill('2026-11-01','taylorwu');const item=t.D.pool.find(x=>x.id==='pl1');assert.equal(form.querySelector('[name="title"]').value,item.title);assert.equal(form.querySelector('[name="desc"]').value,item.desc);t.A.saveTask(event(form));
+ assert.deepEqual(sent(t)[1],['pool.promote',{poolItemId:'pl1',epicId:'e4',deadline:'2026-11-01',assigneeIds:['taylorwu']}]);
 });
 
-test('new epics require an explicit track', () => {
- const t=taskPage({production:false}),count=t.D.epics.length;t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count);assert(form.textContent.includes('Choose a track.'));form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.equal(t.D.epics.length,count+1);const epic=t.D.epics.at(-1);t.A.openModal('epic',epic.id);assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
+test('new epics require an explicit track', async () => {
+ const t=taskPage();t.A.openModal('epic');let form=t.d.querySelector('.modal form');assert.equal(form.querySelector('[name="trackId"]').value,'');assert(form.textContent.includes('Choose a track'));form.querySelector('[name="title"]').value='Explicit track';t.A.saveEpic(event(form),'');assert.equal(t.commands.length,0);assert(form.textContent.includes('Choose a track.'));
+ form.querySelector('[name="trackId"]').value='t1';t.A.saveEpic(event(form),'');assert.deepEqual([t.commands[0].operation,t.commands[0].payload.trackId,t.commands[0].payload.title],['epic.create','t1','Explicit track']);
+ await accept(t,[{entityType:'epic',id:'e-new',projectId:'p1',trackId:'t1',title:'Explicit track',startDate:'2026-10-01',state:'planning',position:20,revision:1}]);t.A.openModal('epic','e-new');assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
 });
 
 test('comment readers reset every height before measuring any of them', () => {
@@ -91,8 +95,12 @@ test('opaque task IDs resolve to the task page', () => {
 const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaque-example'});assert(opaque.d.querySelector('.topbar').textContent.includes('BIR-064'));
 });
 
-test('the activity feed loads older records in batches', () => {
-const x=bootApp({route:'task/BIR-079',production:false});const task=x.D.tasks.find(t=>t.id==='BIR-079');task.activity=Array.from({length:120},(_,i)=>({who:'taylorwu',text:'Event '+i,ts:Date.now()-i*1000}));x.A.openTask(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,50);x.A.loadOlderActivity(task.id);assert.equal(x.d.querySelectorAll('.timeline .tl-act').length,100);
+test('the activity feed loads older records a page at a time', async () => {
+ const t=bootApp({route:'task/BIR-079'}),task=t.D.tasks.find(x=>x.id==='BIR-079'),rows=()=>t.d.querySelectorAll('.timeline .tl-act').length;
+ const page=(from,cursor)=>({items:Array.from({length:50},(_,i)=>({id:`event-${from+i}`,eventType:'task.updated',fieldKey:'title',actorUserId:'taylorwu',createdAt:Math.floor(Date.now()/1000)-(from+i)})),nextCursor:cursor});
+ t.answer('comments',{items:[],nextCursor:null});t.answer('activity',page(0,'older'));await settle();assert.equal(rows(),50);
+ t.A.loadOlderActivity(task.id);assert.equal(t.calls.filter(call=>call.method==='activity').at(-1).args[1].cursor,'older');
+ t.answer('activity',page(50,null));await settle();assert.equal(rows(),100);assert.equal(t.d.querySelector('[data-feed-key="load-older"]'),null);
 });
 
 /** A task page whose commands the test answers; reading the task again brings someone else's `latest` change. */
@@ -160,12 +168,12 @@ test('a saved status shows in the header, the Status icon and Block task while S
 });
 
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
-  const t = bootApp({ route: 'task/BIR-079', actions: true, production: false }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
   const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };
   title.focus(); title.value = 'Renamed with Enter';
   assert.equal(enter({ isComposing: true }).defaultPrevented, false); assert.equal(t.d.activeElement, title);
   assert.equal(enter().defaultPrevented, true);
-  assert.notEqual(t.d.activeElement, title); assert.equal(task.title, 'Renamed with Enter');
+  assert.notEqual(t.d.activeElement, title); assert.deepEqual(t.commands.map(command => [command.operation, command.payload.title]), [['task.update', 'Renamed with Enter']]);
 });
 
 test('a pasted line break cleans the title without splitting an emoji at its length limit', () => {

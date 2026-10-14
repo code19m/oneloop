@@ -14,15 +14,10 @@ function fixture(overrides={}){
     data,api:{request:async()=>({}),...overrides.api},gateway:{invalidate(){},...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
     reload:async()=>{reloads++;return {};},presentConflict:overrides.presentConflict,
     setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),
-    documentObject:null,windowObject:overrides.windowObject??null,locationObject:{hash:'#/task/ONE-1'},random:()=>0,
+    documentObject:null,windowObject:overrides.windowObject??null,random:()=>0,
   });
   return {controller,data,app,get expires(){return expires;},get reloads(){return reloads;}};
 }
-
-test('production controller implements the complete legacy recovery facade',()=>{
-  const state=fixture();
-  for(const name of ['errorHtml','connectionHtml','ensureOnline','enforceSession','sessionActive','loginAtLimit','recentAuth','retryLoad','reconnect','clearPageError','consumeReturn','copyReference','blockDrag','bind'])assert.equal(typeof state.controller[name],'function',name);
-});
 
 test('recognizes revision conflicts by their code, not their wording',()=>{
   assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);

@@ -166,7 +166,7 @@ test('Roadmap refreshes keep focus on the focused epic or milestone', () => {
 });
 
 test('the task feed shows load states, refreshes in place and ignores unmounted or stale callbacks', () => {
-  const t=boot('task/BIR-079',w=>{w.OneloopTransport={};w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
+  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
   assert(t.d.querySelector('.timeline').textContent.includes('Loading activity'));
   t.w.testFacade.taskPage(task.id,{loaded:false,loading:false,error:true,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('Could not load activity'));assert(t.d.querySelector('.timeline button')?.textContent.includes('Retry'));
   t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('No activity yet'));

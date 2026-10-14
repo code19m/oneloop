@@ -12,25 +12,23 @@
   /** Attachment hooks supplied by the shared renderer's bind call.
    * @type {{task:(id:string)=>any, can:(id:string)=>boolean, canRead:(id:string)=>boolean,
    * confirm:(options:{title:string,text:string,action:string,confirm:()=>void})=>void,
-   * instant:(value:number|string)=>string, log:(task:any,text:string,change?:object)=>void,
-   * me:()=>{admin?:boolean,id:string,avatar?:string}, refresh:()=>void, refreshActivity:(id:string)=>void,
-   * refreshAttachments:(id:string)=>void}}
+   * instant:(value:number|string)=>string, me:()=>{admin?:boolean,id:string,avatar?:string},
+   * refresh:()=>void, refreshAttachments:(id:string)=>void}}
    */
   let hooks;
-  let next=0,app,failedOnce=false,preview=null,serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',serverStorageRead=false,runtimeUnsubscribe=null;
+  let next=0,app,preview=null,serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',serverStorageRead=false,runtimeUnsubscribe=null;
   // Tasks whose attachments this account has read. Reading them again, after a
   // live update or a refresh replaced the task, is passive: it never keeps an
   // idle session open.
   let attachmentsRead=new Set();
-  const transport=()=>window.OneloopTransport?.api?.uploadAttachment?window.OneloopTransport.api:null;
+  const transport=()=>window.OneloopTransport.api;
   function cachedSource(id) {
     const source=sources.get(id);
-    if(source&&transport()){sources.delete(id);sources.set(id,source);}
+    if(source){sources.delete(id);sources.set(id,source);}
     return source;
   }
   function cacheSource(id,source) {
     sources.delete(id);sources.set(id,source);
-    if(!transport())return;
     // Count both the ArrayBuffer and Blob, even where the browser shares bytes.
     let bytes=[...sources.values()].reduce((total,item)=>total+item.buffer.byteLength+item.blob.size,0);
     for(const [key,item] of sources){
@@ -45,7 +43,7 @@
   const sameTask=(taskId,task)=>{const current=hooks.task(taskId);return current&&(current===task||!!current.internalId&&current.internalId===task.internalId)?current:null;};
   function loadProduction(taskId,force=false,background=false){
     const api=transport(),task=hooks?.task(taskId);
-    if(!api||!task||!force&&productionLoaded.has(task))return;
+    if(!task||!force&&productionLoaded.has(task))return;
     const sessionId=window.DATA.session?.id,internalId=task.internalId||taskId;
     background||=attachmentsRead.has(internalId);
     if(productionLoading.has(taskId)){
@@ -86,35 +84,6 @@
     productionLoading.set(taskId,request);
   }
 
-  function imageMatches(ext,bytes){
-    if(ext==='png')return [137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n);
-    if(['jpg','jpeg'].includes(ext))return bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
-    if(ext==='webp'){const head=new TextDecoder().decode(bytes.slice(0,12));return head.startsWith('RIFF')&&head.slice(8,12)==='WEBP';}
-    if(ext==='gif')return /^GIF8[79]a/.test(new TextDecoder().decode(bytes.slice(0,6)));
-    if(ext==='avif')return new TextDecoder().decode(bytes.slice(4,12))==='ftypavif';
-    return false;
-  }
-  function inspect(file,buffer,avatar=false){
-    if(file.size>(avatar?maxAvatar():maxFile()))return avatar?`Avatar exceeds ${maxAvatar()/1024/1024} MB.`:`File exceeds ${maxFile()/1024/1024} MB.`;
-    // Attachments are opaque originals. Content checks decide previews, never acceptance.
-    if(!avatar)return '';
-    const ext=file.name.split('.').pop().toLowerCase();
-    if(!['png','jpg','jpeg','webp'].includes(ext))return 'This file type is not supported.';
-    return imageMatches(ext,new Uint8Array(buffer))?'':'The file contents do not match its type.';
-  }
-  function textContent(buffer){
-    try{const text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);return /[\u0000-\u0008\u000b\u000e-\u001f]/.test(text)?null:text;}catch{return null;}
-  }
-  function previewKind(name,buffer){
-    const ext=extension({name}),bytes=new Uint8Array(buffer);
-    if(['png','jpg','jpeg','webp','gif','avif'].includes(ext))return imageMatches(ext,bytes)?'image':null;
-    if(ext==='pdf')return new TextDecoder().decode(bytes.slice(0,5))==='%PDF-'?'pdf':null;
-    if(ext==='html'||ext==='htm')return textContent(buffer)!==null?'html':null;
-    if(ext==='md'||ext==='markdown')return textContent(buffer)!==null?'markdown':null;
-    if(textExtensions.has(ext)||textNames.has(name.toLowerCase())||name.toLowerCase().startsWith('.env.'))return textContent(buffer)!==null?'text':null;
-    return null;
-  }
-  function read(file,progress){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('The file could not be read.'));reader.onprogress=e=>{if(e.lengthComputable)progress?.(Math.round(e.loaded/e.total*100));};reader.readAsArrayBuffer(file);});}
   function mount(id){
     loadProduction(id);
     const host=document.querySelector('.upload-list');if(!host)return;
@@ -126,7 +95,7 @@
       const progress=row.querySelector('progress');progress.value=job.progress;progress.hidden=job.state!=='uploading';progress.setAttribute('aria-label',displayText(job.file.name)+' upload');
       row.querySelector('[data-upload-action="cancel"]').hidden=job.state!=='uploading';row.querySelector('[data-upload-action="retry"]').hidden=!['error','cancelled'].includes(job.state)||job.validation;row.querySelector('[data-upload-action="remove"]').hidden=job.state==='uploading';
     }
-    host.onclick=event=>{const button=event.target.closest('[data-upload-action]');if(!button)return;const job=jobs.find(j=>j.id===button.closest('[data-upload-id]').dataset.uploadId);if(!job)return;const action=button.dataset.uploadAction;if(action==='cancel'){job.cancelled=true;job.state='cancelled';job.reader?.abort();mount(id);}else if(action==='retry')start(job);else{jobs.splice(jobs.indexOf(job),1);if(transport())loadProduction(id,true);mount(id);}};
+    host.onclick=event=>{const button=event.target.closest('[data-upload-action]');if(!button)return;const job=jobs.find(j=>j.id===button.closest('[data-upload-id]').dataset.uploadId);if(!job)return;const action=button.dataset.uploadAction;if(action==='cancel'){job.cancelled=true;job.state='cancelled';job.reader?.abort();mount(id);}else if(action==='retry')start(job);else{jobs.splice(jobs.indexOf(job),1);loadProduction(id,true);mount(id);}};
   }
   function reject(job,message,validation=false){job.state='error';job.error=message;job.validation=validation;mount(job.taskId);}
   function start(job){
@@ -134,30 +103,9 @@
     if(available(task).length+jobs.filter(j=>j!==job&&j.taskId===job.taskId&&j.state==='uploading').length>=maxFiles()){reject(job,`A task can have at most ${maxFiles()} available attachments.`,true);return;}
     if(job.file.size>maxFile()){reject(job,`File exceeds ${maxFile()/1024/1024} MB.`,true);return;}
     if(window.Recovery?.connection==='offline'){reject(job,'The server is unreachable. Retry when connected.');return;}
-    if(transport()){startProduction(job,task);return;}
-    cleanup(false);if(usage()+reserved(job)+job.file.size>config().budgetBytes){reject(job,'Storage is full. Remove files or ask an admin to increase capacity.');return;}
-    job.cancelled=false;job.state='uploading';job.progress=0;job.error='';job.validation=false;mount(job.taskId);
-    const reader=new FileReader();job.reader=reader;
-    reader.onprogress=event=>{if(event.lengthComputable&&!job.cancelled){job.progress=Math.min(95,Math.round(event.loaded/event.total*95));mount(job.taskId);}};
-    reader.onerror=()=>{if(!job.cancelled)reject(job,'Upload failed. Please try again.');};
-    reader.onload=async()=>{
-      if(job.cancelled)return;
-      const error=inspect(job.file,reader.result);if(error){reject(job,error,true);return;}
-      let checksum=null;try{if(crypto.subtle)checksum=[...new Uint8Array(await crypto.subtle.digest('SHA-256',reader.result))].map(n=>n.toString(16).padStart(2,'0')).join('');}catch{}
-      const finish=()=>{if(job.cancelled)return;if(!hooks.can(job.taskId)||hooks.task(job.taskId)!==task||window.DATA.session?.userId!==job.owner){reject(job,'The task is no longer available.');return;}
-        if(window.Recovery?.scenario==='upload-error'&&!failedOnce){failedOnce=true;reject(job,'Upload failed. Please try again.');return;}
-        if(available(task).length>=maxFiles()){reject(job,`A task can have at most ${maxFiles()} available attachments.`,true);return;}
-        if(usage()+reserved(job)+job.file.size>config().budgetBytes){reject(job,'Storage is full. Retry after space is available.');return;}
-        const fileId=typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'file-'+Date.now()+'-'+job.id;
-        const kind=previewKind(job.file.name,reader.result),type=kind==='image'||kind==='pdf'?mime(job.file.name):kind==='text'||kind==='markdown'?'text/plain':'application/octet-stream',blob=new Blob([reader.result],{type});
-        sources.set(fileId,{blob,buffer:reader.result});
-        (task.attachments ||= []).push({id:fileId,name:job.file.name,size:job.file.size,type,previewKind:kind,checksum,url:URL.createObjectURL?URL.createObjectURL(blob):null,ephemeral:job.ephemeral,uploadedBy:job.owner,uploadedAt:Date.now(),lastAccessAt:Date.now(),state:'available'});
-        hooks.log(task,`attached ${job.file.name}${job.ephemeral?' (temporary)':''}`);job.state='done';job.progress=100;jobs.splice(jobs.indexOf(job),1);cleanup(false);hooks.refreshAttachments(job.taskId);app.toast('Attachment added');
-      };
-      if(window.Recovery?.scenario==='upload-error'){job.progress=60;mount(job.taskId);setTimeout(finish,1200);}else finish();
-    };reader.readAsArrayBuffer(job.file);
+    upload(job,task);
   }
-  async function startProduction(job,task){
+  async function upload(job,task){
     job.cancelled=false;job.state='uploading';job.progress=0;job.error='';job.validation=false;const controller=new AbortController();job.reader={abort:()=>controller.abort()};mount(job.taskId);
     try{
       const value=await transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
@@ -170,7 +118,6 @@
   const escape=value=>UIEscape(displayText(value));
   const size=n=>n>=1073741824?(n/1073741824).toFixed(n%1073741824?1:0)+' GiB':n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?Math.round(n/1024)+' KiB':n+' B';
   const available=task=>(task.attachments||[]).filter(f=>!f.state||f.state==='available');
-  const mime=name=>({html:'text/html',htm:'text/html',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif',avif:'image/avif',pdf:'application/pdf',txt:'text/plain',log:'text/plain',md:'text/plain',json:'application/json',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation'}[name.split('.').pop().toLowerCase()]||'application/octet-stream');
   const extension=file=>file.name.split('.').pop().toLowerCase();
   const canPreview=file=>Object.hasOwn(file,'previewKind')?!!file.previewKind:['png','jpg','jpeg','webp','gif','avif','pdf','html','htm'].includes(extension(file))||textExtensions.has(extension(file))||textNames.has(file.name.toLowerCase());
   const icon=paths=>`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
@@ -185,12 +132,8 @@
   function setTemporary(taskId,fileId,value){
     const task=hooks.task(taskId),file=editableAttachment(taskId,fileId);if(!file)return false;if(retentionPending.has(fileId)){app.toast('This retention change is still being saved.','info');return false;}
     const before=!!file.ephemeral;if(before===!!value)return true;file.ephemeral=!!value;syncRetention(taskId,file);
-    if(transport()){
-      retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);app.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
-      return true;
-    }
-    hooks.log(task,`made ${file.name} ${file.ephemeral?'temporary':'permanent'}`,{field:'attachment-retention:'+file.id,before,after:file.ephemeral});hooks.refreshActivity(taskId);
-    if(!transport())app.toast(file.ephemeral?'Attachment marked temporary':'Attachment marked permanent');return true;
+    retentionPending.add(fileId);transport().updateAttachment(fileId,{isEphemeral:!!value,expectedRevision:file.revision}).then(saved=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(!current)return;Object.assign(current,serverFile(saved));syncRetention(taskId,current);app.toast(current.ephemeral?'Attachment marked temporary':'Attachment marked permanent');}).catch(error=>{const current=sameTask(taskId,task)?.attachments?.find(item=>item.id===fileId);if(current){current.ephemeral=before;syncRetention(taskId,current);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Retention could not be changed.'),'error');}).finally(()=>retentionPending.delete(fileId));
+    return true;
   }
   // A row's switch acts through its data-action arguments. Actions never run in
   // the untrusted preview body, so the preview's switch gets its handler here.
@@ -211,26 +154,6 @@
     if(!download({preventDefault(){}},taskId,fileId))return;
     const link=document.createElement('a');link.href=file.downloadUrl||file.url;link.download=displayText(file.name);link.click();
   }
-  const config=()=>({budgetBytes:10*1024**3,high:.8,low:.7,minAgeMs:864e5,...window.DATA.storageConfig});
-  const records=()=>window.DATA.tasks.flatMap(t=>(t.attachments||[]).map(f=>({task:t,file:f})));
-  const usage=()=>records().filter(({file:f})=>!f.state||f.state==='available').reduce((n,{file:f})=>n+f.size,window.DATA.storageOtherBytes||0);
-  const reserved=except=>jobs.filter(j=>j!==except&&j.state==='uploading').reduce((n,j)=>n+j.file.size,0);
-  function expire(task,file,state){
-    file.state=state;file.removedAt=Date.now();if(file.url?.startsWith('blob:'))URL.revokeObjectURL?.(file.url);file.url=null;sources.delete(file.id);
-    if(preview?.fileId===file.id)closePreview();
-    if(state==='cleaned')Activity.record(task,'system','temporary file removed during storage cleanup: '+file.name);
-    else {task.attachments=task.attachments.filter(f=>f!==file);hooks.log(task,'deleted attachment: '+file.name);}
-  }
-  function cleanup(manual=false){
-    const c=config(),before=usage();if(before<c.budgetBytes*c.high)return {count:0,bytes:0};
-    let bytes=0,count=0;const changedTasks=new Set(),now=Date.now();
-    const eligible=records().filter(({file:f})=>(!f.state||f.state==='available')&&f.ephemeral&&now-(f.uploadedAt||now)>=c.minAgeMs&&now-(f.lastAccessAt||f.uploadedAt||now)>=c.minAgeMs&&preview?.fileId!==f.id).sort((a,b)=>(a.file.lastAccessAt||a.file.uploadedAt)-(b.file.lastAccessAt||b.file.uploadedAt));
-    for(const {task,file} of eligible){if(usage()<=c.budgetBytes*c.low)break;if(!file.ephemeral||file.state&&file.state!=='available')continue;expire(task,file,'cleaned');changedTasks.add(task.id);bytes+=file.size;count++;}
-    for(const id of changedTasks)hooks.refreshAttachments(id);
-    if(count)(window.DATA.storageCleanups ||= []).push({at:now,bytes,count});
-    if(manual)app.toast(count?`Removed ${count} temporary ${count===1?'file':'files'} (${size(bytes)})`:'No temporary files are eligible for cleanup','info');
-    return {count,bytes};
-  }
   function attachmentHeader(task,canEdit){
     const hasAttachments=(task.attachments||[]).some(file=>file.state!=='removed');
     const dropArea=canEdit?`<button type="button" class="attachment-dropzone${hasAttachments?' is-compact':''}" ${UIAction('chooseAttachments')} aria-label="Drag &amp; drop or browse files"><span class="attachment-drop-icon" aria-hidden="true">${icons.plus}</span><span class="attachment-drop-copy"><span><span class="attachment-drop-title">Drag &amp; drop</span><span class="attachment-browse"> or <span class="attachment-choose">browse files</span></span></span><small class="attachment-drop-limit">${icons.info}<span>Max file size: ${maxFile()/1024/1024} MB</span></small></span></button>`:'';
@@ -241,7 +164,6 @@
     return `<bdi class="attachment-name-base">${escape(hasExtension?name.slice(0,dot):name)}</bdi>${hasExtension?`<bdi class="attachment-name-extension">${escape(name.slice(dot))}</bdi>`:''}`;
   }
   function renderAttachments(task,canEdit){
-    (task.attachments||[]).forEach((f,i)=>{f.id ||= 'legacy-'+task.id+'-'+i;f.ephemeral=!!f.ephemeral;delete f.displayName;});
     const rows=(task.attachments||[]).filter(f=>f.state!=='removed').map(f=>{
       const cleaned=f.state==='cleaned',previewable=!cleaned&&canPreview(f),ext=extension(f),action=previewable?'Preview':'Download',link=`href="${escape(previewable?(f.contentUrl||f.url):(f.downloadUrl||f.url||'#'))}" download="${escape(f.name)}" ${UIAction('openAttachment',UIAction.event,task.id,f.id)}`;
       const image=previewable&&(f.previewKind==='image'||!Object.hasOwn(f,'previewKind')&&['png','jpg','jpeg','webp','gif','avif'].includes(ext))&&f.url;
@@ -254,24 +176,13 @@
     return rows||(!canEdit?'<div class="attachment-empty">No attachments yet</div>':'');
   }
 
-  function storageHtml(){
-    if(transport())return productionStorageHtml();
-    const c=config(),all=records().filter(({file:f})=>!f.state||f.state==='available'),used=usage(),permanent=all.filter(({file:f})=>!f.ephemeral).reduce((sum,{file:f})=>sum+f.size,0),temporary=all.filter(({file:f})=>f.ephemeral).reduce((sum,{file:f})=>sum+f.size,0),other=Math.max(0,used-permanent-temporary),free=Math.max(0,c.budgetBytes-used),now=Date.now();
-    const eligible=all.filter(({file:f})=>f.ephemeral&&now-(f.uploadedAt||now)>=c.minAgeMs&&now-(f.lastAccessAt||f.uploadedAt||now)>=c.minAgeMs&&preview?.fileId!==f.id),reclaimable=eligible.reduce((sum,{file:f})=>sum+f.size,0),canClean=used>=c.budgetBytes*c.high&&eligible.length>0;
-    const breakdown=[['Permanent',permanent,'permanent'],['Temporary',temporary,'temporary'],...(other?[['Other usage',other,'other']]:[])],history=(window.DATA.storageCleanups||[]).slice(-5).reverse();
-    const projects=window.DATA.projects.map(project=>{const files=all.filter(({task})=>{const epic=window.DATA.epics.find(e=>e.id===task.epicId),track=window.DATA.tracks.find(t=>t.id===epic?.trackId);return track?.projectId===project.id;});return {project,count:files.length,bytes:files.reduce((sum,{file})=>sum+file.size,0)};}).sort((a,b)=>b.bytes-a.bytes);
-    return `<section class="storage-capacity"><div class="storage-section-heading"><h2>Storage usage</h2><span class="storage-health${used>=c.budgetBytes*c.high?' attention':''}">${used>=c.budgetBytes?'Storage full':used>=c.budgetBytes*c.high?'Cleanup threshold reached':'Within capacity'}</span></div><div class="storage-amount"><strong>${size(used)}</strong><span>of ${size(c.budgetBytes)} used</span><span class="storage-free">${size(free)} free</span></div><div class="storage-meter" role="meter" aria-label="Attachment storage usage" aria-valuemin="0" aria-valuemax="${c.budgetBytes}" aria-valuenow="${Math.min(used,c.budgetBytes)}" aria-valuetext="${size(used)} of ${size(c.budgetBytes)} used">${breakdown.map(([label,bytes,kind])=>`<span class="storage-segment ${kind}" style="width:${Math.min(100,bytes/c.budgetBytes*100)}%" title="${label}: ${size(bytes)}"></span>`).join('')}<i class="storage-threshold" style="left:${Math.min(100,c.high*100)}%" title="Cleanup starts at ${Math.round(c.high*100)}%"></i></div><div class="storage-breakdown">${breakdown.map(([label,bytes,kind])=>`<span><i class="${kind}"></i>${label}<strong>${size(bytes)}</strong></span>`).join('')}</div></section>
-    <section class="storage-cleanup"><div class="storage-section-heading"><div><h2>Temporary files</h2><p>Free up space from files marked temporary.</p></div><button class="btn" ${!canClean?'disabled':''} title="${canClean?'Remove eligible temporary files':used<c.budgetBytes*c.high?'Cleanup is not needed below the storage threshold':'No temporary files are eligible'}" ${UIAction('cleanupStorage')}>${icons.clock}Clean up now</button></div><div class="storage-cleanup-summary"><span>${eligible.length?`<strong>${size(reclaimable)}</strong> eligible for cleanup`:'No files need cleanup right now'}</span><span>${eligible.length} eligible ${eligible.length===1?'file':'files'}</span></div><dl class="storage-policy"><div><dt>Automatic cleanup</dt><dd>Starts at ${Math.round(c.high*100)}% · clears space to ${Math.round(c.low*100)}%</dd></div><div><dt>Recently used files</dt><dd>Protected for ${c.minAgeMs/3600000} hours</dd></div><div><dt>Permanent files</dt><dd>Never removed automatically</dd></div></dl></section>
-    <section class="storage-projects"><div class="storage-section-heading"><h2>By project</h2><span>${all.length} ${all.length===1?'attachment':'attachments'}</span></div><div class="storage-project-list">${projects.map(({project,count,bytes})=>`<div class="storage-project-row"><span class="storage-project-avatar">${escape(project.name.slice(0,1).toUpperCase())}</span><span class="storage-project-name">${escape(project.name)}</span><span class="storage-project-count">${count} ${count===1?'file':'files'}</span><strong>${size(bytes)}</strong></div>`).join('')}</div></section>
-    <section class="storage-history"><div class="storage-section-heading"><h2>Recent cleanup</h2></div>${history.length?history.map(event=>`<div class="storage-history-row"><span class="storage-history-icon">${icons.clock}</span><div><strong>${event.count} temporary ${event.count===1?'file':'files'} cleaned up</strong><time datetime="${new Date(event.at).toISOString()}">${hooks.instant(event.at)}</time></div><span>${size(event.bytes)} freed</span></div>`).join(''):`<div class="storage-history-empty">${icons.clock}<span>No cleanup runs yet</span></div>`}</section>`;
-  }
   /** A `background` read (a live update, or a refresh of usage already shown) is passive. */
   function loadStorageUsage({background=false}={}){
-    if(!transport()?.storageUsage||serverStorageLoading)return serverStorageLoading;
+    if(serverStorageLoading)return serverStorageLoading;
     serverStorageState='loading';
     serverStorageLoading=transport().storageUsage({background}).then(value=>{serverStorage=value;serverStorageState='ready';serverStorageRead=true;if(app.context?.().view==='storage')hooks.refresh();return value;}).catch(error=>{serverStorageState='error';if(app.context?.().view==='storage')hooks.refresh();return null;}).finally(()=>serverStorageLoading=null);return serverStorageLoading;
   }
-  function productionStorageHtml(){
+  function storageHtml(){
     if(!serverStorage){if(serverStorageState==='unloaded')loadStorageUsage({background:serverStorageRead});return `<section class="storage-capacity"><div class="storage-section-heading"><h2>Storage usage</h2></div>${serverStorageState==='error'?`<p class="access-note" role="alert">Could not load storage usage. <button class="btn quiet" ${UIAction('retryStorageUsage')}>Retry</button></p>`:'<p class="access-note" role="status">Loading storage usage…</p>'}</section>`;}
     const c={budgetBytes:serverStorage.budgetBytes,high:serverStorage.highWatermarkBytes/serverStorage.budgetBytes,low:serverStorage.lowWatermarkBytes/serverStorage.budgetBytes},used=serverStorage.usedBytes,permanent=serverStorage.permanentBytes,temporary=serverStorage.temporaryBytes,pending=serverStorage.pendingDeletionBytes||0,other=Math.max(0,used-permanent-temporary-pending),free=Math.max(0,c.budgetBytes-used),canClean=used>=serverStorage.highWatermarkBytes;
     const breakdown=[['Permanent',permanent,'permanent'],['Temporary',temporary,'temporary'],...(pending?[['Pending deletion',pending,'other']]:[]),...(other?[['Other usage',other,'other']]:[])],projects=serverStorage.projects||[],history=serverStorage.recentCleanup||[];
@@ -434,12 +345,12 @@
       controls.querySelector('[data-pdf-prev]').onclick=()=>{if(pageNumber>1){pageNumber--;paint();}};controls.querySelector('[data-pdf-next]').onclick=()=>{if(pageNumber<pdf.numPages){pageNumber++;paint();}};controls.querySelector('[data-pdf-fit]').onclick=()=>{zoom=1;paint();};controls.querySelector('[data-pdf-out]').onclick=()=>{zoom=Math.max(.5,zoom-.25);paint();};controls.querySelector('[data-pdf-in]').onclick=()=>{zoom=Math.min(4,zoom+.25);paint();};if(window.ResizeObserver){let observedWidth=Math.round(host.clientWidth);owner.pdfResize=new ResizeObserver(()=>{const width=Math.round(host.clientWidth);if(width===observedWidth)return;observedWidth=width;clearTimeout(owner.pdfResizeTimer);owner.pdfResizeTimer=setTimeout(()=>{if(previewActive(owner,host))paint();},120);});owner.pdfResize.observe(host);}await paint();
     }catch(error){clearTimeout(owner.pdfTimeout);if(previewActive(owner,host))host.textContent=error.name==='PasswordException'?'This PDF is password protected. Download it to open it.':'Unable to preview this PDF. Download the original file.';}
   }
-  function download(event,taskId,fileId){const file=hooks.task(taskId)?.attachments?.find(f=>f.id===fileId);if(!window.DATA.session||!hooks.canRead(taskId)||!(file?.downloadUrl||file?.url)||file.state&&file.state!=='available'){event.preventDefault();app.toast('File unavailable','error');return false;}if(!transport())file.lastAccessAt=Date.now();return true;}
+  function download(event,taskId,fileId){const file=hooks.task(taskId)?.attachments?.find(f=>f.id===fileId);if(!window.DATA.session||!hooks.canRead(taskId)||!(file?.downloadUrl||file?.url)||file.state&&file.state!=='available'){event.preventDefault();app.toast('File unavailable','error');return false;}return true;}
   // Undo of a deletion, at the revision the deletion left. Every try has the
   // same key, so a retry after an unknown result applies once, and a failure
   // worth trying again goes to `again`, which offers Undo again.
   function restoreAttachment(taskId,task,file,again){
-    transport()?.restoreAttachment(file.id,{expectedRevision:file.revision+1,idempotencyKey:file.restoreKey ||= crypto.randomUUID()}).then(()=>{if(sameTask(taskId,task))loadProduction(taskId,true);app.toast('Attachment restored');}).catch(error=>{if(sameTask(taskId,task))loadProduction(taskId,true);const message=errorMessage(error,'Attachment could not be restored.');if(again&&window.OneloopRetryable?.(error))again(message);else app.toast(message,'error');});
+    transport().restoreAttachment(file.id,{expectedRevision:file.revision+1,idempotencyKey:file.restoreKey ||= crypto.randomUUID()}).then(()=>{if(sameTask(taskId,task))loadProduction(taskId,true);app.toast('Attachment restored');}).catch(error=>{if(sameTask(taskId,task))loadProduction(taskId,true);const message=errorMessage(error,'Attachment could not be restored.');if(again&&window.OneloopRetryable?.(error))again(message);else app.toast(message,'error');});
   }
   function reorderAttachment(taskId,fileId,targetId,after=false){
     const file=editableAttachment(taskId,fileId,true),task=hooks.task(taskId);if(!file||fileId===targetId)return false;if(reorderPending.has(fileId)){app.toast('This attachment is still being reordered.','info');return false;}
@@ -447,9 +358,9 @@
     const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
     if(ordered.every((f,i)=>f===task.attachments[i]))return false;
     task.attachments=ordered;
-    if(transport()){reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;current.attachments=(result.items||[]).map(serverFile);hooks.refreshAttachments(taskId);app.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){current.attachments=before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean);hooks.refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));}
-    else hooks.log(task,'reordered attachments',{field:'attachment-order',before,after:ordered.map(f=>f.id)});hooks.refreshAttachments(taskId);
-    [...document.querySelectorAll('[data-reorder-file]')].find(el=>el.dataset.reorderFile===fileId)?.focus({preventScroll:true});if(!transport())app.toast('Attachment order updated');return true;
+    reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;current.attachments=(result.items||[]).map(serverFile);hooks.refreshAttachments(taskId);app.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){current.attachments=before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean);hooks.refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadProduction(taskId,true);app.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
+    hooks.refreshAttachments(taskId);
+    [...document.querySelectorAll('[data-reorder-file]')].find(el=>el.dataset.reorderFile===fileId)?.focus({preventScroll:true});return true;
   }
   let sorting=null;
   function stopSorting(){
@@ -536,22 +447,16 @@
       return ()=>disposePreview(owner);
     },
     /** Open read-only files, such as synced Knowledge files, in the file dialog. */
-    previewCollection(files,fileId,canRead){if(typeof canRead==='function'&&canRead())previewAttachment(null,fileId,{files,canRead});},inspect,mount,attachmentHeader,renderAttachments,storageHtml,cleanup,usage,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(owner){jobs.filter(j=>j.owner===owner).forEach(j=>{j.cancelled=true;j.reader?.abort();});if(transport()){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();serverStorage=null;serverStorageState='unloaded';serverStorageRead=false;closePreview();}},
+    previewCollection(files,fileId,canRead){if(typeof canRead==='function'&&canRead())previewAttachment(null,fileId,{files,canRead});},mount,attachmentHeader,renderAttachments,storageHtml,available,canPreview,get limits(){return {file:maxFile(),avatar:maxAvatar(),count:maxFiles()};},clearAccount(){closePreview();sources.clear();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});productionLoaded=new WeakSet();productionLoading.clear();productionRefreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();serverStorage=null;serverStorageState='unloaded';serverStorageRead=false;},
     bind(api,callbacks){app=api;hooks=callbacks;
       let accountScope=window.DATA.session?.id;
       runtimeUnsubscribe?.();runtimeUnsubscribe=window.OneloopTransport?.subscribe?.(change=>{if(change?.type==='auth'&&accountScope!==window.DATA.session?.id){window.Uploads.clearAccount();accountScope=window.DATA.session?.id;}if(change?.type==='bootstrap'){productionLoaded=new WeakSet();serverStorage=null;serverStorageState='unloaded';return;}if(change?.type==='sse'){if(app.context?.().view==='storage')loadStorageUsage({background:true});if(change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=hooks.task(change.taskId);if(changedTask)loadProduction(changedTask.id,true,true);}}});
       app.retryStorageUsage=()=>loadStorageUsage();
       app.reorderAttachment=reorderAttachment;app.openAttachment=openAttachment;app.previewAttachment=previewAttachment;app.downloadAttachment=download;app.setAttachmentTemporary=setTemporary;
-      app.cleanupStorage=()=>{if(!hooks.me()?.admin||window.Recovery&&!Recovery.ensureOnline())return;if(transport()?.cleanupStorage){transport().cleanupStorage().then(report=>{serverStorage=null;return loadStorageUsage().then(()=>app.toast(report.temporaryFilesCleaned?`Removed ${report.temporaryFilesCleaned} temporary ${report.temporaryFilesCleaned===1?'file':'files'} (${size(report.bytesReclaimed)})`:'No temporary files are eligible for cleanup','info'));}).catch(error=>app.toast(errorMessage(error,'Storage cleanup could not be completed.'),'error'));return;}cleanup(true);hooks.refresh();};
-      app.delAttachment=(id,index)=>{const task=hooks.task(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;hooks.confirm({title:'Delete attachment?',text:transport()?`${displayText(file.name)} will be deleted. You can undo this right after.`:`${displayText(file.name)} will be permanently deleted.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){app.toast('This task is no longer available.','error');return;}if(transport()){transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)current.attachments=current.attachments.filter(item=>item.id!==file.id);sources.delete(file.id);if(preview?.fileId===file.id)closePreview();hooks.refreshAttachments(id);app.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadProduction(id,true);app.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});return;}expire(task,file,'removed');hooks.refreshAttachments(id);app.toast('Attachment deleted');}});};
+      app.cleanupStorage=()=>{if(!hooks.me()?.admin||window.Recovery&&!Recovery.ensureOnline())return;transport().cleanupStorage().then(report=>{serverStorage=null;return loadStorageUsage().then(()=>app.toast(report.temporaryFilesCleaned?`Removed ${report.temporaryFilesCleaned} temporary ${report.temporaryFilesCleaned===1?'file':'files'} (${size(report.bytesReclaimed)})`:'No temporary files are eligible for cleanup','info'));}).catch(error=>app.toast(errorMessage(error,'Storage cleanup could not be completed.'),'error'));};
+      app.delAttachment=(id,index)=>{const task=hooks.task(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;hooks.confirm({title:'Delete attachment?',text:`${displayText(file.name)} will be deleted. You can undo this right after.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){app.toast('This task is no longer available.','error');return;}transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)current.attachments=current.attachments.filter(item=>item.id!==file.id);sources.delete(file.id);if(preview?.fileId===file.id)closePreview();hooks.refreshAttachments(id);app.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadProduction(id,true);app.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});}});};
       app.chooseAttachments=()=>document.getElementById('attIn')?.click();
       app.attachFiles=(id,input)=>{if(!hooks.can(id)){app.toast('You no longer have permission to upload attachments','error');return;}for(const file of [...input.files]){const job={id:'upload-'+(++next),taskId:id,file,owner:window.DATA.session?.userId,ephemeral:false,state:'queued',progress:0};jobs.push(job);start(job);}input.value='';};
-      const previousAvatar=app.setAvatar.bind(app);
-      app.setAvatar=async input=>{if(window.Recovery && !Recovery.ensureOnline())return;const file=input.files[0];if(!file)return;if(file.size>maxAvatar()){app.toast(`Avatar exceeds ${maxAvatar()/1024/1024} MB.`,'error');input.value='';return;}if(transport()?.uploadAvatar){try{const result=await transport().uploadAvatar(file);hooks.me().avatar=result.avatarUrl;hooks.refresh();app.toast('Avatar updated');}catch(error){app.toast(errorMessage(error,'Avatar could not be updated.'),'error');}finally{input.value='';}return;}
-        try{const buffer=await read(file),error=inspect(file,buffer,true);if(error){app.toast(error,'error');return;}if(typeof createImageBitmap!=='function'){previousAvatar(input);return;}
-          const image=await createImageBitmap(file);if(image.width*image.height>20e6){image.close();app.toast('Avatar dimensions are too large.','error');return;}const canvas=document.createElement('canvas'),scale=Math.min(1,256/Math.max(image.width,image.height));canvas.width=Math.max(1,Math.round(image.width*scale));canvas.height=Math.max(1,Math.round(image.height*scale));canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);image.close();hooks.me().avatar=canvas.toDataURL('image/webp',.9);hooks.refresh();app.toast('Avatar updated');
-        }catch{app.toast('The image could not be read.','error');}finally{input.value='';}
-      };
     }
   };
 })();

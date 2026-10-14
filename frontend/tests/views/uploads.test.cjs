@@ -3,27 +3,36 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM, bootApp, source, waitFor } = require('../support/dom.cjs');
+const { bootApp, source, waitFor, settle } = require('../support/dom.cjs');
 const { ApiError } = require('../../src/data/api-client.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
 
-/** A task page with an HTML receipt and a text file attached through the view. */
-async function withFiles() {
-  const revoked = [];
-  const t = bootApp({ route: 'task/BIR-079', production: false, setup: w => { w.URL.createObjectURL = () => 'blob:attachment'; w.URL.revokeObjectURL = url => revoked.push(url); } });
+/** An attachment as the server lists it. */
+const serverFile = (id, name, previewKind, overrides = {}) => ({ id, name, size: 10, mediaType: 'application/octet-stream', previewKind, isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${id}`, sourceUrl: `/source/${id}`, downloadUrl: `/download/${id}`, ...overrides });
+
+/** A task page whose server lists `files`; `contents` maps a file's source address to its text. */
+async function withServerFiles(files, contents = {}, options = {}) {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: files }) }, setup: w => { w.fetch = async url => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode(contents[url] ?? '').buffer }); }, ...options });
   const task = t.D.tasks.find(item => item.id === 'BIR-079');
-  t.A.attachFiles(task.id, { files: [new t.w.File([receipt], 'receipt-preview.html', { type: 'text/html' }), new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
-  await waitFor(() => (task.attachments || []).length === 2, 'both files are attached');
-  return { ...t, task, file: task.attachments[0], other: task.attachments[1], revoked };
+  await waitFor(() => (task.attachments || []).length === files.length, 'the server lists the files');
+  return { ...t, task };
+}
+
+/** A task page with an HTML receipt and a text file. */
+async function withFiles() {
+  const t = await withServerFiles([serverFile('receipt', 'receipt-preview.html', 'html'), serverFile('notes', 'notes.txt', 'text')], { '/source/receipt': receipt, '/source/notes': 'notes' });
+  return { ...t, file: t.task.attachments[0], other: t.task.attachments[1] };
 }
 
 /** Add an image attachment record and repaint the task. */
 function withImage(t) {
-  const image = { id: 'image', name: 'image.png', size: 10, url: 'blob:sample' };
+  const image = { id: 'image', name: 'image.png', size: 10, type: 'image/png', previewKind: 'image', ephemeral: false, state: 'available', revision: 1, url: '/content/image', contentUrl: '/content/image', downloadUrl: '/download/image' };
   t.task.attachments.push(image); t.A.refresh();
   return image;
 }
+/** Settle the last waiting call of the API's `method` with `value`. */
+const answerLast = (t, method, value) => { t.calls.filter(call => call.method === method && !call.settled).at(-1).resolve(value); return settle(); };
 
 const withoutBoardAccess = t => {
   t.D.users.find(u => u.id === 'taylorwu').admin = false;
@@ -32,15 +41,16 @@ const withoutBoardAccess = t => {
 
 test('HTML attachments keep their file name and preview in an isolated sandbox with a source view', async () => {
   const { d, A, task, file } = await withFiles();
-  assert.equal(file.name, 'receipt-preview.html'); assert.equal(file.displayName, undefined);
+  assert.equal(file.name, 'receipt-preview.html');
   assert(task.attachments.every(f => f.ephemeral === false)); assert(!d.querySelector('[name=uploadEphemeral]'));
   assert(d.querySelector('.attachment-title').textContent === 'receipt-preview.html'); assert(d.querySelector('.attachment-thumbnail').getAttribute('aria-label').includes('Preview'));
   assert(!d.querySelector('.file-preview-action')); assert(d.querySelector('.file-download').textContent.includes('Download'));
   // The server's preview address serves the page under its sandbox policy.
   file.htmlPreviewUrl = '/api/attachments/receipt/preview/html';
   A.previewAttachment(task.id, file.id);
+  await waitFor(() => d.querySelector('.html-preview'), 'the preview loads');
   let frame = d.querySelector('.html-preview');
-  assert(frame); assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
+  assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
   assert.equal(new URL(frame.src).pathname, '/api/attachments/receipt/preview/html');
   assert(d.querySelector('.file-info').hidden);
   const detailsButton = d.querySelector('[data-file-details]');
@@ -52,38 +62,40 @@ test('HTML attachments keep their file name and preview in an isolated sandbox w
   assert(!d.querySelector('#attachment-display-name')); assert.equal(d.querySelector('[data-file-download]').download, 'receipt-preview.html'); assert.equal(d.querySelector('#file-preview-title').textContent, 'receipt-preview.html');
 });
 
-test('retention switches change one file, suppress reverted activity and keep focus and an open reply', async () => {
+test('retention switches change one file and keep focus and an open reply', async () => {
   const t = await withFiles();
-  const { w, d, A, task, file, other } = t;
+  const { d, A, task, file, other } = t;
+  const retentionSaves = () => JSON.parse(JSON.stringify(t.calls.filter(call => call.method === 'updateAttachment').map(call => call.args)));
   A.previewAttachment(task.id, file.id);
   A.setAttachmentTemporary(task.id, file.id, true); assert(file.ephemeral); assert.equal(other.ephemeral, false); assert.equal(d.querySelector('[data-file-ephemeral]').getAttribute('aria-checked'), 'true');
-  A.setAttachmentTemporary(task.id, file.id, false); assert(!file.ephemeral); assert(!w.Activity.visible(task.activity).some(a => a.change?.field === 'attachment-retention:' + file.id));
+  assert.deepEqual(retentionSaves(), [['receipt', { isEphemeral: true, expectedRevision: 1 }]]);
+  await answerLast(t, 'updateAttachment', serverFile('receipt', 'receipt-preview.html', 'html', { isEphemeral: true, revision: 2 }));
   d.querySelector('[data-file-close]').click();
   const image = withImage(t);
   const retention = d.querySelector(`[data-attachment-id="${image.id}"] .retention-switch`); retention.focus();
   A.setAttachmentTemporary(task.id, image.id, true);
   assert.strictEqual(d.querySelector(`[data-attachment-id="${image.id}"] .retention-switch`), retention); assert.equal(d.activeElement, retention); assert.equal(retention.getAttribute('aria-checked'), 'true');
-  assert(d.querySelector('.timeline').textContent.includes('temporary'));
-  A.setAttachmentTemporary(task.id, image.id, false); assert.equal(retention.getAttribute('aria-checked'), 'false');
-  (task.comments ||= []).push({ id: 'retention-reply-root', who: 'taylorwu', ts: Date.now(), text: 'Keep this conversation', parentId: null }); A.refresh();
+  await answerLast(t, 'updateAttachment', serverFile('image', 'image.png', 'image', { isEphemeral: true, revision: 2 }));
+  A.setAttachmentTemporary(task.id, image.id, false); assert.equal(d.querySelector(`[data-attachment-id="${image.id}"] .retention-switch`).getAttribute('aria-checked'), 'false');
+  await answerLast(t, 'updateAttachment', serverFile('image', 'image.png', 'image', { revision: 3 }));
+  (task.comments ||= []).push({ id: 'retention-reply-root', who: 'taylorwu', ts: Date.now(), text: 'Keep this conversation', mentions: [], parentId: null }); A.refresh();
   A.replyComment(task.id, 'retention-reply-root');
   const replyInput = d.getElementById('cmtIn'); replyInput.value = 'Unsent reply stays here'; replyInput.focus();
   A.setAttachmentTemporary(task.id, image.id, true);
   assert.strictEqual(d.getElementById('cmtIn'), replyInput); assert.equal(replyInput.value, 'Unsent reply stays here'); assert.equal(d.activeElement, replyInput);
 });
 
-test('each click on an attachment row\'s Temporary switch changes it once', () => {
-  const t = bootApp({ route: 'task/BIR-079', actions: true, production: false });
-  const task = t.D.tasks.find(item => item.id === 'BIR-079');
-  (task.attachments ||= []).push({ id: 'notes', name: 'notes.txt', size: 5, url: 'blob:notes', ephemeral: false }); t.A.refresh();
-  const retention = () => t.d.querySelector('[data-attachment-id="notes"] .retention-switch');
-  for (const expected of [true, false, true]) {
+test('each click on an attachment row\'s Temporary switch changes it once', async () => {
+  const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')], {}, { actions: true });
+  const retention = () => t.d.querySelector('[data-attachment-id="notes"] .retention-switch'), saves = () => t.calls.filter(call => call.method === 'updateAttachment');
+  for (const [index, expected] of [true, false, true].entries()) {
     retention().click();
-    assert.equal(task.attachments.find(file => file.id === 'notes').ephemeral, expected); assert.equal(retention().getAttribute('aria-checked'), String(expected));
+    assert.equal(saves().length, index + 1); assert.equal(saves().at(-1).args[1].isEphemeral, expected); assert.equal(retention().getAttribute('aria-checked'), String(expected));
+    await answerLast(t, 'updateAttachment', serverFile('notes', 'notes.txt', 'text', { isEphemeral: expected, revision: index + 2 }));
   }
 });
 
-test('Office and binary files are download-only and images drop old custom labels', async () => {
+test('Office and binary files are download-only and images show a thumbnail', async () => {
   const t = await withFiles();
   const { w, d, A, task } = t;
   const downloads = []; w.HTMLAnchorElement.prototype.click = function () { downloads.push(this.download); };
@@ -91,9 +103,8 @@ test('Office and binary files are download-only and images drop old custom label
     const office = { id: ext, name: 'report.' + ext, size: 4, url: 'blob:sample' }; task.attachments.push(office);
     assert.equal(w.Uploads.canPreview(office), false); A.previewAttachment(task.id, office.id); assert(!d.querySelector('.file-dialog')); assert.equal(downloads.at(-1), office.name);
   }
-  const image = { id: 'image', name: 'image.png', size: 10, url: 'blob:sample', displayName: 'Old custom label' };
-  task.attachments.push(image); A.refresh();
-  assert(d.querySelector('.attachment-thumbnail img')); assert(!d.querySelector('.task-attachments').textContent.includes('Old custom label')); assert.equal(image.displayName, undefined);
+  withImage(t);
+  assert(d.querySelector('.attachment-thumbnail img'));
 });
 
 test('file details show the upload time and a positioned retention tooltip that dismisses', async () => {
@@ -150,29 +161,19 @@ test('retention changes require board access while previews stay readable', asyn
   withoutBoardAccess(t);
   assert.equal(A.setAttachmentTemporary(task.id, file.id, true), false);
   file.htmlPreviewUrl = '/api/attachments/receipt/preview/html';
-  A.previewAttachment(task.id, file.id); assert(!d.querySelector('#attachment-display-name')); assert(!d.querySelector('[data-file-ephemeral]')); assert(d.querySelector('.html-preview'));
+  A.previewAttachment(task.id, file.id); assert(!d.querySelector('#attachment-display-name')); assert(!d.querySelector('[data-file-ephemeral]')); await waitFor(() => d.querySelector('.html-preview'), 'the preview loads');
   assert(!d.querySelector('.attachment-count')); assert(!d.querySelector('.file-history'));
 });
 
-test('storage cleanup keeps order and leaves a disabled tombstone for cleaned files', async () => {
-  const { w, d, A, D, task, other } = await withFiles();
-  other.ephemeral = true; other.uploadedAt = Date.now() - 3 * 864e5; other.lastAccessAt = Date.now() - 3 * 864e5;
-  D.storageConfig = { budgetBytes: w.Uploads.usage(), high: .99, low: .9 };
+test('a file cleaned up for space keeps its place as a disabled tombstone', async () => {
+  const { d, A, task, other } = await withFiles();
   const order = task.attachments.map(f => f.id).join(',');
-  w.Uploads.cleanup(); assert.equal(other.state, 'cleaned'); assert.equal(other.url, null); assert.equal(task.attachments.map(f => f.id).join(','), order);
+  // As the server lists a temporary file that storage cleanup removed.
+  other.state = 'cleaned'; A.refresh();
+  assert.equal(task.attachments.map(f => f.id).join(','), order);
   const cleaned = d.querySelector(`[data-attachment-id="${other.id}"]`);
   assert(cleaned.textContent.includes('Cleaned up')); assert(!cleaned.querySelector('a')); assert(cleaned.querySelector('.file-download').disabled); assert(!cleaned.querySelector('[role=switch]'));
   A.previewAttachment(task.id, other.id); assert(!d.querySelector('.file-dialog'));
-});
-
-test('deleting a file revokes its URL, frees usage and clears comment references', async () => {
-  const { w, d, A, task, file, other, revoked } = await withFiles();
-  (task.comments ||= []).push({ id: 'file-ref', who: 'taylorwu', ts: Date.now(), text: 'Reference', attachments: [file.id], mentions: [] });
-  const before = w.Uploads.usage(), url = file.url;
-  A.delAttachment(task.id, task.attachments.indexOf(file)); d.querySelector('[data-confirm-accept]').click();
-  assert(!task.attachments.some(f => f.id === file.id)); assert(revoked.includes(url)); assert.equal(w.Uploads.usage(), before - file.size);
-  assert.equal(task.comments.at(-1).attachments, undefined); assert(!d.querySelector(`[data-attachment-id="${file.id}"]`)); assert(!d.querySelector('.file-history'));
-  A.delAttachment(task.id, task.attachments.indexOf(other)); d.querySelector('[data-confirm-accept]').click(); assert(!task.attachments.includes(other));
 });
 
 test('legacy bidirectional file names are isolated in rows and activity', () => {
@@ -186,40 +187,23 @@ test('legacy bidirectional file names are isolated in rows and activity', () => 
 });
 
 test('files with duplicate names stay separate attachments with download links', async () => {
-const t=bootApp({route:'task/BIR-079',production:false});t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nExample,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>t.D.tasks.find(x=>x.id==='BIR-079').attachments?.length===1,'the first file is attached');const task=t.D.tasks.find(x=>x.id==='BIR-079');assert.equal(task.attachments.length,1);t.A.attachFiles('BIR-079',{files:[new t.w.File(['name,status\nSecond,planning\n'],'example.csv',{type:'text/csv'})],value:''});await waitFor(()=>task.attachments?.length===2,'the duplicate name is attached separately');assert.equal(task.attachments.length,2);assert.notEqual(task.attachments[0].id,task.attachments[1].id);assert(t.d.querySelector('a[download="example.csv"]'));
+  const t = await withServerFiles([serverFile('first', 'example.csv', 'text'), serverFile('second', 'example.csv', 'text')]);
+  assert.deepEqual([...t.d.querySelectorAll('a.file-download[download="example.csv"]')].map(link => link.getAttribute('href')), ['/download/first', '/download/second']);
 });
 
-test('capacity cleanup removes only eligible temporary files and keeps tombstones and permanent files', () => {
-  const { w, D } = bootApp({ route: 'task/BIR-079', prepare: D => {
-    D.tasks.forEach(t => t.attachments = []); D.storageConfig = { budgetBytes: 1000, high: .8, low: .7 };
-    D.tasks.find(t => t.id === 'BIR-079').attachments = [{ id: 'keep', name: 'keep.txt', size: 600, uploadedAt: Date.now() - 3 * 864e5, ephemeral: false }, { id: 'old', name: 'old.txt', size: 250, uploadedAt: Date.now() - 3 * 864e5, lastAccessAt: Date.now() - 2 * 864e5, ephemeral: true }];
-  } });
-  const task = D.tasks.find(t => t.id === 'BIR-079'), result = w.Uploads.cleanup();
-  assert.equal(result.count, 1); assert.equal(task.attachments[1].state, 'cleaned'); assert(!task.attachments[0].state); assert.equal(w.Uploads.available(task).length, 1); assert.equal(w.Uploads.usage(), 600);
-});
-
-test('a task holds at most 25 files, defaults to permanent and previews text safely', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false, prepare: D => { D.tasks.find(t => t.id === 'BIR-079').attachments = Array.from({ length: 24 }, (_, i) => ({ id: 'existing' + i, name: 'existing.txt', size: 1, ephemeral: false })); } });
-  const task = D.tasks.find(t => t.id === 'BIR-079');
+test('a task holds at most 25 files, uploads them as permanent and previews text safely', async () => {
+  const t = await withServerFiles(Array.from({ length: 24 }, (_, i) => serverFile('existing' + i, 'existing.txt', null)), { '/source/sample': 'name,value\n"hello, world",<script>' });
+  const { w, d, A, task } = t;
   A.attachFiles(task.id, { files: [new w.File(['name,value\n"hello, world",<script>'], 'sample.txt', { type: 'text/plain' })], value: '' });
-  await waitFor(() => w.Uploads.available(task).length === 25, 'the 25th file is attached');
-  assert.equal(task.attachments.at(-1).ephemeral, false);
-  A.previewAttachment(task.id, task.attachments.at(-1).id);
+  const upload = t.calls.find(call => call.method === 'uploadAttachment'); assert.equal(upload.args[1].ephemeral, false);
+  upload.resolve(serverFile('sample', 'sample.txt', 'text')); await settle();
+  assert.equal(w.Uploads.available(task).length, 25);
+  A.previewAttachment(task.id, 'sample');
+  await waitFor(() => d.querySelector('.file-preview-content pre'), 'the text loads');
   assert(d.querySelector('.file-preview-content pre').textContent.includes('hello, world')); assert(!d.querySelector('.file-preview-content script'));
   d.querySelector('[data-file-close]').click();
   A.attachFiles(task.id, { files: [new w.File(['x'], 'overflow.txt', { type: 'text/plain' })], value: '' });
-  await waitFor(() => d.querySelector('.upload-state')?.textContent.includes('25 available'), 'the limit is reported');
-  assert.equal(w.Uploads.available(task).length, 25);
-});
-
-test('upload validation limits size, checks signatures and accepts plain text', () => {
-  const { w } = bootApp();
-  const U = w.Uploads;
-  assert.equal(U.inspect({ name: 'bad.pdf', size: 4 }, new Uint8Array([1, 2, 3, 4]).buffer), '');
-  assert.equal(U.inspect({ name: 'file.txt', size: 26 * 1024 * 1024 }, new ArrayBuffer(0)), 'File exceeds 25 MB.');
-  assert.equal(U.inspect({ name: 'file.csv', size: 4 }, new Uint8Array([65, 44, 66, 10]).buffer), '');
-  assert(U.inspect({ name: 'anything.bin', size: 26 * 1024 * 1024 }, new ArrayBuffer(0)).includes('exceeds'));
-  assert(U.inspect({ name: 'avatar.png', size: 4 }, new Uint8Array([1, 2, 3, 4]).buffer, true).includes('do not match'));
+  assert(d.querySelector('.upload-state').textContent.includes('25 available')); assert.equal(t.calls.filter(call => call.method === 'uploadAttachment').length, 1);
 });
 
 test('text file names match the server detection list', () => {
@@ -240,8 +224,10 @@ function drag(w, type, target, files = [], items = [], types = ['Files']) {
 }
 
 test('file drops, drag targets, folders, access, limits and overlays share one upload path', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false });
-  const task = D.tasks.find(t => t.id === 'BIR-079'), notices = []; A.toast = (text, kind) => notices.push({ text, kind });
+  const t = await withServerFiles([]), { w, d, A, D, task } = t, notices = []; A.toast = (text, kind) => notices.push({ text, kind });
+  const uploads = () => t.calls.filter(call => call.method === 'uploadAttachment');
+  /** The server stores every upload still on its way. */
+  const store = async () => { for (const call of uploads().filter(item => !item.settled)) { const name = call.args[1].file.name; call.resolve(serverFile(`${name}-${uploads().indexOf(call)}`, name, 'text')); } await settle(); };
   const zone = () => d.querySelector('.task-attachments');
   assert.equal(zone().dataset.uploadTask, task.id); assert(zone().querySelector(':scope > button.attachment-dropzone')); assert.equal(zone().querySelectorAll('button.attachment-dropzone').length, 1);
   assert(!zone().querySelector('h2 button')); assert(!zone().querySelector('.attachment-empty')); assert(!zone().querySelector('.attachment-dropzone.is-compact'));
@@ -251,63 +237,74 @@ test('file drops, drag targets, folders, access, limits and overlays share one u
   const a = new w.File(['hello'], 'hello.txt'), b = new w.File(['world'], 'world.md');
   const drop = drag(w, 'drop', zone().querySelector('h2'), [a, b]);
   assert(drop.event.defaultPrevented); assert(!zone().classList.contains('is-file-dragover'));
-  await waitFor(() => task.attachments?.length === 2, 'both dropped files are attached');
-  assert(task.attachments.every(f => !f.ephemeral)); assert(zone().querySelector('.attachment-dropzone.is-compact')); assert.equal(zone().querySelector('.attachment-dropzone').innerHTML, uploaderMarkup);
+  assert.deepEqual(uploads().map(call => [call.args[1].file.name, call.args[1].ephemeral]), [['hello.txt', false], ['world.md', false]]);
+  await store(); assert.equal(task.attachments.length, 2);
+  assert(zone().querySelector('.attachment-dropzone.is-compact')); assert.equal(zone().querySelector('.attachment-dropzone').innerHTML, uploaderMarkup);
   drag(w, 'dragover', zone()); assert(zone().classList.contains('is-file-dragover')); drag(w, 'dragover', d.querySelector('.tp-title')); assert(!zone().classList.contains('is-file-dragover'));
-  const count = task.attachments.length; drag(w, 'drop', d.querySelector('.tp-title'), [a]); assert.equal(task.attachments.length, count); assert(notices.at(-1).text.includes('attachment section'));
+  const count = task.attachments.length; drag(w, 'drop', d.querySelector('.tp-title'), [a]); assert.equal(uploads().length, 2); assert(notices.at(-1).text.includes('attachment section'));
   assert(!drag(w, 'dragover', zone(), [], [], ['text/plain']).event.defaultPrevented); assert(!drag(w, 'drop', zone(), [], [], ['text/plain']).event.defaultPrevented);
   const folder = { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }), getAsFile: () => new w.File([], 'folder') }, file = { kind: 'file', webkitGetAsEntry: () => ({ isDirectory: false }), getAsFile: () => a };
   drag(w, 'drop', zone(), [a], [folder, file]);
-  await waitFor(() => task.attachments.length === count + 1, 'only the file inside the drop is attached');
-  assert(notices.some(n => n.text.includes('Folders are not supported')));
+  await waitFor(() => uploads().length === 3, 'only the file inside the drop is sent');
+  assert(notices.some(n => n.text.includes('Folders are not supported'))); await store(); assert.equal(task.attachments.length, count + 1);
   drag(w, 'drop', zone(), [new w.File([new Uint8Array(26 * 1024 * 1024)], 'too-large.zip')]);
   await waitFor(() => d.querySelector('.upload-state')?.textContent.includes('exceeds 25 MB'), 'the size limit is reported');
-  assert.equal(task.attachments.length, count + 1);
+  assert.equal(uploads().length, 3);
   drag(w, 'dragover', zone()); D.users.find(u => u.id === 'taylorwu').admin = false; D.projects[0].members.find(m => m.userId === 'taylorwu').permissions = [];
-  drag(w, 'drop', zone(), [a]); assert(!zone().classList.contains('is-file-dragover')); assert.equal(task.attachments.length, count + 1); assert(notices.at(-1).text.includes('permission'));
+  drag(w, 'drop', zone(), [a]); assert(!zone().classList.contains('is-file-dragover')); assert.equal(uploads().length, 3); assert(notices.at(-1).text.includes('permission'));
   assert.equal(drag(w, 'dragover', zone()).transfer.dropEffect, 'none');
   const protectedOrder = task.attachments.map(f => f.id);
   assert.equal(A.reorderAttachment(task.id, protectedOrder[0], protectedOrder[1], true), false); assert.deepEqual(task.attachments.map(f => f.id), protectedOrder);
-  D.users.find(u => u.id === 'taylorwu').admin = true; A.openModal('task'); drag(w, 'drop', zone(), [a]); assert.equal(task.attachments.length, count + 1); A.closeOverlays();
-  task.attachments = Array.from({ length: 24 }, (_, i) => ({ id: 'existing' + i, name: 'existing.txt', size: 1 })); A.refresh();
+  D.users.find(u => u.id === 'taylorwu').admin = true; A.openModal('task'); drag(w, 'drop', zone(), [a]); assert.equal(uploads().length, 3); A.closeOverlays();
+  task.attachments = Array.from({ length: 24 }, (_, i) => ({ id: 'existing' + i, name: 'existing.txt', size: 1, state: 'available' })); A.refresh();
   drag(w, 'drop', zone(), [a, b]);
-  await waitFor(() => task.attachments.length === 25, 'the drop fills the last slot');
+  await waitFor(() => uploads().length === 4, 'the drop fills the last slot');
   assert([...d.querySelectorAll('.upload-state')].some(el => el.textContent.includes('25 available')));
   task.attachments = []; A.refresh(); assert(!zone().querySelector('.attachment-dropzone.is-compact'));
   A.nav('board'); assert(drag(w, 'drop', d.body, [a]).event.defaultPrevented); assert(notices.at(-1).text.includes('Open a task'));
 });
 
 test('attachment order is shared by keyboard and pointer moves, which Escape and leaving cancel', async () => {
-  const { w, d, A, D } = bootApp({ route: 'task/BIR-079', production: false });
-  const task = D.tasks.find(t => t.id === 'BIR-079');
-  A.attachFiles(task.id, { files: [new w.File(['hello'], 'hello.txt'), new w.File(['world'], 'world.md'), new w.File(['third'], 'third.txt')], value: '' });
-  await waitFor(() => task.attachments?.length === 3, 'three files are attached');
+  const t = await withServerFiles([serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown'), serverFile('third', 'third.txt', 'text')]);
+  const { w, d, A, task } = t;
+  const order = () => task.attachments.map(f => f.id), moves = () => t.calls.filter(call => call.method === 'reorderAttachment');
+  /** The server keeps the order the page sent. */
+  const keep = () => answerLast(t, 'reorderAttachment', { items: order().map(id => serverFile(id, task.attachments.find(f => f.id === id).name, 'text')) });
   const zone = () => d.querySelector('.task-attachments');
-  const original = task.attachments.map(f => f.id), grip = () => d.querySelector(`[data-reorder-file="${original[0]}"]`);
+  const original = order(), grip = () => d.querySelector(`[data-reorder-file="${original[0]}"]`);
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); assert.equal(task.attachments.at(-1).id, original[0]); assert.equal(d.activeElement.dataset.reorderFile, original[0]);
-  grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(task.attachments.map(f => f.id), original);
+  assert.deepEqual(JSON.parse(JSON.stringify(moves()[0].args)), ['bir-079', { attachmentId: 'hello', targetId: 'third', after: true, expectedRevision: 1, idempotencyKey: moves()[0].args[1].idempotencyKey }]); await keep();
+  grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(order(), original); await keep();
   const pointer = (type, target, x, y) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
   const geometry = () => { zone().getBoundingClientRect = () => ({ left: 0, right: 600, top: 0, bottom: 500 }); [...zone().querySelectorAll('[data-attachment-id]')].forEach((row, i) => row.getBoundingClientRect = () => ({ left: 0, right: 600, top: 100 + i * 100, bottom: 190 + i * 100, width: 600, height: 90 })); };
   geometry(); pointer('pointerdown', grip(), 20, 120); pointer('pointermove', d, 20, 370); assert(d.querySelector('.attachment-insert-marker')); pointer('pointerup', d, 20, 370);
-  assert.equal(task.attachments.at(-1).id, original[0]); assert(!d.querySelector('.attachment-insert-marker')); assert(!d.body.classList.contains('attachment-sorting'));
-  const reordered = task.attachments.map(f => f.id);
+  assert.equal(task.attachments.at(-1).id, original[0]); assert(!d.querySelector('.attachment-insert-marker')); assert(!d.body.classList.contains('attachment-sorting')); await keep();
+  const reordered = order(), sent = moves().length;
   geometry(); pointer('pointerdown', grip(), 20, 320); pointer('pointermove', d, 20, 110); d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); pointer('pointerup', d, 20, 110);
-  assert.deepEqual(task.attachments.map(f => f.id), reordered);
-  geometry(); pointer('pointerdown', grip(), 20, 320); pointer('pointermove', d, 700, 110); pointer('pointerup', d, 700, 110); assert.deepEqual(task.attachments.map(f => f.id), reordered);
-  const activities = task.activity.length; assert.equal(A.reorderAttachment(task.id, original[0], original[0]), false); assert.equal(task.activity.length, activities);
+  assert.deepEqual(order(), reordered);
+  geometry(); pointer('pointerdown', grip(), 20, 320); pointer('pointermove', d, 700, 110); pointer('pointerup', d, 700, 110); assert.deepEqual(order(), reordered);
+  assert.equal(A.reorderAttachment(task.id, original[0], original[0]), false); assert.equal(moves().length, sent);
 });
 
 /** Boot a task page whose PDF.js module and canvas are test doubles. */
 async function pdfPreview(url, scriptPath) {
-  const dom = new JSDOM('<meta name="theme-color"><div id="app"></div>', { url: url + '#/task/BIR-079', runScripts: 'outside-only', pretendToBeVisual: true });
-  const w = dom.window, d = w.document;
-  w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} }); w.TextDecoder = TextDecoder; w.URL.createObjectURL = () => 'blob:pdf'; w.HTMLCanvasElement.prototype.getContext = () => ({});
-  const observers = []; w.ResizeObserver = class { constructor(fn) { this.fn = fn; observers.push(this); } observe(el) { this.el = el; } disconnect() { this.stopped = true; } };
-  const state = { renders: 0, textReads: 0, fades: 0, documentOptions: null, importURL: null };
+  const state = { renders: 0, textReads: 0, fades: 0, documentOptions: null, importURL: null }, observers = [];
   const page = { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }), render() { state.renders++; return { promise: Promise.resolve(), cancel() {} }; }, getTextContent() { state.textReads++; return Promise.resolve({ items: [] }); } };
-  w.pdfTestImport = moduleUrl => { state.importURL = moduleUrl; return Promise.resolve(w.pdfTestModule); };
-  w.pdfTestModule = { GlobalWorkerOptions: {}, getDocument: options => { state.documentOptions = options; return { promise: Promise.resolve({ numPages: 2, getPage: async () => page }), destroy: async () => {} }; } };
-  for (const name of ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', 'uploads', 'collaboration', 'app']) {
+  const pdf = { id: 'pdf', name: 'test.pdf', size: 9, mediaType: 'application/pdf', previewKind: 'pdf', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content/pdf', downloadUrl: '/download/pdf' };
+  // uploads.js and app.js load below, with the page's script URL and a PDF.js double.
+  const t = bootApp({
+    url: url + '#/task/BIR-079', media: () => false, scripts: ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', 'collaboration'],
+    api: { attachments: async () => ({ items: [pdf] }) },
+    setup: w => {
+      w.URL.createObjectURL = () => 'blob:pdf'; w.HTMLCanvasElement.prototype.getContext = () => ({});
+      w.ResizeObserver = class { constructor(fn) { this.fn = fn; observers.push(this); } observe(el) { this.el = el; } disconnect() { this.stopped = true; } };
+      w.fetch = async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('%PDF-test').buffer });
+      w.pdfTestImport = moduleUrl => { state.importURL = moduleUrl; return Promise.resolve(w.pdfTestModule); };
+      w.pdfTestModule = { GlobalWorkerOptions: {}, getDocument: options => { state.documentOptions = options; return { promise: Promise.resolve({ numPages: 2, getPage: async () => page }), destroy: async () => {} }; } };
+    },
+  });
+  const { w, d } = t;
+  for (const name of ['uploads', 'app']) {
     let text = source(name);
     if (name === 'uploads') text = text.replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)");
     const script = name === 'uploads' && scriptPath ? d.createElement('script') : null;
@@ -316,10 +313,10 @@ async function pdfPreview(url, scriptPath) {
     w.eval(text);
     Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
   }
+  t.start();
   w.UIMotion.fade = el => { if (el?.tagName === 'CANVAS') state.fades++; };
-  const task = w.DATA.tasks.find(t => t.id === 'BIR-079');
-  w.App.attachFiles(task.id, { files: [new w.File(['%PDF-test'], 'test.pdf')], value: '' });
-  await waitFor(() => task.attachments?.length, 'the PDF is attached');
+  const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
+  await waitFor(() => task.attachments?.length, 'the PDF is listed');
   const open = () => {
     w.App.previewAttachment(task.id, task.attachments[0].id);
     const host = d.querySelector('.file-preview-content'); Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });

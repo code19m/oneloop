@@ -10,6 +10,7 @@ const path = require('node:path');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
+const { createLegacyData } = require('../../src/data/projection-store.js');
 const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
 const { setTrustedHTML } = require('../../src/app/trusted-types.js');
@@ -70,9 +71,12 @@ afterEach(() => {
 const files = new Map();
 const read = file => { if (!files.has(file)) files.set(file, fs.readFileSync(file, 'utf8')); return files.get(file); };
 
-/** The sample projection. Timestamps move with the clock so Today, Yesterday and session ages stay stable. */
-function dataScript(fixture = 'fixture') {
-  return `window.DATA=${read(path.join(fixtures, `${fixture}.json`))};(() => {
+/**
+ * The sample projection, in the shape the projection store gives the views.
+ * Timestamps move with the clock so Today, Yesterday and session ages stay stable.
+ */
+function dataScript() {
+  return `window.DATA=${JSON.stringify({ ...createLegacyData(), ...JSON.parse(read(path.join(fixtures, 'fixture.json'))) })};(() => {
     const offset=Date.now()-DATA.session.authenticatedAt;
     const timestamps=new Set(['created','createdAt','authenticatedAt','lastActiveAt','authorizedAt','lastUsedAt','expiresAt','ts','uploadedAt','lastAccessAt','readAt','archivedAt','at']);
     function rebase(value){for(const [key,item] of Object.entries(value)){if(item&&typeof item==='object')rebase(item);else if(timestamps.has(key)&&typeof item==='number'&&item>1e12)value[key]=item+offset;}}
@@ -82,29 +86,27 @@ function dataScript(fixture = 'fixture') {
 
 /**
  * The production recovery controller, adapted from its ES module into a
- * classic script. It takes the API, gateway and auth that the harness wired,
- * or stand-ins without them.
+ * classic script, with the API, gateway and auth that the harness wired.
  */
 function recoveryScript() {
   return '(function(){' + read(path.join(frontend, 'src/features/recovery/controller.js')).replace(/^import .*;$/mg, 'const ApiError=window.TestApiError;').replaceAll('export ', '')
-    + '\nconst wiring=window.TestWiring??{api:{serverNow:()=>Date.now()},gateway:{},getAuth:()=>({withRecentAuth:run=>run()})};'
-    + '\nwindow.Recovery=window.OneloopRecovery=createRecoveryController({data:DATA,...wiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
+    + '\nwindow.Recovery=window.OneloopRecovery=createRecoveryController({data:DATA,...window.TestWiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
 }
 
 /**
- * Source for one script: `data` (a fixture), `recovery`, `vendor/...` or a
- * file in frontend/views, named without its extension.
+ * Source for one script: `data` (the sample projection), `recovery`,
+ * `vendor/...` or a file in frontend/views, named without its extension.
  */
-function source(name, fixture) {
+function source(name) {
   name = name.replace(/^\//, '').replace(/\.js$/, '');
-  if (name === 'data') return dataScript(fixture);
+  if (name === 'data') return dataScript();
   if (name === 'recovery') return recoveryScript();
   return read(path.join(frontend, name.startsWith('vendor/') ? `${name}.js` : `views/${name}.js`));
 }
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
 /** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const appScripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {
@@ -186,20 +188,16 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
 /**
  * Boot the view layer on the sample projection, wired as the app wires it:
  * the transport, the collaboration controller, the view bridge and the
- * runtime, over a fake API (see `wire`). With `production: false`, the views
- * run alone.
+ * runtime, over a fake API (see `wire`).
  *
  * @param {object} [options]
  * @param {string} [options.route] hash route, such as `board` or `task/BIR-079`
- * @param {string} [options.url] full URL, instead of `route` and `scenario`
- * @param {string} [options.scenario] `?scenario=` value; it also scopes local storage
- * @param {string} [options.fixture] fixture JSON in support/fixtures
+ * @param {string} [options.url] full URL, instead of `route`
  * @param {string} [options.html] initial document
  * @param {(query: string) => boolean} [options.media] matchMedia answers; reduced motion by default
  * @param {Record<string,string>} [options.stored] local storage entries set before boot
  * @param {string[]} [options.scripts] scripts to load, as `source` names
  * @param {boolean} [options.actions] run `data-action` attributes, as the app does; jsdom runs no handlers by itself
- * @param {boolean} [options.production] wire the app as boot.js does; on by default
  * @param {Record<string,Function>} [options.api] API methods that answer by themselves
  * @param {Record<string,unknown>} [options.reads] read controller methods to replace
  * @param {Record<string,unknown>} [options.auth] auth controller methods to replace
@@ -209,27 +207,27 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
  */
 function bootApp({
-  route = 'board', url, scenario = '', fixture, html = '<meta name="theme-color"><div id="app"></div>',
-  media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false, production = true,
+  route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
+  media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
   api, reads, auth, reloadBootstrap, setup, prepare, beforeScript,
 } = {}) {
-  const dom = new JSDOM(html, { url: url || `http://localhost/${scenario ? `?scenario=${scenario}` : ''}#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
   w.matchMedia = query => ({ matches: media(query), addEventListener() {}, removeEventListener() {} });
   w.TextDecoder = TextDecoder;
   w.URL.createObjectURL = () => 'blob:test';
   w.URL.revokeObjectURL = () => {};
   for (const [key, value] of Object.entries(stored)) w.localStorage.setItem(key, value);
-  if (production) useWindowGlobals(w);
+  useWindowGlobals(w);
   // Before any script, so actions run first on the document, as in the app.
   if (actions) installViewActions(w.document);
   setup?.(w);
   let wiring = null;
   for (const name of scripts) {
     beforeScript?.(name, w);
-    w.eval(source(name, fixture));
+    w.eval(source(name));
     if (name !== 'data') continue;
-    if (production) wiring = wire(w, { api, reads, auth, reloadBootstrap });
+    wiring = wire(w, { api, reads, auth, reloadBootstrap });
     prepare?.(w.DATA, w);
   }
   const bridge = wiring && w.App ? wiring.start() : null;
