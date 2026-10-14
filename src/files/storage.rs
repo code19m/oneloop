@@ -24,7 +24,7 @@ impl FileStore {
     }
 
     pub fn previews(&self) -> PathBuf {
-        self.layout.root().join("previews")
+        self.layout.previews()
     }
 
     /// An original's thumbnail, `previews/aa/bb/<key>.thumb`. Its path comes

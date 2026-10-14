@@ -388,27 +388,9 @@ impl FileService {
     ) -> AppResult<FileRuntimeReport> {
         // The data lease comes before any gate, as on every other file path.
         let _lease = self.db.acquire_data_lease().await?;
-        // A per-directory cross-process gate also covers separately constructed services.
-        let path = self.store.layout().root().join(".oneloop-cleanup.lock");
-        let gate =
-            tokio::task::spawn_blocking(move || -> AppResult<Option<FileMaintenanceGate>> {
-                let mut options = std::fs::OpenOptions::new();
-                options.create(true).truncate(false).read(true).write(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let file = options.open(path)?;
-                match file.try_lock() {
-                    Ok(()) => Ok(Some(FileMaintenanceGate { _lock: file })),
-                    Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-                    Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-                }
-            })
-            .await
-            .map_err(|error| AppError::internal(format!("cleanup gate failed: {error}")))??;
-        let Some(_gate) = gate else {
+        // A lock per data directory also covers separately constructed services.
+        let cleanup = self.take_lock(DataLayout::try_cleanup_lock).await?;
+        let Some(_cleanup) = cleanup else {
             return Ok(FileRuntimeReport::default());
         };
         let mut report = FileRuntimeReport::default();

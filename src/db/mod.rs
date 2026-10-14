@@ -29,6 +29,11 @@ const DATA_LOCK_FILE: &str = ".oneloop-data.lock";
 const DATA_INTENT_FILE: &str = ".oneloop-data-intent.lock";
 const BACKUP_LOCK_FILE: &str = ".oneloop-backup.lock";
 const INSTANCE_LOCK_FILE: &str = ".oneloop-instance.lock";
+/// Held while a file is published or removed, so orphan cleanup never takes
+/// a file that is being published.
+const FILE_MAINTENANCE_LOCK_FILE: &str = ".oneloop-files.lock";
+/// Held by storage cleanup, which runs once at a time per data directory.
+const CLEANUP_LOCK_FILE: &str = ".oneloop-cleanup.lock";
 const DEFAULT_POOL_SIZE: usize = 8;
 const MAX_PENDING_OPERATIONS: usize = 256;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,6 +79,20 @@ impl DataLayout {
         self.root.join("keys")
     }
 
+    /// Thumbnails of attachments.
+    pub fn previews(&self) -> PathBuf {
+        self.root.join("previews")
+    }
+
+    /// Working copies of Knowledge syncs, removed at startup.
+    pub(crate) fn knowledge_work(&self) -> PathBuf {
+        self.root.join("knowledge")
+    }
+
+    pub(crate) fn knowledge_known_hosts(&self) -> PathBuf {
+        self.keys().join("knowledge_known_hosts")
+    }
+
     pub fn data_lock(&self) -> PathBuf {
         self.root.join(DATA_LOCK_FILE)
     }
@@ -87,7 +106,7 @@ impl DataLayout {
         create_private_directories(&self.files())?;
         create_private_directories(&self.staging())?;
         create_private_directories(&self.keys())?;
-        create_private_directories(&self.root.join("previews"))?;
+        create_private_directories(&self.previews())?;
         Ok(())
     }
 
@@ -111,13 +130,21 @@ impl DataLayout {
 
     /// The backup lock, unless a backup holds it now.
     pub(crate) fn try_backup_lock(&self) -> AppResult<Option<File>> {
-        let path = self.root.join(BACKUP_LOCK_FILE);
+        try_lock_file(&self.root.join(BACKUP_LOCK_FILE))
+    }
+
+    /// The file maintenance lock, once no one else holds it.
+    pub(crate) fn file_maintenance_lock(&self) -> AppResult<File> {
+        let path = self.root.join(FILE_MAINTENANCE_LOCK_FILE);
         let file = open_lock_file(&path)?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => Err(lock_failed_error(&path, error)),
-        }
+        file.lock()
+            .map_err(|error| lock_failed_error(&path, error))?;
+        Ok(file)
+    }
+
+    /// The storage cleanup lock, unless another cleanup holds it now.
+    pub(crate) fn try_cleanup_lock(&self) -> AppResult<Option<File>> {
+        try_lock_file(&self.root.join(CLEANUP_LOCK_FILE))
     }
 
     pub fn try_server_lock(&self) -> AppResult<File> {
@@ -151,7 +178,7 @@ impl DataLayout {
             self.files(),
             self.staging(),
             self.keys(),
-            self.root.join("previews"),
+            self.previews(),
         ] {
             // Missing runtime directories will be created on startup. Probe their parent.
             let directory = if path.exists() {
@@ -735,6 +762,15 @@ fn lock_busy_error(path: &Path) -> AppError {
 
 fn lock_failed_error(path: &Path, error: std::io::Error) -> AppError {
     AppError::Io(format!("lock {}: {error}", path.display()))
+}
+
+fn try_lock_file(path: &Path) -> AppResult<Option<File>> {
+    let file = open_lock_file(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(lock_failed_error(path, error)),
+    }
 }
 
 fn open_lock_file(path: &Path) -> AppResult<File> {

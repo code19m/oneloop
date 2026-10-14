@@ -41,7 +41,7 @@ use crate::{
     auth::{Actor, ActorSource, refresh_actor_connection},
     blocking::Lane,
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
-    db::DataLease,
+    db::{DataLayout, DataLease},
     domain::UNDO_WINDOW_SECONDS,
 };
 
@@ -57,7 +57,6 @@ const CLEANUP_LOW_PERCENT: u64 = 70;
 
 const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
 const AVATAR_SIDE: u32 = 256;
-const FILE_MAINTENANCE_LOCK_FILE: &str = ".oneloop-files.lock";
 
 #[derive(Clone)]
 pub struct FileService {
@@ -99,10 +98,6 @@ pub enum UploadStart {
 enum UploadCleanupDecision {
     PreserveCommitted,
     RemoveUncommitted,
-}
-
-struct FileMaintenanceGate {
-    _lock: std::fs::File,
 }
 
 pub struct FileRead {
@@ -252,24 +247,19 @@ impl FileService {
         &self.store
     }
 
-    async fn acquire_file_maintenance_gate(&self) -> AppResult<FileMaintenanceGate> {
-        let path = self.db.layout().root().join(FILE_MAINTENANCE_LOCK_FILE);
-        tokio::task::spawn_blocking(move || {
-            let mut options = std::fs::OpenOptions::new();
-            options.create(true).truncate(false).read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let file = options.open(&path)?;
-            file.lock().map_err(|error| {
-                AppError::Io(format!("lock file maintenance {}: {error}", path.display()))
-            })?;
-            Ok(FileMaintenanceGate { _lock: file })
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("file maintenance worker failed: {error}")))?
+    async fn acquire_file_maintenance_gate(&self) -> AppResult<std::fs::File> {
+        self.take_lock(DataLayout::file_maintenance_lock).await
+    }
+
+    /// Takes a lock of the data directory off the async workers.
+    async fn take_lock<T: Send + 'static>(
+        &self,
+        take: fn(&DataLayout) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let layout = self.db.layout().clone();
+        tokio::task::spawn_blocking(move || take(&layout))
+            .await
+            .map_err(|error| AppError::internal(format!("file lock worker failed: {error}")))?
     }
 
     pub async fn list_attachments(

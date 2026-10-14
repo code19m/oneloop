@@ -384,8 +384,8 @@ impl KnowledgeService {
         let keys = db.layout().keys();
         let disk = crate::files::disk::DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
         let git = Git::new(
-            db.layout().root().join("knowledge"),
-            keys.join("knowledge_known_hosts"),
+            db.layout().knowledge_work(),
+            db.layout().knowledge_known_hosts(),
             allow_file,
         );
         Self {
