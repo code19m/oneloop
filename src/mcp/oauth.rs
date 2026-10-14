@@ -26,10 +26,7 @@ use super::{
 };
 use crate::{
     AppError, AppResult, AppState,
-    auth::{
-        ACCESS_TOKEN_SECONDS, Actor, GRANT_ABSOLUTE_SECONDS, REFRESH_IDLE_SECONDS, revoke_grant,
-        revoke_unless_current,
-    },
+    auth::{ACCESS_TOKEN_SECONDS, Actor, AppTokens, NewGrant, issue_grant, revoke_grant},
     config::is_loopback,
     http::{
         auth::authenticate_headers,
@@ -37,7 +34,6 @@ use crate::{
     },
 };
 
-const REFRESH_REUSE_GRACE_SECONDS: i64 = 30;
 const AUTHORIZATION_REQUEST_SECONDS: i64 = 10 * 60;
 /// Authorization requests one person may have waiting for consent; a new one
 /// replaces the oldest.
@@ -743,24 +739,16 @@ struct TokenResponse {
     scope: String,
 }
 
-struct RefreshTokenRow {
-    id: String,
-    grant_id: String,
-    family_id: String,
-    expires_at: i64,
-    last_used_at: Option<i64>,
-    rotated_to_id: Option<String>,
-    revoked_at: Option<i64>,
-}
-
-struct NewToken<'a> {
-    id: &'a str,
-    grant_id: &'a str,
-    family_id: &'a str,
-    kind: &'a str,
-    hash: &'a str,
-    issued_at: i64,
-    expires_at: i64,
+impl From<AppTokens> for TokenResponse {
+    fn from(tokens: AppTokens) -> Self {
+        Self {
+            access_token: tokens.access,
+            token_type: "Bearer",
+            expires_in: ACCESS_TOKEN_SECONDS,
+            refresh_token: tokens.refresh,
+            scope: tokens.scopes.join(" "),
+        }
+    }
 }
 
 async fn token_inner(
@@ -792,28 +780,10 @@ async fn revoke_inner(
     State(state): State<AppState>,
     Form(form): Form<RevokeForm>,
 ) -> AppResult<StatusCode> {
-    let hash = hash_token(&form.token);
-    let client = form.client_id;
-    let now = unix_now()?;
-    let grant = state
-        .db
-        .run(move |connection| {
-            Ok(connection
-                .query_row(
-                    "SELECT t.grant_id FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
-                     WHERE t.token_hash=?1 AND (?2 IS NULL OR g.client_id=?2)",
-                    params![hash, client],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?)
-        })
+    state
+        .auth
+        .revoke_app_token(&form.token, form.client_id)
         .await?;
-    if let Some(grant) = grant {
-        state
-            .db
-            .transaction(move |tx| revoke_grant(tx, &grant, now).map(drop))
-            .await?;
-    }
     Ok(StatusCode::OK)
 }
 
@@ -858,24 +828,16 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
     if !valid {
         return Err(AppError::Unauthorized);
     }
-    let access = random_token(32)?;
-    let refresh = random_token(48)?;
-    let access_hash = hash_token(&access);
-    let refresh_hash = hash_token(&refresh);
-    let grant_id = Uuid::now_v7().to_string();
-    let family_id = Uuid::now_v7().to_string();
-    let access_id = Uuid::now_v7().to_string();
-    let refresh_id = Uuid::now_v7().to_string();
-    let scopes = state
+    let tokens = state
         .db
         .transaction(move |tx| {
             let now = unix_now()?;
             // Revalidate bindings under the writer lock before honoring replay evidence.
             let replay: Option<String> = tx
                 .query_row(
-                    "SELECT grant_id FROM oauth_authorization_codes WHERE code_hash=?1
-                 AND client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5
-                 AND used_at IS NOT NULL AND grant_id IS NOT NULL",
+                    "SELECT grant_id FROM oauth_authorization_codes
+                     WHERE code_hash=?1 AND client_id=?2 AND redirect_uri=?3 AND resource=?4
+                       AND code_challenge=?5 AND used_at IS NOT NULL AND grant_id IS NOT NULL",
                     params![code_hash, client_id, redirect_uri, resource, challenge],
                     |row| row.get(0),
                 )
@@ -885,261 +847,86 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
                 // Returning success commits revocation; the caller returns invalid_grant.
                 return Ok(None);
             }
-            let row: Option<(String, String, String, String, String, String, String)> = tx
+            // Like refresh, a code needs the account to be active now.
+            let code = tx
                 .query_row(
-                    SELECT_OAUTH_AUTHORIZATION_CODES_2_SQL,
+                    "SELECT c.user_id,c.client_id,c.client_name,c.redirect_uri,c.resource,
+                            c.projects_json,c.scopes_json,c.code_challenge
+                     FROM oauth_authorization_codes c JOIN users u ON u.id=c.user_id
+                     WHERE c.code_hash=?1 AND c.used_at IS NULL AND c.expires_at>?2
+                       AND u.is_active=1",
                     params![code_hash, now],
                     |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                        ))
+                        Ok(StoredCode {
+                            user_id: row.get(0)?,
+                            client_id: row.get(1)?,
+                            client_name: row.get(2)?,
+                            redirect_uri: row.get(3)?,
+                            resource: row.get(4)?,
+                            projects_json: row.get(5)?,
+                            scopes_json: row.get(6)?,
+                            challenge: row.get(7)?,
+                        })
                     },
                 )
-                .optional()?;
-            let Some((
-                user_id,
-                stored_client,
-                client_name,
-                stored_redirect,
-                stored_resource,
-                projects_json,
-                scopes_json,
-            )) = row
-            else {
-                return Err(AppError::Unauthorized);
-            };
-            let stored_challenge: String = tx.query_row(
-                SELECT_OAUTH_AUTHORIZATION_CODES_3_SQL,
-                [&code_hash],
-                |row| row.get(0),
-            )?;
-            if stored_client != client_id
-                || stored_redirect != redirect_uri
-                || stored_resource != resource
-                || !constant_time_eq(stored_challenge.as_bytes(), challenge.as_bytes())
+                .optional()?
+                .ok_or(AppError::Unauthorized)?;
+            if code.client_id != client_id
+                || code.redirect_uri != redirect_uri
+                || code.resource != resource
+                || !constant_time_eq(code.challenge.as_bytes(), challenge.as_bytes())
             {
                 return Err(AppError::Unauthorized);
             }
-            let projects: Vec<String> = serde_json::from_str(&projects_json)
-                .map_err(|e| AppError::internal(e.to_string()))?;
-            let scopes: Vec<String> = serde_json::from_str(&scopes_json)
-                .map_err(|e| AppError::internal(e.to_string()))?;
+            let json = |value: &str| -> AppResult<Vec<String>> {
+                serde_json::from_str(value).map_err(|e| AppError::internal(e.to_string()))
+            };
+            let grant = NewGrant {
+                projects: json(&code.projects_json)?,
+                scopes: json(&code.scopes_json)?,
+                user_id: code.user_id,
+                client_id: code.client_id,
+                client_name: code.client_name,
+            };
             tx.execute(
                 "UPDATE oauth_clients SET last_used_at=?1 WHERE client_id=?2",
                 params![now, client_id],
             )?;
+            let (grant_id, tokens) = issue_grant(tx, grant, now)?;
             tx.execute(
-                INSERT_MCP_GRANTS_SQL,
-                params![
-                    grant_id,
-                    user_id,
-                    client_id,
-                    client_name,
-                    now,
-                    now + GRANT_ABSOLUTE_SECONDS
-                ],
-            )?;
-            tx.execute(
-                UPDATE_OAUTH_AUTHORIZATION_CODES_SQL,
+                "UPDATE oauth_authorization_codes SET used_at=?1,grant_id=?3
+                 WHERE code_hash=?2 AND used_at IS NULL",
                 params![now, code_hash, grant_id],
             )?;
-            for project in projects {
-                tx.execute(INSERT_MCP_GRANT_PROJECTS_SQL, params![grant_id, project])?;
-            }
-            for scope in &scopes {
-                tx.execute(
-                    "INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES(?1,?2)",
-                    params![grant_id, scope],
-                )?;
-            }
-            insert_token(
-                tx,
-                NewToken {
-                    id: &access_id,
-                    grant_id: &grant_id,
-                    family_id: &family_id,
-                    kind: "access",
-                    hash: &access_hash,
-                    issued_at: now,
-                    expires_at: now + ACCESS_TOKEN_SECONDS,
-                },
-            )?;
-            insert_token(
-                tx,
-                NewToken {
-                    id: &refresh_id,
-                    grant_id: &grant_id,
-                    family_id: &family_id,
-                    kind: "refresh",
-                    hash: &refresh_hash,
-                    issued_at: now,
-                    expires_at: now + GRANT_ABSOLUTE_SECONDS,
-                },
-            )?;
-            Ok(Some(scopes))
+            Ok(Some(tokens))
         })
         .await?
         .ok_or(AppError::Unauthorized)?;
-    Ok(TokenResponse {
-        access_token: access,
-        token_type: "Bearer",
-        expires_in: ACCESS_TOKEN_SECONDS,
-        refresh_token: refresh,
-        scope: scopes.join(" "),
-    })
+    Ok(tokens.into())
+}
+
+/// An authorization code waiting for exchange.
+struct StoredCode {
+    user_id: String,
+    client_id: String,
+    client_name: String,
+    redirect_uri: String,
+    resource: String,
+    projects_json: String,
+    scopes_json: String,
+    challenge: String,
 }
 
 async fn exchange_refresh(state: &AppState, form: TokenForm) -> AppResult<TokenResponse> {
-    let old = form
+    let refresh = form
         .refresh_token
         .ok_or_else(|| AppError::validation("refresh_token", "is required"))?;
-    let old_hash = hash_token(&old);
-    let client_id = form.client_id;
-    let lookup_hash = old_hash.clone();
-    let lookup_client = client_id.clone();
-    let known = state
-        .db
-        .run(move |c| {
-            Ok(c.query_row(
-                SELECT_MCP_TOKENS_SQL,
-                params![lookup_hash, lookup_client],
-                |r| r.get::<_, bool>(0),
-            )?)
-        })
-        .await?;
-    if !known {
-        return Err(AppError::Unauthorized);
-    }
-    let access = random_token(32)?;
-    let refresh = random_token(48)?;
-    let access_hash = hash_token(&access);
-    let refresh_hash = hash_token(&refresh);
-    let access_id = Uuid::now_v7().to_string();
-    let refresh_id = Uuid::now_v7().to_string();
-    let outcome = state
-        .db
-        .transaction(move |tx| {
-            let now = unix_now()?;
-            let row: Option<RefreshTokenRow> = tx
-                .query_row(
-                    SELECT_MCP_TOKENS_2_SQL,
-                    params![old_hash, client_id],
-                    |row| {
-                        Ok(RefreshTokenRow {
-                            id: row.get(0)?,
-                            grant_id: row.get(1)?,
-                            family_id: row.get(2)?,
-                            expires_at: row.get(3)?,
-                            last_used_at: row.get(4)?,
-                            rotated_to_id: row.get(5)?,
-                            revoked_at: row.get(6)?,
-                        })
-                    },
-                )
-                .optional()?;
-            let Some(row) = row else { return Ok(None) };
-            let rotated = row.rotated_to_id.is_some();
-            let within_grace = rotated
-                && row.last_used_at.is_some_and(|rotation| {
-                    (0..=REFRESH_REUSE_GRACE_SECONDS).contains(&(now - rotation))
-                });
-            if rotated && !within_grace {
-                revoke_grant(tx, &row.grant_id, now)?;
-                return Ok(None);
-            }
-            let RefreshTokenRow {
-                id: old_id,
-                grant_id,
-                family_id,
-                expires_at,
-                last_used_at: last_used,
-                revoked_at,
-                ..
-            } = row;
-            if (revoked_at.is_some() && !within_grace)
-                || expires_at <= now
-                || last_used.unwrap_or(now) <= now - REFRESH_IDLE_SECONDS
-            {
-                tx.execute(UPDATE_MCP_TOKENS_2_SQL, params![now, old_id])?;
-                return Ok(None);
-            }
-            if !revoke_unless_current(tx, &grant_id, now)? {
-                return Ok(None);
-            }
-            let grant_expiry: i64 = tx.query_row(
-                "SELECT expires_at FROM mcp_grants WHERE id=?1",
-                [&grant_id],
-                |row| row.get(0),
-            )?;
-            insert_token(
-                tx,
-                NewToken {
-                    id: &access_id,
-                    grant_id: &grant_id,
-                    family_id: &family_id,
-                    kind: "access",
-                    hash: &access_hash,
-                    issued_at: now,
-                    expires_at: now + ACCESS_TOKEN_SECONDS,
-                },
-            )?;
-            insert_token(
-                tx,
-                NewToken {
-                    id: &refresh_id,
-                    grant_id: &grant_id,
-                    family_id: &family_id,
-                    kind: "refresh",
-                    hash: &refresh_hash,
-                    issued_at: now,
-                    expires_at: grant_expiry,
-                },
-            )?;
-            // Preserve the first rotation time: retries cannot extend the grace window.
-            if !rotated {
-                tx.execute(UPDATE_MCP_TOKENS_4_SQL, params![now, refresh_id, old_id])?;
-            }
-            tx.execute(
-                "UPDATE mcp_grants SET last_used_at=?1,updated_at=?1 WHERE id=?2",
-                params![now, grant_id],
-            )?;
-            let mut stmt = tx.prepare(SELECT_MCP_GRANT_SCOPES_SQL)?;
-            let values = stmt
-                .query_map([grant_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Some(values))
-        })
-        .await?;
-    let scopes = outcome.ok_or(AppError::Unauthorized)?;
-    Ok(TokenResponse {
-        access_token: access,
-        token_type: "Bearer",
-        expires_in: ACCESS_TOKEN_SECONDS,
-        refresh_token: refresh,
-        scope: scopes.join(" "),
-    })
-}
-
-fn insert_token(tx: &rusqlite::Transaction<'_>, token: NewToken<'_>) -> AppResult<()> {
-    tx.execute(
-        INSERT_MCP_TOKENS_SQL,
-        params![
-            token.id,
-            token.grant_id,
-            token.family_id,
-            token.kind,
-            token.hash,
-            token.issued_at,
-            token.expires_at
-        ],
-    )?;
-    Ok(())
+    let tokens = state
+        .auth
+        .refresh_app_tokens(&refresh, &form.client_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    Ok(tokens.into())
 }
 
 async fn validate_authorization_query(
@@ -1719,35 +1506,10 @@ const DROP_OLDEST_PENDING_REQUESTS_SQL: &str = "DELETE FROM oauth_authorization_
      (SELECT rowid FROM oauth_authorization_requests WHERE user_id=?1 ORDER BY rowid DESC LIMIT ?2)";
 const SELECT_OAUTH_AUTHORIZATION_CODES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM oauth_authorization_codes WHERE code_hash=?1 AND \
                      client_id=?2 AND redirect_uri=?3 AND resource=?4 AND code_challenge=?5 AND ((used_at IS NULL AND expires_at>?6) OR (used_at IS NOT NULL AND grant_id IS NOT NULL)))";
-const INSERT_MCP_GRANTS_SQL: &str = "INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)
-                    VALUES(?1,?2,?3,?4,?5,?5,?6,?5)";
-const INSERT_MCP_TOKENS_SQL: &str = "INSERT INTO mcp_tokens(id,grant_id,family_id,kind,token_hash,issued_at,expires_at,last_used_at)
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?6)";
 const SELECT_PROJECTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2 WHERE p.id=?1 AND \
                      p.deleted_at IS NULL AND u.is_active=1 AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM \
                      project_memberships m WHERE m.project_id=p.id AND m.user_id=u.id)))";
 
-// Like refresh, a code needs the account to be active now.
-const SELECT_OAUTH_AUTHORIZATION_CODES_2_SQL: &str = "SELECT c.user_id,c.client_id,c.client_name,c.redirect_uri,c.resource,c.projects_json,c.scopes_json
-             FROM oauth_authorization_codes c JOIN users u ON u.id=c.user_id
-             WHERE c.code_hash=?1 AND c.used_at IS NULL AND c.expires_at>?2 AND u.is_active=1";
-const SELECT_OAUTH_AUTHORIZATION_CODES_3_SQL: &str =
-    "SELECT code_challenge FROM oauth_authorization_codes WHERE code_hash=?1";
-const UPDATE_OAUTH_AUTHORIZATION_CODES_SQL: &str = "UPDATE oauth_authorization_codes SET used_at=?1,grant_id=?3 WHERE code_hash=?2 AND used_at IS NULL";
-const INSERT_MCP_GRANT_PROJECTS_SQL: &str =
-    "INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES(?1,?2)";
-const SELECT_MCP_TOKENS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id WHERE \
-                     t.token_hash=?1 AND t.kind='refresh' AND g.client_id=?2)";
-const SELECT_MCP_TOKENS_2_SQL: &str =
-    "SELECT t.id,t.grant_id,t.family_id,t.expires_at,t.last_used_at,t.rotated_to_id,t.revoked_at
-             FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
-             WHERE t.token_hash=?1 AND t.kind='refresh' AND g.client_id=?2";
-const UPDATE_MCP_TOKENS_2_SQL: &str =
-    "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE id=?2";
-const UPDATE_MCP_TOKENS_4_SQL: &str = "UPDATE mcp_tokens SET revoked_at=?1,last_used_at=?1,rotated_to_id=?2 WHERE id=?3 AND \
-                     revoked_at IS NULL";
-const SELECT_MCP_GRANT_SCOPES_SQL: &str =
-    "SELECT scope FROM mcp_grant_scopes WHERE grant_id=?1 ORDER BY scope";
 const UPSERT_DESCRIBED_CLIENT_SQL: &str = "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,client_uri,created_at)
              VALUES(?1,?2,?3,?4,?5)
              ON CONFLICT(client_id) DO UPDATE SET client_name=excluded.client_name,

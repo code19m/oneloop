@@ -7,9 +7,10 @@ mod session;
 mod throttle;
 
 pub use crate::clock::unix_now;
+use grants::REFRESH_IDLE_SECONDS;
 use grants::revoke_all_app_access;
 pub(crate) use grants::{
-    ACCESS_TOKEN_SECONDS, GRANT_ABSOLUTE_SECONDS, REFRESH_IDLE_SECONDS, revoke_grant,
+    ACCESS_TOKEN_SECONDS, AppTokens, NewGrant, issue_grant, revoke_grant,
     revoke_lost_project_app_access, revoke_project_app_access, revoke_unless_current,
 };
 pub use token::hash as token_hash;

@@ -7,7 +7,27 @@ pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
 /// repeats the value as a literal, because its index expression must match.
 pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// A grant stops working 90 days after consent, however often it is used.
-pub(crate) const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
+const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
+/// How long a rotated refresh token still works, for an app that lost the
+/// answer to its refresh and asks again.
+const REFRESH_REUSE_GRACE_SECONDS: i64 = 30;
+
+/// What a person allowed an app on the consent page.
+pub(crate) struct NewGrant {
+    pub(crate) user_id: String,
+    pub(crate) client_id: String,
+    pub(crate) client_name: String,
+    pub(crate) projects: Vec<String>,
+    pub(crate) scopes: Vec<String>,
+}
+
+/// Tokens just issued to a connected app; the database keeps only hashes.
+pub(crate) struct AppTokens {
+    pub(crate) access: String,
+    pub(crate) refresh: String,
+    /// The grant's scopes, which the token response names.
+    pub(crate) scopes: Vec<String>,
+}
 
 impl AuthService {
     /// Signs in a connected app. A grant that no longer works is revoked
@@ -96,6 +116,67 @@ impl AuthService {
                 grant_id: authenticated.grant_id,
             },
         })
+    }
+
+    /// Trades an app's refresh token for new tokens. None means the token no
+    /// longer works. A refresh token used again after its grace period may
+    /// have leaked, so that revokes the whole grant.
+    pub(crate) async fn refresh_app_tokens(
+        &self,
+        refresh_token: &str,
+        client_id: &str,
+    ) -> AppResult<Option<AppTokens>> {
+        let hash = token_hash(refresh_token);
+        let client_id = client_id.to_owned();
+        let (lookup_hash, lookup_client) = (hash.clone(), client_id.clone());
+        // An unknown token needs no writer.
+        let known: bool = self
+            .db
+            .run(move |connection| {
+                Ok(connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
+                     WHERE t.token_hash=?1 AND t.kind='refresh' AND g.client_id=?2)",
+                    rusqlite::params![lookup_hash, lookup_client],
+                    |row| row.get(0),
+                )?)
+            })
+            .await?;
+        if !known {
+            return Ok(None);
+        }
+        self.db
+            .transaction(move |tx| rotate_refresh(tx, &hash, &client_id, unix_now()?))
+            .await
+    }
+
+    /// Revokes the grant that issued a token, if the token is known; with a
+    /// client ID, only when the grant is that client's.
+    pub(crate) async fn revoke_app_token(
+        &self,
+        token: &str,
+        client_id: Option<String>,
+    ) -> AppResult<()> {
+        let hash = token_hash(token);
+        let now = unix_now()?;
+        let grant: Option<String> = self
+            .db
+            .run(move |connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT t.grant_id FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
+                         WHERE t.token_hash=?1 AND (?2 IS NULL OR g.client_id=?2)",
+                        rusqlite::params![hash, client_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?)
+            })
+            .await?;
+        if let Some(grant) = grant {
+            self.db
+                .transaction(move |tx| revoke_grant(tx, &grant, now).map(drop))
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn list_connected_apps(&self, actor: &Actor) -> AppResult<Vec<ConnectedAppSummary>> {
@@ -252,6 +333,189 @@ impl AuthService {
             })
             .await
     }
+}
+
+/// Stores a grant with its first tokens and returns the grant's ID.
+pub(crate) fn issue_grant(
+    tx: &Transaction<'_>,
+    grant: NewGrant,
+    now: i64,
+) -> AppResult<(String, AppTokens)> {
+    let id = Uuid::now_v7().to_string();
+    let expires_at = now + GRANT_ABSOLUTE_SECONDS;
+    tx.execute(
+        "INSERT INTO mcp_grants
+         (id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)
+         VALUES(?1,?2,?3,?4,?5,?5,?6,?5)",
+        rusqlite::params![
+            id,
+            grant.user_id,
+            grant.client_id,
+            grant.client_name,
+            now,
+            expires_at
+        ],
+    )?;
+    for project in &grant.projects {
+        tx.execute(
+            "INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES(?1,?2)",
+            rusqlite::params![id, project],
+        )?;
+    }
+    for scope in &grant.scopes {
+        tx.execute(
+            "INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES(?1,?2)",
+            rusqlite::params![id, scope],
+        )?;
+    }
+    let family = Uuid::now_v7().to_string();
+    let tokens = insert_tokens(tx, &id, &family, now, expires_at)?;
+    Ok((
+        id,
+        AppTokens {
+            access: tokens.access,
+            refresh: tokens.refresh,
+            scopes: grant.scopes,
+        },
+    ))
+}
+
+/// A new access and refresh token pair.
+struct NewTokens {
+    access: String,
+    refresh: String,
+    refresh_id: String,
+}
+
+/// Stores a new token pair for a grant. A refresh token lasts as long as its
+/// grant, `refresh_expires_at`.
+fn insert_tokens(
+    tx: &Transaction<'_>,
+    grant_id: &str,
+    family_id: &str,
+    now: i64,
+    refresh_expires_at: i64,
+) -> AppResult<NewTokens> {
+    let tokens = NewTokens {
+        access: token::random_token(32)?,
+        refresh: token::random_token(48)?,
+        refresh_id: Uuid::now_v7().to_string(),
+    };
+    for (id, kind, secret, expires_at) in [
+        (
+            Uuid::now_v7().to_string(),
+            "access",
+            &tokens.access,
+            now + ACCESS_TOKEN_SECONDS,
+        ),
+        (
+            tokens.refresh_id.clone(),
+            "refresh",
+            &tokens.refresh,
+            refresh_expires_at,
+        ),
+    ] {
+        tx.execute(
+            "INSERT INTO mcp_tokens
+             (id,grant_id,family_id,kind,token_hash,issued_at,expires_at,last_used_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?6)",
+            rusqlite::params![
+                id,
+                grant_id,
+                family_id,
+                kind,
+                token_hash(secret),
+                now,
+                expires_at
+            ],
+        )?;
+    }
+    Ok(tokens)
+}
+
+/// Replaces a refresh token with a new token pair. See
+/// `AuthService::refresh_app_tokens`.
+fn rotate_refresh(
+    tx: &Transaction<'_>,
+    hash: &str,
+    client_id: &str,
+    now: i64,
+) -> AppResult<Option<AppTokens>> {
+    struct RefreshToken {
+        id: String,
+        grant_id: String,
+        family_id: String,
+        expires_at: i64,
+        last_used_at: Option<i64>,
+        rotated: bool,
+        revoked: bool,
+    }
+    let old = tx
+        .query_row(
+            "SELECT t.id,t.grant_id,t.family_id,t.expires_at,t.last_used_at,
+                    t.rotated_to_id IS NOT NULL,t.revoked_at IS NOT NULL
+             FROM mcp_tokens t JOIN mcp_grants g ON g.id=t.grant_id
+             WHERE t.token_hash=?1 AND t.kind='refresh' AND g.client_id=?2",
+            rusqlite::params![hash, client_id],
+            |row| {
+                Ok(RefreshToken {
+                    id: row.get(0)?,
+                    grant_id: row.get(1)?,
+                    family_id: row.get(2)?,
+                    expires_at: row.get(3)?,
+                    last_used_at: row.get(4)?,
+                    rotated: row.get(5)?,
+                    revoked: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(old) = old else { return Ok(None) };
+    // A rotated token's last use is the time of its rotation.
+    let within_grace = old.rotated
+        && old
+            .last_used_at
+            .is_some_and(|rotation| (0..=REFRESH_REUSE_GRACE_SECONDS).contains(&(now - rotation)));
+    if old.rotated && !within_grace {
+        revoke_grant(tx, &old.grant_id, now)?;
+        return Ok(None);
+    }
+    if (old.revoked && !within_grace)
+        || old.expires_at <= now
+        || old.last_used_at.unwrap_or(now) <= now - REFRESH_IDLE_SECONDS
+    {
+        tx.execute(
+            "UPDATE mcp_tokens SET revoked_at=COALESCE(revoked_at,?1) WHERE id=?2",
+            rusqlite::params![now, old.id],
+        )?;
+        return Ok(None);
+    }
+    if !revoke_unless_current(tx, &old.grant_id, now)? {
+        return Ok(None);
+    }
+    let grant_expires_at: i64 = tx.query_row(
+        "SELECT expires_at FROM mcp_grants WHERE id=?1",
+        [&old.grant_id],
+        |row| row.get(0),
+    )?;
+    let tokens = insert_tokens(tx, &old.grant_id, &old.family_id, now, grant_expires_at)?;
+    // Keep the first rotation time, so that retries can't extend the grace.
+    if !old.rotated {
+        tx.execute(
+            "UPDATE mcp_tokens SET revoked_at=?1,last_used_at=?1,rotated_to_id=?2
+             WHERE id=?3 AND revoked_at IS NULL",
+            rusqlite::params![now, tokens.refresh_id, old.id],
+        )?;
+    }
+    tx.execute(
+        "UPDATE mcp_grants SET last_used_at=?1,updated_at=?1 WHERE id=?2",
+        rusqlite::params![now, old.grant_id],
+    )?;
+    Ok(Some(AppTokens {
+        access: tokens.access,
+        refresh: tokens.refresh,
+        scopes: values_for_grant(tx, "mcp_grant_scopes", "scope", &old.grant_id)?,
+    }))
 }
 
 /// Whether a grant still works: it is not revoked or expired, its account is
