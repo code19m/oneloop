@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Updated rustls to 0.23.46 (RUSTSEC-2026-0349). oneloop uses it when it
+  fetches the metadata document of an AI assistant that connects.
+
 ## [0.1.0-rc.4] - 2026-10-07
 
 The fourth release candidate. 0.1.0-rc.3 was tagged but never published,
