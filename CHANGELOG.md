@@ -26,6 +26,10 @@ All notable changes to oneloop are recorded here. The format follows
 - The Inbox's unread and filter counts now always match the items they come
   with, and an activity feed or a block's history no longer mixes data from
   before and after a change that lands while it is read.
+- After you change a task's status on its page, the status in the page header,
+  the Status icon and **Block task** now change at once. Before, they changed
+  only after you left the task's fields. **Overdue** also follows a changed
+  deadline at once.
 
 ### Security
 

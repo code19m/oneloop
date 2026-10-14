@@ -146,6 +146,19 @@ test('an unsaved description stays on the page through refreshes and offers Save
   assert.equal(t.commands.length, 0);
 });
 
+test('a saved status shows in the header, the Status icon and Block task while Status keeps focus', async () => {
+  const t = bootApp({ route: 'task/BIR-079' }), task = t.D.tasks.find(item => item.id === 'BIR-079');
+  const select = t.d.getElementById('select-tpState');
+  select.focus(); t.A.popSelect({ currentTarget: select, preventDefault() {} }, 'tpState');
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent === 'Done').click();
+  assert.deepEqual([t.commands[0].operation, t.commands[0].payload.status], ['task.move', 'done']);
+  t.commands[0].resolve({ entities: [{ entityType: 'task', id: task.internalId, status: 'done', revision: 2 }], events: [] }); await settle();
+  assert.equal(t.d.querySelector('.task-status-chip').textContent, 'Done');
+  assert.equal(select.querySelector('svg').outerHTML, t.d.querySelector('.task-status-chip svg').outerHTML, 'the Status icon is the Done ring');
+  assert.equal(t.d.querySelector('.block-task-action'), null, 'a finished task offers no Block task');
+  assert.equal(t.d.activeElement, select);
+});
+
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
   const t = bootApp({ route: 'task/BIR-079', actions: true, production: false }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
   const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };

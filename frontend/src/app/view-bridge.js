@@ -196,11 +196,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   // A task field save repaints in the background, so it never replaces the
-  // field being edited. Other changes paint at once, or, under a dialog opened
-  // while they ran, when that dialog closes.
+  // field being edited; the status and deadline around it show at once.
+  // Other changes paint at once, or, under a dialog opened while they ran,
+  // when that dialog closes.
   function paintCommand(operation){
     if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();
-    else if(operation==='task.update'||operation==='task.move')(app.refreshBackground??app.refresh)();
+    else if(operation==='task.update'||operation==='task.move'){app.refreshTaskHeader?.();(app.refreshBackground??app.refresh)();}
     else (app.refreshAfterDialog??app.refresh)();
   }
 

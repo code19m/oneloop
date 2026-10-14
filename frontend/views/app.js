@@ -2906,6 +2906,27 @@
         host.append(template.content);
       }
     },
+    /**
+     * Show the saved status, block and deadline of the open task around its
+     * fields: the header chip and badge, the Status icon, Block task and
+     * Overdue. A field save draws the page again only once focus leaves it.
+     */
+    refreshTaskHeader() {
+      const t = state.view === 'task' ? taskById(state.taskId) : null, page = document.querySelector('.task-page');
+      if (!t || !page) return;
+      const next = document.createElement('template'); setHTML(next, `<header>${renderTopbar()}</header>${renderTask()}`);
+      const topbar = document.querySelector('.topbar');
+      topbar?.querySelector('.task-status-chip')?.replaceWith(next.content.querySelector('.task-status-chip'));
+      topbar?.querySelector('.blocked-badge')?.remove();
+      const badge = next.content.querySelector('header .blocked-badge');
+      if (badge) topbar?.querySelector('.task-status-chip')?.after(badge);
+      const heading = page.querySelector('.task-properties-heading');
+      if (heading && !heading.contains(document.activeElement)) heading.replaceWith(next.content.querySelector('.task-properties-heading'));
+      page.querySelector('#select-tpState > svg')?.replaceWith(next.content.querySelector('#select-tpState > svg'));
+      const late = overdue(t);
+      page.querySelector('.task-property-date')?.classList.toggle('late', late);
+      page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);
+    },
     noteTaskSaving: taskSaving,
     clearTaskSaving,
     retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
