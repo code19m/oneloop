@@ -469,7 +469,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
         if(Object.hasOwn(payload,'userId')&&globalThis.OneloopRecovery?.ownsAnswer?.(payload.userId)===false){source?.close?.();source=null;return;}
         const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
-      source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();});
+      source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();globalThis.OneloopRecovery?.livePaused?.(resumeOnUse);});
       source.addEventListener?.('error',()=>{
         if(source!==activeSource)return;
         source?.close?.();source=null;

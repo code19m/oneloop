@@ -474,3 +474,13 @@ test('a deleted comment offers Undo, which brings its text back',async()=>{
   assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').text,'Original');
  }finally{t.controller.dispose();}
 });
+
+test('a tab whose live updates a newer tab took says so, and Resume takes them back', () => {
+ const t=bootApp({route:'board'}),notice=()=>t.d.querySelector('#app .connection-notice span')?.textContent??null;
+ t.events[0].emit('replaced');
+ assert.equal(notice(),'Live updates are paused in this tab.');
+ t.d.querySelector('#app .connection-notice button').click();
+ assert.equal(t.events.length,2,'Resume opens a new stream');
+ t.events[1].emit('open');
+ assert.equal(notice(),null);
+});

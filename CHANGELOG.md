@@ -34,6 +34,9 @@ All notable changes to oneloop are recorded here. The format follows
   error.
 - The **Temporary** switch in a file preview works as soon as the preview
   opens. Before, it did nothing until the attachment list loaded again.
+- A tab whose live updates a newer tab took over now says that live updates
+  are paused, with **Resume**. Before, it looked connected but showed no new
+  changes until you used it.
 
 ### Security
 

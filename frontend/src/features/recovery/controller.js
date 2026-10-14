@@ -233,6 +233,8 @@ export function createRecoveryController({
   const pendingEditors=new Map();
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
+  // Resumes the live updates a newer tab of the same person took over, while they are paused.
+  /** @type {(()=>void)|null} */ let resumeLive=null;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
   // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
@@ -399,6 +401,7 @@ export function createRecoveryController({
     if(state==='offline')return {text:online()?'Cannot reach oneloop — changes are not being saved':'Offline — changes are not being saved',action:'reconnect',label:'Reconnect'};
     if(state==='reconnecting')return {text:'Reconnecting to live updates…',action:'reconnect',label:'Reconnect'};
     if(updatedBuild)return {text:'oneloop was updated. Reload when you are ready; reloading discards unsaved input.',action:'reloadClient',label:'Reload'};
+    if(resumeLive)return {text:'Live updates are paused in this tab.',action:'resumeLive',label:'Resume'};
     if(refreshFailureScope===viewScope())return {text:'Could not refresh this view.',action:'retryRefresh',label:'Retry'};
     return null;
   }
@@ -447,6 +450,7 @@ export function createRecoveryController({
     const state=notice();if(!state)return;
     if(state.action==='reloadClient')controller.reloadClient();
     else if(state.action==='reconnect')reconnect();
+    else if(state.action==='resumeLive')resumeLive?.();
     else reconcile({background:true});
   }
 
@@ -457,6 +461,12 @@ export function createRecoveryController({
   }
 
   function refreshSucceeded(){refreshFailureScope=null;updateNotice();}
+
+  /** @param {(()=>void)|null} resume */
+  function livePaused(resume){
+    if(resumeLive===resume)return;
+    resumeLive=resume;updateNotice();
+  }
 
   function interactionPending(key,pending){
     if(!pending){
@@ -702,7 +712,9 @@ export function createRecoveryController({
     reloadClient(){windowObject?.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
-    liveConnected(){liveAttempt=0;clearTimer(liveTimer);setConnectivity(apiReachable,true);},
+    liveConnected(){liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
+    /** A newer tab took this tab's live updates; `resume` takes them back. */
+    livePaused,
     liveDisconnected(reconnectLive){
       setConnectivity(apiReachable,false);clearTimer(liveTimer);
       if(typeof reconnectLive==='function'){
@@ -720,7 +732,7 @@ export function createRecoveryController({
     recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
     loginAtLimit(_user,complete){complete();return false;},
     bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
