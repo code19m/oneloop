@@ -18,6 +18,37 @@ pub(crate) enum Need {
     Attachments { write: bool },
 }
 
+/// Where an MCP client may run a command. Every operation is classified
+/// exhaustively, so a new one stays out of MCP until someone places it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum McpRoute {
+    Tool(McpTool),
+    /// Undo for deletions, which belongs to the browser's delete flow.
+    Undo,
+    /// Administration, which never goes through MCP.
+    Administration,
+}
+
+/// The MCP tools that run commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum McpTool {
+    Work,
+    Discussion,
+    Destructive,
+}
+
+impl McpTool {
+    pub(crate) const ALL: [Self; 3] = [Self::Work, Self::Discussion, Self::Destructive];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Work => "execute_work_command",
+            Self::Discussion => "execute_discussion_command",
+            Self::Destructive => "execute_destructive_command",
+        }
+    }
+}
+
 pub(crate) fn require_scope(
     conn: &Connection,
     actor: &Actor,

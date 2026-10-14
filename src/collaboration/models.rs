@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::idempotency::RevisionRule;
+use crate::{
+    access::{McpRoute, McpTool},
+    idempotency::RevisionRule,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,6 +48,21 @@ impl CollaborationOperation {
             | Self::RestoreArchived
             | Self::BulkMarkRead
             | Self::BulkArchive => RevisionRule::Optional,
+        }
+    }
+
+    pub(crate) fn mcp_route(self) -> McpRoute {
+        match self {
+            Self::DeleteComment => McpRoute::Tool(McpTool::Destructive),
+            Self::RestoreComment => McpRoute::Undo,
+            Self::CreateComment
+            | Self::EditComment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Archive
+            | Self::RestoreArchived
+            | Self::BulkMarkRead
+            | Self::BulkArchive => McpRoute::Tool(McpTool::Discussion),
         }
     }
 

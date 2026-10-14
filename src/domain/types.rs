@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{access::Need, idempotency::RevisionRule};
+use crate::{
+    access::{McpRoute, McpTool, Need},
+    idempotency::RevisionRule,
+};
 
 /// Patch fields distinguish omission (keep) from an explicit null (clear).
 fn nullable_patch<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -164,22 +167,20 @@ impl DomainOperation {
         }
     }
 
-    /// Exhaustive classification keeps new operations out of MCP until reviewed.
-    pub fn mcp_tool(self) -> Option<&'static str> {
+    pub(crate) fn mcp_route(self) -> McpRoute {
         match self {
             Self::CreateProject
             | Self::UpdateProject
             | Self::DeleteProject
             | Self::AddMembership
             | Self::UpdateMembership
-            | Self::RemoveMembership => None,
-            // Undo belongs to the browser's delete flow (see the MCP tools).
-            Self::RestoreTask => None,
+            | Self::RemoveMembership => McpRoute::Administration,
+            Self::RestoreTask => McpRoute::Undo,
             Self::DeleteTrack
             | Self::DeleteEpic
             | Self::DeleteMilestone
             | Self::DeleteTask
-            | Self::DeletePoolItem => Some("execute_destructive_command"),
+            | Self::DeletePoolItem => McpRoute::Tool(McpTool::Destructive),
             Self::CreateTrack
             | Self::UpdateTrack
             | Self::ReorderTrack
@@ -198,7 +199,7 @@ impl DomainOperation {
             | Self::UnblockAndCompleteTask
             | Self::CreatePoolItem
             | Self::UpdatePoolItem
-            | Self::PromotePoolItem => Some("execute_work_command"),
+            | Self::PromotePoolItem => McpRoute::Tool(McpTool::Work),
         }
     }
 }
