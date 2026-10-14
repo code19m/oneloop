@@ -40,7 +40,7 @@ impl FileService {
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                require_actor_identity_raw(tx, &actor_tx, now)?;
+                refresh_actor_connection(tx, &actor_tx)?;
                 require_capacity(tx, now, non_database_bytes, normalized_size, storage_limit)?;
                 tx.execute(
                     "INSERT INTO file_blobs
@@ -100,7 +100,7 @@ impl FileService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                require_actor_identity_raw(tx, &actor_tx, now)?;
+                refresh_actor_connection(tx, &actor_tx)?;
                 let old: Option<String> = tx
                     .query_row(
                         "SELECT avatar_blob_id FROM users WHERE id=?1",
@@ -149,7 +149,7 @@ impl FileService {
         let old = self
             .db
             .transaction(move |tx| {
-                require_actor_identity_raw(tx, &actor_tx, unix_now()?)?;
+                refresh_actor_connection(tx, &actor_tx)?;
                 let old: Option<String> = tx
                     .query_row(
                         "SELECT avatar_blob_id FROM users WHERE id=?1 AND is_active=1",
@@ -202,7 +202,7 @@ impl FileService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let current_admin = require_actor_identity_raw(tx, &actor, now)?;
+                let current_admin = refresh_actor_connection(tx, &actor)?.is_admin;
                 let visible: bool = actor.user_id == user_id_tx
                     || current_admin
                     || tx.query_row(

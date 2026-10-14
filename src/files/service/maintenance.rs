@@ -269,20 +269,14 @@ impl FileService {
 
     pub async fn storage_usage(&self, actor: &Actor) -> AppResult<StorageUsage> {
         actor.require_admin()?;
-        let check_actor = actor.clone();
-        self.db
-            .run(move |connection| {
-                let is_admin = require_actor_identity_raw(connection, &check_actor, unix_now()?)?;
-                if !is_admin {
-                    return Err(AppError::Forbidden);
-                }
-                Ok(())
-            })
-            .await?;
+        let actor = actor.clone();
         let limit = self.storage_limit_bytes;
         let (permanent, temporary, pending_deletion, cleaned, projects, recent_cleanup) = self
             .db
             .run(move |connection| {
+                if !refresh_actor_connection(connection, &actor)?.is_admin {
+                    return Err(AppError::Forbidden);
+                }
                 let permanent: i64 = connection.query_row(
                     "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
                      JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id

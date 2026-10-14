@@ -102,7 +102,7 @@ impl FileService {
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let stored = attachment_by_id(tx, &id)?;
-                require_file_access_tx(tx, &actor_tx, &stored.attachment.project_id, false, false, now)?;
+                require_file_access(tx, &actor_tx, &stored.attachment.project_id, false, false)?;
                 if stored.attachment.state != BlobState::Available
                     || stored.storage_key.is_none()
                     || stored.attachment.preview_kind != Some(PreviewKind::Image)

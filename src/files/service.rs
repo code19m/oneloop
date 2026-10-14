@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    auth::{Actor, ActorSource},
+    auth::{Actor, ActorSource, refresh_actor_connection},
     blocking::Lane,
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
     db::DataLease,
@@ -321,7 +321,7 @@ impl FileService {
             .db
             .run(move |connection| {
                 let project_id = task_project(connection, &task_id)?;
-                require_file_access_connection(connection, &actor, &project_id, false, false)?;
+                require_file_access(connection, &actor, &project_id, false, false)?;
                 attachment_views(connection, &task_id)
             })
             .await?;
@@ -343,14 +343,7 @@ impl FileService {
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access_tx(
-                    tx,
-                    &actor,
-                    &stored.attachment.project_id,
-                    true,
-                    false,
-                    now,
-                )?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, false)?;
                 // Already set: a retry of an applied change succeeds, while a
                 // stale request for the other value still conflicts below.
                 if stored.attachment.is_ephemeral == patch.is_ephemeral {
@@ -413,29 +406,30 @@ impl FileService {
         }
         let actor = actor.clone();
         let task_id = task_id.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&json!({
-                "taskId": task_id,
-                "attachmentId": input.attachment_id,
-                "targetId": input.target_id,
-                "after": input.after,
-                "expectedRevision": input.expected_revision,
-            }))
-            .expect("serializable reorder hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(&json!({
+            "taskId": task_id,
+            "attachmentId": input.attachment_id,
+            "targetId": input.target_id,
+            "after": input.after,
+            "expectedRevision": input.expected_revision,
+        }))?;
         let idempotency_id = Uuid::now_v7().to_string();
         let list = self
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let project_id = task_project(tx, &task_id)?;
-                require_file_access_tx(tx, &actor, &project_id, true, false, now)?;
-                if let Some(existing) =
-                    reorder_idempotency_replay(tx, &actor, &input.idempotency_key, &request_hash)?
-                {
+                require_file_access(tx, &actor, &project_id, true, false)?;
+                if let Some(existing) = crate::idempotency::replay(
+                    tx,
+                    &actor,
+                    &input.idempotency_key,
+                    "attachment.reorder",
+                    &request_hash,
+                )? {
                     return Ok(existing);
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -559,22 +553,29 @@ impl FileService {
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         let key = idempotency_key.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(
-                &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
-            )
-            .expect("serializable delete hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(
+            &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
+        )?;
         let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(replay) = delete_idempotency_replay(tx, &actor, &key, &request_hash)? {
-                    require_file_access_tx(tx, &actor, &replay.0, false, true, now)?;
+                let replay: Option<serde_json::Value> = crate::idempotency::replay(
+                    tx,
+                    &actor,
+                    &key,
+                    "attachment.delete",
+                    &request_hash,
+                )?;
+                if let Some(replay) = replay {
+                    let project_id = replay["projectId"]
+                        .as_str()
+                        .ok_or_else(|| AppError::internal("deletion replay lacks project"))?;
+                    require_file_access(tx, &actor, project_id, false, true)?;
                     return Ok(());
                 }
                 let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
                 if stored.attachment.revision != expected_revision {
                     return Err(AppError::revision(expected_revision, stored.attachment.revision));
                 }
@@ -584,7 +585,7 @@ impl FileService {
                         "the attachment is being removed; try again shortly".into(),
                     ));
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -642,28 +643,25 @@ impl FileService {
         }
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(
-                &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
-            )
-            .expect("serializable restore hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(
+            &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
+        )?;
         let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(view) = idempotency_replay(
+                if let Some(view) = crate::idempotency::replay::<AttachmentView>(
                     tx,
                     &actor,
                     &input.idempotency_key,
                     "attachment.restore",
                     &request_hash,
                 )? {
-                    require_file_access_tx(tx, &actor, &view.project_id, false, true, now)?;
+                    require_file_access(tx, &actor, &view.project_id, false, true)?;
                     return Ok(view);
                 }
                 let (stored, deleted_at) = attachment_with_deletion(tx, &attachment_id)?;
-                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
                 let Some(deleted_at) = deleted_at else {
                     return Err(AppError::Conflict("the attachment is not deleted".into()));
                 };
@@ -687,7 +685,7 @@ impl FileService {
                         "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
                     )));
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -757,39 +755,14 @@ fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<S
         .ok_or(AppError::NotFound { resource: "task" })
 }
 
-fn require_file_access_connection(
+/// Attachment access to `project_id`. A reader without access is told the
+/// attachment doesn't exist.
+fn require_file_access(
     connection: &rusqlite::Connection,
     actor: &Actor,
     project_id: &str,
     write: bool,
     destructive: bool,
-) -> AppResult<()> {
-    require_file_access_raw(
-        connection,
-        actor,
-        project_id,
-        write,
-        destructive,
-        unix_now()?,
-    )
-}
-fn require_file_access_tx(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    project_id: &str,
-    write: bool,
-    destructive: bool,
-    now: i64,
-) -> AppResult<()> {
-    require_file_access_raw(tx, actor, project_id, write, destructive, now)
-}
-fn require_file_access_raw(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    project_id: &str,
-    write: bool,
-    destructive: bool,
-    _now: i64,
 ) -> AppResult<()> {
     crate::access::require_project(
         connection,
@@ -807,14 +780,6 @@ fn require_file_access_raw(
             error
         }
     })
-}
-
-fn require_actor_identity_raw(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    _now: i64,
-) -> AppResult<bool> {
-    Ok(crate::auth::refresh_actor_connection(connection, actor)?.is_admin)
 }
 
 /// Attachments that count against a task's limit: available files, files
@@ -935,54 +900,6 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
     })
 }
 
-fn upload_request_hash(task: &str, name: &str, size: u64, ephemeral: bool) -> String {
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(&json!({"taskId":task,"name":name,"size":size,"ephemeral":ephemeral}))
-            .expect("serializable upload hash"),
-    ))
-}
-fn idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    operation: &str,
-    hash: &str,
-) -> AppResult<Option<AttachmentView>> {
-    crate::idempotency::replay(tx, actor, key, operation, hash)
-}
-fn delete_idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    hash: &str,
-) -> AppResult<Option<(String, String)>> {
-    let value: Option<serde_json::Value> =
-        crate::idempotency::replay(tx, actor, key, "attachment.delete", hash)?;
-    value
-        .map(|value| {
-            Ok((
-                value["projectId"]
-                    .as_str()
-                    .ok_or_else(|| AppError::internal("deletion replay lacks project"))?
-                    .to_owned(),
-                value["taskId"]
-                    .as_str()
-                    .ok_or_else(|| AppError::internal("deletion replay lacks task"))?
-                    .to_owned(),
-            ))
-        })
-        .transpose()
-}
-
-fn reorder_idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    hash: &str,
-) -> AppResult<Option<AttachmentList>> {
-    crate::idempotency::replay(tx, actor, key, "attachment.reorder", hash)
-}
-
 fn finish_reorder_idempotency(
     tx: &Transaction<'_>,
     idempotency_id: &str,
@@ -1006,18 +923,6 @@ fn finish_reorder_idempotency(
     )?;
     Ok(())
 }
-fn upsert_running_idempotency(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    id: &str,
-    key: &str,
-    operation: &str,
-    hash: &str,
-    now: i64,
-) -> AppResult<String> {
-    crate::idempotency::start(tx, actor, id, key, operation, hash, now)
-}
-
 fn record_attachment_deletion(
     tx: &Transaction<'_>,
     attachment: &DeleteActivityContext,

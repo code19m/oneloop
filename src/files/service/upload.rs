@@ -23,7 +23,12 @@ impl FileService {
                 ),
             ));
         }
-        let request_hash = upload_request_hash(task_id, original_name, claimed_size, is_ephemeral);
+        let request_hash = crate::idempotency::request_hash(&json!({
+            "taskId": task_id,
+            "name": original_name,
+            "size": claimed_size,
+            "ephemeral": is_ephemeral,
+        }))?;
         let replay_task = task_id.to_owned();
         let replay_key = idempotency_key.to_owned();
         let replay_actor = actor.clone();
@@ -31,10 +36,9 @@ impl FileService {
         if let Some(existing) = self
             .db
             .transaction(move |tx| {
-                let now = unix_now()?;
                 let project_id = task_project(tx, &replay_task)?;
-                require_file_access_tx(tx, &replay_actor, &project_id, true, false, now)?;
-                idempotency_replay(
+                require_file_access(tx, &replay_actor, &project_id, true, false)?;
+                crate::idempotency::replay(
                     tx,
                     &replay_actor,
                     &replay_key,
@@ -75,9 +79,9 @@ impl FileService {
                 .transaction(move |tx| {
                     let now = unix_now()?;
                     let project_id = task_project(tx, &task_id_owned)?;
-                    require_file_access_tx(tx, &actor_owned, &project_id, true, false, now)?;
+                    require_file_access(tx, &actor_owned, &project_id, true, false)?;
 
-                    if let Some(existing) = idempotency_replay(
+                    if let Some(existing) = crate::idempotency::replay(
                         tx,
                         &actor_owned,
                         &key_owned,
@@ -95,7 +99,7 @@ impl FileService {
 
                     require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
-                    let actual_idempotency_id = upsert_running_idempotency(
+                    let actual_idempotency_id = crate::idempotency::start(
                         tx,
                         &actor_owned,
                         &idempotency_id_tx,
@@ -442,7 +446,7 @@ async fn finalize_attachment_upload(
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                require_file_access_tx(tx, &actor, &project_id, true, false, now)?;
+                require_file_access(tx, &actor, &project_id, true, false)?;
                 // Someone may have deleted the task while the bytes arrived.
                 if task_project(tx, &task_id)? != project_id {
                     return Err(AppError::NotFound { resource: "task" });
