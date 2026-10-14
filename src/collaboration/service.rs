@@ -29,11 +29,12 @@ use crate::{
 use super::{
     ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationOperation,
     CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
-    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionKind,
-    MentionToken, NotificationInput, record_activity_tx, snapshot_notification_tx,
+    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken,
+    NotificationInput,
+    mentions::{self, MentionNotice, Mentioned},
+    record_activity_tx, snapshot_notification_tx,
 };
 
-use crate::access::enforce_broadcast_cooldown;
 pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const DEFAULT_PAGE_SIZE: usize = 50;
 /// Deleted comments whose text the Undo window no longer needs.
@@ -56,18 +57,6 @@ const INBOX_FILTER_SQL: &str = "
       ))
       AND (?7 IS NULL OR n.project_id IN
         (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))";
-
-struct CommentNotificationContext<'a> {
-    project_id: &'a str,
-    task_id: &'a str,
-    comment_id: &'a str,
-    content: &'a str,
-    mentions: &'a [MentionToken],
-    previous_mentions: &'a [MentionToken],
-    reply_author: Option<&'a str>,
-    editing: bool,
-    now: i64,
-}
 
 #[derive(Clone)]
 pub struct CollaborationService {
@@ -485,43 +474,6 @@ fn dispatch(
     }
 }
 
-fn validate_mentions(
-    tx: &Transaction<'_>,
-    project_id: &str,
-    content: &str,
-    mut mentions: Vec<MentionToken>,
-) -> AppResult<Vec<MentionToken>> {
-    mentions.sort_by_key(|token| (token.start_offset, token.end_offset));
-    crate::access::validate_mentions(tx, project_id, content, mentions)
-}
-
-fn insert_mentions(
-    tx: &Transaction<'_>,
-    comment_id: &str,
-    mentions: &[MentionToken],
-) -> AppResult<()> {
-    for mention in mentions {
-        tx.execute(
-            "INSERT INTO comment_mentions
-             (id,comment_id,kind,user_id,start_offset,end_offset,label)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                Uuid::now_v7().to_string(),
-                comment_id,
-                match mention.kind {
-                    MentionKind::User => "user",
-                    MentionKind::Everyone => "everyone",
-                },
-                mention.user_id,
-                mention.start_offset as i64,
-                mention.end_offset as i64,
-                mention.label,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
 fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentView> {
     let mut view = tx
         .query_row(
@@ -537,7 +489,7 @@ fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentV
         })?;
     // A deleted comment keeps its mentions only for a restore.
     if view.deleted_at.is_none() {
-        view.mentions = load_mentions_tx(tx, comment_id)?;
+        view.mentions = mentions::load(tx, Mentioned::Comment(comment_id))?;
     }
     Ok(view)
 }
@@ -577,7 +529,7 @@ fn comment_page_context(
         .chain(context.iter_mut())
         .filter(|item| item.deleted_at.is_none())
     {
-        item.mentions = load_mentions_connection(connection, &item.id)?;
+        item.mentions = mentions::load(connection, Mentioned::Comment(&item.id))?;
     }
     let mut reply_counts = std::collections::BTreeMap::new();
     for root in roots {
@@ -613,44 +565,6 @@ fn comment_row(row: &Row<'_>) -> rusqlite::Result<CommentView> {
         edited_at: row.get(9)?,
         deleted_at,
         revision: row.get(11)?,
-    })
-}
-
-fn load_mentions_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<Vec<MentionToken>> {
-    let mut statement = tx.prepare(
-        "SELECT kind,user_id,start_offset,end_offset,label FROM comment_mentions
-         WHERE comment_id=?1 ORDER BY start_offset,id",
-    )?;
-    Ok(statement
-        .query_map([comment_id], mention_row)?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn load_mentions_connection(
-    connection: &rusqlite::Connection,
-    comment_id: &str,
-) -> AppResult<Vec<MentionToken>> {
-    let mut statement = connection.prepare(
-        "SELECT kind,user_id,start_offset,end_offset,label FROM comment_mentions
-         WHERE comment_id=?1 ORDER BY start_offset,id",
-    )?;
-    Ok(statement
-        .query_map([comment_id], mention_row)?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn mention_row(row: &Row<'_>) -> rusqlite::Result<MentionToken> {
-    let kind: String = row.get(0)?;
-    Ok(MentionToken {
-        kind: if kind == "user" {
-            MentionKind::User
-        } else {
-            MentionKind::Everyone
-        },
-        user_id: row.get(1)?,
-        start_offset: row.get::<_, i64>(2)? as usize,
-        end_offset: row.get::<_, i64>(3)? as usize,
-        label: row.get(4)?,
     })
 }
 
@@ -980,22 +894,4 @@ fn decode_cursor(value: &str) -> AppResult<Cursor> {
         .decode(value)
         .map_err(|_| AppError::validation("cursor", "is invalid"))?;
     serde_json::from_slice(&bytes).map_err(|_| AppError::validation("cursor", "is invalid"))
-}
-
-#[cfg(test)]
-mod generated_tests {
-    proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
-        #[test]
-        fn unicode_mention_offsets_land_only_on_codepoint_boundaries(value in ".{0,256}") {
-            let boundaries = crate::access::utf16_boundaries(&value);
-            let mut units = 0;
-            for (offset, ch) in value.char_indices() {
-                proptest::prop_assert_eq!(boundaries.get(&units), Some(&offset));
-                if ch.len_utf16() == 2 { proptest::prop_assert!(!boundaries.contains_key(&(units + 1))); }
-                units += ch.len_utf16();
-            }
-            proptest::prop_assert_eq!(boundaries.get(&units), Some(&value.len()));
-        }
-    }
 }

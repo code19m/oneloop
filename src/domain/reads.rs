@@ -1037,17 +1037,7 @@ fn task_views(
     for row in statement.query_map([&encoded], |r| {
         Ok((
             r.get::<_, String>(0)?,
-            super::MentionInput {
-                kind: if r.get::<_, String>(1)? == "everyone" {
-                    super::MentionKind::Everyone
-                } else {
-                    super::MentionKind::User
-                },
-                user_id: r.get(2)?,
-                start_offset: r.get::<_, i64>(3)? as usize,
-                end_offset: r.get::<_, i64>(4)? as usize,
-                label: r.get(5)?,
-            },
+            crate::collaboration::mentions::token(r, 1)?,
         ))
     })? {
         let (id, mention) = row?;

@@ -139,23 +139,17 @@ pub(crate) fn require_project(
     Ok(())
 }
 
+/// Checks mentions against the exact text they select and keeps those that
+/// count: a mention in code or a quote is plain text. A person mentioned
+/// before an edit (`retained`) stays valid after leaving the project.
 pub(crate) fn validate_mentions(
-    tx: &Transaction<'_>,
-    project_id: &str,
-    content: &str,
-    mentions: Vec<MentionToken>,
-) -> AppResult<Vec<MentionToken>> {
-    validate_mentions_retaining(tx, project_id, content, mentions, &[])
-}
-
-pub(crate) fn validate_mentions_retaining(
     tx: &Transaction<'_>,
     project_id: &str,
     content: &str,
     mut mentions: Vec<MentionToken>,
     retained: &[String],
 ) -> AppResult<Vec<MentionToken>> {
-    mentions.sort_by_key(|token| token.start_offset);
+    mentions.sort_by_key(|token| (token.start_offset, token.end_offset));
     let boundaries = utf16_boundaries(content);
     let mut previous_end = 0usize;
     let mut everyone_seen = false;
@@ -238,7 +232,7 @@ pub(crate) fn validate_mentions_retaining(
     }
     Ok(selected)
 }
-pub(crate) fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
+fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
     let mut result = HashMap::new();
     let mut utf16 = 0usize;
     result.insert(0, 0);
@@ -307,8 +301,23 @@ mod tests {
                     }
                 })
                 .collect();
-            let selected = validate_mentions(&tx, "project", content, mentions).unwrap();
+            let selected = validate_mentions(&tx, "project", content, mentions, &[]).unwrap();
             assert_eq!(selected.len(), expected, "{content}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
+        #[test]
+        fn unicode_mention_offsets_land_only_on_codepoint_boundaries(value in ".{0,256}") {
+            let boundaries = utf16_boundaries(&value);
+            let mut units = 0;
+            for (offset, ch) in value.char_indices() {
+                proptest::prop_assert_eq!(boundaries.get(&units), Some(&offset));
+                if ch.len_utf16() == 2 { proptest::prop_assert!(!boundaries.contains_key(&(units + 1))); }
+                units += ch.len_utf16();
+            }
+            proptest::prop_assert_eq!(boundaries.get(&units), Some(&value.len()));
         }
     }
 }

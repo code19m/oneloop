@@ -16,7 +16,6 @@ use pool::*;
 mod validation;
 use validation::*;
 
-use crate::access::validate_mentions_retaining as validate_mentions;
 use crate::{
     clock::unix_now,
     idempotency::{Envelope, Mutation},
@@ -31,10 +30,12 @@ use uuid::Uuid;
 
 use crate::{
     Db,
-    access::{Need, require_project},
+    access::{Need, require_project, validate_mentions},
     auth::Actor,
     collaboration::{
-        ActivityInput, NotificationInput, record_activity_tx, snapshot_notification_tx,
+        ActivityInput, NotificationInput,
+        mentions::{self, MentionNotice, Mentioned},
+        record_activity_tx, snapshot_notification_tx,
     },
     error::{AppError, AppResult},
     timezone::TimeZone,
@@ -43,10 +44,9 @@ use crate::{
 use super::{
     Access, BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation,
     EntityId, EpicCreate, EpicUpdate, MembershipCreate, MembershipDelete, MembershipUpdate,
-    MentionInput, MentionKind, MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote,
-    PoolItemUpdate, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate,
-    TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate,
-    require_undo_window,
+    MilestoneCreate, MilestoneUpdate, PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolScope,
+    ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove, TaskStatus,
+    TaskUnblock, TaskUpdate, TrackCreate, TrackReorder, TrackUpdate, require_undo_window,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;

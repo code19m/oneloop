@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::{
     access::{McpRoute, McpTool, Need},
+    collaboration::MentionToken,
     idempotency::RevisionRule,
 };
 
@@ -434,15 +435,13 @@ pub struct TaskMove {
     pub after_task_id: Option<String>,
 }
 
-pub use crate::collaboration::{MentionKind, MentionToken as MentionInput};
-
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskBlock {
     pub task_id: String,
     pub reason: String,
     #[serde(default)]
-    pub mentions: Vec<MentionInput>,
+    pub mentions: Vec<MentionToken>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -451,7 +450,7 @@ pub struct BlockReasonUpdate {
     pub block_id: String,
     pub reason: String,
     #[serde(default)]
-    pub mentions: Vec<MentionInput>,
+    pub mentions: Vec<MentionToken>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
