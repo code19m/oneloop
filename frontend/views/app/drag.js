@@ -2,6 +2,7 @@
 /* Dragging Board cards and Roadmap tracks with a pointer. A drag ends in the
    same drop handlers on any device. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { App, canBoard, canRoadmap, state } from './model.js';
 
 // Pointer gestures share the existing destination, optimistic-save and rollback

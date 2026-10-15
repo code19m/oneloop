@@ -27,7 +27,7 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   return), `controls.js` (selects, date fields, input cleaning), `forms.js`,
   `toasts.js` and `drag.js`. They share `model.js` (view state and data
   lookups) and `format.js` (text, dates and icons), and animate with the one
-  motion engine, `UIMotion` from `views/motion.js`. A module reaches the render
+  motion engine, `UIMotion` from `src/app/motion.js`. A module reaches the render
   pipeline through `App`, such as `App.refresh()`, and never imports
   `views/app.js`. TypeScript checks only `src/`, so each view module starts
   with `// @ts-nocheck` and the views carry no JSDoc types.
@@ -79,8 +79,7 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads the classic scripts motion, file views, uploads and collaboration in
-order, then imports the `app.js` module. The view bridge installs
+loads the classic scripts file views, uploads and collaboration in order, then imports the `app.js` module. The view bridge installs
 server-backed actions before the first application render; preview libraries
 load on demand.
 
@@ -94,12 +93,12 @@ New code imports a module instead of adding one.
 | `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions and the server clock |
 | `OneloopTransport` | `boot.js` | The API, commands and live updates for the classic scripts |
 | `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
-| `UIHTML`, `UIEscape`, `UIAction` | `boot.js` | The HTML helpers of the classic scripts |
+| `UIHTML`, `UIEscape`, `UIAction`, `UIMotion` | `boot.js` | The HTML and motion helpers of the classic scripts |
 | `OneloopErrorMessage`, `OneloopRetryable` | `boot.js` | How a failure reads, and whether trying again can help |
 | `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
 | `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
 | `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
-| `Theme`, `UIMotion`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, motion, file previews, attachments, comments and the Inbox |
+| `Theme`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, file previews, attachments, comments and the Inbox |
 
 ## Design
 

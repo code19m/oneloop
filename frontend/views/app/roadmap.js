@@ -2,6 +2,7 @@
 /* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
    drawer, and moving tracks. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,

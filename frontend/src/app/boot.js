@@ -22,6 +22,7 @@ import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } 
 import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
 import { UIAction, escapeHtml } from './markup.js';
 import { installTooltips } from './tooltips.js';
+import { UIMotion, installDisclosures } from './motion.js';
 
 installTrustedTypes();
 // The classic view scripts build HTML with UIEscape and UIAction and write it
@@ -29,6 +30,7 @@ installTrustedTypes();
 globalThis.UIHTML = setTrustedHTML;
 globalThis.UIEscape = escapeHtml;
 globalThis.UIAction = UIAction;
+globalThis.UIMotion = UIMotion;
 // First, so actions run before the document's other listeners, as inline handlers did.
 installViewActions(document);
 
@@ -99,6 +101,7 @@ recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>a
 globalThis.Recovery=recovery;
 
 installTooltips(document);
+installDisclosures(document);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
@@ -124,7 +127,6 @@ try {
 
 async function loadViewDependencies() {
   await Promise.all([
-    '/views/motion.js',
     '/views/file-views.js','/views/uploads.js','/views/collaboration.js',
   ].map(loadClassic));
 }

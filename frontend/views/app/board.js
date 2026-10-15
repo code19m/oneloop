@@ -2,6 +2,7 @@
 /* The Board: task columns, their filters, and moving tasks with optimistic
    saves that roll back when the server refuses. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters,
 } from '../../src/data/board-filters.js';

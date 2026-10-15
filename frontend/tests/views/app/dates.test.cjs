@@ -17,7 +17,7 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       let now = Date.parse('2026-06-15T12:00:00Z'), rollover;
       const { w, d } = bootApp({
         route: 'roadmap', html: '<!doctype html><meta name="theme-color"><div id="app"></div>', media: () => true,
-        scripts: ['theme', 'data', 'motion', 'collaboration', 'app'],
+        scripts: ['theme', 'data', 'collaboration', 'app'],
         api: { serverNow: () => now },
         setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; },
         beforeScript: (name, w) => {

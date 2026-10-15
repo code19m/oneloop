@@ -5,6 +5,7 @@
    server-backed actions to `App`. See frontend/README.md before changing an
    action. */
 
+import { UIMotion } from '../src/app/motion.js';
 import {
   boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch,
   clearFilterMotion, renderBoard,

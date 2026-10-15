@@ -9,7 +9,6 @@ const { afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
 const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
@@ -109,23 +108,37 @@ const sharedModules = new Map([[path.join(frontend, 'src/data/api-client.js'), r
 
 /**
  * Import `file`, an ES module, and the modules it imports into the window of
- * `dom`, as a browser does. Each window gets its own instances.
+ * `dom`, as a browser does: each window has one instance of each module, at
+ * the URL the server gives it, and `stubs` (paths in frontend/ to exports)
+ * stand in for some of them. Returns the module's exports.
  */
-function importModule(dom, file) {
-  const context = dom.getInternalVMContext(), loaded = new Map();
+function importModule(dom, file, stubs = {}) {
+  file = path.resolve(frontend, file);
+  dom.modules ??= new Map();
+  const context = dom.getInternalVMContext(), loaded = dom.modules;
+  const origin = dom.window.location.origin === 'null' ? 'http://localhost' : dom.window.location.origin;
+  const urlOf = file => new URL(path.relative(frontend, file).split(path.sep).join('/'), `${origin}/`).href;
+  const synthetic = (exports, identifier) => new vm.SyntheticModule(Object.keys(exports), function () { for (const name of Object.keys(exports)) this.setExport(name, exports[name]); }, { context, identifier });
   const link = file => {
     if (loaded.has(file)) return loaded.get(file);
-    const shared = sharedModules.get(file), identifier = pathToFileURL(file).href;
-    const module = shared
-      ? new vm.SyntheticModule(Object.keys(shared), function () { for (const name of Object.keys(shared)) this.setExport(name, shared[name]); }, { context, identifier })
-      : new vm.SourceTextModule(read(file), { context, identifier });
+    const stub = sharedModules.get(file) ?? stubs[path.relative(frontend, file)], identifier = urlOf(file);
+    const module = stub ? synthetic(stub, identifier) : new vm.SourceTextModule(read(file), {
+      context, identifier,
+      initializeImportMeta: meta => { meta.url = identifier; },
+      importModuleDynamically: async specifier => {
+        const imported = link(path.join(frontend, decodeURIComponent(new URL(specifier, identifier).pathname)));
+        if (imported.status === 'unlinked') imported.instantiate();
+        await imported.evaluate();
+        return imported;
+      },
+    });
     loaded.set(file, module);
-    if (shared) return module;
+    if (stub) return module;
     module.linkRequests(module.moduleRequests.map(({ specifier }) => link(path.resolve(path.dirname(file), specifier))));
     return module;
   };
   const module = link(file);
-  module.instantiate();
+  if (module.status === 'unlinked') module.instantiate();
   // A module without top-level await runs now; a failure leaves it errored.
   module.evaluate().catch(() => {});
   if (module.status === 'errored') throw module.error;
@@ -147,7 +160,7 @@ function load(dom, name) {
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
 /** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const appScripts = ['theme', 'data', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {
@@ -265,6 +278,9 @@ function bootApp({
   useWindowGlobals(w);
   // Before any script, so actions run first on the document, as in the app.
   if (actions) installViewActions(w.document);
+  const motion = importModule(dom, path.join(frontend, 'src/app/motion.js'));
+  motion.installDisclosures(w.document);
+  w.UIMotion = motion.UIMotion;
   setup?.(w);
   let wiring = null;
   for (const name of scripts) {
@@ -294,4 +310,4 @@ function withRuntime(route, held) {
 /** The dataTransfer of a drag that carries `id` as `type`. */
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-module.exports = { JSDOM, jsdom, source, load, bootApp, withRuntime, transfer, appScripts, previewLibraries, waitFor, settle, deferred, tick, fixtures };
+module.exports = { JSDOM, jsdom, source, load, importModule, bootApp, withRuntime, transfer, appScripts, previewLibraries, waitFor, settle, deferred, tick, fixtures };

@@ -3,6 +3,7 @@
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 
 import { openDialog, placeNear, trapFocus } from '../../src/app/layers.js';
+import { UIMotion } from '../../src/app/motion.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import {
   App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,

@@ -3,10 +3,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM, bootApp, source, previewLibraries, waitFor, settle, fixtures } = require('../support/dom.cjs');
+const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const scripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const scripts = ['theme', 'data', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
 // KaTeX refuses to render in quirks mode.
 const boot = options => bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options });
 
@@ -270,10 +270,11 @@ test('the renderer hides $$ pairs from Mermaid\'s math, and draws a diagram as w
 
 /** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */
 function lazyPreviews() {
-  const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   const d = w.document, host = d.getElementById('host');
   w.matchMedia = () => ({ matches: true });
-  for (const name of ['motion', 'file-views']) w.eval(source(name));
+  w.UIMotion = importModule(dom, 'src/app/motion.js').UIMotion;
+  for (const name of ['file-views']) w.eval(source(name));
   const loaded = [], append = d.head.append.bind(d.head);
   const state = { failMath: true };
   d.head.append = element => {
@@ -320,9 +321,10 @@ test('HTML previews keep Source usable without parsing, and show nothing without
 
 /** File views with the Markdown libraries present, outside the app. */
 function directPreviews() {
-  const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   w.matchMedia = () => ({ matches: true });
-  for (const name of ['motion', ...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index', 'file-views']) w.eval(source(name));
+  w.UIMotion = importModule(dom, 'src/app/motion.js').UIMotion;
+  for (const name of [...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index', 'file-views']) w.eval(source(name));
   return { w, d: w.document, host: w.document.getElementById('host') };
 }
 

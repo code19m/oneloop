@@ -2,6 +2,7 @@
 /* Form controls: selects, date fields with a calendar, field errors and
    labels, and the cleaning of typed and pasted text. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { I, UIAction, d, esc, humanFull, iso, setHTML, today } from './format.js';
 import { App } from './model.js';
 import { POP, closePop, openPop, placePop, rememberOpener, restoreOpener } from './overlays.js';

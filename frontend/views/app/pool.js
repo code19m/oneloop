@@ -2,6 +2,7 @@
 /* The Pool dialog: personal and team items, their descriptions, and creating
    a task from an item. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { patchBoardRow } from './board.js';
 import { optionalMark } from './controls.js';
 import { I, UIAction, esc, setHTML } from './format.js';
