@@ -18,7 +18,9 @@ use crate::{
     auth::Actor,
     collaboration::{CollaborationOperation, InboxFilter},
     command::{Command, Operation},
-    domain::{BoardQuery, BoardViewQuery, DomainOperation, DoneOrder, PageQuery, PoolQuery},
+    domain::{
+        BoardQuery, BoardViewQuery, DomainOperation, DoneOrder, PageQuery, PoolQuery, TaskFilter,
+    },
     files::{AttachmentPatch, AttachmentReorder},
 };
 
@@ -452,33 +454,35 @@ impl OneloopMcp {
     ) -> Result<Json<Value>, ToolError> {
         let actor = actor(&parts)?;
         let domain = &self.state.domain;
+        let filter = TaskFilter {
+            search: input.search,
+            track_ids: input.track_ids,
+            epic_ids: input.epic_ids,
+            assignee_ids: input.assignee_ids,
+            no_assignee: input.no_assignee,
+            blocked: input.blocked,
+            done_order: DoneOrder::Manual,
+        };
         if let Some(status) = input.status {
-            return json(
-                domain
-                    .board_page(&actor, board_query(input, status))
-                    .await?,
-            );
+            let query = BoardQuery {
+                project_id: input.project_id,
+                status,
+                cursor: input.cursor,
+                limit: input.limit,
+                filter,
+            };
+            return json(domain.board_page(&actor, query).await?);
         }
         if input.cursor.is_some() {
             return Err(ToolError::invalid_arguments("cursor requires a status"));
         }
         // One read, so a task that moves meanwhile is in exactly one column.
-        let board = domain
-            .board_view(
-                &actor,
-                BoardViewQuery {
-                    project_id: input.project_id,
-                    limit: input.limit,
-                    search: input.search,
-                    track_ids: input.track_ids,
-                    epic_ids: input.epic_ids,
-                    assignee_ids: input.assignee_ids,
-                    no_assignee: input.no_assignee,
-                    blocked: input.blocked,
-                    done_order: DoneOrder::Manual,
-                },
-            )
-            .await?;
+        let query = BoardViewQuery {
+            project_id: input.project_id,
+            limit: input.limit,
+            filter,
+        };
+        let board = domain.board_view(&actor, query).await?;
         json(json!({
             "planning": board.planning,
             "in_progress": board.in_progress,
@@ -1033,22 +1037,6 @@ fn actor(parts: &Parts) -> Result<Actor, ToolError> {
         .cloned()
         .ok_or_else(|| ToolError::invalid_request("authenticated actor is missing"))
 }
-fn board_query(input: SearchTasksInput, status: crate::domain::TaskStatus) -> BoardQuery {
-    BoardQuery {
-        project_id: input.project_id,
-        status,
-        cursor: input.cursor,
-        limit: input.limit,
-        search: input.search,
-        track_ids: input.track_ids,
-        epic_ids: input.epic_ids,
-        assignee_ids: input.assignee_ids,
-        no_assignee: input.no_assignee,
-        blocked: input.blocked,
-        done_order: DoneOrder::Manual,
-    }
-}
-
 #[derive(Debug)]
 enum ToolError {
     Protocol(ErrorData),

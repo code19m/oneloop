@@ -57,51 +57,54 @@ impl Default for PageQuery {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Which tasks a Board read shows, and the order of its Done column.
+#[derive(Clone, Debug, Default)]
+pub struct TaskFilter {
+    /// Text in the task key or title, in any case.
+    pub search: Option<String>,
+    pub track_ids: Vec<String>,
+    pub epic_ids: Vec<String>,
+    /// With `no_assignee`, tasks of any of these people or of nobody.
+    pub assignee_ids: Vec<String>,
+    pub no_assignee: bool,
+    pub blocked: bool,
+    /// Applies to the Done column; other columns keep their manual order.
+    pub done_order: DoneOrder,
+}
+
+impl TaskFilter {
+    /// Whether the filter shows every task. The Done order only sorts them.
+    pub fn is_empty(&self) -> bool {
+        self.search
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+            && self.track_ids.is_empty()
+            && self.epic_ids.is_empty()
+            && self.assignee_ids.is_empty()
+            && !self.no_assignee
+            && !self.blocked
+    }
+}
+
+/// A page of one Board column.
+#[derive(Clone, Debug)]
 pub struct BoardQuery {
     pub project_id: String,
     pub status: TaskStatus,
     pub cursor: Option<String>,
     pub limit: Option<usize>,
-    pub search: Option<String>,
-    #[serde(default)]
-    pub track_ids: Vec<String>,
-    #[serde(default)]
-    pub epic_ids: Vec<String>,
-    #[serde(default)]
-    pub assignee_ids: Vec<String>,
-    #[serde(default)]
-    pub no_assignee: bool,
-    #[serde(default)]
-    pub blocked: bool,
-    /// Applies to the Done column; other columns keep their manual order.
-    #[serde(default)]
-    pub done_order: DoneOrder,
+    pub filter: TaskFilter,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// The first page of every Board column, read at one moment.
+#[derive(Clone, Debug)]
 pub struct BoardViewQuery {
     pub project_id: String,
     pub limit: Option<usize>,
-    pub search: Option<String>,
-    #[serde(default)]
-    pub track_ids: Vec<String>,
-    #[serde(default)]
-    pub epic_ids: Vec<String>,
-    #[serde(default)]
-    pub assignee_ids: Vec<String>,
-    #[serde(default)]
-    pub no_assignee: bool,
-    #[serde(default)]
-    pub blocked: bool,
-    #[serde(default)]
-    pub done_order: DoneOrder,
+    pub filter: TaskFilter,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct PoolQuery {
     pub project_id: String,
     pub scope: PoolScope,
@@ -169,15 +172,7 @@ impl DomainService {
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &query.project_id, Need::Read, false)?;
             let counts = board_counts_connection(connection, &query.project_id)?;
-            let unfiltered = query
-                .search
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-                && query.track_ids.is_empty()
-                && query.epic_ids.is_empty()
-                && query.assignee_ids.is_empty()
-                && !query.no_assignee
-                && !query.blocked;
+            let unfiltered = query.filter.is_empty();
             let page = |status: TaskStatus, total: i64| {
                 board_page_with_total(
                     connection,
@@ -187,13 +182,7 @@ impl DomainService {
                         status,
                         cursor: None,
                         limit: query.limit,
-                        search: query.search.clone(),
-                        track_ids: query.track_ids.clone(),
-                        epic_ids: query.epic_ids.clone(),
-                        assignee_ids: query.assignee_ids.clone(),
-                        no_assignee: query.no_assignee,
-                        blocked: query.blocked,
-                        done_order: query.done_order,
+                        filter: query.filter.clone(),
                     },
                     unfiltered.then_some(total),
                 )

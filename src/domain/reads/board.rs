@@ -21,7 +21,8 @@ pub(super) fn board_page_with_total(
     let limit = page_limit(q.limit);
     let generation = task_page_generation(connection, &q.project_id)?;
     // Only Done has a newest-first order; other columns ignore the choice.
-    let newest = q.status == TaskStatus::Done && q.done_order == DoneOrder::Completed;
+    let filter = &q.filter;
+    let newest = q.status == TaskStatus::Done && filter.done_order == DoneOrder::Completed;
     let scope = if newest {
         format!("board:{}:done:completed", q.project_id)
     } else {
@@ -53,7 +54,7 @@ pub(super) fn board_page_with_total(
         "t.status=?2".to_owned(),
         "t.deleted_at IS NULL".to_owned(),
     ];
-    if let Some(search) = q
+    if let Some(search) = filter
         .search
         .as_deref()
         .map(str::trim)
@@ -65,17 +66,17 @@ pub(super) fn board_page_with_total(
             "(instr(lower(t.task_key),?{n})>0 OR instr(t.search_title,?{n})>0)"
         ));
     }
-    if !q.track_ids.is_empty() {
+    if !filter.track_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.track_ids)
+            serde_json::to_string(&filter.track_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
         conditions.push(format!("EXISTS(SELECT 1 FROM epics e WHERE e.id=t.epic_id AND e.track_id IN (SELECT value FROM json_each(?{})))",values.len()));
     }
-    if !q.epic_ids.is_empty() {
+    if !filter.epic_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.epic_ids)
+            serde_json::to_string(&filter.epic_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
@@ -85,28 +86,28 @@ pub(super) fn board_page_with_total(
         ));
     }
     let mut assigned = Vec::new();
-    if !q.assignee_ids.is_empty() {
+    if !filter.assignee_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.assignee_ids)
+            serde_json::to_string(&filter.assignee_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
         assigned.push(format!("EXISTS(SELECT 1 FROM task_assignees a WHERE a.task_id=t.id AND a.user_id IN (SELECT value FROM json_each(?{})))",values.len()));
     }
-    if q.no_assignee {
+    if filter.no_assignee {
         assigned.push("NOT EXISTS(SELECT 1 FROM task_assignees a WHERE a.task_id=t.id)".into());
     }
     if !assigned.is_empty() {
         conditions.push(format!("({})", assigned.join(" OR ")));
     }
-    if q.blocked {
+    if filter.blocked {
         conditions.push(
             "EXISTS(SELECT 1 FROM task_blocks b WHERE b.task_id=t.id AND b.resolved_at IS NULL)"
                 .into(),
         );
     }
     let predicate = conditions.join(" AND ");
-    let total = if total.is_none() && conditions.len() == 3 {
+    let total = if total.is_none() && filter.is_empty() {
         Some(connection.query_row(
             &format!("SELECT COUNT(*) FROM tasks t WHERE {predicate}"),
             rusqlite::params_from_iter(values.iter()),

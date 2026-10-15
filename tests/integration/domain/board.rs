@@ -27,13 +27,10 @@ async fn board_search_preserves_unicode_case_and_literal_punctuation() {
                     status: oneloop::domain::TaskStatus::Planning,
                     cursor: None,
                     limit: Some(50),
-                    search: Some(term.into()),
-                    track_ids: vec![],
-                    epic_ids: vec![],
-                    assignee_ids: vec![],
-                    no_assignee: false,
-                    blocked: false,
-                    done_order: Default::default(),
+                    filter: TaskFilter {
+                        search: Some(term.into()),
+                        ..Default::default()
+                    },
                 },
             )
             .await
@@ -93,13 +90,7 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
             BoardViewQuery {
                 project_id: "p1".into(),
                 limit: Some(50),
-                search: None,
-                track_ids: vec![],
-                epic_ids: vec![],
-                assignee_ids: vec![],
-                no_assignee: false,
-                blocked: false,
-                done_order: Default::default(),
+                filter: TaskFilter::default(),
             },
         )
         .await
@@ -119,13 +110,11 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
             BoardViewQuery {
                 project_id: "p1".into(),
                 limit: Some(50),
-                search: Some("needle".into()),
-                track_ids: vec![],
-                epic_ids: vec![],
-                assignee_ids: vec![],
-                no_assignee: false,
-                blocked: true,
-                done_order: Default::default(),
+                filter: TaskFilter {
+                    search: Some("needle".into()),
+                    blocked: true,
+                    ..Default::default()
+                },
             },
         )
         .await
@@ -236,13 +225,10 @@ async fn filtered_board_moves_use_server_validated_visible_anchors() {
                 status: oneloop::domain::TaskStatus::Planning,
                 cursor: None,
                 limit: Some(50),
-                search: Some("Visible".into()),
-                track_ids: vec![],
-                epic_ids: vec![],
-                assignee_ids: vec![],
-                no_assignee: false,
-                blocked: false,
-                done_order: Default::default(),
+                filter: TaskFilter {
+                    search: Some("Visible".into()),
+                    ..Default::default()
+                },
             },
         )
         .await
@@ -287,7 +273,7 @@ async fn position_writes(f: &Fixture) -> HashSet<String> {
 
 async fn column(f: &Fixture, status: &str) -> Vec<oneloop::domain::TaskView> {
     let mut query = board_query(status, None);
-    query.done_order = DoneOrder::Manual;
+    query.filter.done_order = DoneOrder::Manual;
     f.service.board_page(&f.manager, query).await.unwrap().items
 }
 
@@ -544,13 +530,10 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
                 status: oneloop::domain::TaskStatus::Planning,
                 cursor: None,
                 limit: Some(50),
-                search: Some("РИВ".into()),
-                track_ids: vec![],
-                epic_ids: vec![],
-                assignee_ids: vec![],
-                no_assignee: false,
-                blocked: false,
-                done_order: Default::default(),
+                filter: TaskFilter {
+                    search: Some("РИВ".into()),
+                    ..Default::default()
+                },
             },
         )
         .await
@@ -603,11 +586,7 @@ proptest::proptest! {
                 if source == target && old == position { assert_eq!(result.unwrap_err().code(), "validation_failed"); }
                 else { result.unwrap(); model[source].remove(old); model[target].insert(position, id.clone()); }
                 for (column, status) in statuses.iter().enumerate() {
-                    let page = f.service.board_page(&f.manager, BoardQuery {
-                        project_id:"p1".into(), status:serde_json::from_value(json!(status)).unwrap(), limit:Some(50), cursor:None,
-                        search:None, track_ids:vec![], epic_ids:vec![], assignee_ids:vec![], no_assignee:false, blocked:false,
-                        done_order: Default::default(),
-                    }).await.unwrap();
+                    let page = f.service.board_page(&f.manager, BoardQuery { project_id:"p1".into(), status:serde_json::from_value(json!(status)).unwrap(), limit:Some(50), cursor:None, filter: TaskFilter::default() }).await.unwrap();
                     assert_eq!(page.items.iter().map(|task|task.id.clone()).collect::<Vec<_>>(), model[column]);
                     assert!(page.items.windows(2).all(|pair| pair[0].position < pair[1].position));
                 }
@@ -826,15 +805,14 @@ async fn filtered_board_counts_survive_empty_cursor_pages_and_search_edits() {
     let query = |cursor| BoardQuery {
         project_id: "p1".into(),
         status: oneloop::domain::TaskStatus::Planning,
-        search: Some("ORDERING".into()),
         cursor,
         limit: Some(2),
-        track_ids: vec![],
-        epic_ids: vec!["e1".into()],
-        assignee_ids: vec![],
-        no_assignee: true,
-        blocked: false,
-        done_order: Default::default(),
+        filter: TaskFilter {
+            search: Some("ORDERING".into()),
+            epic_ids: vec!["e1".into()],
+            no_assignee: true,
+            ..Default::default()
+        },
     };
     let first = f.service.board_page(&f.member, query(None)).await.unwrap();
     assert_eq!(first.total, 4);
@@ -914,8 +892,11 @@ async fn seed_done_column(f: &Fixture) {
 fn newest_done_query(cursor: Option<String>, search: Option<&str>) -> BoardQuery {
     BoardQuery {
         limit: Some(2),
-        search: search.map(str::to_owned),
-        done_order: DoneOrder::Completed,
+        filter: TaskFilter {
+            search: search.map(str::to_owned),
+            done_order: DoneOrder::Completed,
+            ..Default::default()
+        },
         ..board_query("done", cursor)
     }
 }
@@ -1112,7 +1093,7 @@ async fn done_order_cursors_and_parameters_belong_to_their_order() {
     // Other columns keep their manual order whatever the Done order is.
     seed_ordering_column(&f, 3).await;
     let mut planning = board_query("planning", None);
-    planning.done_order = DoneOrder::Completed;
+    planning.filter.done_order = DoneOrder::Completed;
     let planning = f.service.board_page(&f.member, planning).await.unwrap();
     assert_eq!(
         planning

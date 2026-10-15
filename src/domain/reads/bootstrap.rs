@@ -96,13 +96,10 @@ pub(super) fn bootstrap_snapshot(
                         status,
                         cursor: None,
                         limit: Some(PAGE_SIZE),
-                        search: None,
-                        track_ids: vec![],
-                        epic_ids: vec![],
-                        assignee_ids: vec![],
-                        no_assignee: false,
-                        blocked: false,
-                        done_order: query.done_order,
+                        filter: TaskFilter {
+                            done_order: query.done_order,
+                            ..TaskFilter::default()
+                        },
                     },
                     Some(total),
                 )?;
