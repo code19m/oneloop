@@ -437,7 +437,7 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserView> {
     let id: String = r.get(0)?;
     let avatar: Option<String> = r.get(5)?;
     Ok(UserView {
-        avatar_url: avatar.map(|blob| format!("/api/users/{id}/avatar?v={blob}")),
+        avatar_url: avatar.map(|blob| crate::auth::avatar_url(&id, &blob)),
         id,
         username: r.get(1)?,
         name: r.get(2)?,

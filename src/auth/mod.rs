@@ -567,7 +567,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary>
 }
 
 /// The address of a person's avatar; the blob ID keeps a cached copy current.
-fn avatar_url(user_id: &str, blob_id: &str) -> String {
+pub(crate) fn avatar_url(user_id: &str, blob_id: &str) -> String {
     format!("/api/users/{user_id}/avatar?v={blob_id}")
 }
 
