@@ -7,7 +7,7 @@ pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
 /// A refresh token unused for 30 days stops working, and so does its grant.
 /// `src/retention.rs` repeats the value as a literal, because its index
 /// expression must match.
-pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub(super) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// A grant stops working 90 days after consent, however often it is used.
 const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// How long a rotated refresh token still works, for an app that lost the
@@ -559,7 +559,7 @@ pub(crate) fn revoke_unless_current(
     Ok(false)
 }
 
-/// Revokes every grant that `grants` selects; its one parameter is `?1`.
+/// Revokes every grant whose ID the query `grants` selects with `parameters`.
 fn revoke_grants(
     tx: &Transaction<'_>,
     grants: &str,
