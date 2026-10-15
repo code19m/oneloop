@@ -23,7 +23,8 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 - **Views.** `views/app.js` is the shell: routing, the render pipeline and the
   pages that have no module of their own. Each feature in `views/app/` keeps
   its markup and its `App` handlers together: `board.js`, `roadmap.js`,
-  `pool.js`, `attachments.js`, `collaboration.js` (comments and the Inbox),
+  `pool.js`, `task.js` (a task's page), `attachments.js`, `collaboration.js`
+  (comments and the Inbox), `account.js` (Profile, Users and Settings),
   `storage.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and
   focus return), `controls.js` (selects, date fields, input cleaning),
   `forms.js`, `toasts.js` and `drag.js`. They share `model.js` (view state and data

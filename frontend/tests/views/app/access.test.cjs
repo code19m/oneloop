@@ -114,14 +114,14 @@ test('Enter in the profile name saves through the blur path', async () => {
 });
 
 test('project Settings bound member rows, update loading state in place and search all members', () => {
-  const { w, d } = bootApp({ route: 'settings', media: () => true });
+  const { w, d } = bootApp({ route: 'settings', media: () => true, actions: true });
   const project = w.DATA.projects.find(p => p.id === w.App.context().projectId);
   for (let i = 0; i < 205; i++) { const id = 'member-' + i; w.DATA.users.push({ id, name: 'Member ' + i, username: id, active: true, admin: false }); project.members.push({ userId: id, permissions: [] }); }
   w.App.refreshUsers(); assert.equal(d.querySelectorAll('.member-access-row').length, 100);
   const row = d.querySelector('.member-access-row'); w.DATA.adminUsers = { loading: true }; w.App.refreshUsers({ loadingOnly: true });
   assert.equal(d.querySelector('.member-access-row'), row); assert.equal(d.querySelector('.member-access-list').getAttribute('aria-busy'), 'true');
-  d.querySelector('[data-more-members]').click(); assert.equal(d.querySelectorAll('.member-access-row').length, 200);
-  const search = d.querySelector('[data-member-search]'); search.value = 'member-204'; search.dispatchEvent(new w.Event('input', { bubbles: true }));
+  [...d.querySelectorAll('button')].find(button => button.textContent === 'Load more members').click(); assert.equal(d.querySelectorAll('.member-access-row').length, 200);
+  const search = d.getElementById('member-search'); search.value = 'member-204'; search.dispatchEvent(new w.Event('input', { bubbles: true }));
   assert.equal(d.querySelectorAll('.member-access-row').length, 1); assert.match(d.querySelector('.member-access-row').textContent, /Member 204/);
 });
 
