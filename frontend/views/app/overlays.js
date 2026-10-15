@@ -2,6 +2,7 @@
 /* Layers above the page: popovers, menus, dialogs and their confirmations,
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 
+import { openDialog, placeNear, trapFocus } from '../../src/app/layers.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import {
   App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,
@@ -38,21 +39,17 @@ export function askConfirmation({ title, text, action, match, confirm, cancel, l
   const returnFocus = document.activeElement;
   state.menu = null;
   document.querySelectorAll('#overlay-root > .menu, #overlay-root > .menu-scrim').forEach(el => el.remove());
-  const layer = document.createElement('div'); layer.className = 'confirmation-layer';
-  setHTML(layer,`<div class="scrim"></div><div class="confirmation-wrap"><form class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-description" novalidate>
-    <h2 id="confirmation-title">${esc(title)}</h2><p id="confirmation-description">${esc(text)}</p>
+  const form = document.createElement('form'); form.className = 'confirm-dialog'; form.noValidate = true;
+  for (const [name, value] of Object.entries({ role:'alertdialog', 'aria-modal':'true', 'aria-labelledby':'confirmation-title', 'aria-describedby':'confirmation-description' })) form.setAttribute(name, value);
+  setHTML(form,`<h2 id="confirmation-title">${esc(title)}</h2><p id="confirmation-description">${esc(text)}</p>
     ${match !== undefined ? `<label class="confirmation-match-label" for="confirmation-match">Type <strong>${esc(match)}</strong> to confirm</label><input id="confirmation-match" class="ctl" autocomplete="off" spellcheck="false" required>` : ''}
-    <div class="modal-actions"><button type="button" class="btn quiet" data-confirm-cancel>Cancel</button><button type="submit" class="btn danger" data-confirm-accept ${match !== undefined ? 'disabled' : ''}>${esc(action)}</button></div>
-    </form></div>`);
-  const inerted = [...document.querySelectorAll('#app, #toast-region .toast-stack')].map(el => [el, el.inert]);
-  inerted.forEach(([el]) => { el.inert = true; });
-  const record = { layer, returnFocus, inerted, cancel, session:D.session?.id, hash:location.hash, close:null }; pendingConfirmation = record;
+    <div class="modal-actions"><button type="button" class="btn quiet" data-confirm-cancel>Cancel</button><button type="submit" class="btn danger" data-confirm-accept ${match !== undefined ? 'disabled' : ''}>${esc(action)}</button></div>`);
+  const dialog = openDialog({ form, inert:[...document.querySelectorAll('#app, #toast-region .toast-stack')], onEscape:() => close(false) });
+  const record = { session:D.session?.id, hash:location.hash, close:null }; pendingConfirmation = record;
   const close = (accepted, restoreFocus = true) => {
     if (pendingConfirmation !== record) return;
     pendingConfirmation = null;
-    document.removeEventListener('keydown', onKey, true);
-    UIMotion.exit(layer.querySelector('.scrim'));UIMotion.exit(layer.querySelector('.confirm-dialog')); layer.remove();
-    inerted.forEach(([el, wasInert]) => { el.inert = wasInert; });
+    UIMotion.exit(dialog.layer.querySelector('.scrim'));UIMotion.exit(form); dialog.close();
     if (!accepted) cancel?.();
     if (restoreFocus) {
       const focus = returnFocus?.isConnected && returnFocus !== document.body && !returnFocus.closest('[inert]') ? returnFocus :
@@ -61,27 +58,16 @@ export function askConfirmation({ title, text, action, match, confirm, cancel, l
     }
   };
   record.close = close;
-  const form = layer.querySelector('form'), input = layer.querySelector('input'), accept = layer.querySelector('[data-confirm-accept]');
+  const input = form.querySelector('input'), accept = form.querySelector('[data-confirm-accept]'), dismiss = form.querySelector('[data-confirm-cancel]');
   input?.addEventListener('input', () => { accept.disabled = input.value !== match; });
-  layer.querySelector('[data-confirm-cancel]').addEventListener('click', () => close(false));
+  dismiss.addEventListener('click', () => close(false));
   form.addEventListener('submit', event => {
     event.preventDefault();
     if (pendingConfirmation !== record || (match !== undefined && input.value !== match)) return;
     if(!local && window.Recovery && !Recovery.ensureOnline())return;
     accept.disabled = true; close(true); confirm();
   });
-  function onKey(event) {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(false); }
-    else if (event.key === 'Tab') {
-      const controls = [...form.querySelectorAll('input,button')].filter(el => !el.disabled);
-      const first = controls[0], last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-  }
-  document.addEventListener('keydown', onKey, true);
-  document.body.append(layer);
-  (input || layer.querySelector('[data-confirm-cancel]')).focus();
+  (input || dismiss).focus();
   return true;
 }
 
@@ -116,13 +102,10 @@ export function openPop(anchor, width) {
 export function placePop(anchor) {
   const el = POP.el;
   if (!el || !anchor.isConnected) return;
-  const r = anchor.getBoundingClientRect();
-  const W = window.innerWidth, H = window.innerHeight;
-  el.style.minWidth = Math.min(parseFloat(el.style.minWidth) || 0, W - 16) + 'px';
-  el.style.maxHeight = Math.min(340, H - 16) + 'px';
-  const flip = r.bottom + el.offsetHeight + 8 > H;
-  el.style.left = Math.max(Math.min(r.left, W - el.offsetWidth - 8), 8) + 'px';
-  el.style.top = Math.max(Math.min(flip ? r.top - el.offsetHeight - 6 : r.bottom + 6, H - el.offsetHeight - 8), 8) + 'px';
+  el.style.minWidth = Math.min(parseFloat(el.style.minWidth) || 0, innerWidth - 16) + 'px';
+  el.style.maxHeight = Math.min(340, innerHeight - 16) + 'px';
+  const { left, top } = placeNear(anchor.getBoundingClientRect(), el);
+  el.style.left = left + 'px'; el.style.top = top + 'px';
 }
 
 export function placeMenu() {
@@ -138,7 +121,7 @@ export function placeMenu() {
     const anchor=state.menu.taskActions?document.querySelector('.task-actions-button')
       :state.menu.trackId?[...document.querySelectorAll('.lane[data-track]')].find(lane=>lane.dataset.track===state.menu.trackId)?.querySelector('.kebab')
       :[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
-    if(anchor){const r=anchor.getBoundingClientRect();state.menu.x=r.right-el.offsetWidth;state.menu.y=r.bottom+4;if(state.menu.y+el.offsetHeight>innerHeight-8)state.menu.y=r.top-el.offsetHeight-4;}
+    if(anchor){const place=placeNear(anchor.getBoundingClientRect(),el,{align:'end',gap:4});state.menu.x=place.left;state.menu.y=place.top;}
   }
   el.style.left = Math.max(8, Math.min(state.menu.x, innerWidth - el.offsetWidth - 8)) + 'px';
   const top = state.menu.above ? state.menu.y - el.offsetHeight - 6 : state.menu.y;
@@ -160,10 +143,8 @@ export function mountRoadmapTip(anchor, id, html) {
   setHTML(el,html);
   document.body.append(el); EPIC_TIP.el = el; EPIC_TIP.anchor = anchor;
   anchor.setAttribute('aria-describedby', el.id);
-  const rect = anchor.getBoundingClientRect(), width = el.offsetWidth, height = el.offsetHeight;
-  const left = Math.max(8, Math.min(rect.left, innerWidth - width - 8));
-  const top = rect.bottom + height + 10 <= innerHeight ? rect.bottom + 8 : rect.top - height - 8;
-  el.style.left = left + 'px'; el.style.top = Math.max(8, Math.min(top, innerHeight - height - 8)) + 'px';UIMotion.enter(el);
+  const { left, top } = placeNear(anchor.getBoundingClientRect(), el, { gap: 8 });
+  el.style.left = left + 'px'; el.style.top = top + 'px';UIMotion.enter(el);
   el.addEventListener('mouseenter', () => clearTimeout(EPIC_TIP.hideTimer));
   el.addEventListener('mouseleave', () => App.epicLeave());
 }
@@ -292,8 +273,7 @@ document.addEventListener('keydown', (event) => {
   const controls = overlayControls(panel), first = controls[0], last = controls.at(-1);
   if (!first) { event.preventDefault(); panel.focus(); return; }
   if (!panel.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
-  else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  else trapFocus(event, controls);
 }, true);
 
 document.addEventListener('keydown', (e) => {

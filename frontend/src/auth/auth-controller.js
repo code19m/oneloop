@@ -4,6 +4,7 @@ import { ApiError } from '../data/api-client.js';
 import { applyAuthSession } from '../data/projection-store.js';
 import { sessionDateLabel, sessionDateTimeLabel, sessionDeviceLabel } from './session-label.js';
 import { isFormRetryPending, presentFormError } from '../app/form-feedback.js';
+import { openDialog } from '../app/layers.js';
 
 function disableForm(form, disabled) {
   for (const control of form?.querySelectorAll('input,button') ?? []) {
@@ -202,10 +203,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     const authGeneration=generation;
     return new Promise((resolve,reject)=>{
       if(document.querySelector('.reauth-layer')){reject(new ApiError('Authentication is already in progress',{code:'reauth_pending'}));return;}
-      const previous=document.activeElement,appRoot=document.getElementById('app');if(appRoot)appRoot.inert=true;
-      const layer=document.createElement('div');layer.className='confirmation-layer reauth-layer';
-      const scrim=document.createElement('div');scrim.className='scrim';
-      const wrap=document.createElement('div');wrap.className='confirmation-wrap';
+      const previous=document.activeElement;
       const form=document.createElement('form');form.className='confirm-dialog';form.setAttribute('role','dialog');form.setAttribute('aria-modal','true');
       const heading=document.createElement('h2');heading.id='reauth-title';heading.textContent='Confirm your identity';form.setAttribute('aria-labelledby',heading.id);
       const label=document.createElement('label');label.htmlFor='reauth-password';label.textContent='Current password';
@@ -213,13 +211,12 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
       const actions=document.createElement('div');actions.className='modal-actions';
       const cancel=document.createElement('button');cancel.className='btn quiet';cancel.type='button';cancel.textContent='Cancel';
       const submit=document.createElement('button');submit.className='btn primary';submit.type='submit';submit.textContent='Continue';
-      actions.append(cancel,submit);form.append(heading,label,input,actions);wrap.append(form);layer.append(scrim,wrap);document.body.append(layer);
+      actions.append(cancel,submit);form.append(heading,label,input,actions);
+      // Escape belongs to this prompt only; the dialog behind it stays open.
+      const dialog=openDialog({form,className:'confirmation-layer reauth-layer',inert:[document.getElementById('app')],onEscape:()=>{if(!cancel.disabled)cancel.click();}});
       let closed=false,phase='password';
       const authController=new AbortController();
-      // Escape belongs to this prompt only; the dialog behind it stays open.
-      const keydown=(event)=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(!cancel.disabled)cancel.click();}else if(event.key==='Tab'){const controls=[input,cancel,submit].filter((control)=>!control.disabled),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}};
-      document.addEventListener('keydown',keydown,true);
-      const close=()=>{if(closed)return;closed=true;document.removeEventListener('keydown',keydown,true);if(appRoot)appRoot.inert=false;layer.remove();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
+      const close=()=>{if(closed)return;closed=true;dialog.close();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
       cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
       form.addEventListener('submit',async(event)=>{
         event.preventDefault();
