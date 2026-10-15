@@ -81,6 +81,14 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
  assert(board.d.querySelector('.blocked-badge').dataset.tip.endsWith(expected));
 });
 
+test('relative times count from the server clock, so a computer clock that runs fast changes nothing', () => {
+ const serverNow=()=>Date.now()-10*60_000;
+ const t=bootApp({route:'task/BIR-079',api:{serverNow},prepare:D=>{
+   D.tasks.find(item=>item.id==='BIR-079').comments=[{id:'new-comment',who:'taylorwu',text:'Posted now',ts:serverNow(),mentions:[]}];
+ }});
+ assert.equal(t.d.querySelector('[data-comment="new-comment"] .act-time').textContent,'just now');
+});
+
 test('the instance time zone decides Today across the UTC day boundary', () => {
 const t=boot('board',{prepare:(D,w)=>{const Native=w.Date,fixed=Native.parse('2026-09-12T20:30:00Z');w.Date=class extends Native{constructor(...args){super(...(args.length?args:[fixed]));}static now(){return fixed;}};D.session.authenticatedAt=fixed;D.browserSessions[0].createdAt=fixed;D.browserSessions[0].lastActiveAt=fixed;}});t.A.openModal('epic');assert.equal(t.d.querySelector('[name="start"]').value,'2026-09-13');
 });

@@ -31,6 +31,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- Times such as "5m ago" on comments, activity and the Inbox now count from
+  the server's clock. Before, a computer clock that ran fast or slow made a
+  new comment read "5m ago", or stay "just now" too long.
 - `oneloop serve` no longer crashes when nothing reads its standard error and
   it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
   line like the others.

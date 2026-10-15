@@ -62,7 +62,7 @@ export const instanceToday = () => d(instanceDateKey(instanceNow()));
 export const today = instanceToday();
 export const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
 export const ago = (ts) => {
-  const m = Math.round((Date.now() - ts) / 60000);
+  const m = Math.round((instanceNow() - ts) / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return m + 'm ago';
   if (m < 48 * 60) return Math.round(m / 60) + 'h ago';
