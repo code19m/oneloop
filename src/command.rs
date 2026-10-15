@@ -69,8 +69,6 @@ pub enum RevisionRule {
     /// It changes a record, so a revision is required. A missing one fails the
     /// precondition (412).
     Existing,
-    /// A revision is optional.
-    Optional,
     /// It changes no record that has a revision, so a revision is refused.
     None,
 }

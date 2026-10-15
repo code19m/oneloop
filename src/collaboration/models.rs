@@ -8,16 +8,16 @@ use crate::access::{McpRoute, McpTool};
 crate::command::operations! {
     /// Discussion and Inbox commands.
     pub enum CollaborationOperation {
-        CreateComment = "discussion.comment.create" => Optional,
+        CreateComment = "discussion.comment.create" => Create,
         EditComment = "discussion.comment.edit" => Existing,
         DeleteComment = "discussion.comment.delete" => Existing,
         RestoreComment = "discussion.comment.restore" => Existing,
-        MarkRead = "inbox.markRead" => Optional,
-        MarkUnread = "inbox.markUnread" => Optional,
-        Archive = "inbox.archive" => Optional,
-        RestoreArchived = "inbox.restore" => Optional,
-        BulkMarkRead = "inbox.bulkMarkRead" => Optional,
-        BulkArchive = "inbox.bulkArchive" => Optional,
+        MarkRead = "inbox.markRead" => None,
+        MarkUnread = "inbox.markUnread" => None,
+        Archive = "inbox.archive" => None,
+        RestoreArchived = "inbox.restore" => None,
+        BulkMarkRead = "inbox.bulkMarkRead" => None,
+        BulkArchive = "inbox.bulkArchive" => None,
     }
 }
 
