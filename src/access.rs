@@ -9,6 +9,28 @@ use crate::{
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
+/// SQL that holds when the account in `$user`, an alias of a `users` row, may
+/// read the project in `$project`: the account is active, and an admin or a
+/// member. Every query that picks people by project access uses it, so the
+/// rule has one owner.
+macro_rules! can_read_project {
+    ($user:literal, $project:literal) => {
+        concat!(
+            "(",
+            $user,
+            ".is_active=1 AND (",
+            $user,
+            ".is_admin=1 OR EXISTS(",
+            "SELECT 1 FROM project_memberships m WHERE m.user_id=",
+            $user,
+            ".id AND m.project_id=",
+            $project,
+            ")))"
+        )
+    };
+}
+pub(crate) use can_read_project;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Need {
     Read,
@@ -93,8 +115,15 @@ pub(crate) fn require_project(
 ) -> AppResult<()> {
     let actor = refresh_actor_connection(conn, actor)?;
     let visible: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projects p WHERE p.id=?1 AND p.deleted_at IS NULL AND (?3 OR EXISTS(SELECT 1 FROM project_memberships WHERE project_id=p.id AND user_id=?2)))",
-        params![project, actor.user_id, actor.is_admin], |row| row.get(0))?;
+        concat!(
+            "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2
+             WHERE p.id=?1 AND p.deleted_at IS NULL AND ",
+            can_read_project!("u", "p.id"),
+            ")"
+        ),
+        params![project, actor.user_id],
+        |row| row.get(0),
+    )?;
     if !visible {
         return Err(AppError::NotFound {
             resource: "project",

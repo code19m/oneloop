@@ -151,14 +151,11 @@ fn eligible_recipients(
     let mut eligible = Vec::with_capacity(requested.len());
     for user_id in requested {
         let allowed: bool = tx.query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM users u
-               WHERE u.id=?1 AND u.is_active=1 AND
-                 (u.is_admin=1 OR EXISTS(
-                    SELECT 1 FROM project_memberships m
-                    WHERE m.user_id=u.id AND m.project_id=?2
-                 ))
-             )",
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM users u WHERE u.id=?1 AND ",
+                crate::access::can_read_project!("u", "?2"),
+                ")"
+            ),
             params![user_id, project_id],
             |row| row.get(0),
         )?;

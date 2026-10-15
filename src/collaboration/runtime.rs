@@ -16,7 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{AppError, AppResult, Db};
+use crate::{AppError, AppResult, Db, access::can_read_project};
 
 use super::{CollaborationService, SseHint};
 
@@ -532,12 +532,11 @@ fn deliver_notification(
     let Some(project_id) = project_id else {
         return Ok(None);
     };
-    let mut statement = tx.prepare(
+    let mut statement = tx.prepare(concat!(
         "SELECT r.user_id FROM notification_recipients r JOIN users u ON u.id=r.user_id
-         WHERE r.notification_id=?1 AND r.delivered_at IS NULL AND u.is_active=1
-           AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m
-                WHERE m.user_id=u.id AND m.project_id=?2))",
-    )?;
+         WHERE r.notification_id=?1 AND r.delivered_at IS NULL AND ",
+        can_read_project!("u", "?2")
+    ))?;
     let recipients: BTreeSet<String> = statement
         .query_map(params![message.aggregate_id, project_id], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
@@ -583,9 +582,11 @@ fn deliver_activity(
             ));
         };
         let allowed: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM users u WHERE u.id=?1 AND u.is_active=1 AND
-              (u.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m
-               WHERE m.user_id=u.id AND m.project_id=?2)))",
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM users u WHERE u.id=?1 AND ",
+                can_read_project!("u", "?2"),
+                ")"
+            ),
             params![owner_id, project_id],
             |row| row.get(0),
         )?;
@@ -597,11 +598,10 @@ fn deliver_activity(
     } else if payload.get("visibility").and_then(Value::as_str) == Some("owner") {
         BTreeSet::new()
     } else if let Some(project_id) = project_id.as_deref() {
-        let mut statement = tx.prepare(
-            "SELECT u.id FROM users u WHERE u.is_active=1 AND
-              (u.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m
-               WHERE m.user_id=u.id AND m.project_id=?1))",
-        )?;
+        let mut statement = tx.prepare(concat!(
+            "SELECT u.id FROM users u WHERE ",
+            can_read_project!("u", "?1")
+        ))?;
         statement
             .query_map([project_id], |row| row.get(0))?
             .collect::<Result<BTreeSet<String>, _>>()?

@@ -178,8 +178,10 @@ pub(super) fn delete_project(
     }
     // Snapshot affected accounts before membership cascades erase the audience.
     let recipients = {
-        let mut statement = tx.prepare("SELECT id FROM users WHERE is_active=1 AND
-            (is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.user_id=users.id AND m.project_id=?1))")?;
+        let mut statement = tx.prepare(concat!(
+            "SELECT id FROM users WHERE ",
+            crate::access::can_read_project!("users", "?1")
+        ))?;
         statement
             .query_map([&input.project_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?

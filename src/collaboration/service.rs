@@ -41,7 +41,8 @@ const DEFAULT_PAGE_SIZE: usize = 50;
 const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
     WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT 500";
 const MAX_PAGE_SIZE: usize = 100;
-const INBOX_FILTER_SQL: &str = "
+const INBOX_FILTER_SQL: &str = concat!(
+    "
     WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL
       AND ((?3=0 AND r.archived_at IS NULL)
         OR (?3=1 AND r.archived_at>?2))
@@ -51,12 +52,13 @@ const INBOX_FILTER_SQL: &str = "
         AND EXISTS(SELECT 1 FROM projects p WHERE p.id=n.project_id AND p.deleted_at IS NULL)
         AND (r.task_key_snapshot IS NULL OR EXISTS(
           SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.deleted_at IS NULL))
-        AND EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND me.is_active=1 AND
-          (me.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships pm
-           WHERE pm.user_id=me.id AND pm.project_id=n.project_id)))
+        AND EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND ",
+    access::can_read_project!("me", "n.project_id"),
+    ")
       ))
       AND (?7 IS NULL OR n.project_id IN
-        (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))";
+        (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))"
+);
 
 #[derive(Clone)]
 pub struct CollaborationService {
@@ -255,9 +257,8 @@ impl CollaborationService {
                         CASE WHEN n.comment_id IS NOT NULL THEN r.excerpt_snapshot
                              ELSE COALESCE(b.reason,r.excerpt_snapshot) END,r.read_at,r.archived_at,
                         p.deleted_at,t.deleted_at,c.deleted_at,
-                        EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND me.is_active=1 AND
-                          (me.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships pm
-                           WHERE pm.user_id=me.id AND pm.project_id=n.project_id))) AS can_read, n.actor_user_id
+                        EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND {can_read}) AS can_read,
+                        n.actor_user_id
                  FROM page
                  JOIN notification_events n ON n.id=page.id
                  JOIN notification_recipients r ON r.notification_id=page.id AND r.user_id=?1
@@ -266,7 +267,8 @@ impl CollaborationService {
                  LEFT JOIN comments c ON c.id=n.comment_id
                  LEFT JOIN task_blocks b ON b.id=n.block_id
                  LEFT JOIN users actor ON actor.id=n.actor_user_id
-                 ORDER BY page.created_at DESC,page.id DESC"
+                 ORDER BY page.created_at DESC,page.id DESC",
+                can_read = access::can_read_project!("me", "n.project_id"),
             ))?;
             let cursor_time = cursor.as_ref().map(|cursor| cursor.time);
             let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
