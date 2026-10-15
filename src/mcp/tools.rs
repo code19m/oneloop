@@ -15,7 +15,7 @@ use super::transfer;
 use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
-    auth::{Actor, McpScope},
+    auth::Actor,
     collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
         BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
