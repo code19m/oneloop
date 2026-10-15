@@ -1101,6 +1101,14 @@ async fn inbox_comment_excerpts_are_bounded_current_and_cleared_on_delete() {
         .await
         .unwrap();
     assert!(page.items[0].excerpt.is_none());
+    // The Inbox hides it either way, so check that the stored copy is gone.
+    let stored: Option<String> = query_one(
+        &fixture.db,
+        "SELECT excerpt_snapshot FROM notification_recipients WHERE user_id='bob'",
+        [],
+    )
+    .await;
+    assert_eq!(stored, None);
 }
 
 #[tokio::test]
