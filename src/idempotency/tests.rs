@@ -30,7 +30,7 @@ async fn ledger_restarts_failed_requests_and_isolates_browser_and_grant_keys() {
         assert!(stored.contains(r#""status":"planned""#));
         for grant in [false,true] {
             if grant {actor.source=ActorSource::McpGrant{grant_id:"grant".into()};}
-            let plan:String=tx.query_row(&format!("EXPLAIN QUERY PLAN SELECT id FROM idempotency_keys WHERE {}",key_predicate(&actor)),params![actor.user_id,"key",actor.mcp_grant_id()],|r|r.get(3))?;
+            let plan=crate::db::query_plan(tx,&format!("SELECT id FROM idempotency_keys WHERE {}",key_predicate(&actor)));
             assert!(plan.contains("SEARCH") && plan.contains("idempotency_"),"{plan}");
         }
         assert!(replay::<Value>(tx,&actor,"key","work",&hash,now)?.is_none());
