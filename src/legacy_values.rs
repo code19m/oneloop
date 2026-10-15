@@ -58,7 +58,7 @@ mod tests {
             "epic":{"state":"planned"}, "notification":{"task":{"status":"planned"}},
             "fieldKey":"status","before":"planned","after":"done",
             "comment":"planned","items":[{"status":"planned"}]});
-        let read = payload(stored.clone());
+        let read = payload(stored);
         assert_eq!(read["task"]["status"], "planning");
         assert_eq!(read["epic"]["state"], "planning");
         assert_eq!(read["notification"]["task"]["status"], "planning");
@@ -66,7 +66,6 @@ mod tests {
         assert_eq!(read["items"][0]["status"], "planning");
         assert_eq!(read["task"]["title"], "planned");
         assert_eq!(read["comment"], "planned");
-        assert_eq!(stored["task"]["status"], "planned");
         assert_eq!(
             activity(Some(json!("planned")), Some("state")),
             Some(json!("planning"))
