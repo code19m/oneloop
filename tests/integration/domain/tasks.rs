@@ -419,6 +419,62 @@ async fn pool_promotion_accepts_edited_task_text_atomically() {
 }
 
 #[tokio::test]
+async fn a_personal_pool_item_is_hidden_from_members_and_admins() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreatePoolItem,
+                json!({"projectId":"p1","scope":"personal","title":"Private"}),
+                "private",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    let personal = || PoolQuery {
+        project_id: "p1".into(),
+        scope: PoolScope::Personal,
+        cursor: None,
+        limit: None,
+    };
+    for other in [&f.member, &f.admin] {
+        let page = f.service.pool_page(other, personal()).await.unwrap();
+        assert_eq!((page.items.len(), page.total), (0, 0), "{}", other.user_id);
+        for (operation, payload) in [
+            (
+                DomainOperation::UpdatePoolItem,
+                json!({"poolItemId":id,"title":"Taken"}),
+            ),
+            (DomainOperation::DeletePoolItem, json!({"id":id})),
+            (
+                DomainOperation::PromotePoolItem,
+                json!({"poolItemId":id,"epicId":"e1"}),
+            ),
+        ] {
+            let key = format!("{}-{}", other.user_id, operation.as_str());
+            let result = f
+                .service
+                .execute(other, command(operation, payload, &key, Some(1)))
+                .await;
+            assert!(
+                matches!(result, Err(AppError::NotFound { .. })),
+                "{key}: {result:?}"
+            );
+        }
+    }
+    let page = f.service.pool_page(&f.manager, personal()).await.unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(
+        (page.items[0].id.as_str(), page.items[0].revision),
+        (id.as_str(), 1)
+    );
+}
+
+#[tokio::test]
 async fn blocking_notifies_only_mentions_and_unblocking_notifies_assignees() {
     let f = fixture().await;
     let created = f
