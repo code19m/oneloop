@@ -1,6 +1,23 @@
 //! Administrators' Knowledge commands: connecting, changing and
 //! disconnecting a source, asking for a sync, and creating a deploy key.
-use super::*;
+
+use rusqlite::{Connection, Transaction, params};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+
+use super::{Inner, KnowledgeService, load_source, source_activity, source_view};
+use crate::{
+    AppError, AppResult,
+    access::{Need, require_project},
+    auth::Actor,
+    clock::unix_now,
+    collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
+    idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
+    knowledge::{
+        secrets::{Purpose, generate_deploy_key},
+        source::{self, GitUrl, Transport},
+    },
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
