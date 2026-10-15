@@ -15,6 +15,9 @@ All notable changes to oneloop are recorded here. The format follows
   gets 400.
 - An MCP download now names the file in its `Content-Disposition` header, as
   a browser download does.
+- Editing, deleting or restoring a comment without `expectedRevision` now
+  fails with `precondition_failed` (412), as changes to tasks and other
+  records do. It failed with `validation_failed` (400).
 
 ### Fixed
 
