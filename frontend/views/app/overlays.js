@@ -2,7 +2,6 @@
 /* Layers above the page: popovers, menus, dialogs and their confirmations,
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 
-import { exitVisual } from './effects.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import {
   App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,
@@ -52,7 +51,7 @@ export function askConfirmation({ title, text, action, match, confirm, cancel, l
     if (pendingConfirmation !== record) return;
     pendingConfirmation = null;
     document.removeEventListener('keydown', onKey, true);
-    exitVisual(layer.querySelector('.scrim'));exitVisual(layer.querySelector('.confirm-dialog')); layer.remove();
+    UIMotion.exit(layer.querySelector('.scrim'));UIMotion.exit(layer.querySelector('.confirm-dialog')); layer.remove();
     inerted.forEach(([el, wasInert]) => { el.inert = wasInert; });
     if (!accepted) cancel?.();
     if (restoreFocus) {
@@ -95,7 +94,7 @@ export const POP = { el: null, id: null, onKey: null, anchor: /** @type {HTMLEle
 
 export function closePop(silent) {
   if (!POP.el) return;
-  if (!silent) exitVisual(POP.el);
+  if (!silent) UIMotion.exit(POP.el);
   POP.el.remove(); POP.el = null; POP.id = null; POP.anchor = null;
   if (POP.onKey) { document.removeEventListener('keydown', POP.onKey, true); POP.onKey = null; }
   const cb = POP.onClose; POP.onClose = null;
@@ -151,7 +150,7 @@ export const EPIC_TIP = { el: null, anchor: null, showTimer: null, hideTimer: nu
 export function hideEpicTip() {
   clearTimeout(EPIC_TIP.showTimer); clearTimeout(EPIC_TIP.hideTimer);
   EPIC_TIP.anchor?.removeAttribute('aria-describedby');
-  if(EPIC_TIP.el)exitVisual(EPIC_TIP.el);EPIC_TIP.el?.remove(); EPIC_TIP.el = null; EPIC_TIP.anchor = null;
+  if(EPIC_TIP.el)UIMotion.exit(EPIC_TIP.el);EPIC_TIP.el?.remove(); EPIC_TIP.el = null; EPIC_TIP.anchor = null;
 }
 
 export function mountRoadmapTip(anchor, id, html) {

@@ -4,7 +4,6 @@
 
 import { patchBoardRow } from './board.js';
 import { optionalMark } from './controls.js';
-import { exitVisual, fadeContent, uiAnimate } from './effects.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
 import { App, D, canBoard, me, poolItems, report, runtime, state } from './model.js';
@@ -36,10 +35,10 @@ function updatePool({ completeItemId } = {}) {
   const list = view.querySelector('.pool-list');
   const listScroll = list.scrollTop;
   const tabChanged = list.dataset.poolScope && list.dataset.poolScope !== state.poolTab;
-  const beforeRows = new Map([...list.querySelectorAll('[data-pool-item]')].map(el => [el.dataset.poolItem, el.getBoundingClientRect()]));
+  const beforeRows = UIMotion.rows(list, '[data-pool-item]', 'data-pool-item');
   const items = poolItems(state.poolTab);
   const ids = new Set(items.map((item) => item.id));
-  list.querySelectorAll('[data-pool-item]').forEach((row) => { if (!ids.has(row.dataset.poolItem)) { if (!tabChanged) exitVisual(row); row.remove(); } });
+  list.querySelectorAll('[data-pool-item]').forEach((row) => { if (!ids.has(row.dataset.poolItem)) { if (!tabChanged) UIMotion.exit(row); row.remove(); } });
   list.querySelector('.empty-note')?.remove();
   list.querySelector('.pool-read-status')?.remove();
   let cursor = list.firstElementChild;
@@ -83,12 +82,8 @@ function updatePool({ completeItemId } = {}) {
   document.querySelectorAll('[data-pool-count]').forEach((el) => { el.textContent = Number.isFinite(mineTotal)&&Number.isFinite(teamTotal)?mineTotal+teamTotal:poolItems().length; });
   list.dataset.poolScope = state.poolTab;
   if (!tabChanged) list.scrollTop = listScroll;
-  if (tabChanged) fadeContent(list);
-  else list.querySelectorAll('[data-pool-item]').forEach(row => {
-    const from = beforeRows.get(row.dataset.poolItem), to = row.getBoundingClientRect();
-    if (!from) uiAnimate(row, [{ opacity:0,transform:'translateY(4px)' },{ opacity:1,transform:'none' }]);
-    else if (Math.abs(from.top - to.top) > 1) uiAnimate(row, [{transform:`translateY(${from.top - to.top}px)`},{transform:'none'}]);
-  });
+  if (tabChanged) UIMotion.fade(list);
+  else UIMotion.reflow(list, '[data-pool-item]', 'data-pool-item', beforeRows);
 }
 
 /** The Pool dialog: its tabs, the capture field and the item list. */
@@ -136,7 +131,7 @@ Object.assign(App, {
     setHTML(editor,taskModalHtml(state.modal));
     view.parentElement.appendChild(editor);
     mountDescription();
-    fadeContent(editor);
+    UIMotion.fade(editor);
     editor.querySelector('[name="title"]').focus();
   },
   returnToPool() {
@@ -149,7 +144,7 @@ Object.assign(App, {
     view.hidden = false;
     updatePool();
     view.querySelector('.pool-list').scrollTop = App._poolScroll?.[state.poolTab] || 0;
-    fadeContent(view);
+    UIMotion.fade(view);
     view.querySelector('#poolAdd')?.focus();
   },
   setPoolTab(k) {

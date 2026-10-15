@@ -3,7 +3,6 @@
    drawer, and moving tracks. */
 
 import { sessionKey } from '../../src/data/projection-store.js';
-import { MOTION, animateLayout, motionRects, reducedMotion } from './effects.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
 } from './format.js';
@@ -717,7 +716,7 @@ export function mountRoadmap() {
     scaleFrame = 0;
     if (!scaled || !sc.isConnected) return;
     scaled.started ??= time - 1000 / 60;
-    const progress = Math.min(1, (time - scaled.started) / MOTION.normal), eased = 1 - (1 - progress) ** 3;
+    const progress = Math.min(1, (time - scaled.started) / UIMotion.normal), eased = 1 - (1 - progress) ** 3;
     zoomRoadmap(view, progress < 1 ? clampZoom(scaled.from * Math.exp(Math.log(scaled.ppd / scaled.from) * eased)) : scaled.ppd, scaled.day, scaled.cx);
     if (progress < 1) scaleFrame = requestAnimationFrame(stepScale); else scaled = null;
   };
@@ -726,7 +725,7 @@ export function mountRoadmap() {
     stopScale();
     hideEpicTip();
     const { day, cx } = scaleAnchor(view, ppd);
-    if (reducedMotion.matches || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); return; }
+    if (UIMotion.reduced() || Math.abs(ppd - view.ppd) < 1e-3) { zoomRoadmap(view, ppd, day, cx); return; }
     scaled = { ppd, day, cx, from: view.ppd, started: null };
     scaleFrame = requestAnimationFrame(stepScale);
   };
@@ -785,13 +784,13 @@ Object.assign(App, {
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
     if(!content||!scroll){App.refresh();return;}
     roadmapGestureCleanup();
-    const before=motionRects('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
+    const before=UIMotion.positions('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
     const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
     setHTML(content,renderRoadmap());mountRoadmap();
     const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
     if(focusId){const equivalent=[...content.querySelectorAll(`[data-${focusType}]`)].find(el=>el.dataset[focusType]===focusId);(equivalent||document.querySelector('.topbar button'))?.focus({preventScroll:true});}
     App.updateDocumentTitle();
-    if(before)animateLayout(before,'.lane');
+    if(before)UIMotion.layout(before,'.lane');
     App.refreshCounts();
   },
   /** Zoom the Roadmap to a fixed scale, in place, keeping the selected epic or today where it is. */
@@ -900,18 +899,18 @@ Object.assign(App, {
     if (index < 0) return;
     const to = Math.max(0, Math.min(list.length-1, position));
     if (to === index) return;
-    const before = motionRects('.lane');
+    const before = UIMotion.positions('.lane');
     const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
     const moved = list.splice(index, 1)[0];
     list.splice(to, 0, moved);
     list.forEach((t, i) => { t.order = i; });
     App.refresh();
     focusMovedTrack(id);
-    animateLayout(before, '.lane');
+    UIMotion.layout(before, '.lane');
     const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
     runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
       const sameSession=session===sessionKey(D);
-      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');App.refresh();animateLayout(rollbackBefore,'.lane');}}
+      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=UIMotion.positions('.lane');App.refresh();UIMotion.layout(rollbackBefore,'.lane');}}
       report(error);
     }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
   },

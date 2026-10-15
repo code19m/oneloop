@@ -2,7 +2,6 @@
 /* Dragging Board cards and Roadmap tracks with a pointer. A drag ends in the
    same drop handlers on any device. */
 
-import { animateLayout, motionRects } from './effects.js';
 import { App, canBoard, canRoadmap, state } from './model.js';
 
 // Pointer gestures share the existing destination, optimistic-save and rollback
@@ -122,7 +121,7 @@ Object.assign(App, {
     return el;
   },
   dragEnd(animate = true) {
-    const before = animate ? motionRects('.card[data-task]') : null;
+    const before = animate ? UIMotion.positions('.card[data-task]') : null;
     App._dropBefore = null; App._dropColumn = null; App._laneBefore = null;
     App._drag = null;
     App._dragPreview?.remove(); App._dragPreview = null;
@@ -130,12 +129,10 @@ Object.assign(App, {
     document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
     document.querySelectorAll('.col.drop').forEach((el) => el.classList.remove('drop'));
     document.body.classList.remove('is-dragging');
-    if (before) animateLayout(before, '.card[data-task]');
+    if (before) UIMotion.layout(before, '.card[data-task]');
   },
   _dragImage(ev, source, compact = false) {
-    const image = source.cloneNode(true);
-    image.removeAttribute('data-task'); image.removeAttribute('data-track');
-    image.removeAttribute('data-reorderable'); image.setAttribute('aria-hidden', 'true'); image.inert = true;
+    const image = UIMotion.ghost(source);
     image.classList.add('drag-preview');
     const r = source.getBoundingClientRect();
     image.style.cssText = `position:fixed;left:-10000px;top:0;width:${compact ? 240 : r.width}px;height:auto;`;

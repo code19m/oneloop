@@ -2,7 +2,6 @@
 /* Notifications and Undo. They live outside #app, so a render never restarts
    them or clears entered text. */
 
-import { MOTION, uiAnimate } from './effects.js';
 import { I, cleanStr, esc, setHTML } from './format.js';
 import { App, state } from './model.js';
 import { POP, pendingConfirmation } from './overlays.js';
@@ -88,10 +87,10 @@ function showQueuedToasts(before = toastPositions()) {
   const waiting = toastQueue.filter(toast => !toast.el).length;
   const count = region.querySelector('.toast-queued'); count.hidden = !waiting; count.textContent = waiting ? `${waiting} queued` : '';
   toastQueue.filter(toast => toast.el).forEach(toast => {
-    if (added.has(toast.id)) uiAnimate(toast.el, [{ opacity:0, transform:'translateX(12px)' },{ opacity:1, transform:'none' }]);
+    if (added.has(toast.id)) UIMotion.animate(toast.el, [{ opacity:0, transform:'translateX(12px)' },{ opacity:1, transform:'none' }]);
     else if (before.has(toast.id)) {
       const from = before.get(toast.id), to = toast.el.getBoundingClientRect();
-      if (Math.abs(from.rect.top - to.top) > 1) uiAnimate(toast.el, [{ opacity:from.opacity, transform:`translateY(${from.rect.top - to.top}px)` },{ opacity:1, transform:'none' }]);
+      if (Math.abs(from.rect.top - to.top) > 1) UIMotion.animate(toast.el, [{ opacity:from.opacity, transform:`translateY(${from.rect.top - to.top}px)` },{ opacity:1, transform:'none' }]);
     }
   });
 }
@@ -156,7 +155,7 @@ function dismissToast(id) {
     const rect = el.getBoundingClientRect(), opacity = getComputedStyle(el).opacity;
     el.removeAttribute('data-toast-id'); el.classList.add('toast-leaving'); el.inert = true; el.setAttribute('aria-hidden','true');
     Object.assign(el.style, { position:'fixed',left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px',margin:'0' });
-    const animation = uiAnimate(el, [{opacity,transform:'none'},{opacity:0,transform:'translateX(8px)'}], MOTION.quick);
+    const animation = UIMotion.animate(el, [{opacity,transform:'none'},{opacity:0,transform:'translateX(8px)'}], UIMotion.quick);
     if (animation) animation.finished.then(() => el.remove(), () => el.remove()); else el.remove();
   }
   showQueuedToasts(before);

@@ -25,10 +25,11 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   `pool.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and focus
   return), `controls.js` (selects, date fields, input cleaning), `forms.js`,
   `toasts.js` and `drag.js`. They share `model.js` (view state and data
-  lookups), `format.js` (text, dates and icons) and `effects.js`. A module
-  reaches the render pipeline through `App`, such as `App.refresh()`, and never
-  imports `views/app.js`. TypeScript checks only `src/`, so each view module
-  starts with `// @ts-nocheck`.
+  lookups) and `format.js` (text, dates and icons), and animate with the one
+  motion engine, `UIMotion` from `views/motion.js`. A module reaches the render
+  pipeline through `App`, such as `App.refresh()`, and never imports
+  `views/app.js`. TypeScript checks only `src/`, so each view module starts
+  with `// @ts-nocheck`.
 - **Actions.** To change an action that saves, start from
   `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
   `saveTask`, and wraps a few of the views' own, such as `nav`.

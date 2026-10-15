@@ -7,7 +7,6 @@ import {
 } from '../../src/data/board-filters.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
-import { MOTION, animateLayout, fadeContent, motionRects, reducedMotion } from './effects.js';
 import {
   I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort,
   instanceDateKey, instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
@@ -104,7 +103,8 @@ export function clearFilterMotion() {
 }
 
 function filterAnimate(element, frames, cleanup) {
-  const animation = element.animate(frames, { duration: MOTION.normal, easing: MOTION.ease });
+  const animation = UIMotion.animate(element, frames);
+  if (!animation) { cleanup?.(); return; }
   filterAnimations.add(animation);
   const finish = () => { filterAnimations.delete(animation); cleanup?.(); };
   animation.finished.then(finish, finish);
@@ -149,14 +149,14 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
   const previous = new Map([...board.querySelectorAll('.col-cards > *')].map((card) =>
     [boardRowKey(card,card.closest('.col').dataset.col), { card, rect: card.getBoundingClientRect(), opacity: getComputedStyle(card).opacity }]));
   clearFilterMotion();
-  const animate = motion && !reducedMotion.matches && typeof board.animate === 'function' && !App._drag;
+  const animate = motion && !UIMotion.reduced() && typeof board.animate === 'function' && !App._drag;
   const template = document.createElement('template');
   setHTML(template,renderBoard());
   if (!board.querySelector('.col') || !template.content.querySelector('.col')) {
     const next=template.content.firstElementChild;
     if (board.classList.contains('board-empty') && next.classList.contains('board-empty')
       && board.textContent===next.textContent && board.querySelector('button')?.className===next.querySelector('button')?.className) {boardSnapshots.set(board,snapshot);return;}
-    board.replaceWith(next); boardSnapshots.set(next,snapshot); fadeContent(next); return;
+    board.replaceWith(next); boardSnapshots.set(next,snapshot); UIMotion.fade(next); return;
   }
   [...board.querySelectorAll('.col')].forEach((column) => {
     const list = column.querySelector('.col-cards');
@@ -178,9 +178,7 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
         exitLayer.setAttribute('aria-hidden', 'true'); exitLayer.inert = true;
         column.append(exitLayer); filterExitLayers.add(exitLayer);
       }
-      const ghost = card.cloneNode(true);
-      ghost.removeAttribute('data-task'); ghost.removeAttribute('data-reorderable');
-      for (const name of ghost.getAttributeNames()) if (/^data-(?:action|args)\b/.test(name)) ghost.removeAttribute(name);
+      const ghost = UIMotion.ghost(card);
       ghost.style.cssText = `position:absolute;margin:0;left:${old.rect.left - viewport.left}px;top:${old.rect.top - viewport.top}px;width:${old.rect.width}px;height:${old.rect.height}px`;
       exitLayer.append(ghost);
       const layer = exitLayer;
@@ -397,24 +395,20 @@ function focusMovedTask(id) {
 }
 
 function settleCard(card, from) {
-  if (!card || !from || reducedMotion.matches) return;
+  if (!card || !from || UIMotion.reduced()) return;
   const to = card.getBoundingClientRect();
-  const ghost = card.cloneNode(true);
-  ghost.removeAttribute('data-task');
-  ghost.removeAttribute('data-reorderable');
+  const ghost = UIMotion.ghost(card);
   ghost.classList.remove('dragging');
   ghost.classList.add('drag-settle');
-  ghost.setAttribute('aria-hidden', 'true');
-  ghost.inert = true;
   ghost.style.cssText = `left:${to.left}px;top:${to.top}px;width:${to.width}px;height:${to.height}px`;
   document.body.appendChild(ghost);
   card.classList.add('settling');
-  const animation = ghost.animate([
+  const animation = UIMotion.animate(ghost, [
     { transform: `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(1.025)`, opacity: 0.9 },
     { transform: 'translate(0, 0) scale(1)', opacity: 1 },
-  ], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  ], 260);
   const cleanup = () => { ghost.remove(); card.classList.remove('settling'); };
-  animation.finished.then(cleanup, cleanup);
+  if (animation) animation.finished.then(cleanup, cleanup); else cleanup();
 }
 
 document.addEventListener('compositionend', (e) => { if(e.target.matches?.('[data-board-search]'))App.setBoardQ(e.target.value,e); }, true);
@@ -472,22 +466,22 @@ Object.assign(App, {
     });
     const beforeId = next ? next.dataset.task : null;
     if (App._dropColumn === colEl.dataset.col && App._dropBefore === beforeId && ind?.parentNode === list) return;
-    const before = motionRects('.card[data-task]');
+    const before = UIMotion.positions('.card[data-task]');
     document.querySelectorAll('.col.drop').forEach((el) => { if (el !== colEl) el.classList.remove('drop'); });
     colEl.classList.add('drop');
     App._dropColumn = colEl.dataset.col;
     App._dropBefore = beforeId;
     const marker = App._mkInd(false);
     if (next) list.insertBefore(marker, next); else list.appendChild(marker);
-    animateLayout(before, '.card[data-task]', App._drag.id);
+    UIMotion.layout(before, '.card[data-task]', App._drag.id);
   },
   colLeave(ev) {
     if (ev.currentTarget.contains(ev.relatedTarget)) return;
     ev.currentTarget.classList.remove('drop');
     if (App._ind()?.parentNode === ev.currentTarget.querySelector('.col-cards')) {
-      const before = motionRects('.card[data-task]');
+      const before = UIMotion.positions('.card[data-task]');
       App._ind().remove(); App._dropColumn = null; App._dropBefore = null;
-      animateLayout(before, '.card[data-task]', App._drag?.id);
+      UIMotion.layout(before, '.card[data-task]', App._drag?.id);
     }
   },
   dropTask(ev, col) {
@@ -501,14 +495,14 @@ Object.assign(App, {
     const t = taskById(id);
     if (!t || id === beforeId) { App.dragEnd(); return; }
     if(t.block && col==='done'){App.dragEnd();App.openModal('completeBlocked',id);return;}
-    const before=motionRects('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
+    const before=UIMotion.positions('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
     const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
     const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
     App.dragEnd(false);if(!change)return;
     App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
     scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${esc(key)}"] .col-cards`);if(list)list.scrollTop=top;});
-    animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
-    submitTaskMove(change,{onRollback:()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');}});
+    UIMotion.layout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
+    submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
   clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
@@ -528,7 +522,7 @@ Object.assign(App, {
     if(!canBoard()||pendingMove)return;
     const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;
     const change={...moveOrigin(task),payload:{taskId:task.internalId,status:task.state,[before?'beforeTaskId':'afterTaskId']:target.internalId,optimistic:true}};
-    const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);App.refresh();focusMovedTask(id);animateLayout(old,'.card[data-task]');
+    const old=UIMotion.positions('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);App.refresh();focusMovedTask(id);UIMotion.layout(old,'.card[data-task]');
     submitTaskMove(change,{rollback:restoreTaskPosition,onRollback:()=>App.refreshBoard()});
   },
 

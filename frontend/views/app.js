@@ -12,7 +12,6 @@ import {
 import { dateHtml, field, multiHtml, resetFieldIds, selectHtml } from './app/controls.js';
 import { renderModal } from './app/dialogs.js';
 import './app/drag.js';
-import { exitVisual, exitVisuals, fadeContent, uiAnimations } from './app/effects.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, instanceDateKey, instanceToday,
   iso, overdue, previousDate, setHTML, stIcon, today,
@@ -46,13 +45,13 @@ function prepareRenderMotion(overlaysOnly=false) {
   if(page?.dataset.pageKey?.includes(':board:'))boardScrollMemory.set(`${D.session?.userId}:${page.dataset.pageKey}`, [...document.querySelectorAll('.board,.col-cards')].map(el=>[el.closest('[data-col]')?.dataset.col,el.scrollLeft,el.scrollTop]));
   const scrim = document.querySelector('#overlay-root > .scrim');
   if (state.modal || state.peek || state.menu) {
-    exitVisuals.forEach(el => { uiAnimations.get(el)?.cancel(); el.remove(); }); exitVisuals.clear();
-  } else if (scrim) exitVisual(scrim);
+    UIMotion.clearExits();
+  } else if (scrim) UIMotion.exit(scrim);
   ['.modal','.peek','.menu'].forEach((selector) => {
     const el = document.querySelector('#app ' + selector);
     if (!el) return;
     previous.set(selector, el.dataset.motionKey || '');
-    if (!overlayKey(selector)) exitVisual(el);
+    if (!overlayKey(selector)) UIMotion.exit(el);
   });
   return { previous, hadBlock:!!document.querySelector('.task-block'), pageState:page?.querySelector('.page-error,.loading-state')?.className||'ready', hadScrim: !!scrim, pageKey: page?.dataset.pageKey, scrolls: [...(overlaysOnly?[]:document.querySelectorAll('.content,.task-page,.settings,.board,.col-cards'))].map(el => [el.className, el.closest('[data-col]')?.dataset.col, el.scrollLeft, el.scrollTop]) };
 }
@@ -63,7 +62,7 @@ function finishRenderMotion(before,overlaysOnly=false) {
   if (page) {
     page.dataset.pageKey = key;
     if (before.pageKey && before.pageKey !== key) {
-      fadeContent(page);
+      UIMotion.fade(page);
       if(state.view==='board')for(const [col,left,top] of boardScrollMemory.get(`${D.session?.userId}:${key}`)||[]){const el=document.querySelector(col?`[data-col="${esc(col)}"] .col-cards`:'.board');if(el){el.scrollLeft=left;el.scrollTop=top;}}
     }
     else if (before.pageKey === key) before.scrolls.forEach(([classes, col, left, top]) => {
@@ -130,7 +129,7 @@ function refreshProfileAccess(status = {}) {
   const hadFocus = host.contains(document.activeElement);
   const before=host.getBoundingClientRect().height;
   setHTML(host,renderProfileAccess() + (status.loading ? '<p class="access-note" role="status">Loading access…</p>' : status.error ? `<p class="access-note" role="alert">${esc(status.error)} <button type="button" class="btn quiet" ${UIAction('retryProfileAccess')}>Retry</button></p>` : ''));
-  fadeContent(host);UIMotion.height(host,before);
+  UIMotion.fade(host);UIMotion.height(host,before);
   if (hadFocus) (host.querySelector('button:not(:disabled)') || host.querySelector('h2'))?.focus({preventScroll:true});
 }
 
@@ -225,7 +224,7 @@ function refreshTaskActivity(id,preserveComments=true) {
   const children=next.map(el=>{const old=existing.get(el.dataset.feedKey),markup=el.outerHTML;if(old&&((preserveComments&&old.classList.contains('comment-conversation'))||feedRowMarkup.get(old)===markup))return old;feedRowMarkup.set(el,markup);if(old)changed.push(el);return el;});
   const exiting=document.createElement('div');exiting.inert=true;exiting.setAttribute('aria-hidden','true');Object.assign(exiting.style,{position:'absolute',inset:'0',height:before+'px',pointerEvents:'none'});
   const viewport=timeline.closest('.content')?.getBoundingClientRect(),removed=[...existing.keys()].filter(key=>!wanted.has(key)).length;
-  if(removed<=20&&!UIMotion.reduced())existing.forEach((el,key)=>{const rect=rows.get(key);if(wanted.has(key)||!rect?.height||viewport&&(rect.bottom<viewport.top||rect.top>viewport.bottom))return;const ghost=el.cloneNode(true);[ghost,...ghost.querySelectorAll('*')].forEach(node=>[...node.attributes].forEach(attr=>{if(attr.name==='id'||attr.name==='name'||attr.name==='tabindex'||attr.name.startsWith('on')||attr.name.startsWith('data-')||attr.name.startsWith('aria-'))node.removeAttribute(attr.name);}));Object.assign(ghost.style,{position:'absolute',top:rect.top-timelineRect.top+'px',left:rect.left-timelineRect.left+'px',width:rect.width+'px',height:rect.height+'px',margin:'0'});exiting.append(ghost);});
+  if(removed<=20&&!UIMotion.reduced())existing.forEach((el,key)=>{const rect=rows.get(key);if(wanted.has(key)||!rect?.height||viewport&&(rect.bottom<viewport.top||rect.top>viewport.bottom))return;const ghost=UIMotion.ghost(el);Object.assign(ghost.style,{position:'absolute',top:rect.top-timelineRect.top+'px',left:rect.left-timelineRect.left+'px',width:rect.width+'px',height:rect.height+'px',margin:'0'});exiting.append(ghost);});
   timeline.style.position='relative';
   // Move only rows whose place changed. replaceChildren would detach every row, and browsers cancel a click whose pressed element left the document, even briefly.
   let cursor=timeline.firstChild;for(const child of children){if(child===cursor)cursor=cursor.nextSibling;else timeline.insertBefore(child,cursor);}while(cursor){const next=cursor.nextSibling;cursor.remove();cursor=next;}
@@ -852,7 +851,7 @@ window.addEventListener('resize', () => {
   }, 120);
 });
 
-collaboration?.bind(App,{task:taskById,projects:visibleProjects,view:()=>state.view,canBoard:task=>hasPermission('manage_board',trackById(epicById(task?.epicId)?.trackId)?.projectId),confirm:askConfirmation,refresh:render,refreshBackground,refreshActivity:refreshTaskActivity,exit:exitVisual,multi:multiHtml,ago,instant:formatInstant,dateKey:instanceDateKey,previousDate,avatar:avatarHtml,
+collaboration?.bind(App,{task:taskById,projects:visibleProjects,view:()=>state.view,canBoard:task=>hasPermission('manage_board',trackById(epicById(task?.epicId)?.trackId)?.projectId),confirm:askConfirmation,refresh:render,refreshBackground,refreshActivity:refreshTaskActivity,multi:multiHtml,ago,instant:formatInstant,dateKey:instanceDateKey,previousDate,avatar:avatarHtml,
   refreshComments:(id,composer=false)=>{if(state.view!=='task'||state.taskId!==id)return;const task=taskById(id),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment'),focused=document.activeElement?.dataset.replyRoot;if(timeline){setHTML(timeline,collaboration.feedHtml(task));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);if(focused)[...timeline.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===focused)?.focus({preventScroll:true});}if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,Collab.composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}},
 });
 window.Recovery?.bind(App,{refresh:render});

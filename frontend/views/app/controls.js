@@ -2,7 +2,6 @@
 /* Form controls: selects, date fields with a calendar, field errors and
    labels, and the cleaning of typed and pasted text. */
 
-import { fadeContent } from './effects.js';
 import { I, UIAction, d, esc, humanFull, iso, setHTML, today } from './format.js';
 import { App } from './model.js';
 import { POP, closePop, openPop, placePop, rememberOpener, restoreOpener } from './overlays.js';
@@ -519,7 +518,7 @@ Object.assign(App, {
     const paint = (focus = false) => {
       const changedMonth=el.dataset.month&&el.dataset.month!==view;el.dataset.month=view;
       setHTML(el,calHtml(view, enteredDate === null ? def.value : enteredDate, focusDate, def));
-      placePop(wrap.querySelector('.date-control'));if(changedMonth)fadeContent(el.querySelector('.cal-grid'));
+      placePop(wrap.querySelector('.date-control'));if(changedMonth)UIMotion.fade(el.querySelector('.cal-grid'));
       el.querySelectorAll('.cal-d').forEach((b) => b.addEventListener('click', () => pick(b.dataset.d)));
       el.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => {
         const target = d(view + '-01'); target.setUTCMonth(target.getUTCMonth() + Number(b.dataset.nav));

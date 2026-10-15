@@ -3,7 +3,6 @@
    grow with their text, and the New task form. */
 
 import { dateHtml, field, multiHtml, selectHtml } from './controls.js';
-import { animateHeight, uiAnimations } from './effects.js';
 import { I, UIAction, d, esc, setHTML } from './format.js';
 import { App, canRoadmap, epics, projectMembers, userById, userHandle } from './model.js';
 
@@ -15,7 +14,7 @@ export function sizeDescription(animated = false) {
   document.querySelectorAll('.expandable-description').forEach(section=>{
     const input=section.querySelector('.description-content, textarea'),toggle=section.querySelector('.description-toggle');
     const before=input.getBoundingClientRect().height,scrollTop=input.scrollTop;
-    uiAnimations.get(input)?.cancel();
+    UIMotion.cancel(input);
     const expanded=expandedDescriptions.has(section.dataset.descriptionKey);
     input.style.overflowY='hidden';input.style.height='0px';
     const fullHeight=Math.max(input.tagName==='TEXTAREA'?96:0,input.scrollHeight+(input.tagName==='TEXTAREA'?2:0));
@@ -25,7 +24,7 @@ export function sizeDescription(animated = false) {
     toggle.hidden=fullHeight<=240;section.classList.toggle('is-collapsed',fullHeight>240&&!expanded);
     toggle.textContent=expanded?'Show less':'Show more';toggle.setAttribute('aria-expanded',String(expanded));
     if(input.tagName!=='TEXTAREA'){if(fullHeight>240&&(!expanded||fullHeight>expandedLimit))input.setAttribute('tabindex','0');else input.removeAttribute('tabindex');}
-    if(animated)animateHeight(input,before);
+    if(animated)UIMotion.height(input,before);
   });
 }
 
