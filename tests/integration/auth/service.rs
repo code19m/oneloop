@@ -497,46 +497,36 @@ async fn sensitive_account_changes_require_fresh_browser_authentication() {
         .await
         .unwrap();
     assert!(created.temporary_password.len() >= 32);
-    let mut stale = admin.clone();
-    stale.authenticated_at = 0;
     let session_id = admin.session_id().unwrap().to_owned();
-    db.run(move |connection| {
-        connection.execute(
-            "UPDATE sessions SET authenticated_at=0 WHERE id=?1",
-            [session_id],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    // Every change reads the sign-in time from the session, not the actor.
+    let signed_in_at = |at: i64| {
+        let session_id = session_id.clone();
+        db.run(move |connection| {
+            connection.execute(
+                "UPDATE sessions SET authenticated_at=?1 WHERE id=?2",
+                rusqlite::params![at, session_id],
+            )?;
+            Ok(())
+        })
+    };
+    let deactivate = || AccountUpdate {
+        display_name: "New Person".into(),
+        is_admin: false,
+        is_active: false,
+        expected_revision: created.user.revision,
+    };
+    signed_in_at(0).await.unwrap();
     let error = service
-        .update_account(
-            &stale,
-            &created.user.id,
-            AccountUpdate {
-                display_name: "New Person".into(),
-                is_admin: false,
-                is_active: false,
-                expected_revision: created.user.revision,
-            },
-        )
+        .update_account(&admin, &created.user.id, deactivate())
         .await
         .unwrap_err();
     assert_eq!(error.code(), "recent_auth_required");
+    signed_in_at(unix_now().unwrap()).await.unwrap();
     let updated = service
-        .update_account(
-            &admin,
-            &created.user.id,
-            AccountUpdate {
-                display_name: "Updated Person".into(),
-                is_admin: false,
-                is_active: true,
-                expected_revision: created.user.revision,
-            },
-        )
+        .update_account(&admin, &created.user.id, deactivate())
         .await
         .unwrap();
-    assert_eq!(updated.display_name, "Updated Person");
+    assert!(!updated.is_active);
 }
 
 #[tokio::test]
