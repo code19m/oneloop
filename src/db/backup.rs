@@ -603,13 +603,13 @@ fn reclaim_partial_copies(parent: &Path) {
             match remove_claimed(&path, lock) {
                 Ok(()) => {
                     let _ = sync_directory(parent);
-                    eprintln!(
+                    notice!(
                         "removed the copy of an interrupted backup of {}: {}",
                         owner.data_dir,
                         path.display()
                     );
                 }
-                Err(error) => eprintln!(
+                Err(error) => notice!(
                     "warning: cannot remove the copy of an interrupted backup {}: {error}",
                     path.display()
                 ),
@@ -628,7 +628,7 @@ fn reclaim_partial_copies(parent: &Path) {
                 _ => {}
             }
         }
-        eprintln!(
+        notice!(
             "possible interrupted backup/restore copy: {} ({} bytes{}); after confirming no backup or restore is running, remove this directory manually",
             path.display(),
             bytes,
@@ -709,7 +709,7 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
         return Err(refused());
     }
     sync_directory(target)?;
-    eprintln!(
+    notice!(
         "removed what an interrupted restore left in {}; restoring again",
         target.display()
     );
@@ -863,7 +863,7 @@ impl BackupPins {
 impl Drop for BackupPins {
     fn drop(&mut self) {
         if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!(
+            notice!(
                 "warning: cannot remove backup pins {}: {error}; the next backup will retry",
                 self.0.display()
             );

@@ -24,6 +24,9 @@ All notable changes to oneloop are recorded here. The format follows
 - `oneloop serve` no longer crashes when nothing reads its standard error and
   it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
   line like the others.
+- `oneloop backup` and the other commands that open the data directory no
+  longer fail when nothing reads their standard error and they have a notice
+  to print, such as a copy left by an interrupted backup.
 - A Knowledge folder with more than 5,000 subfolders no longer syncs, and
   shows that it is too large. Before, a folder with many deep subfolders
   could make search use gigabytes of memory, and a sync could fill the disk

@@ -1,5 +1,14 @@
 //! Bounded SQLite execution with foreign keys, WAL snapshots and explicit migrations. Writes and their durable audit/outbox commit atomically.
 
+/// Tells the person running a command what maintenance found or did. Unlike
+/// `eprintln!`, it doesn't panic when nothing reads standard error.
+macro_rules! notice {
+    ($($message:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($message)*);
+    }};
+}
+
 mod backup;
 mod migration;
 
@@ -205,7 +214,7 @@ impl DataLayout {
         match file.try_lock_shared() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) => {
-                eprintln!(
+                notice!(
                     "waiting for exclusive maintenance (db migrate) to finish at {}",
                     self.root.display()
                 );
@@ -735,7 +744,7 @@ fn warn_public_permissions(path: &Path) -> AppResult<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
-            eprintln!(
+            notice!(
                 "warning: {} has group/other permissions; keep instance data private to the service account",
                 path.display()
             );
