@@ -14,15 +14,15 @@ use axum::{
     response::Response,
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now, knowledge::KnowledgeService};
-use rusqlite::params;
+use oneloop::{AppState, Db, application, knowledge::KnowledgeService};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::support::{
-    self,
+    self, Role,
     http::{body_bytes, body_json},
+    session_cookie,
 };
 
 const ORIGIN: &str = "https://tasks.example.test";
@@ -189,24 +189,15 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let (directory, db) = support::database();
-        let admin = support::add_user(&db, "admin", true).await;
-        let member = support::add_user(&db, "member", false).await;
-        let outsider = support::add_user(&db, "outsider", false).await;
-        let member_id = member.actor.user_id.clone();
-        db.run(move |connection| {
-            let now = unix_now()?;
-            connection.execute(
-                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','Project','PRJ',?1,?1)",
-                [now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1',?1,?2,?2)",
-                params![member_id, now],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+        support::seed_project(
+            &db,
+            [
+                ("admin", Role::Admin),
+                ("member", Role::Member),
+                ("outsider", Role::Outsider),
+            ],
+        )
+        .await;
         let mut config = support::config(directory.path(), ORIGIN, &[]);
         config.disk_min_free_bytes = 0;
         let mut state = AppState::new(config, db.clone());
@@ -216,9 +207,9 @@ impl Fixture {
             app: application(state.clone()).router,
             state,
             db,
-            admin: cookie(&admin.token),
-            member: cookie(&member.token),
-            outsider: cookie(&outsider.token),
+            admin: session_cookie("admin"),
+            member: session_cookie("member"),
+            outsider: session_cookie("outsider"),
         }
     }
 
@@ -331,10 +322,6 @@ impl Fixture {
             .await
             .unwrap()
     }
-}
-
-fn cookie(token: &str) -> String {
-    format!("__Host-oneloop_session={token}")
 }
 
 #[tokio::test]

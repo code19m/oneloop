@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::time::{sleep, timeout};
 
-use crate::support::{browser_actor, eventually, now};
+use crate::support::{Role, eventually, now, seed_project};
 
 struct Fixture {
     _root: TempDir,
@@ -22,43 +22,29 @@ struct Fixture {
     manager: Actor,
     viewer: Actor,
     outsider: Actor,
+    admin: Actor,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let (root, db) = crate::support::database();
-        let now = now();
-        db.run(move |connection| {
-            connection.execute_batch(&format!(r#"
-                INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
-                    VALUES ('manager','manager','Manager','x',{now},{now},{now}),
-                           ('viewer','viewer','Viewer','x',{now},{now},{now}),
-                           ('outsider','outsider','Outsider','x',{now},{now},{now});
-                INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-                    VALUES ('sm','manager','hm',{now},{now},{now},{expiry},{expiry}),
-                           ('sv','viewer','hv',{now},{now},{now},{expiry},{expiry}),
-                           ('so','outsider','ho',{now},{now},{now},{expiry},{expiry});
-                INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
-                    VALUES ('p1','Project','PRJ','manager',{now},{now});
-                INSERT INTO project_prefixes(prefix,project_id,reserved_at) VALUES ('PRJ','p1',{now});
-                INSERT INTO project_sequences(project_id,next_task_number) VALUES ('p1',2);
-                INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                    VALUES ('p1','manager',1,{now},{now}),('p1','viewer',0,{now},{now});
-                INSERT INTO tracks(id,project_id,name,position,created_by,created_at,updated_at)
-                    VALUES ('track','p1','Track',0,'manager',{now},{now});
-                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_by,created_at,updated_at)
-                    VALUES ('epic','p1','track','Epic','2026-01-01',0,'manager',{now},{now});
-                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                    VALUES ('task','p1','epic',1,'PRJ-001','Task','planning',0,'manager',{now},{now});
-            "#, expiry=now+86_400))?;
-            Ok(())
-        }).await.unwrap();
+        let [manager, viewer, outsider, admin] = seed_project(
+            &db,
+            [
+                ("manager", Role::Manager),
+                ("viewer", Role::Member),
+                ("outsider", Role::Outsider),
+                ("admin", Role::Admin),
+            ],
+        )
+        .await;
         Self {
             _root: root,
             db,
-            manager: browser_actor("manager", "manager", "sm", now),
-            viewer: browser_actor("viewer", "viewer", "sv", now),
-            outsider: browser_actor("outsider", "outsider", "so", now),
+            manager,
+            viewer,
+            outsider,
+            admin,
         }
     }
 
@@ -727,13 +713,11 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
              FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
             [&id],
         )?;
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
             VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
         Ok(())
     }).await.unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc())
         .execute(
             &admin,
@@ -918,16 +902,7 @@ async fn retried_cleanup_uses_the_same_activity_projection_path() {
 #[tokio::test]
 async fn capacity_counts_reservations_without_double_counting_partial_staging() {
     let fixture = Fixture::new().await;
-    fixture
-        .db
-        .run(|connection| {
-            connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
+    let admin = fixture.admin.clone();
     let service = fixture.service(100);
     let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&admin, "task", "partial.bin", 10, false, "partial")
@@ -1529,16 +1504,7 @@ async fn stalled_upload_does_not_hold_back_a_complete_backup() {
 async fn capacity_scans_tolerate_staging_and_preview_churn() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
-    fixture
-        .db
-        .transaction(|tx| {
-            tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let admin = fixture.admin.clone();
     fixture.store().ensure_directories().await.unwrap();
     let staging = fixture.store().layout().staging();
     let previews = fixture.store().previews();
@@ -1724,7 +1690,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
             tx.execute(
                 "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
                  VALUES(?1,'p1','epic',?2,?3,'Storage fixture','planning',?2,'manager',1,1)",
-                rusqlite::params![format!("batch-task-{i}"),i+2,format!("PRJ-{:03}",i+2)],
+                rusqlite::params![format!("batch-task-{i}"),i+2,format!("ONE-{:03}",i+2)],
             )?;
         }
         for (i,key) in keys.iter().enumerate() {
@@ -1762,15 +1728,13 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
         .unwrap();
     assert_eq!((cleaned, events, jobs), (201, 201, 0));
     fixture.db.transaction(|tx| {
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
             VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
         // Deliberately span activity timestamps: history must use the run, not seconds.
         tx.execute("UPDATE activity_events SET created_at=created_at + rowid WHERE event_type='attachment.cleaned'", [])?;
         Ok(())
     }).await.unwrap();
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
+    let admin = fixture.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(usage.recent_cleanup.len(), 1);
     assert_eq!(
@@ -2086,15 +2050,13 @@ async fn storage_accounts_for_pending_deletion_separately() {
         false,
     )
     .await;
-    f.db.transaction(|tx| {
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        tx.execute("UPDATE file_blobs SET state='deleting'", [])?;
+    f.db.run(|connection| {
+        connection.execute("UPDATE file_blobs SET state='deleting'", [])?;
         Ok(())
     })
     .await
     .unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(usage.used_bytes, 7);
     assert_eq!(usage.pending_deletion_bytes, 7);
@@ -2124,14 +2086,7 @@ async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
         true,
     )
     .await;
-    f.db.run(|connection| {
-        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     let domain = oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc());
     domain
         .execute(
@@ -2687,17 +2642,7 @@ async fn deleted_files_wait_for_removal_instead_of_temporary_file_cleanup() {
         )
         .await
         .unwrap();
-    let admin = {
-        let mut admin = f.manager.clone();
-        admin.is_admin = true;
-        admin
-    };
-    f.db.run(|connection| {
-        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    let admin = f.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(
         (usage.temporary_bytes, usage.pending_deletion_bytes),

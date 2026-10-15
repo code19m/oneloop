@@ -8,48 +8,35 @@ use oneloop::{
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::support::{browser_actor, now};
+use crate::support::{Role, now, seed_project};
 
 struct Fixture {
     _root: TempDir,
     db: Db,
     alice: Actor,
     bob: Actor,
+    carol: Actor,
 }
 
 impl Fixture {
+    /// Alice manages the Board; Bob and Carol are members.
     async fn new() -> Self {
         let (root, db) = crate::support::database();
-        let now = now();
-        db.run(move |connection| {
-            connection.execute_batch(&format!(r#"
-                INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
-                    VALUES ('alice','alice','Alice','x',{now},{now},{now}),
-                           ('bob','bob','Bob','x',{now},{now},{now}),
-                           ('carol','carol','Carol','x',{now},{now},{now});
-                INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
-                    VALUES ('p1','Secret Project','SEC','alice',{now},{now});
-                INSERT INTO project_prefixes(prefix,project_id,reserved_at) VALUES ('SEC','p1',{now});
-                INSERT INTO project_sequences(project_id,next_task_number) VALUES ('p1',2);
-                INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                    VALUES ('p1','alice',1,{now},{now}),('p1','bob',0,{now},{now}),('p1','carol',0,{now},{now});
-                INSERT INTO tracks(id,project_id,name,position,created_by,created_at,updated_at)
-                    VALUES ('track','p1','Track',0,'alice',{now},{now});
-                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_by,created_at,updated_at)
-                    VALUES ('epic','p1','track','Epic','2026-01-01',0,'alice',{now},{now});
-                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                    VALUES ('task','p1','epic',1,'SEC-001','Task','planning',0,'alice',{now},{now});
-                INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-                    VALUES ('sa','alice','ha',{now},{now},{now},{expiry},{expiry}),
-                           ('sb','bob','hb',{now},{now},{now},{expiry},{expiry});
-            "#, expiry=now+86_400))?;
-            Ok(())
-        }).await.unwrap();
+        let [alice, bob, carol] = seed_project(
+            &db,
+            [
+                ("alice", Role::Manager),
+                ("bob", Role::Member),
+                ("carol", Role::Member),
+            ],
+        )
+        .await;
         Self {
             _root: root,
             db,
-            alice: browser_actor("alice", "Alice", "sa", now),
-            bob: browser_actor("bob", "Bob", "sb", now),
+            alice,
+            bob,
+            carol,
         }
     }
 
@@ -577,14 +564,16 @@ async fn deletion_tombstones_create_and_edit_retry_receipts() {
         Some(1),
     );
     let edited = service.execute(&fixture.alice, edit.clone()).await.unwrap();
-    let mut moderator = browser_actor("carol", "Carol", "sc", now());
+    let mut moderator = fixture.carol.clone();
     moderator.is_admin = true;
-    fixture.db.run(|connection| {
-        connection.execute("UPDATE users SET is_admin=1 WHERE id='carol'", [])?;
-        connection.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-            VALUES('sc','carol','hc',1,1,1,9999999999,9999999999)", [])?;
-        Ok(())
-    }).await.unwrap();
+    fixture
+        .db
+        .run(|connection| {
+            connection.execute("UPDATE users SET is_admin=1 WHERE id='carol'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     service
         .execute(
             &moderator,
@@ -1022,7 +1011,7 @@ async fn bulk_inbox_uses_displayed_filter_and_actor_identity_is_immutable() {
     f.db.transaction(move |tx| {
         tx.execute("UPDATE users SET display_name='Bob' WHERE id='alice'", [])?;
         tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            SELECT 'deleted-task',project_id,epic_id,2,'SEC-002','Deleted','planning',1,created_at,updated_at FROM tasks WHERE id='task'", [])?;
+            SELECT 'deleted-task',project_id,epic_id,2,'ONE-002','Deleted','planning',1,created_at,updated_at FROM tasks WHERE id='task'", [])?;
         for task_id in ["task", "deleted-task"] {
             snapshot_notification_tx(tx,&actor, NotificationInput {
                 project_id:"p1",event_type:"task.assigned",task_id:Some(task_id),comment_id:None,

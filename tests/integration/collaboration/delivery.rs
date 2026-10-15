@@ -478,7 +478,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
     assert_eq!(read.unread_count, 0);
     assert_eq!(read.filtered_count, 55);
 
-    let alice_for_new = browser_actor("alice", "Alice", "sa", now());
+    let alice_for_new = browser_actor("alice", "Alice", "s-alice", now());
     db.transaction(move |tx| {
         snapshot_notification_tx(
             tx,
@@ -1154,7 +1154,7 @@ async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() 
         alice,
         bob,
     } = seeded_project().await;
-    let mut dave = browser_actor("dave", "Dave", "sd", now());
+    let mut dave = browser_actor("dave", "Dave", "s-dave", now());
     dave.is_admin = true;
     let event_time = now() - 2;
     db.transaction({

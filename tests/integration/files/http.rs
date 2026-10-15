@@ -1,6 +1,7 @@
 use crate::support::{
-    self,
+    self, Role,
     http::{body_bytes, body_json},
+    seed_project, session_cookie,
 };
 use axum::{
     Router,
@@ -10,10 +11,9 @@ use axum::{
 use http_body_util::BodyExt;
 use oneloop::{
     AppState, Db, application,
-    auth::{Actor, unix_now},
+    auth::Actor,
     files::{AttachmentView, FileService},
 };
-use rusqlite::params;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -22,6 +22,8 @@ pub(super) struct Fixture {
     pub(super) app: Router,
     pub(super) files: FileService,
     pub(super) db: Db,
+    pub(super) manager: Actor,
+    pub(super) admin: Actor,
     pub(super) manager_cookie: String,
     outsider_cookie: String,
 }
@@ -33,49 +35,15 @@ impl Fixture {
 
     pub(super) async fn with_storage_limit(limit: u64) -> Self {
         let (directory, db) = crate::support::database();
-        let manager = support::add_user(&db, "manager", false).await;
-        let outsider = support::add_user(&db, "outsider", false).await;
-        let manager_id = manager.actor.user_id.clone();
-        db.run(move |connection| {
-            let now = unix_now()?;
-            connection.execute(
-                "INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
-                 VALUES('p1','Project','PRJ',?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_prefixes(prefix,project_id,reserved_at) VALUES('PRJ','p1',?1)",
-                [now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_sequences(project_id,next_task_number) VALUES('p1',2)",
-                [],
-            )?;
-            connection.execute(
-                "INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                 VALUES('p1',?1,1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO tracks(id,project_id,name,position,created_by,created_at,updated_at)
-                 VALUES('track','p1','Track',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_by,created_at,updated_at)
-                 VALUES('epic','p1','track','Epic','2026-01-01',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                 VALUES('task','p1','epic',1,'PRJ-001','Task','planning',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-
+        let [manager, _, admin] = seed_project(
+            &db,
+            [
+                ("manager", Role::Manager),
+                ("outsider", Role::Outsider),
+                ("admin", Role::Admin),
+            ],
+        )
+        .await;
         let mut config = support::config(directory.path(), "https://tasks.example.test", &[]);
         config.storage_limit_bytes = limit;
         config.disk_min_free_bytes = 0;
@@ -85,8 +53,10 @@ impl Fixture {
             app: application.router,
             files: application.files,
             db,
-            manager_cookie: format!("__Host-oneloop_session={}", manager.token),
-            outsider_cookie: format!("__Host-oneloop_session={}", outsider.token),
+            manager,
+            admin,
+            manager_cookie: session_cookie("manager"),
+            outsider_cookie: session_cookie("outsider"),
         }
     }
 
@@ -104,13 +74,6 @@ impl Fixture {
         body.extend_from_slice(bytes);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         self.upload_body(key, bytes.len(), body).await
-    }
-
-    async fn actor(&self, cookie: &str) -> Actor {
-        support::auth_service(&self.db)
-            .authenticate_session(cookie.split_once('=').unwrap().1, false)
-            .await
-            .unwrap()
     }
 
     async fn put_avatar(&self, cookie: &str, body: Body) -> axum::response::Response {
@@ -605,7 +568,7 @@ async fn conditional_sources_recheck_access_without_allocating_read_leases() {
 async fn avatars_revalidate_versioned_and_unversioned_urls_and_reject_lost_access() {
     use image::ImageEncoder;
     let f = Fixture::new().await;
-    let manager = f.actor(&f.manager_cookie).await;
+    let manager = f.manager.clone();
     let service = oneloop::files::FileService::new(f.db.clone(), 1000000, 0);
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
@@ -770,10 +733,7 @@ async fn an_uploaded_avatar_is_served_as_a_256_pixel_png() {
 #[tokio::test]
 async fn one_person_uploads_one_avatar_at_a_time() {
     let f = Fixture::new().await;
-    let slot = f
-        .files
-        .avatar_slot(&f.actor(&f.manager_cookie).await)
-        .unwrap();
+    let slot = f.files.avatar_slot(&f.manager).unwrap();
     let response = f
         .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
         .await;
@@ -797,7 +757,7 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
         atomic::{AtomicBool, Ordering},
     };
     let f = Fixture::new().await;
-    let manager = f.actor(&f.manager_cookie).await;
+    let manager = f.manager.clone();
     let people = ["a", "b", "c", "d"].map(|name| Actor {
         user_id: name.into(),
         ..manager.clone()

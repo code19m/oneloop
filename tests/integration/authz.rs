@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
-use crate::support::{self, SeededProject, TestInstance, database, now, seeded_project};
+use crate::support::{
+    self, Role, SeededProject, TestInstance, database, now, seed_project, seeded_project,
+};
 
 #[tokio::test]
 async fn project_reads_recheck_a_cached_admin_role() {
@@ -73,36 +75,18 @@ async fn account_administration_rechecks_a_cached_admin_role() {
 #[tokio::test]
 async fn mcp_admin_cannot_moderate_another_authors_comment() {
     let (_root, db) = database();
+    seed_project(&db, [("member", Role::Member), ("admin", Role::Admin)]).await;
     let timestamp = now();
     db.run(move |connection| {
         connection.execute_batch(&format!(
             r#"
-            INSERT INTO users
-                (id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at)
-            VALUES
-                ('member','member','Member','x',0,{timestamp},{timestamp},{timestamp}),
-                ('admin','admin','Admin','x',1,{timestamp},{timestamp},{timestamp});
-            INSERT INTO projects(id,name,task_prefix,created_at,updated_at)
-            VALUES ('project','Project','PRJ',{timestamp},{timestamp});
-            INSERT INTO project_prefixes(prefix,project_id,reserved_at)
-            VALUES ('PRJ','project',{timestamp});
-            INSERT INTO project_sequences(project_id,next_task_number) VALUES ('project',2);
-            INSERT INTO project_memberships(project_id,user_id,created_at,updated_at)
-            VALUES ('project','member',{timestamp},{timestamp});
-            INSERT INTO tracks(id,project_id,name,position,created_at,updated_at)
-            VALUES ('track','project','Track',0,{timestamp},{timestamp});
-            INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
-            VALUES ('epic','project','track','Epic','2026-09-20',0,{timestamp},{timestamp});
-            INSERT INTO tasks
-                (id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            VALUES ('task','project','epic',1,'PRJ-001','Task','planning',0,{timestamp},{timestamp});
             INSERT INTO comments
                 (id,project_id,task_id,author_id,root_id,content,created_at)
-            VALUES ('comment','project','task','member','comment','Original comment',{timestamp});
+            VALUES ('comment','p1','task','member','comment','Original comment',{timestamp});
             INSERT INTO mcp_grants
                 (id,user_id,client_id,client_name,created_at,updated_at,expires_at)
             VALUES ('grant','admin','client','Assistant',{timestamp},{timestamp},{expiry});
-            INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES ('grant','project');
+            INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES ('grant','p1');
             INSERT INTO mcp_grant_scopes(grant_id,scope)
             VALUES ('grant','project_read'),('grant','discussion');
             "#,
@@ -239,7 +223,7 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
     ] {
         db.transaction(move |tx| {
             tx.execute("UPDATE users SET is_active=?1,is_admin=?2,must_change_password=?3 WHERE id='alice'", rusqlite::params![active,admin,!ready])?;
-            tx.execute("UPDATE sessions SET revoked_at=?1 WHERE id='sa'", [(!valid_session).then_some(1)])?;
+            tx.execute("UPDATE sessions SET revoked_at=?1 WHERE id='s-alice'", [(!valid_session).then_some(1)])?;
             tx.execute("DELETE FROM project_memberships WHERE user_id='alice'", [])?;
             if member { tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('p1','alice',?1,?2,1,1)", rusqlite::params![board,roadmap])?; }
             Ok(())

@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::http::Fixture;
-use crate::support::{self, http::body_bytes};
+use crate::support::http::body_bytes;
 
 fn png(width: u32, height: u32, transparent: bool) -> Vec<u8> {
     let pixels = (0..width * height)
@@ -396,14 +396,13 @@ async fn removing_a_deleted_image_removes_its_thumbnail() {
 #[tokio::test]
 async fn thumbnails_count_as_previews_and_come_back_after_storage_cleanup() {
     let fixture = Fixture::new().await;
-    let admin = support::add_user(&fixture.db, "admin", true).await;
     let attachment = fixture
         .attach("counted", "counted.png", &png(500, 500, false))
         .await;
     fixture.files.make_queued_thumbnails().await;
     let thumbnail = fixture.thumbnail_file(&attachment);
     let size = std::fs::metadata(&thumbnail).unwrap().len();
-    let usage = fixture.files.storage_usage(&admin.actor).await.unwrap();
+    let usage = fixture.files.storage_usage(&fixture.admin).await.unwrap();
     assert_eq!(usage.preview_bytes, size);
     assert_eq!(usage.used_bytes, attachment.size + size);
 

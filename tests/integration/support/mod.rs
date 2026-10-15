@@ -6,8 +6,8 @@
 //!
 //! Accounts that sign in are created through the application's own account
 //! and session services, then keep a cheap hash of their password; see
-//! `add_user`. Seeded projects insert rows directly for speed; their users
-//! cannot sign in.
+//! `add_user`. A seeded project inserts its rows directly for speed; its
+//! people have no password, but their sessions work; see `seed_project`.
 
 pub mod http;
 mod project;
@@ -34,7 +34,7 @@ use oneloop::{
 };
 use tempfile::TempDir;
 
-pub use project::{SeededProject, seeded_project};
+pub use project::{Role, SeededProject, add_people, seed_project, seeded_project, session_cookie};
 pub use sqlite::with_instant_busy_timeout;
 
 const PASSWORD: &str = "test-only-password-012345";
