@@ -16,6 +16,10 @@ import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.j
 import { presentFormError, isFormRetryPending, completeForm } from './form-feedback.js';
 import { leaveAdminPage } from '../features/recovery/controller.js';
 
+const BLOCK_MESSAGES = Object.freeze({
+  'task.block':'Task blocked', 'task.block.update':'Block reason updated',
+  'task.unblock':'Task unblocked', 'task.unblock-and-complete':'Task unblocked and completed',
+});
 /** The server's username order: SQLite's binary collation, not the browser's locale. */
 const compareUsernames = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 /** Cut at `max` UTF-16 units, as maxlength does, without splitting a surrogate pair. */
@@ -168,8 +172,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function failureMessage(error){
     return error instanceof ApiError && error.uncertain
       ? 'The save result is unknown. Try the same action again to reconcile it safely.'
-      : error instanceof ApiError && (error.code === 'revision_conflict'||(error.status===409&&/record changed/i.test(error.message)))
-      ? 'This item changed elsewhere. Review the latest version before saving again.'
       : actionErrorFeedback(error).message;
   }
 
@@ -196,11 +198,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   }
 
   // A task field save repaints in the background, so it never replaces the
-  // field being edited. Other changes paint at once, or, under a dialog opened
-  // while they ran, when that dialog closes.
+  // field being edited; the status and deadline around it show at once.
+  // Other changes paint at once, or, under a dialog opened while they ran,
+  // when that dialog closes.
   function paintCommand(operation){
     if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();
-    else if(operation==='task.update'||operation==='task.move')(app.refreshBackground??app.refresh)();
+    else if(operation==='task.update'||operation==='task.move'){app.refreshTaskHeader?.();(app.refreshBackground??app.refresh)();}
     else (app.refreshAfterDialog??app.refresh)();
   }
 
@@ -313,6 +316,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     // once when it can't be sent, so its caller keeps it unsaved. A title or
     // description goes on: its draft keeps a refused value and sends it later.
     if(field==='state'&&refusedAtOnce(null))return false;
+    // A blocked task is completed with its block resolved, as on the Board.
+    // Status shows the saved status again behind the dialog, which opens once
+    // the Status menu has returned focus, so it takes focus and gives it back.
+    if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
     if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
@@ -358,8 +365,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     askToDiscard(()=>nav(view));
   };
   globalThis.document?.addEventListener?.('click',(event)=>{
-    const link=/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]');
-    if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
+    const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]'));
+    // A link to the page that shows changes nothing, so it loses nothing.
+    if(!link||link.href===globalThis.location?.href||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
     event.preventDefault();
     askToDiscard(()=>app.followAddress(link.getAttribute('href')));
   },true);
@@ -715,7 +723,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     else if(mode==='block'){operation='task.block';payload={taskId:item.internalId,reason,mentions:prepared.mentions||[]};}
     else {operation=mode==='completeBlocked'?'task.unblock-and-complete':'task.unblock';payload={taskId:item.internalId,resolution:reason||null};}
     const revisionEntity=operation==='task.block.update'?item.block:item;
-    return fire(execute(operation,payload,revisionEntity,mode==='block'?'Task blocked':'Task unblocked',{form,closeForm:true}));
+    return fire(execute(operation,payload,revisionEntity,BLOCK_MESSAGES[operation],{form,closeForm:true}));
   };
 
   // An item leaves the field as soon as it is sent, so what is typed next is a

@@ -4,27 +4,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle, waitFor } = require('../../support/dom.cjs');
-const { installViewBridge } = require('../../../src/app/view-bridge.js');
 
 /** Whether the browser would ask before the tab leaves oneloop. */
 function leaveWarns(t) { const event = new t.w.Event('beforeunload', { cancelable: true }); t.w.dispatchEvent(event); return event.defaultPrevented; }
 /** Whether moving to another page of oneloop would ask first. */
 const pageWarns = t => t.w.Recovery.hasUnsavedInput({ leaving: false });
 const type = (element, value) => { element.focus(); element.value = value; };
-/**
- * What the app runs: the view bridge with the real recovery controller. The
- * gateway records each command and leaves it running, unless a test gives its
- * own. The bridge watches the document it runs in, as in a browser.
- */
-function withBridge(t, { reloadBootstrap = async () => ({ stale: false }), gateway } = {}) {
-  const commands = [];
-  gateway ??= { execute: (operation, payload) => new Promise((resolve, reject) => { commands.push({ operation, payload, resolve, reject }); }), hasPending: () => false };
-  const previous = globalThis.document; globalThis.document = t.d;
-  try {
-    const bridge = installViewBridge({ app: t.A, data: t.D, api: {}, reads: { cancel() {} }, gateway, auth: {}, recovery: t.w.Recovery, reloadBootstrap });
-    return { ...t, bridge, commands };
-  } finally { globalThis.document = previous; }
-}
 const ask = t => t.d.querySelector('.confirmation-layer [role="alertdialog"]');
 
 test('an unsent comment makes leaving warn, and a clean page leaves quietly', () => {
@@ -53,7 +38,7 @@ test('search boxes and fields that saved when they lost focus never count', asyn
   const board = bootApp({ route: 'board' });
   type(board.d.querySelector('[data-board-search]'), 'payment');
   assert.equal(leaveWarns(board), false, 'the Board search');
-  const settings = withBridge(bootApp({ route: 'settings', actions: true }));
+  const settings = bootApp({ route: 'settings', actions: true });
   type(settings.d.getElementById('member-search'), 'robin');
   assert.equal(leaveWarns(settings), false, 'the member search');
   const name = settings.d.querySelector('.project-fields [name="name"]');
@@ -62,6 +47,7 @@ test('search boxes and fields that saved when they lost focus never count', asyn
   name.blur(); await settle();
   assert.deepEqual(settings.commands.map(command => command.operation), ['project.update']);
   assert.equal(name.value, 'Renamed project');
+  settings.commands[0].resolve({ entities: [], events: [] }); await settle();
   assert.equal(leaveWarns(settings), false, 'the name saved when it lost focus');
   name.focus();
   assert.equal(leaveWarns(settings), false, 'focusing it again without typing');
@@ -79,11 +65,13 @@ test('an untouched New user or Edit user dialog leaves quietly; a ticked checkbo
 });
 
 test('a permission checkbox saves when it changes, so it never counts, also while it has focus', async () => {
-  const t = withBridge(bootApp({ route: 'settings', actions: true }));
+  const t = bootApp({ route: 'settings', actions: true });
   const box = t.d.querySelector('.member-access-row input[type="checkbox"][data-autosave]:not(:checked)');
   box.focus(); box.click(); await settle();
   assert.deepEqual(t.commands.map(command => command.operation), ['membership.update']);
   assert.equal(t.d.activeElement, box);
+  assert.equal(pageWarns(t), false);
+  t.commands[0].resolve({ entities: [], events: [] }); await settle();
   assert.equal(leaveWarns(t), false);
 });
 
@@ -99,7 +87,7 @@ const tabAway = (t, deadline) => { deadline.blur(); t.A.dateBlur({ target: deadl
 const deadlines = t => t.commands.map(command => [command.operation, command.payload.deadline]);
 
 test('a deadline saved with Enter counts as saved once the server accepts it, though it keeps focus', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' })), task = t.D.tasks.find(item => item.id === 'BIR-079');
+  const t = bootApp({ route: 'task/BIR-079' }), task = t.D.tasks.find(item => item.id === 'BIR-079');
   const deadline = enterDeadline(t, '2026-12-24');
   await settle();
   assert.deepEqual(deadlines(t), [['task.update', '2026-12-24']]);
@@ -113,7 +101,7 @@ test('a deadline saved with Enter counts as saved once the server accepts it, th
 });
 
 test('a deadline whose save fails keeps counting, and Tab sends it again', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   const deadline = enterDeadline(t, '2026-12-24');
   await settle();
   t.commands[0].reject(new t.w.TestApiError('down', { status: 503, code: 'unavailable' })); await settle();
@@ -124,7 +112,7 @@ test('a deadline whose save fails keeps counting, and Tab sends it again', async
 });
 
 test('a deadline typed offline is refused at once, keeps counting, and Tab sends it once online', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Network', { code: 'network_error' }) });
   const deadline = enterDeadline(t, '2026-12-24');
   await settle();
@@ -136,18 +124,46 @@ test('a deadline typed offline is refused at once, keeps counting, and Tab sends
   assert.deepEqual(deadlines(t), [['task.update', '2026-12-24']]);
 });
 
+test('a deadline refused offline keeps counting once focus leaves it', async () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Network', { code: 'network_error' }) });
+  const deadline = enterDeadline(t, '2026-12-24');
+  tabAway(t, deadline); await settle();
+  assert.notEqual(t.d.activeElement, deadline);
+  assert.equal(pageWarns(t), true, 'another page asks first'); assert.equal(leaveWarns(t), true);
+});
+
+test('a deadline refused after a status save repainted the header stays marked unsaved', async () => {
+  const t = bootApp({ route: 'task/BIR-079' }), task = t.D.tasks.find(item => item.id === 'BIR-079');
+  t.A.popSelect({ currentTarget: t.d.getElementById('select-tpState'), preventDefault() {} }, 'tpState');
+  [...t.d.querySelectorAll('.pop-opt')].find(option => option.textContent === 'In Progress').click();
+  const deadline = enterDeadline(t, '2026-12-24'); await settle();
+  // The deadline waits behind the status save, whose answer repaints the header.
+  Object.assign(task, { state: 'progress', revision: task.revision + 1 });
+  t.commands[0].resolve({ entities: [{ id: task.internalId, revision: task.revision }], events: [] }); await settle();
+  assert.deepEqual(deadlines(t), [['task.move', undefined], ['task.update', '2026-12-24']]);
+  t.commands[1].reject(new t.w.TestApiError('Deadline refused', { status: 400, code: 'validation_failed' })); await settle();
+  assert.equal(deadline.value, '2026-12-24');
+  assert(deadline.hasAttribute('data-unsaved'), 'the refused date shows as not saved');
+  assert.equal(pageWarns(t), true, 'another page asks first');
+});
+
+test('a link to the page that shows never asks', () => {
+  const t = bootApp({ route: 'task/BIR-079' });
+  type(t.d.getElementById('cmtIn'), 'Half a thought');
+  const link = t.d.createElement('a'); link.href = '#/task/BIR-079'; link.textContent = 'This task'; t.d.querySelector('.task-page').append(link);
+  link.click();
+  assert.equal(ask(t), null);
+});
+
 test('a comment that is being sent does not count, and counts again if the send fails', async () => {
-  let finish;
-  const t = bootApp({ route: 'task/BIR-079', prepare(_D, w) {
-    w.OneloopTransport = {};
-    w.OneloopCollaboration = { bind() { return { saveComment(input) { return new Promise(resolve => { finish = saved => { if (!saved) input.unsent(); resolve(saved); }; }); } }; } };
-  } });
+  const t = bootApp({ route: 'task/BIR-079' });
   type(t.d.getElementById('cmtIn'), 'On its way');
   assert.equal(pageWarns(t), true);
   t.A.addComment('BIR-079');
   assert.equal(t.d.getElementById('cmtIn').value, '', 'the text left the box as it was sent');
   assert.equal(pageWarns(t), false, 'the comment is being sent');
-  finish(false); await settle();
+  await settle(); t.commands[0].reject(new t.w.TestApiError('The service is busy', { status: 503, code: 'unavailable' })); await settle();
   assert.equal(t.d.getElementById('cmtIn').value, 'On its way', 'a send that failed brings it back');
   assert.equal(pageWarns(t), true, 'the person keeps the text of a send that failed');
 });
@@ -179,7 +195,7 @@ test('a temporary password counts as unsaved while it shows or waits, so neither
 });
 
 test('running saves, uploads and drafts count only when leaving oneloop', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   let finish;
   t.w.Recovery.trackWrite(new Promise(resolve => { finish = resolve; }));
   assert.equal(leaveWarns(t), true); assert.equal(pageWarns(t), false, 'a save carries on on another page');
@@ -190,19 +206,19 @@ test('running saves, uploads and drafts count only when leaving oneloop', async 
 });
 
 test('deleting a task drops its Not saved drafts, and its Undo counts as nothing unsaved', async () => {
-  const page = bootApp({ route: 'task/BIR-079' }), item = page.D.tasks.find(task => task.id === 'BIR-079');
-  const t = withBridge(page, { gateway: { execute: async () => ({ entities: [{ id: item.internalId, revision: 7 }], events: [] }), hasPending: () => false } });
+  const t = bootApp({ route: 'task/BIR-079' }), item = t.D.tasks.find(task => task.id === 'BIR-079');
   t.bridge.keepTaskDraft('BIR-079', 'desc', 'A description that could not be saved');
   assert.equal(leaveWarns(t), true, 'a draft waits for the task page');
   t.A.deleteTask('BIR-079');
   t.d.querySelector('[data-confirm-accept]').click();
+  t.commands[0].resolve({ entities: [{ id: item.internalId, revision: 7 }], events: [] });
   await waitFor(() => t.d.querySelector('.toast-action'), 'the deletion offers Undo');
   assert.equal(t.A.context().view, 'board'); assert.equal(ask(t), null, 'deleting goes to the Board without asking');
   assert.equal(leaveWarns(t), false, 'nothing of the deleted task counts');
 });
 
 test('another page asks first: Cancel keeps the text and Discard moves on', () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   t.A.nav('board');
   assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
@@ -218,7 +234,7 @@ test('another page asks first: Cancel keeps the text and Discard moves on', () =
 async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before || ask(t), 'Back changed the page'); await settle(); }
 
 test('Back saves a field that saves itself before the page changes, and does not ask', async () => {
-  const t = withBridge(bootApp({ route: 'board', actions: true }));
+  const t = bootApp({ route: 'board', actions: true });
   t.A.openTask('BIR-079'); await settle();
   const description = t.d.getElementById('task-description');
   type(description, 'Typed before Back');
@@ -229,7 +245,7 @@ test('Back saves a field that saves itself before the page changes, and does not
 });
 
 test('Back with typed text puts the address back and asks; Discard then goes without asking again', async () => {
-  const t = withBridge(bootApp({ route: 'roadmap' }));
+  const t = bootApp({ route: 'roadmap' });
   t.A.nav('board'); await settle();
   t.A.openTask('BIR-079'); await settle();
   type(t.d.getElementById('cmtIn'), 'Half a thought');
@@ -246,7 +262,7 @@ test('Back with typed text puts the address back and asks; Discard then goes wit
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   const link = t.d.createElement('a'); link.href = '#/board'; link.textContent = 'Board'; t.d.querySelector('.task-page').append(link);
   link.click();
@@ -258,7 +274,7 @@ test('a link to another page with typed text asks once, and Discard follows it',
 });
 
 test('a page change that follows the person\'s own change, or a clean page, never asks', () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   t.A.nav('roadmap');
   assert.equal(ask(t), null); assert.equal(t.A.context().view, 'roadmap');
   t.A.openTask('BIR-079');
@@ -269,7 +285,7 @@ test('a page change that follows the person\'s own change, or a clean page, neve
 
 test('switching projects with typed text asks first, and Cancel stays', async () => {
   const loads = [];
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }), { reloadBootstrap: async scope => { loads.push(scope); return { stale: false }; } });
+  const t = bootApp({ route: 'task/BIR-079', reloadBootstrap: async scope => { loads.push(scope); return { stale: false }; } });
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   const switching = t.bridge.invoke('workspace.select', { projectId: 'p2' });
   await settle();
@@ -279,7 +295,7 @@ test('switching projects with typed text asks first, and Cancel stays', async ()
 });
 
 test('Discard works while offline, because nothing changes on the server', () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Network', { code: 'network_error' }) });
   assert.equal(t.w.Recovery.connection, 'offline');
   type(t.d.getElementById('cmtIn'), 'Half a thought');
@@ -289,7 +305,7 @@ test('Discard works while offline, because nothing changes on the server', () =>
 });
 
 test('Sign out says that typed text will be lost, only when there is some', () => {
-  const t = withBridge(bootApp({ route: 'task/BIR-079' }));
+  const t = bootApp({ route: 'task/BIR-079' });
   t.A.logout();
   assert.equal(ask(t).querySelector('p').textContent, 'End your current browser session.');
   t.d.querySelector('[data-confirm-cancel]').click();

@@ -1,11 +1,7 @@
 // @ts-check
 
 import {secondsToMilliseconds} from './time.js';
-import {mapInboxItem} from './inbox-mapper.js';
-
 import {refreshPageWindow} from './page-window.js';
-
-import { sessionBrowserLabel, sessionDeviceLabel } from '../auth/session-label.js';
 
 const STATUS_TO_LEGACY = Object.freeze({ planning: 'planning', in_progress: 'progress', in_review: 'review', done: 'done' });
 const SCOPE_TO_LEGACY = Object.freeze({ personal: 'mine', team: 'project' });
@@ -154,9 +150,8 @@ export function compareTaskOrder(left, right, doneOrder) {
 }
 
 export function mergeEpicTaskPage(data, epicId, taskViews, page, append=false) {
-  const previous=new Map(data.tasks.map((item)=>[item.internalId,item]));
   const byId=new Map(data.tasks.map((item)=>[item.internalId,item]));
-  for(const view of taskViews)byId.set(view.id,retainTaskDetails(previous.get(view.id),mapTask(view)));
+  for(const view of taskViews)byId.set(view.id,retainTaskDetails(byId.get(view.id),mapTask(view)));
   replace(data.tasks,[...byId.values()]);
   const current=data.epicPageInfo[epicId]??{taskIds:[],tasksCursor:null,tasksTotal:0,activityCursor:null,loaded:false};
   const taskIds=append?[...current.taskIds]:[];
@@ -271,15 +266,9 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
     const kept=previousTasks.get(id);
     if(kept&&!data.tasks.some((item)=>item.internalId===id)&&data.projects.some((project)=>project.id===kept.projectId))data.tasks.push(kept);
   }
-  if(!bootstrap.view)replace(data.pool, (bootstrap.pool ?? []).map(mapPoolItem));
-  else replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
-  if(!bootstrap.view)replace(data.notifications, (bootstrap.notifications ?? []).map(mapInboxItem));
-  if(!bootstrap.view)replace(data.browserSessions, (bootstrap.browserSessions ?? []).map((session) => ({
-    ...session, userId:session.userId ?? identity?.id ?? identity?.userId,
-    device:sessionDeviceLabel(session), browser:sessionBrowserLabel(session), createdAt:secondsToMilliseconds(session.createdAt) ?? session.createdAt,
-    lastActiveAt:secondsToMilliseconds(session.lastActivityAt) ?? session.lastActiveAt, current:!!session.current,
-  })));
-  if(!bootstrap.view)replace(data.appGrants, bootstrap.appGrants ?? []);
+  // The Pool, Inbox, sessions and app grants load with their own reads; only
+  // drop Pool items this person can no longer see.
+  replace(data.pool,data.pool.filter(item=>data.projects.some(project=>project.id===item.projectId)&&(item.scope!=='mine'||item.ownerId===(identity?.id??identity?.userId))));
   data.inboxUnreadCount=Number(bootstrap.inboxUnreadCount??0);
   data.boardPageInfo=null;
   data.projectTaskCounts={};

@@ -16,7 +16,7 @@ UIAction.on = (type, method, ...args) => {
 for (const name of ['event', 'element', 'value', 'checked']) UIAction[name] = Object.freeze({ $: name });
 globalThis.UIEscape=UIEscape;
 globalThis.UIAction=UIAction;
-window.UIHTML=(element,source)=>window.OneloopSetHTML?window.OneloopSetHTML(element,source):(element.innerHTML=source);
+window.UIHTML=(element,source)=>window.OneloopSetHTML(element,source);
 (() => {
   const running=new WeakMap(),disclosures=new WeakMap();
   const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;

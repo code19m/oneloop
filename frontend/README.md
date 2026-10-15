@@ -19,21 +19,25 @@ Add application logic to `src/` as ES modules with JSDoc types; preserve the
 DOM contracts in `views/`. Whole-app browser journeys live in
 [`../e2e/journeys/`](../e2e/README.md).
 
-- **Actions.** To change an action, start from `src/app/view-bridge.js`. It
-  replaces many `App` methods in `views/app.js` with server-backed versions, so
-  the method in `views/` may not be the one that runs.
+- **Actions.** To change an action that saves, start from
+  `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
+  `saveTask`, and wraps a few of `views/app.js`, such as `nav`.
+  `views/collaboration.js` and `views/uploads.js` add the comment and
+  attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
   `App` method that its click runs in `data-action`, or that another event runs
   in `data-action-<event>`, with JSON arguments in `data-args`. In `views/`,
   write these with `UIAction`, such as `UIAction('openTask', id)` or
   `UIAction.on('keydown', 'epicKey', UIAction.event, id)`.
   `src/app/view-actions.js` runs them from listeners on the document, but never
-  inside rendered Markdown or file previews. A test checks that each one names
-  an existing method.
+  inside rendered Markdown or file previews, and only for the names in its
+  `ACTIONS` list. A new action goes into that list; a test checks that the list
+  matches the markup and that each name is an existing method.
 - **Unsaved input.** Before someone leaves a page, `hasUnsavedInput` in the
   recovery controller looks for changed fields in open editors. Mark a field
   that saves itself when it loses focus with `data-autosave`, so it counts only
-  while it is being typed.
+  while it is being typed. One whose save was refused gets `data-unsaved` and
+  counts until it saves.
 - **Tooltips.** Put a detail that only a hover would show, such as a full time
   or a name that may be cut off, in `data-tip` rather than `title`.
   `src/app/tooltips.js` shows it on hover, keyboard focus and tap.
@@ -62,9 +66,9 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads motion, SHA-256, activity, file views, uploads and collaboration in
-order, then `app.js`. The view bridge installs server-backed actions before the
-first application render; preview libraries load on demand.
+loads motion, file views, uploads and collaboration in order, then `app.js`.
+The view bridge installs server-backed actions before the first application
+render; preview libraries load on demand.
 
 ## Design
 

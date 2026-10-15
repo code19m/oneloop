@@ -6,30 +6,32 @@ const path = require('node:path');
 const { JSDOM, bootApp, source, previewLibraries, waitFor, fixtures } = require('../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const scripts = ['theme', 'data', 'motion', 'vendor/js-sha256/sha256', 'activity', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const scripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
 // KaTeX refuses to render in quirks mode.
-const boot = () => bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>' });
+const boot = options => bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options });
 
 const readme = ['# Review', '', '## Notes', '## Notes', '', '**bold** and ~~old~~', '', '- [x] Ready', '- [ ] Later', '', '| A | B |', '| - | - |', '| 1 | 2 |', '', '```js', 'const total = 2; // <script>bad()</script>', '```', '', '<details><summary>More</summary>Details</details>', '', '[Jump](#notes)', '[Docs](https://example.invalid/docs)', '[Relative](./other.md)', '[Unsafe](javascript:alert(1))', '![Remote](https://example.invalid/image.png)', '', '<script>window.evil=true</script><img src="x" onerror="evil()"><input name="App"><style>body{display:none}</style>'].join('\n');
 const report = '<h1>Report</h1><link rel="stylesheet" href="https://example.invalid/style.css"><script src="https://example.invalid/code.js"></script><img src="https://example.invalid/pic.png" onerror="alert(1)"><iframe src="https://example.invalid/frame"></iframe><form action="https://example.invalid"><button>Go</button></form>';
 
-/** Boot a task page and attach one file of each kind the previews handle. */
-async function taskWithFiles() {
-  const t = boot();
+/**
+ * Boot a task page whose server lists one file of each kind the previews
+ * handle, with `extra` files; `fetch` gives each file's text.
+ */
+async function taskWithFiles(extra = []) {
+  const files = [['README.md', 'markdown', readme], ['broken.json', 'text', '{"broken":'], ['source.ts', 'text', '<script>alert(1)</script>'], ['Dockerfile', 'text', 'FROM scratch'], ['release.zip', null, ''], ['broken.png', null, 'corrupt'], ['binary.txt', null, ''], ['report.html', 'html', report], ...extra];
+  const record = ([name, previewKind, text], index) => ({ id: `file-${index}`, name, size: text.length, mediaType: 'application/octet-stream', previewKind, isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/${index}`, sourceUrl: `/source/${index}`, downloadUrl: `/download/${index}` });
+  const t = boot({ api: { attachments: async () => ({ items: files.map(record) }) }, setup: w => { w.fetch = async url => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode(files[Number(String(url).split('/').at(-1))][2]).buffer }); } });
   const { w, d } = t;
   const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
-  const files = [new w.File([readme], 'README.md'), new w.File(['{"broken":'], 'broken.json'), new w.File(['<script>alert(1)</script>'], 'source.ts'), new w.File(['FROM scratch'], 'Dockerfile'), new w.File([new Uint8Array([0, 255, 2, 4])], 'release.zip'), new w.File(['corrupt'], 'broken.png'), new w.File([new Uint8Array([0, 255])], 'binary.txt'), new w.File([report], 'report.html')];
-  w.App.attachFiles(task.id, { files, value: '' });
-  await waitFor(() => task.attachments?.length === files.length, 'every file is attached');
+  await waitFor(() => task.attachments?.length === files.length, 'the server lists every file');
   const file = name => task.attachments.find(f => f.name === name);
   return { ...t, task, file, open: name => w.App.previewAttachment(task.id, file(name).id), close: () => d.querySelector('[data-file-close]').click() };
 }
 
-test('uploads accept broken files and keep unpreviewable content download-only', async () => {
-  const { w, file } = await taskWithFiles();
-  for (const name of ['release.zip', 'broken.png', 'binary.txt']) { assert(!w.Uploads.canPreview(file(name))); assert.equal(file(name).type, 'application/octet-stream'); }
-  for (const name of ['README.md', 'broken.json', 'source.ts', 'Dockerfile']) assert(w.Uploads.canPreview(file(name)));
-  assert.equal(file('report.html').type, 'application/octet-stream');
+test('files the server cannot preview are download only', async () => {
+  const { w, d, file } = await taskWithFiles();
+  for (const name of ['release.zip', 'broken.png', 'binary.txt']) { assert(!w.Uploads.canPreview(file(name))); assert(d.querySelector(`[data-attachment-id="${file(name).id}"] .attachment-meta`).textContent.includes('Download only')); }
+  for (const name of ['README.md', 'broken.json', 'source.ts', 'Dockerfile', 'report.html']) assert(w.Uploads.canPreview(file(name)));
 });
 
 test('the preview sequence spans every previewable format and keeps its shell', async () => {
@@ -46,14 +48,15 @@ test('the preview sequence spans every previewable format and keeps its shell', 
 });
 
 test('code and data previews stay escaped text', async () => {
-  const { d, open, close } = await taskWithFiles();
-  open('source.ts'); assert.equal(d.querySelector('.file-preview-content pre').textContent, '<script>alert(1)</script>'); assert(!d.querySelector('.file-preview-content script')); close();
-  open('broken.json'); assert.equal(d.querySelector('.file-preview-content pre').textContent, '{"broken":'); close();
+  const { d, open, close } = await taskWithFiles(), text = () => d.querySelector('.file-preview-content pre')?.textContent;
+  open('source.ts'); await waitFor(() => text(), 'the code loads'); assert.equal(text(), '<script>alert(1)</script>'); assert(!d.querySelector('.file-preview-content script')); close();
+  open('broken.json'); await waitFor(() => text(), 'the data loads'); assert.equal(text(), '{"broken":'); close();
 });
 
 test('Markdown renders GitHub-flavored content safely and offers its source', async () => {
   const { d, open, close } = await taskWithFiles();
   open('README.md');
+  await waitFor(() => d.querySelector('.markdown-body'), 'the Markdown renders');
   const article = d.querySelector('.markdown-body');
   assert(article.querySelector('h1')); assert(article.querySelector('table')); assert(article.querySelector('del')); assert(article.querySelector('details summary'));
   assert.equal(article.querySelectorAll('input[type=checkbox]:disabled').length, 2); assert(article.querySelector('code .hljs-keyword')); assert(article.querySelector('#md-notes-1'));
@@ -81,6 +84,7 @@ test('HTML previews frame the server preview in a sandbox and restart it', async
   const { d, file, open, close } = await taskWithFiles();
   file('report.html').htmlPreviewUrl = '/api/attachments/report/preview/html';
   open('report.html');
+  await waitFor(() => d.querySelector('iframe'), 'the preview loads');
   let frame = d.querySelector('iframe');
   assert.equal(frame.getAttribute('sandbox'), ''); assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
   assert.equal(new URL(frame.src).pathname, '/api/attachments/report/preview/html'); assert(!frame.hasAttribute('srcdoc'));
@@ -89,11 +93,10 @@ test('HTML previews frame the server preview in a sandbox and restart it', async
   d.querySelector('[data-view-preview]').click(); assert(d.querySelector('.document-preview iframe')); assert(!d.querySelector('[data-html-restart]').hidden); close();
 });
 
-test('large Markdown stays attachable and both preview modes are bounded', async () => {
-  const { w, d, task, file, open, close } = await taskWithFiles();
-  w.App.attachFiles(task.id, { files: [new w.File(['# Large\n\n' + 'word '.repeat(50000)], 'large.markdown')], value: '' });
-  await waitFor(() => file('large.markdown'), 'the large file is attached');
-  open('large.markdown'); assert(d.querySelector('.access-note').textContent.includes('truncated')); assert(d.querySelector('.html-source').textContent.length <= 200000); close();
+test('large Markdown previews are bounded in both modes', async () => {
+  const { d, open, close } = await taskWithFiles([['large.markdown', 'markdown', '# Large\n\n' + 'word '.repeat(50000)]]);
+  open('large.markdown'); await waitFor(() => d.querySelector('.file-preview-content .access-note')?.textContent.includes('truncated'), 'the preview says it is cut');
+  assert(d.querySelector('.html-source').textContent.length <= 200000); close();
 });
 
 test('math, alerts and footnotes render and footnote links move focus', async () => {

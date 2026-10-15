@@ -8,7 +8,7 @@ test('a concurrent project-prefix conflict stays beside its editable field',()=>
   const form={isConnected:true,querySelector:(selector)=>selector==='[name="key"]'?field:null,querySelectorAll:()=>[]};
   const calls=[];
   const app={fieldError:(target,name,message)=>calls.push({target,name,message})};
-  const error=new ApiError('task prefix is reserved by another project or its history',{status:409,code:'conflict'});
+  const error=new ApiError('task prefix is reserved by another project or its history',{status:409,code:'prefix_reserved'});
   assert.equal(presentFormError(form,error,app),true);
   assert.deepEqual(calls,[{target:form,name:'key',message:'This task prefix is already in use. Choose another.'}]);
   assert.equal(field.value,'ONE');

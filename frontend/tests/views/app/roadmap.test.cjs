@@ -11,12 +11,11 @@ const boot = (route = 'roadmap', { readOnly = false, stored, prepare } = {}) => 
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose commands stay pending until the test settles them. */
+/** Boot with a runtime whose actions stay pending until the test settles them. */
 function withRuntime(route) {
   const calls = [], reports = [], requests = [];
-  const t = bootApp({ route, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  } });
+  const t = bootApp({ route });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
@@ -198,6 +197,15 @@ test('an ongoing epic that starts after every other date stays on the timeline',
   const { d } = boot('roadmap', { prepare: D => { D.epics.find(epic => epic.id === 'e11').start = '2099-01-01'; } });
   const rail = parseFloat(d.querySelector('.lane-head').style.width), bar = d.querySelector('[data-epic="e11"]');
   assert(rail + parseFloat(bar.style.left) + 60 <= parseFloat(d.querySelector('.rm-canvas').style.width), 'the bar starts with room for its minimum width');
+});
+
+test('a completed open-ended epic reads as complete, also without tasks', () => {
+  // e11 has no end date. Done by hand with no tasks, it is complete, not a quiet ongoing bar.
+  const { d } = boot('roadmap', { prepare: D => Object.assign(D.epics.find(epic => epic.id === 'e11'), { state: 'done', total: 0, done: 0 }) });
+  const bar = d.querySelector('[data-epic="e11"].bar'), meta = bar.querySelector('.m').textContent;
+  assert(bar.classList.contains('done'));
+  assert(!bar.classList.contains('quiet'));
+  assert(meta.includes('complete') && !meta.includes('ongoing'), meta);
 });
 
 test('milestone details stay readable for viewers, show safe full text and dismiss, while managers can edit', () => {

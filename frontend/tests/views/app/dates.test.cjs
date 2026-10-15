@@ -1,7 +1,7 @@
 // views/app.js: dates, Today and displayed instants follow the instance time zone.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
@@ -17,8 +17,9 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       let now = Date.parse('2026-06-15T12:00:00Z'), rollover;
       const { w, d } = bootApp({
         route: 'roadmap', html: '<!doctype html><meta name="theme-color"><div id="app"></div>', media: () => true,
-        scripts: ['theme', 'data', 'motion', 'activity', 'collaboration', 'app'],
-        setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; w.OneloopRuntime = { now: () => now, invoke: async () => {}, report() {} }; },
+        scripts: ['theme', 'data', 'motion', 'collaboration', 'app'],
+        api: { serverNow: () => now },
+        setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; },
         beforeScript: (name, w) => {
           if (name !== 'app') return;
           w.DATA.timeZone = 'UTC'; w.DATA.tasks.find(task => task.id === 'BIR-079').deadline = '2026-06-15';
@@ -58,14 +59,14 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
   }
 });
 
-test('the configured UTC zone controls every displayed instant, whatever the host zone', () => {
+test('the configured UTC zone controls every displayed instant, whatever the host zone', async () => {
  const instant=Date.parse('2099-01-02T23:04:05Z'),expected='2099-01-02 23:04:05';
- const t=boot('task/BIR-079',{prepare:D=>{
+ const storageUsage=async()=>({budgetBytes:100,highWatermarkBytes:90,lowWatermarkBytes:80,usedBytes:1,permanentBytes:1,temporaryBytes:0,cleanedRecords:1,reservedBytes:0,projects:[],recentCleanup:[{at:instant/1000,bytes:1,fileCount:1}]});
+ const t=bootApp({route:'task/BIR-079',api:{storageUsage},prepare:D=>{
    const task=D.tasks.find(item=>item.id==='BIR-079');D.timeZone='UTC';task.created=instant;
    task.comments=[{id:'utc-comment',who:'taylorwu',text:'UTC comment',ts:instant,mentions:[]}];
    task.activity=[{id:'utc-activity',who:'taylorwu',text:'UTC activity',ts:instant}];
    task.attachments=[{id:'utc-file',name:'utc.txt',size:1,type:'text/plain',previewKind:'text',url:'data:text/plain;base64,eA==',ephemeral:false,uploadedBy:'taylorwu',uploadedAt:instant,state:'available'}];
-   D.storageCleanups=[{at:instant,bytes:1,count:1}];
    D.browserSessions.find(item=>item.id==='web-phone').lastActiveAt=instant;
    Object.assign(D.appGrants[0],{authorizedAt:instant,lastUsedAt:instant,expiresAt:Date.parse('2099-01-03T23:04:05Z')});
  }});
@@ -74,7 +75,7 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
  assert.equal(t.d.querySelector('.tl-cmt .act-time').dataset.tip,expected);
  assert.equal(t.d.querySelector('.tl-act .act-time').dataset.tip,expected);
  t.A.previewAttachment('BIR-079','utc-file');assert(t.d.querySelector('.file-info').textContent.includes(expected));
- t.A.nav('storage');assert.equal(t.d.querySelector('.storage-history time').textContent,expected);
+ t.A.nav('storage');await settle();assert.equal(t.d.querySelector('.storage-history time').textContent,expected);
  t.A.nav('profile');assert(t.d.querySelector('.profile-access').textContent.includes(expected));
  const board=boot('board',{prepare:D=>{D.timeZone='UTC';const task=D.tasks.find(item=>item.id==='BIR-079');task.block={id:'utc-block',reason:'UTC block',by:'robin',at:instant};}});
  assert(board.d.querySelector('.blocked-badge').dataset.tip.endsWith(expected));

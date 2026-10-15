@@ -135,7 +135,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     const fields = new FormData(form), currentPassword = String(fields.get('cur') || pendingCredentials?.password || '');
     const newPassword = String(fields.get('pw') || '');
     validateNewPassword(newPassword);
-    if (newPassword !== String(fields.get('pw2') || '')) throw new ApiError('Passwords do not match', { code:'validation_error' });
+    if (newPassword !== String(fields.get('pw2') || '')) throw new ApiError('Passwords do not match.', { code:'validation_error' });
     const auth = await api.changePassword({ currentPassword, newPassword });
     if(!current(token))return;
     pendingCredentials = null;
@@ -149,7 +149,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     if(pendingCompletion)return resumeCompletion(form,()=>changePassword(form),token);
     const fields = new FormData(form), newPassword = String(fields.get('pw') || '');
     validateNewPassword(newPassword);
-    if (newPassword !== String(fields.get('pw2') || '')) throw new ApiError('Passwords do not match', { code:'validation_error' });
+    if (newPassword !== String(fields.get('pw2') || '')) throw new ApiError('Passwords do not match.', { code:'validation_error' });
     const auth = await api.changePassword({ currentPassword:String(fields.get('cur') || ''), newPassword });
     try{return await complete(auth,token);}
     catch(error){if(current(token)&&pendingCompletion&&showCompletionRetry(form,()=>changePassword(form),'Password changed'))return false;throw error;}

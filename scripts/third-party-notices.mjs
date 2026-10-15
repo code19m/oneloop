@@ -66,7 +66,6 @@ const browserLicenses = {
   'cdn-assets': 'BSD-3-Clause',
   dompurify: 'MPL-2.0 OR Apache-2.0',
   'github-markdown-css': 'MIT',
-  'js-sha256': 'MIT',
   katex: 'MIT',
   marked: 'MIT',
   'marked-alert': 'MIT',

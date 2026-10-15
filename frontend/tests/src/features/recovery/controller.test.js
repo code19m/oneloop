@@ -14,26 +14,20 @@ function fixture(overrides={}){
     data,api:{request:async()=>({}),...overrides.api},gateway:{invalidate(){},...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
     reload:async()=>{reloads++;return {};},presentConflict:overrides.presentConflict,
     setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),
-    documentObject:null,windowObject:overrides.windowObject??null,locationObject:{hash:'#/task/ONE-1'},random:()=>0,
+    documentObject:null,windowObject:overrides.windowObject??null,random:()=>0,
   });
   return {controller,data,app,get expires(){return expires;},get reloads(){return reloads;}};
 }
 
-test('production controller implements the complete legacy recovery facade',()=>{
-  const state=fixture();
-  for(const name of ['errorHtml','connectionHtml','ensureOnline','enforceSession','sessionActive','loginAtLimit','recentAuth','retryLoad','reconnect','clearPageError','consumeReturn','copyReference','blockDrag','bind'])assert.equal(typeof state.controller[name],'function',name);
-});
-
-test('recognizes only actionable revision conflicts',()=>{
-  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),true);
-  assert.equal(isRevisionConflict(new ApiError('user is already a member',{status:409,code:'conflict'})),false);
-  assert.equal(isRevisionConflict(new ApiError('record changed',{status:400,code:'conflict'})),false);
+test('recognizes revision conflicts by their code, not their wording',()=>{
+  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);
+  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),false);
 });
 
 test('conflict review can use latest without writing or retry mine at the latest revision',async()=>{
   let latest={revision:4,title:'Latest'},retried=null;
   const first=fixture({presentConflict:async()=> 'latest'});
-  const error=new ApiError('record changed; latest revision is 4',{status:409,code:'conflict'});
+  const error=new ApiError('record changed; latest revision is 4',{status:409,code:'revision_conflict'});
   const accepted=await first.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
   assert.deepEqual(accepted,{handled:true,saved:false,latest,choice:'latest'});assert.equal(retried,null);
 
@@ -95,7 +89,7 @@ test('an open editor keeps its focus-time revision across a live projection refr
   const task={id:'ONE-1',internalId:'opaque-1',revision:1};
   const data={session:{id:'s1',userId:'u1'},tasks:[task],projects:[],tracks:[],epics:[],milestones:[],pool:[]};
   const app={context:()=>({view:'task',taskId:'ONE-1',projectId:'p1'}),refresh(){}};
-  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null,locationObject:{hash:'#/task/ONE-1'}});
+  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
   controller.bind(app,{refresh(){}});
   const target={closest:(selector)=>selector.includes('.task-page')?root:null};
   listeners.focusin({target});

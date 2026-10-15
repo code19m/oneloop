@@ -63,9 +63,27 @@ test('disclosure controls expose names, expansion and keyboard focus', async ({ 
   await page.keyboard.press('Shift+Tab');
   await expect(title).toBeFocused();
   expect(await title.evaluate(el => getComputedStyle(el).outlineWidth)).toBe('2px');
-  await page.evaluate(() => { window.DATA.session.authenticatedAt = 0; window.OneloopRecovery.recentAuth(() => {}).catch(() => {}); });
-  await expect(page.getByRole('dialog', { name: 'Confirm your identity', exact: true })).toBeVisible();
-  await page.getByRole('dialog', { name: 'Confirm your identity' }).getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('a sensitive action asks for the password in a named dialog once the sign-in is old', async ({ page, instance }) => {
+  const created = await instance.api.post('/api/users', { data: { username: 'prompt_member', displayName: 'Prompt Member', isAdmin: false } });
+  expect(created.ok()).toBeTruthy();
+  // The client measures the sign-in age with the server's Date header, so a
+  // server clock 31 minutes ahead makes this fresh sign-in too old to trust.
+  await page.route('**/api/**', async route => {
+    if (new URL(route.request().url()).pathname === '/api/events') { await route.continue(); return; }
+    const response = await route.fetch();
+    await route.fulfill({ response, headers: { ...response.headers(), date: new Date(Date.now() + 31 * 60_000).toUTCString() } });
+  });
+  await openApp(page, instance, 'users');
+  await page.locator('.user-row').filter({ hasText: 'Prompt Member' }).click();
+  await page.locator('.modal').getByRole('button', { name: 'Reset password', exact: true }).click();
+  await page.locator('[data-confirm-accept]').click();
+  const prompt = page.getByRole('dialog', { name: 'Confirm your identity', exact: true });
+  await expect(prompt).toBeVisible();
+  await prompt.getByRole('button', { name: 'Cancel' }).click();
+  await expect(prompt).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'wait' });
 });
 
 // Exercise the rendered client, including its legacy bridge overrides.

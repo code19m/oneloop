@@ -94,7 +94,6 @@ const buildMonitor=createBuildMonitor({
   onUpdate:(value)=>recovery?.buildChanged(value),
 });
 recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
-globalThis.OneloopRecovery=recovery;
 globalThis.Recovery=recovery;
 
 installTooltips(document);
@@ -125,7 +124,7 @@ try {
 
 async function loadViewDependencies() {
   await Promise.all([
-    '/views/motion.js','/vendor/js-sha256/sha256.js','/views/activity.js',
+    '/views/motion.js',
     '/views/file-views.js','/views/uploads.js','/views/collaboration.js',
   ].map(loadClassic));
 }

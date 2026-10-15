@@ -97,13 +97,13 @@ test('attachment transport surfaces structured retryable server errors', async (
 });
 
 test('streaming upload outcomes reach the shared authentication recovery observer',async()=>{
-  const previous=globalThis.OneloopRecovery,events=[];globalThis.OneloopRecovery={observeResponse:(event)=>events.push(event)};
+  const previous=globalThis.Recovery,events=[];globalThis.Recovery={observeResponse:(event)=>events.push(event)};
   try{
     const xhr=new MockXhr();xhr.status=401;xhr.responseText=JSON.stringify({error:{code:'unauthorized',message:'Sign in'}});
     const installed=installAttachmentTransport(runtime(),{xhrFactory:()=>xhr,formDataFactory:()=>new MockFormData()});
     await assert.rejects(installed.api.uploadAttachment('task',{file:new Blob(['a']),idempotencyKey:'expired'}),error=>error.status===401);
     assert.equal(events.length,1);assert.equal(events[0].ok,false);assert.equal(events[0].error.status,401);
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('streaming uploads have a transfer deadline and preserve non-JSON retry headers',async()=>{
@@ -117,8 +117,8 @@ test('streaming uploads have a transfer deadline and preserve non-JSON retry hea
 });
 
 test('streaming upload observers carry the session context from before send',async()=>{
-  const previous=globalThis.OneloopRecovery,events=[];let generation=1;
-  globalThis.OneloopRecovery={requestContext:()=>({sessionGeneration:generation}),observeResponse:event=>events.push(event)};
+  const previous=globalThis.Recovery,events=[];let generation=1;
+  globalThis.Recovery={requestContext:()=>({sessionGeneration:generation}),observeResponse:event=>events.push(event)};
   try{
     const xhr=new MockXhr();xhr.send=()=>{};
     const installed=installAttachmentTransport(runtime(),{xhrFactory:()=>xhr,formDataFactory:()=>new MockFormData()});
@@ -126,30 +126,30 @@ test('streaming upload observers carry the session context from before send',asy
     generation=2;xhr.status=401;xhr.responseText='{}';xhr.onload();
     await assert.rejects(pending,error=>error.requestContext.sessionGeneration===1);
     assert.equal(events[0].requestContext.sessionGeneration,1);
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('an upload counts as unsaved work until it settles',async()=>{
-  const previous=globalThis.OneloopRecovery,tracked=[];
-  globalThis.OneloopRecovery={trackWrite:promise=>tracked.push(promise)};
+  const previous=globalThis.Recovery,tracked=[];
+  globalThis.Recovery={trackWrite:promise=>tracked.push(promise)};
   try{
     const xhr=new MockXhr();xhr.send=()=>{};
     const installed=installAttachmentTransport(runtime(),{xhrFactory:()=>xhr,formDataFactory:()=>new MockFormData()});
     const upload=installed.api.uploadAttachment('task',{file:new Blob(['a']),idempotencyKey:'leaving'});
     assert.deepEqual(tracked,[upload]);
     xhr.onload();await upload;
-  }finally{if(previous===undefined)delete globalThis.OneloopRecovery;else globalThis.OneloopRecovery=previous;}
+  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
 });
 
 test('an upload names the person the page shows', async () => {
   const xhr = new MockXhr();
-  const previous = globalThis.OneloopRecovery;
-  globalThis.OneloopRecovery = { requestContext: () => ({ sessionGeneration: 1, userId: 'u1' }), observeResponse() {}, trackWrite() {} };
+  const previous = globalThis.Recovery;
+  globalThis.Recovery = { requestContext: () => ({ sessionGeneration: 1, userId: 'u1' }), observeResponse() {}, trackWrite() {} };
   try {
     const installed = installAttachmentTransport(runtime(), { xhrFactory: () => xhr, formDataFactory: () => new MockFormData() });
     await installed.api.uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'named-upload' });
     assert.equal(xhr.headers['X-Oneloop-User'], 'u1');
   } finally {
-    if (previous === undefined) delete globalThis.OneloopRecovery; else globalThis.OneloopRecovery = previous;
+    if (previous === undefined) delete globalThis.Recovery; else globalThis.Recovery = previous;
   }
 });

@@ -2,15 +2,12 @@
 
 import { ApiError } from '../../data/api-client.js';
 
-const REVISION_CONFLICT = /(?:record|attachment|comment|user).*(?:changed|latest revision)|latest revision/i;
 const EDITOR_ROOT = '.modal,.task-page,.peek,.settings,.workspace-page';
 const EDITOR_REVISIONS = new WeakMap();
 
 /** @param {unknown} error */
 export function isRevisionConflict(error) {
-  return error instanceof ApiError
-    && error.status === 409
-    && (error.code === 'revision_conflict' || (error.code === 'conflict' && REVISION_CONFLICT.test(error.message)));
+  return error instanceof ApiError && error.code === 'revision_conflict';
 }
 
 /** @param {unknown} value */
@@ -42,6 +39,8 @@ function changedControl(element) {
 const NOT_TYPED = new Set(['password','file','submit','button','reset','image','hidden','search']);
 /** A field that saves itself when it loses focus, such as a task's title. */
 const AUTOSAVE = '[data-autosave]';
+/** A field that saves itself whose last save was refused, so what it shows is not saved. */
+const REFUSED = '[data-unsaved]';
 /** Reload after updates, a choice each browser makes. */
 const AUTO_RELOAD = 'oneloop.autoReload';
 /** The versions a tab already reloaded itself for. */
@@ -51,9 +50,9 @@ const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUIL
 /**
  * Whether an open editor holds text the person typed and has not saved or
  * sent: a changed field in a dialog, a drawer, the task page or a settings
- * page. A field that saves itself counts only while it has focus with a value
- * it has not saved yet; a checkbox that saves itself never counts, because it
- * saves when it changes. `skip` leaves out controls that keep their own state;
+ * page. A field that saves itself counts while it has focus with a value it
+ * has not saved yet, and after its save was refused; a checkbox that saves
+ * itself never counts, because it saves when it changes. `skip` leaves out controls that keep their own state;
  * `roots` limits the check to some editors, such as one dialog.
  * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
  * @param {(element:Element)=>boolean} [skip] @param {Iterable<Element>} [roots]
@@ -65,7 +64,7 @@ export function hasTypedInput(doc, committed, skip = () => false, roots = doc.qu
     if (element instanceof HTMLInputElement && NOT_TYPED.has(element.type) || !(element instanceof HTMLSelectElement) && element.readOnly) continue;
     if (!element.matches(AUTOSAVE)) { if (changedControl(element)) return true; continue; }
     if (isTick(element) || element instanceof HTMLSelectElement) continue;
-    if (element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
+    if (element.matches(REFUSED) || element===active && element.value!==(committed.get(element) ?? element.defaultValue)) return true;
   }
   return false;
 }
@@ -236,6 +235,8 @@ export function createRecoveryController({
   const pendingEditors=new Map();
   const pendingSaves=new Map();
   let refreshFailureScope=null,updatedBuild=false;
+  // Resumes the live updates a newer tab of the same person took over, while they are paused.
+  /** @type {(()=>void)|null} */ let resumeLive=null;
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
   // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
@@ -402,6 +403,7 @@ export function createRecoveryController({
     if(state==='offline')return {text:online()?'Cannot reach oneloop — changes are not being saved':'Offline — changes are not being saved',action:'reconnect',label:'Reconnect'};
     if(state==='reconnecting')return {text:'Reconnecting to live updates…',action:'reconnect',label:'Reconnect'};
     if(updatedBuild)return {text:'oneloop was updated. Reload when you are ready; reloading discards unsaved input.',action:'reloadClient',label:'Reload'};
+    if(resumeLive)return {text:'Live updates are paused in this tab.',action:'resumeLive',label:'Resume'};
     if(refreshFailureScope===viewScope())return {text:'Could not refresh this view.',action:'retryRefresh',label:'Retry'};
     return null;
   }
@@ -450,6 +452,7 @@ export function createRecoveryController({
     const state=notice();if(!state)return;
     if(state.action==='reloadClient')controller.reloadClient();
     else if(state.action==='reconnect')reconnect();
+    else if(state.action==='resumeLive')resumeLive?.();
     else reconcile({background:true});
   }
 
@@ -460,6 +463,12 @@ export function createRecoveryController({
   }
 
   function refreshSucceeded(){refreshFailureScope=null;updateNotice();}
+
+  /** @param {(()=>void)|null} resume */
+  function livePaused(resume){
+    if(resumeLive===resume)return;
+    resumeLive=resume;updateNotice();
+  }
 
   function interactionPending(key,pending){
     if(!pending){
@@ -666,7 +675,7 @@ export function createRecoveryController({
   }
 
   const controller={
-    get pageError(){return pageError;},get pageReference(){return pageReference;},get connection(){return visibleConnection();},get expired(){return expired;},scenario:'',
+    get pageError(){return pageError;},get pageReference(){return pageReference;},get connection(){return visibleConnection();},get expired(){return expired;},
     /**
      * Whether typed text waits for the person's next sign-in: what an editor
      * held when the session ended, or, while no one is signed in, anything
@@ -682,7 +691,6 @@ export function createRecoveryController({
     revisionKey:entityKey,expectedRevision,finishRevision,
     interactionPending,refreshFailed,refreshSucceeded,isSavingTask:()=>pendingSaves.size>0,
     sessionActive:(session)=>session?.revokedAt==null,
-    enforceSession:()=>false,
     ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast?.('Reconnect before making this change.','error');return false;},
     connectionHtml,
     activateNotice,
@@ -705,7 +713,9 @@ export function createRecoveryController({
     reloadClient(){windowObject?.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
-    liveConnected(){liveAttempt=0;clearTimer(liveTimer);setConnectivity(apiReachable,true);},
+    liveConnected(){liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
+    /** A newer tab took this tab's live updates; `resume` takes them back. */
+    livePaused,
     liveDisconnected(reconnectLive){
       setConnectivity(apiReachable,false);clearTimer(liveTimer);
       if(typeof reconnectLive==='function'){
@@ -715,15 +725,12 @@ export function createRecoveryController({
     },
     beginRouteLoad,
     clearPageError(){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;updateNotice();pageError=null;pageReference=null;},
-    consumeReturn(){return null;},
     retryLoad(){beginRouteLoad();reconcile({background:false}).then((result)=>{cancelRouteLoading();if(!result?.error){pageError=null;renderPreservingEditor();}});},
     retryRefresh:()=>reconcile({background:true}),
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast?.('Error reference copied'),()=>getApp()?.toast?.('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
-    recentAuth(run){return getAuth()?.withRecentAuth?.(run);},
-    loginAtLimit(_user,complete){complete();return false;},
     bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);

@@ -26,6 +26,28 @@ All notable changes to oneloop are recorded here. The format follows
 - The Inbox's unread and filter counts now always match the items they come
   with, and an activity feed or a block's history no longer mixes data from
   before and after a change that lands while it is read.
+- After you change a task's status on its page, the status in the page header,
+  the Status icon and **Block task** now change at once. Before, they changed
+  only after you left the task's fields. **Overdue** also follows a changed
+  deadline at once.
+- Dropping a track back in its own place on the Roadmap no longer shows an
+  error.
+- The **Temporary** switch in a file preview works. Before, it did nothing.
+- A tab whose live updates a newer tab took over now says that live updates
+  are paused, with **Resume**. Before, it looked connected but showed no new
+  changes until you used it.
+- Saving a changed block reason now says "Block reason updated", and unblocking
+  and completing a task says "Task unblocked and completed". Before, they said
+  "Task blocked" and "Task unblocked".
+- Markdown in **Knowledge** shows at the reader's own width and spacing.
+  Before, it used the wider layout of file previews.
+- oneloop asks before you leave a task whose new deadline could not be saved
+  because the connection was lost, also after you left the deadline field. A
+  link to the page you are on no longer asks to discard your changes.
+- Choosing **Done** in the Status of a blocked task now asks you to unblock and
+  complete it, as the Board does. Before, the change failed with an error.
+- A block reason with several spaces in a row before a mention keeps the
+  mention. Before, the mention was dropped and the person was not notified.
 
 ### Security
 

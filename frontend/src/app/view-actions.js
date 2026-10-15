@@ -18,7 +18,8 @@
  * run for their own element only. A file input's actions run even when a
  * render removed the input while its picker was open, as its inline handlers
  * did. Nothing runs inside rendered Markdown or a file preview, and a name
- * that isn't a method of `App` or `Recovery` does nothing.
+ * that isn't in `ACTIONS`, or isn't an own method of `App` or `Recovery`,
+ * does nothing.
  */
 
 const BUBBLING = Object.freeze(['click', 'submit', 'input', 'change', 'keydown', 'dragstart', 'dragend', 'dragover', 'dragleave', 'drop']);
@@ -26,6 +27,38 @@ const OWN = Object.freeze(['focus', 'blur', 'mouseenter', 'mouseleave']);
 /** The events an action can answer. */
 export const actionEvents = Object.freeze([...BUBBLING, ...OWN]);
 const UNTRUSTED = '.markdown-body,.file-preview-body';
+/**
+ * The methods the app's markup names, so that a planted attribute can't call
+ * any other method, such as `Recovery.dispose`. A test keeps it equal to the
+ * names in the markup.
+ */
+export const ACTIONS = Object.freeze([
+  'Recovery.activateNotice', 'Recovery.copyReference', 'Recovery.retryLoad', 'addComment',
+  'addPoolItem', 'archiveNotification', 'attachFiles', 'blockReasonInput', 'boardSearchKey',
+  'cancelCommentMode', 'cancelPoolDescription', 'changePassword', 'chooseAttachments',
+  'chooseAvatar', 'cleanupStorage', 'clearBoardFilters', 'closeEpic', 'closeOverlays', 'colLeave',
+  'colOver', 'commentInput', 'commentKey', 'commentMenu', 'copyTemporaryPassword', 'dateBlur',
+  'dateKey', 'dateTyping', 'delAttachment', 'delPool', 'deleteEpic', 'deleteMilestone',
+  'deleteProject', 'downloadAttachment', 'dragEnd', 'dropTask', 'editPoolDescription', 'epicHover',
+  'epicKey', 'epicLeave', 'expandDescription', 'goToday', 'inboxBulk', 'inboxFilter',
+  'jumpToComment', 'laneOver', 'leaveField', 'leaveProjectField', 'loadMoreBoard',
+  'loadMoreEpicActivity', 'loadMoreEpicTasks', 'loadMorePool', 'loadMoreUsers',
+  'loadOlderActivity', 'login', 'logout', 'menuAction', 'milestoneClick', 'milestoneHover',
+  'moreInbox', 'nav', 'openAttachment', 'openModal', 'openNotification', 'openPeek', 'openTask',
+  'poolDescriptionKey', 'poolKey', 'popDate', 'popMulti', 'popSelect', 'projectMenu',
+  'promotePool', 'removeAvatar', 'removeMember', 'reopenEpic', 'replyComment', 'resetPassword',
+  'retryInbox', 'retryPool', 'retryProfileAccess', 'retryStorageUsage', 'retryTaskActivity',
+  'retryUsers', 'revokeAppAccess', 'revokeOtherSessions', 'revokeSession', 'roadmapTipKey',
+  'saveBlock', 'saveEpic', 'saveMilestone', 'savePoolDescription', 'saveProjectNew', 'saveTask',
+  'saveTaskDraft', 'saveTrack', 'saveUser', 'setAttachmentTemporary', 'setAvatar',
+  'setBlockedFilter', 'setBoardQ', 'setMemberPermission', 'setNotificationRead', 'setPassword',
+  'setPoolTab', 'setRoadmapScale', 'setTheme', 'sizeDescription', 'sizeDescriptionEditors',
+  'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu', 'toggleAutoReload',
+  'toggleCommentText', 'toggleDescription', 'toggleDoneOrder', 'togglePoolDescription',
+  'toggleReplies', 'toggleSidebar', 'trackDragStart', 'trackDrop', 'trackMenu', 'trackReorderKey',
+  'updMe', 'updTask', 'updateProjectField', 'userMenu',
+]);
+const ALLOWED = new Set(ACTIONS);
 
 /** @type {Record<string,(event:Event,element:any)=>unknown>} */
 const PLACEHOLDERS = {
@@ -55,7 +88,7 @@ export function installViewActions(doc = document, { onError = (error, element) 
   function run(event, element) {
     const type = event.type, suffix = type === 'click' ? '' : `-${type}`;
     const name = element.getAttribute(`data-action${suffix}`);
-    if (!name || element.closest(UNTRUSTED)) return;
+    if (!name || !ALLOWED.has(name) || element.closest(UNTRUSTED)) return;
     const target = /** @type {HTMLElement} */ (element), key = element.getAttribute('data-key'), press = /** @type {KeyboardEvent} */ (event);
     // Some browsers don't focus a clicked button; a dialog it opens returns focus to it.
     if (type === 'click' && element.matches('button') && !(/** @type {HTMLButtonElement} */ (element).disabled)) target.focus({ preventScroll: true });

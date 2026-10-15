@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, replaceTaskDetail, replaceBoardTasks, replaceRoadmap, wireStatus } from '../../../src/data/projection-store.js';
+import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap, wireStatus } from '../../../src/data/projection-store.js';
 
 const bootstrap = () => ({
-  timeZone: 'Asia/Tashkent',
+  view: 'board', timeZone: 'Asia/Tashkent',
   session: { userId: 'u1', username: 'taylorwu', name: 'Nico', isAdmin: false },
   users: [{ id:'u1', username:'taylorwu', name:'Nico', isAdmin:false, isActive:true, revision:2 }],
   projects: [{ id:'p1', name:'Birch Grove', taskPrefix:'BIR', revision:3 }],
@@ -12,8 +12,6 @@ const bootstrap = () => ({
   epics: [{ id:'e1', projectId:'p1', trackId:'tr1', title:'Launch', description:'Plan', startDate:'2026-09-20', endDate:null, state:'active', position:1, taskDone:0, taskTotal:1, revision:4 }],
   milestones: [{ id:'m1', projectId:'p1', title:'Go live', description:'', milestoneDate:'2026-10-01', revision:1 }],
   tasks: [{ id:'opaque-task', projectId:'p1', epicId:'e1', taskKey:'BIR-001', title:'Ship', description:'Now', status:'in_progress', position:1, deadline:null, createdAt:100, updatedAt:101, revision:5, assigneeIds:['u1'], activeBlock:null }],
-  pool: [{ id:'pool1', projectId:'p1', scope:'personal', ownerUserId:'u1', title:'Later', description:'', createdAt:100, revision:1 }],
-  notifications: [], browserSessions: [], appGrants: [],
 });
 
 test('bootstrap hydrates one stable legacy root and performs explicit wire mappings', () => {
@@ -29,17 +27,9 @@ test('bootstrap hydrates one stable legacy root and performs explicit wire mappi
   assert.equal(data.tasks[0].state, 'progress');
   assert.equal(data.tasks[0].created, 100000);
   assert.equal(data.epics[0].total, 1);
+  replacePoolPage(data, 'p1', 'personal', [{ id:'pool1', projectId:'p1', scope:'personal', ownerUserId:'u1', title:'Later', description:'', createdAt:100, revision:1 }]);
   assert.equal(data.pool[0].scope, 'mine');
   assert.equal(wireStatus('review'), 'in_review');
-});
-
-test('browser sessions keep a concise device label rather than a raw user agent',()=>{
-  const data=createLegacyData(),value=bootstrap();
-  const userAgent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
-  value.browserSessions=[{id:'s1',clientName:userAgent,userAgent,createdAt:100,lastActivityAt:101,current:true}];
-  hydrateLegacyData(data,value);
-  assert.equal(data.browserSessions[0].device,'Chrome on macOS');
-  assert.equal(data.browserSessions[0].browser,null);
 });
 
 test('canonical command entities replace by opaque identity and never create activity', () => {

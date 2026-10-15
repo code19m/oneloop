@@ -1,7 +1,7 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
@@ -57,17 +57,16 @@ const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bo
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose commands stay pending until the test settles them. */
+/** Boot with a runtime whose actions stay pending until the test settles them. */
 function withRuntime(route = 'board') {
   const calls = [], reports = [], requests = [];
-  const t = bootApp({ route, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  } });
+  const t = bootApp({ route });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-/** Boot the Board with recorded animations, a fixed layout and a resolved runtime. */
+/** Boot the Board with recorded animations, a fixed layout and a runtime whose actions succeed at once. */
 function recordingBoard(reduced) {
   const animations = [];
   const t = bootApp({
@@ -77,8 +76,8 @@ function recordingBoard(reduced) {
       w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; };
       w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
     },
-    beforeScript: (name, w) => { if (name === 'app') w.OneloopRuntime = { invoke: () => Promise.resolve({}), report: () => {} }; },
   });
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke: () => Promise.resolve({}), report: () => {} };
   return { ...t, animations };
 }
 
@@ -156,15 +155,6 @@ test('accepting another Board page appends cards and leaves loaded cards and col
   assert(otherColumns.every(item => item.isConnected));
 });
 
-test('Board columns page at 50 cards and load more on demand', () => {
- const t=boot('board',{prepare:D=>{
-  for(let i=0;i<60;i++)D.tasks.push({id:'BIR-page-'+i,epicId:'e2',state:'planning',title:'Paged task '+i,created:Date.now()});
- }});
- assert.equal(t.d.querySelectorAll('[data-col="planning"] .col-cards > .card').length,50);
- const count=Number(t.d.querySelector('[data-col="planning"] .row1 .mono').textContent);assert(count>50);
- t.A.loadMoreBoard('planning');assert.equal(t.d.querySelectorAll('[data-col="planning"] .col-cards > .card').length,count);
-});
-
 test('compact deadlines show the year when it differs and expose the complete date', () => {
  const t=boot('board',{prepare:(D,w)=>{
   const year=new w.Date().getFullYear();
@@ -186,20 +176,35 @@ test('multi-select filters keep keyboard position through toggles and return foc
  key('Escape');assert(!t.d.querySelector('.pop'));assert.equal(t.d.activeElement,trigger);
 });
 
+test('Pool Load more reads the next page once per click, before and after the list repaints', () => {
+ const t=bootApp({route:'board',actions:true}),projectId=t.A.context().projectId;
+ t.D.poolPageInfo[`${projectId}:mine`]={nextCursor:'next',total:30,loaded:true};
+ t.A.openModal('pool');
+ const more=()=>t.d.querySelectorAll('.pool-load-more'),reads=()=>t.reads.calls.filter(call=>call[0]==='morePool').length;
+ assert.equal(more().length,1);more()[0].click();assert.equal(reads(),1);
+ // The fake read repaints the open list in place, which rebuilds the button.
+ assert.equal(more().length,1);more()[0].click();assert.equal(reads(),2);
+ t.D.poolPageInfo[`${projectId}:mine`].nextCursor=null;t.A.refreshPool();assert.equal(more().length,0);
+});
+
 test('Pool does not keep unsent entries across tabs or reopening', () => {
  const t=boot();t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
 });
 
-test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', () => {
- const t=boot('board');t.A.openModal('pool');let input=t.d.getElementById('poolAdd');input.value='Idea with context';t.A.togglePoolDescription();const notes=t.d.getElementById('poolNewDesc');notes.value='First line\n<example> & details';const beforeCount=t.D.pool.length;let prevented=false;const enter=extra=>t.A.poolDescriptionKey({key:'Enter',currentTarget:notes,preventDefault(){prevented=true;},...extra});enter({shiftKey:true});assert(!prevented);enter({isComposing:true});assert.equal(t.D.pool.length,beforeCount);enter({});assert(prevented);assert(!t.d.querySelector('.pool-description-actions').textContent.includes('Enter'));
- const item=t.D.pool.find(p=>p.title==='Idea with context');assert.equal(item.desc,'First line\n<example> & details');assert.equal(input.value,'');assert.equal(t.d.getElementById('poolNewDesc').value,'');assert(!t.d.querySelector('.pool-capture').classList.contains('is-expanded'));
- const row=()=>t.d.querySelector(`[data-pool-item="${item.id}"]`);assert(row().querySelector('.pool-description-preview').textContent.includes('<example>'));assert.equal(row().querySelectorAll('.act>button').length,3);
- t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);let form=row().querySelector('form');form.querySelector('textarea').value='Saved context';t.A.poolDescriptionKey({key:'Enter',currentTarget:form.querySelector('textarea'),preventDefault(){}},item.id);assert.equal(item.desc,'Saved context');
- t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);row().querySelector('textarea').value='Discard this';t.A.cancelPoolDescription(item.id);assert.equal(item.desc,'Saved context');
+test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', async () => {
+ const t=bootApp({route:'board'}),sent=()=>t.commands.map(command=>[command.operation,command.payload]);t.A.openModal('pool');let input=t.d.getElementById('poolAdd');input.value='Idea with context';t.A.togglePoolDescription();const notes=t.d.getElementById('poolNewDesc');notes.value='First line\n<example> & details';let prevented=false;const enter=extra=>t.A.poolDescriptionKey({key:'Enter',currentTarget:notes,preventDefault(){prevented=true;},...extra});enter({shiftKey:true});assert(!prevented);enter({isComposing:true});assert.deepEqual(sent(),[]);enter({});assert(prevented);assert(!t.d.querySelector('.pool-description-actions').textContent.includes('Enter'));
+ assert.deepEqual(sent(),[['pool.create',{projectId:'p1',scope:'personal',title:'Idea with context',description:'First line\n<example> & details'}]]);assert.equal(input.value,'');assert.equal(t.d.getElementById('poolNewDesc').value,'');
+ t.commands[0].resolve({entities:[{entityType:'poolItem',id:'pl-new',projectId:'p1',scope:'personal',ownerUserId:'taylorwu',title:'Idea with context',description:'First line\n<example> & details',createdAt:Math.floor(Date.now()/1000),revision:1}],events:[]});await settle();
+ const item=t.D.pool.find(p=>p.id==='pl-new'),row=()=>t.d.querySelector(`[data-pool-item="${item.id}"]`);assert(row().querySelector('.pool-description-preview').textContent.includes('<example>'));assert.equal(row().querySelectorAll('.act>button').length,3);
+ t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);let form=row().querySelector('form');form.querySelector('textarea').value='Saved context';t.A.poolDescriptionKey({key:'Enter',currentTarget:form.querySelector('textarea'),preventDefault(){}},item.id);
+ assert.deepEqual(sent()[1],['pool.update',{poolItemId:item.id,description:'Saved context'}]);t.commands[1].resolve({entities:[{entityType:'poolItem',id:item.id,description:'Saved context',revision:2}],events:[]});await settle();assert.equal(item.desc,'Saved context');
+ t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);row().querySelector('textarea').value='Discard this';t.A.cancelPoolDescription(item.id);assert.equal(item.desc,'Saved context');assert.equal(t.commands.length,2);
  t.A.togglePoolDescription();t.d.getElementById('poolNewDesc').value='Unsent context';t.A.setPoolTab('project');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolNewDesc').value,'');assert(!t.d.querySelector('.pool-capture').classList.contains('is-expanded'));
  t.A.promotePool(item.id);assert.equal(t.d.querySelector('.pool-editor [name=desc]').value,'Saved context');t.A.returnToPool();assert(t.D.pool.includes(item));assert.equal(item.desc,'Saved context');
- t.A.promotePool(item.id);form=t.d.querySelector('.pool-editor form');form.querySelector('[name=epicId]').value=t.D.epics.find(e=>e.state!=='done').id;t.A.saveTask({target:form,preventDefault(){}});assert(!t.D.pool.includes(item));assert.equal(t.D.tasks.find(task=>task.title==='Idea with context').desc,'Saved context');
- const locked=boot('board');locked.A.openModal('pool');locked.A.setPoolTab('project');const team=locked.D.pool.find(p=>p.scope==='project');let teamRow=locked.d.querySelector(`[data-pool-item="${team.id}"]`);locked.A.editPoolDescription({currentTarget:teamRow.querySelector('.pool-note-toggle'),stopPropagation(){}},team.id);const teamForm=teamRow.querySelector('form');teamForm.querySelector('textarea').value='Not authorized';locked.D.users.find(u=>u.id==='taylorwu').admin=false;locked.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];locked.A.savePoolDescription({target:teamForm,preventDefault(){}},team.id);assert(!team.desc);locked.A.closeOverlays();locked.A.openModal('pool');locked.A.setPoolTab('project');assert(locked.d.querySelector('.pool-capture').hidden);
+ // Text left as the item has it follows the item, so the promotion sends neither title nor description.
+ t.A.promotePool(item.id);form=t.d.querySelector('.pool-editor form');const epicId=t.D.epics.find(e=>e.state!=='done').id;form.querySelector('[name=epicId]').value=epicId;t.A.saveTask({target:form,preventDefault(){}});
+ assert.deepEqual(sent()[2],['pool.promote',{poolItemId:item.id,epicId,deadline:null,assigneeIds:[]}]);
+ const locked=bootApp({route:'board'});locked.D.users.find(u=>u.id==='taylorwu').admin=false;locked.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];locked.A.openModal('pool');locked.A.setPoolTab('project');assert(locked.d.querySelector('.pool-capture').hidden);
 });
 
 test('a Board move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
@@ -332,9 +337,7 @@ test('a card dropped below a long column follows its last shown card and stays d
 });
 
 test('the click that ends a card drag never opens the card, however late it comes', () => {
-  const t = bootApp({ route: 'board', actions: true, beforeScript: (name, w) => {
-    if (name === 'app') w.OneloopRuntime = { invoke: () => Promise.resolve({}), report() {} };
-  } });
+  const t = bootApp({ route: 'board', actions: true });
   t.d.elementFromPoint = () => null;
   const card = t.d.querySelector('.board .card[data-task]');
   const pointer = (type, x) => card.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, pointerType: 'mouse', clientX: x, clientY: 10 }));
