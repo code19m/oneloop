@@ -4,239 +4,27 @@
    bridge then adds the server-backed actions to `App`. See
    frontend/README.md before changing an action. */
 
-const D = window.DATA;
-const collaboration=window.Collab;
-const setHTML=UIHTML;
-const UIMotion=/** @type {Window & {UIMotion:{enter:(el:Element|null)=>void,fade:(el:Element|null)=>void,height:(el:Element|null,before:number)=>void,reduced:()=>boolean,rows:(host:Element,selector:string,key:string)=>Map<string,DOMRect>,reflow:(host:Element,selector:string,key:string,before:Map<string,DOMRect>)=>void,animate:(el:Element,frames:Keyframe[],duration?:number)=>Animation|null}}} */(/** @type {unknown} */(window)).UIMotion;
-/** @type {Window & {ONELOOP_DEFER_BOOT_RENDER?:boolean,OneloopRuntime?:{now?:()=>number,report:(error:unknown)=>void,invoke:(action:string,payload:object)=>Promise<unknown>}}} */
-const bootWindow=window;
-const DAY = 86400000;
+import {
+  MOTION, animateHeight, animateLayout, exitVisual, exitVisuals, fadeContent, motionRects,
+  reducedMotion, uiAnimate, uiAnimations,
+} from './app/effects.js';
+import {
+  DAY, I, STATUS, ago, avatarHtml, cleanStr, d, esc, formatInstant, human, humanFull,
+  humanInstant, humanShort, instanceDateKey, instanceTimeZone, instanceToday, iso, overdue,
+  previousDate, setHTML, stIcon, today,
+} from './app/format.js';
+import {
+  App, D, activeAdmins, canBoard, canReadProject, canReadTask, canRoadmap, collaboration, counts,
+  epicById, epics, hasPermission, instanceNow, invoke, isAdmin, locallyRenderedHashes, me,
+  milestones, poolItems, project, projectMembers, setLocalHash, state, taskById, tasks, trackById,
+  tracks, userById, userHandle, visibleProjects,
+} from './app/model.js';
+
 const NO_ASSIGNEE = '__unassigned__';
-
-const esc = UIEscape;
-const d = (iso) => new Date(iso + 'T00:00:00Z');
-const iso = (dt) => `${String(dt.getUTCFullYear()).padStart(4, '0')}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
-const instanceTimeZone = () => D.timeZone || 'UTC';
-const warnedTimeZones = new Set();
-let formatterZone;
-/** @type {Intl.DateTimeFormat} */ let instantFormatter, shortInstantFormatter;
-function timeFormatters() {
-  const zone = instanceTimeZone();
-  if (formatterZone !== zone) {
-    /** @param {string} timeZone */
-    const build = timeZone => [
-      new Intl.DateTimeFormat('en-GB', {timeZone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'}),
-      new Intl.DateTimeFormat('en-US', {timeZone, month:'short', day:'numeric'}),
-    ];
-    let formatters;
-    try { formatters = build(zone); }
-    catch (error) {
-      if (!(error instanceof RangeError)) throw error;
-      formatters = build('UTC');
-      if (!warnedTimeZones.has(zone)) {
-        warnedTimeZones.add(zone);
-        setTimeout(()=>App.toast('Your browser does not support the instance time zone. Times and Today are shown in UTC. Update your browser to use the configured zone.','info'),0);
-      }
-    }
-    [instantFormatter, shortInstantFormatter] = formatters;
-    formatterZone = zone;
-  }
-}
-const instantParts = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-  timeFormatters();
-  return Object.fromEntries(instantFormatter.formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
-};
-const formatInstant = (value) => {
-  const parts = instantParts(value);
-  // The instance time zone applies everywhere, so the label would only add noise.
-  return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}` : 'Unavailable';
-};
-const instanceDateKey = (value=instanceNow()) => formatInstant(value).slice(0, 10);
-const previousDate = value => { const date = d(value); date.setUTCDate(date.getUTCDate() - 1); return iso(date); };
-window.OneloopTime = { instant: formatInstant };
-const calendarFormatter = new Intl.DateTimeFormat('en-US', {timeZone:'UTC',month:'short',day:'numeric'});
-const human = (dt) => calendarFormatter.format(dt);
-/** @param {Date} dt */
-const humanShort = dt => dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
-const humanInstant = (value) => {timeFormatters();return shortInstantFormatter.format(new Date(value));};
-const instanceNow = () => bootWindow.OneloopRuntime?.now?.() ?? Date.now();
-/** Run a server-backed action of the runtime; it reports a failure itself. */
-const invoke = (action, payload = {}) => bootWindow.OneloopRuntime.invoke(action, payload).catch(bootWindow.OneloopRuntime.report);
-const instanceToday = () => d(instanceDateKey(instanceNow()));
-const today = instanceToday();
 const TOUCH = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-
-const state = {
-  sideOpen: false,
-  view: (location.hash.replace('#/', '') || 'roadmap'),
-  taskId: null,
-  rail: (() => { try { return localStorage.getItem('oneloop.sidebar') === 'rail'; } catch { return false; } })(),
-  poolTab: 'mine',
-  projectId: 'p1',
-  pxPerDay: 8.5,
-  rmScrollLeft: null, rmScrollTop: 0,
-  boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
-  peek: null, modal: null, menu: null,
-  boardLimits:{planning:50,progress:50,review:50,done:50}, usersLimit:50,
-};
-const locallyRenderedHashes = [];
-function setLocalHash(hash) {
-  if (location.hash === hash) return;
-  location.hash = hash;
-  locallyRenderedHashes.push(location.href);
-}
-// ---------- project-scoped accessors ----------
-const project = () => D.projects.find((p) => p.id === state.projectId && canReadProject(p.id));
-const tracks = () => D.tracks.filter((t) => t.projectId === state.projectId && canReadProject(t.projectId)).sort((a, b) => a.order - b.order);
-const epics = () => { const tids = new Set(tracks().map((t) => t.id)); return D.epics.filter((e) => tids.has(e.trackId)); };
-const epicById = (id) => D.epics.find((e) => e.id === id);
-const trackById = (id) => D.tracks.find((t) => t.id === id);
-const milestones = () => D.milestones.filter((m) => m.projectId === state.projectId && canReadProject(m.projectId));
-const tasks = () => { const eids = new Set(epics().map((e) => e.id)); return D.tasks.filter((t) => eids.has(t.epicId)); };
-const taskById = (id) => D.tasks.find((t) => t.id === id || t.internalId === id);
-const poolItems = (scope) => D.pool.filter((p) => p.projectId === state.projectId && canReadProject(p.projectId) && (scope ? p.scope === scope : true) && (p.scope !== 'mine' || p.ownerId === (me() || {}).id));
-const userById = (id) => collaboration?.userById ? collaboration.userById(id) : D.users.find((u) => u.id === id);
-const userHandle = (user) => user?.username || user?.id || '';
-const me = () => (D.session ? userById(D.session.userId) : null);
-const isAdmin = () => !!(me() && me().admin);
-const visibleProjects = () => D.projects.filter(p=>canReadProject(p.id));
-const memberRecord = (userId, projectId) => {
-  const p = D.projects.find((x) => x.id === (projectId || state.projectId));
-  if (!p) return null;
-  const raw = (p.members || []).find((m) => (typeof m === 'string' ? m : m.userId) === userId);
-  return typeof raw === 'string' ? { userId: raw, permissions: [] } : raw || null;
-};
-const canReadProject = id => !!(me()?.active && D.projects.some(p=>p.id===id) && (me().admin||memberRecord(me().id,id)));
-const canReadTask = task => {const id=trackById(epicById(task?.epicId)?.trackId)?.projectId;return !!id&&canReadProject(id);};
-const hasPermission = (permission, projectId) => {
-  const u = me();
-  if (!u || !u.active) return false;
-  if (u.admin) return true;
-  const membership = memberRecord(u.id, projectId);
-  return !!(membership && (membership.permissions || []).includes(permission));
-};
-const canRoadmap = () => hasPermission('manage_roadmap');
-const canBoard = () => hasPermission('manage_board');
-const projectMembers = () => ((project() || {}).members || [])
-  .map((m) => userById(typeof m === 'string' ? m : m.userId))
-  .filter((u) => u && u.active);
-const activeAdmins = () => D.users.filter((u) => u.admin && u.active);
-const avatarHtml = (uid, size) => {
-  const u = userById(uid), sz = size || 18;
-  if (u && u.avatar) return `<img class="avatar" src="${UIEscape(u.avatar)}" style="width:${sz}px;height:${sz}px;object-fit:cover" alt="">`;
-  const initial=(u?.name||u?.username||uid||'?').trim()[0]||'?';
-  return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.55)}px">${esc(initial.toUpperCase())}</span>`;
-};
-const STATUS = { planning: 'Planning', progress: 'In Progress', review: 'In Review', done: 'Done' };
-const ago = (ts) => {
-  const m = Math.round((Date.now() - ts) / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return m + 'm ago';
-  if (m < 48 * 60) return Math.round(m / 60) + 'h ago';
-  return Math.round(m / 1440) + 'd ago';
-};
-const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
   `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
   || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
-
-const counts = () => {
-  const aggregate = D.projectTaskCounts?.[state.projectId];
-  if (aggregate) return { open:aggregate.open, done:aggregate.done };
-  const ts = tasks();
-  return {
-    open: ts.filter((t) => t.state !== 'done').length,
-    done: ts.filter((t) => t.state === 'done').length,
-  };
-};
-
-// ---------- icons ----------
-const I = {
-  knowledge: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 3.6C6 2.4 3.6 2.3 1.75 3v10c1.85-.7 4.25-.6 6.25.6 2-1.2 4.4-1.3 6.25-.6V3c-1.85-.7-4.25-.6-6.25.6Z"/><path d="M8 3.6v10"/></svg>',
-  note: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 1.5h-7v13h11v-9l-4-4Z M9.5 1.5v4h4M5 8h6M5 11h4"/></svg>',
-  blocked: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="m4 4 8 8"/></svg>',
-
-  roadmap: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="7" height="3" rx="1"/><rect x="4.5" y="6.5" width="9" height="3" rx="1"/><rect x="2.5" y="10.5" width="6" height="3" rx="1"/></svg>',
-  board: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="3.4" height="11" rx="1"/><rect x="6.3" y="2.5" width="3.4" height="7" rx="1"/><rect x="11.1" y="2.5" width="3.4" height="9" rx="1"/></svg>',
-  settings: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h2.2M7.8 4.5H14M2 11.5h6.2M11.8 11.5H14"/><circle cx="6" cy="4.5" r="1.8"/><circle cx="10" cy="11.5" r="1.8"/></svg>',
-  plus: '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>',
-  chev: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>',
-  kebab: '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3.5" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="12.5" r="1.2"/></svg>',
-  grip: '<svg width="12" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="5.5" cy="3.5" r="1.2"/><circle cx="10.5" cy="3.5" r="1.2"/><circle cx="5.5" cy="8" r="1.2"/><circle cx="10.5" cy="8" r="1.2"/><circle cx="5.5" cy="12.5" r="1.2"/><circle cx="10.5" cy="12.5" r="1.2"/></svg>',
-  check: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
-  close: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
-  logo: "<svg width=\"20\" height=\"20\" viewBox=\"0 0 100 100\" aria-hidden=\"true\"><path d=\"M46 18H37C25 18 18 25 18 37V63C18 75 25 82 37 82H63C75 82 82 75 82 63V54\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"12\" stroke-linecap=\"round\"/><rect x=\"66\" y=\"12\" width=\"23\" height=\"23\" rx=\"4\" transform=\"rotate(45 77.5 23.5)\" fill=\"currentColor\"/></svg>",
-  wordmark: "<svg class=\"brand-wordmark\" viewBox=\"0 0 7455 1950\" aria-hidden=\"true\"><g transform=\"translate(-80 1470) scale(1 -1)\"><path d=\"M608.667724609375 -30.0Q446.66766357421875 -30.0 328.000732421875 43.0Q209.33380126953125 116.0 144.66690063476562 244.66665649414062Q80.0 373.33331298828125 80.0 540.6666259765625Q80.0 709.9999389648438 146.000244140625 838.3332824707031Q212.00048828125 966.6666259765625 330.8340759277344 1038.3333129882812Q449.66766357421875 1110.0 608.667724609375 1110.0Q771.0010986328125 1110.0 890.0013732910156 1037.1666564941406Q1009.0016479492188 964.3333129882812 1073.8352355957031 835.9999694824219Q1138.6688232421875 707.6666259765625 1138.6688232421875 540.6666259765625Q1138.6688232421875 371.66668701171875 1073.3352355957031 243.16668701171875Q1008.0016479492188 114.66668701171875 888.834716796875 42.333343505859375Q769.6677856445312 -30.0 608.667724609375 -30.0ZM608.667724609375 167.3367919921875Q763.9995727539062 167.3367919921875 840.3321838378906 271.50250244140625Q916.664794921875 375.668212890625 916.664794921875 540.6666259765625Q916.664794921875 710.3317260742188 839.4988403320312 811.4974670410156Q762.3328857421875 912.6632080078125 608.667724609375 912.6632080078125Q503.668701171875 912.6632080078125 435.8360290527344 865.330322265625Q368.00335693359375 817.9974365234375 335.0036926269531 734.33154296875Q302.0040283203125 650.6656494140625 302.0040283203125 540.6666259765625Q302.0040283203125 370.66815185546875 379.83660888671875 269.0024719238281Q457.669189453125 167.3367919921875 608.667724609375 167.3367919921875ZM2081.9986572265625 0.0V530.6654052734375Q2081.9986572265625 593.9971313476562 2071.499053955078 660.49658203125Q2060.9994506835938 726.9960327148438 2031.6666259765625 784.1627502441406Q2002.3338012695312 841.3294677734375 1948.8341674804688 876.3297119140625Q1895.3345336914062 911.3299560546875 1809.33447265625 911.3299560546875Q1753.00244140625 911.3299560546875 1703.1697082519531 892.4971008300781Q1653.3369750976562 873.6642456054688 1615.6704711914062 832.6648254394531Q1578.0039672851562 791.6654052734375 1556.3372497558594 724.9990844726562Q1534.6705322265625 658.332763671875 1534.6705322265625 561.9991455078125L1404.6689453125 610.6673583984375Q1404.6689453125 757.6661987304688 1459.6687622070312 870.1661682128906Q1514.6685791015625 982.6661376953125 1617.8353271484375 1045.9998168945312Q1721.0020751953125 1109.33349609375 1866.6695556640625 1109.33349609375Q1978.6704711914062 1109.33349609375 2054.837371826172 1072.999755859375Q2131.0042724609375 1036.666015625 2178.5040893554688 978.1655578613281Q2226.00390625 919.6651000976562 2251.0035400390625 850.9982604980469Q2276.003173828125 782.3314208984375 2285.0028686523438 716.1651916503906Q2294.0025634765625 649.9989624023438 2294.0025634765625 600.0003662109375V0.0ZM1322.6666259765625 0.0V1080.0H1510.0032958984375V767.9971923828125H1534.6705322265625V0.0ZM2998.334716796875 -30.0Q2836.6677856445312 -30.0 2715.5007934570312 40.666717529296875Q2594.3338012695312 111.33343505859375 2526.6669006347656 237.66671752929688Q2459 364 2459.0 530.6663818359375Q2459.0 707.6663818359375 2525.500213623047 837.6664428710938Q2592.0004272460938 967.66650390625 2710.834014892578 1038.833251953125Q2829.6676025390625 1110.0 2987.667724609375 1110.0Q3152.6680297851562 1110.0 3268.668212890625 1033.3331298828125Q3384.6683959960938 956.666259765625 3442.1683654785156 815.666015625Q3499.6683349609375 674.665771484375 3488.3346557617188 481.332275390625H3278.9976806640625V557.333740234375Q3276.997802734375 744.9990234375 3207.4988403320312 834.831298828125Q3137.9998779296875 924.66357421875 2995.66796875 924.66357421875Q2839.0023803710938 924.66357421875 2760.003204345703 825.8311157226562Q2681.0040283203125 726.9986572265625 2681.0040283203125 540.0Q2681.0040283203125 362.3349609375 2760.003204345703 264.83587646484375Q2839.0023803710938 167.3367919921875 2987.667724609375 167.3367919921875Q3085.6666259765625 167.3367919921875 3157.3323974609375 211.6695556640625Q3228.9981689453125 256.0023193359375 3268.99755859375 339.3345947265625L3473.6683349609375 274.00048828125Q3411.0017700195312 129.3336181640625 3283.0015563964844 49.66680908203125Q3155.0013427734375 -30.0 2998.334716796875 -30.0ZM2613.0030517578125 481.332275390625V644.0013427734375H3383.6663818359375V481.332275390625ZM3697 0V1470H3906.337158203125V0.0ZM4639.667724609375 -30.0Q4477.667663574219 -30.0 4359.000732421875 43.0Q4240.333801269531 116.0 4175.666900634766 244.66665649414062Q4111.0 373.33331298828125 4111.0 540.6666259765625Q4111.0 709.9999389648438 4177.000244140625 838.3332824707031Q4243.00048828125 966.6666259765625 4361.834075927734 1038.3333129882812Q4480.667663574219 1110.0 4639.667724609375 1110.0Q4802.0010986328125 1110.0 4921.001373291016 1037.1666564941406Q5040.001647949219 964.3333129882812 5104.835235595703 835.9999694824219Q5169.6688232421875 707.6666259765625 5169.6688232421875 540.6666259765625Q5169.6688232421875 371.66668701171875 5104.335235595703 243.16668701171875Q5039.001647949219 114.66668701171875 4919.834716796875 42.333343505859375Q4800.667785644531 -30.0 4639.667724609375 -30.0ZM4639.667724609375 167.3367919921875Q4794.999572753906 167.3367919921875 4871.332183837891 271.50250244140625Q4947.664794921875 375.668212890625 4947.664794921875 540.6666259765625Q4947.664794921875 710.3317260742188 4870.498840332031 811.4974670410156Q4793.3328857421875 912.6632080078125 4639.667724609375 912.6632080078125Q4534.668701171875 912.6632080078125 4466.836029052734 865.330322265625Q4399.003356933594 817.9974365234375 4366.003692626953 734.33154296875Q4333.0040283203125 650.6656494140625 4333.0040283203125 540.6666259765625Q4333.0040283203125 370.66815185546875 4410.836608886719 269.0024719238281Q4488.669189453125 167.3367919921875 4639.667724609375 167.3367919921875ZM5823.667724609375 -30.0Q5661.667663574219 -30.0 5543.000732421875 43.0Q5424.333801269531 116.0 5359.666900634766 244.66665649414062Q5295.0 373.33331298828125 5295.0 540.6666259765625Q5295.0 709.9999389648438 5361.000244140625 838.3332824707031Q5427.00048828125 966.6666259765625 5545.834075927734 1038.3333129882812Q5664.667663574219 1110.0 5823.667724609375 1110.0Q5986.0010986328125 1110.0 6105.001373291016 1037.1666564941406Q6224.001647949219 964.3333129882812 6288.835235595703 835.9999694824219Q6353.6688232421875 707.6666259765625 6353.6688232421875 540.6666259765625Q6353.6688232421875 371.66668701171875 6288.335235595703 243.16668701171875Q6223.001647949219 114.66668701171875 6103.834716796875 42.333343505859375Q5984.667785644531 -30.0 5823.667724609375 -30.0ZM5823.667724609375 167.3367919921875Q5978.999572753906 167.3367919921875 6055.332183837891 271.50250244140625Q6131.664794921875 375.668212890625 6131.664794921875 540.6666259765625Q6131.664794921875 710.3317260742188 6054.498840332031 811.4974670410156Q5977.3328857421875 912.6632080078125 5823.667724609375 912.6632080078125Q5718.668701171875 912.6632080078125 5650.836029052734 865.330322265625Q5583.003356933594 817.9974365234375 5550.003692626953 734.33154296875Q5517.0040283203125 650.6656494140625 5517.0040283203125 540.6666259765625Q5517.0040283203125 370.66815185546875 5594.836608886719 269.0024719238281Q5672.669189453125 167.3367919921875 5823.667724609375 167.3367919921875ZM7046.334716796875 -30.0Q6891.3343505859375 -30.0 6786.0008544921875 45.33331298828125Q6680.6673583984375 120.6666259765625 6626.833984375 249.83328247070312Q6573.0006103515625 378.99993896484375 6573.0006103515625 540.6666259765625Q6573.0006103515625 703.333251953125 6626.667297363281 832.1665954589844Q6680.333984375 960.9999389648438 6784.834014892578 1035.4999694824219Q6889.334045410156 1110.0 7042.3341064453125 1110.0Q7194.0009765625 1110.0 7304.501251220703 1035.5000305175781Q7415.001525878906 961.0000610351562 7475.001739501953 832.3334045410156Q7535.001953125 703.666748046875 7535.001953125 540.6666259765625Q7535.001953125 378.6666259765625 7475.335113525391 249.49996948242188Q7415.668273925781 120.33331298828125 7306.168121337891 45.166656494140625Q7196.66796875 -30.0 7046.334716796875 -30.0ZM6537.6666259765625 -480.0V1080.0H6723.669921875V303.3355712890625H6748.337158203125V-480.0ZM7017.00048828125 159.3365478515625Q7117.333068847656 159.3365478515625 7182.832489013672 210.0028076171875Q7248.3319091796875 260.6690673828125 7280.6649169921875 347.1683349609375Q7312.9979248046875 433.6676025390625 7312.9979248046875 540.6666259765625Q7312.9979248046875 646.6656494140625 7280.498199462891 732.8316040039062Q7247.998474121094 818.99755859375 7180.998992919922 869.8305053710938Q7113.99951171875 920.6634521484375 7010.3336181640625 920.6634521484375Q6911.667785644531 920.6634521484375 6848.16845703125 872.6638793945312Q6784.669128417969 824.664306640625 6754.169525146484 738.8316955566406Q6723.669921875 652.9990844726562 6723.669921875 540.6666259765625Q6723.669921875 429.00079345703125 6754.002868652344 342.8348693847656Q6784.3358154296875 256.6689453125 6849.168518066406 208.00274658203125Q6914.001220703125 159.3365478515625 7017.00048828125 159.3365478515625Z\" fill=\"currentColor\"/></g></svg>",
-  diamond: '<span class="ms-diamond"></span>',
-  storage: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M2.5 3.5v8c0 2.7 11 2.7 11 0v-8M2.5 7.5c0 2.7 11 2.7 11 0"/></svg>',
-  users: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.5"/><path d="M1.5 13.5c.5-2.5 2-4 4.5-4s4 1.5 4.5 4M11 2.7a2.5 2.5 0 0 1 0 4.6M12 9.5c1.5.6 2.3 1.9 2.5 4"/></svg>',
-  signOut: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 2.5H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3.5M7 8h7M11 5l3 3-3 3"/></svg>',
-  sun: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1v1M8 14v1M1 8h1M14 8h1M3 3l.7.7M12.3 12.3l.7.7M3 13l.7-.7M12.3 3.7l.7-.7"/></svg>',
-  moon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.8 9.5A6 6 0 0 1 6.5 2.2 6 6 0 1 0 13.8 9.5Z"/></svg>',
-  device: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11v3"/></svg>',
-  reload: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"/><path d="M12.5 1.5v3h-3"/></svg>',
-  person: '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="5" r="2.6"/><path d="M2.8 13.6c.9-2.6 2.8-3.9 5.2-3.9s4.3 1.3 5.2 3.9"/></svg>',
-  arrow: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>',
-  clock: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.4 1.6"/></svg>',
-  menu: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/></svg>',
-  st_planning: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--ink-faint)" stroke-width="1.6" stroke-dasharray="2.2 2.2"><circle cx="8" cy="8" r="5.5"/></svg>',
-  st_progress: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--run)" stroke-width="1.6"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="var(--run)" stroke="none"/></svg>',
-  st_review: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--review)" stroke-width="1.6"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="var(--review)" stroke="none"/></svg>',
-  st_done: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--ok)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M5.3 8.2l1.9 1.8 3.5-3.6"/></svg>',
-  cal: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg>',
-  tick: '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
-};
-
-// ---------- form components ----------
-// Shared motion never delays state changes or owns application callbacks.
-const MOTION = { quick: 140, normal: 180, ease: 'cubic-bezier(.2,.8,.2,1)' };
-const uiAnimations = new WeakMap();
-const exitVisuals = new Set();
-const canAnimate = (el) => !!el?.animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-function uiAnimate(el, frames, duration = MOTION.normal) {
-  uiAnimations.get(el)?.cancel();
-  if (!canAnimate(el)) return;
-  const animation = el.animate(frames, { duration, easing: MOTION.ease });
-  uiAnimations.set(el, animation);
-  animation.finished.then(() => { if (uiAnimations.get(el) === animation) uiAnimations.delete(el); }, () => {});
-  return animation;
-}
-function fadeContent(el) {
-  if (el) uiAnimate(el, [{ opacity: .35 }, { opacity: 1 }]);
-}
-function animateHeight(el, before) {
-  if (!el) return;
-  const after = el.getBoundingClientRect().height;
-  if (Math.abs(before - after) > 1) uiAnimate(el, [{ height: before + 'px' }, { height: after + 'px' }]);
-}
-function exitVisual(source) {
-  if (!canAnimate(source)) return;
-  const rect = source.getBoundingClientRect();
-  if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return;
-  // A presentation-only copy cannot intercept input, reuse IDs, or match app selectors.
-  const clone = source.cloneNode(true);
-  const originals = [source, ...source.querySelectorAll('*')];
-  const copies = [clone, ...clone.querySelectorAll('*')];
-  const properties = ['display','position','box-sizing','width','height','min-width','min-height','max-width','max-height','padding','margin','border','border-radius','background','box-shadow','backdrop-filter','color','font','line-height','letter-spacing','text-align','white-space','overflow','text-overflow','flex','flex-direction','align-items','justify-content','gap','opacity'];
-  copies.forEach((copy, i) => {
-    const original = originals[i], style = getComputedStyle(original);
-    [...copy.attributes].forEach((attr) => {
-      if (attr.name === 'id' || attr.name === 'class' || attr.name === 'name' || attr.name.startsWith('data-') || attr.name.startsWith('on') || attr.name === 'draggable') copy.removeAttribute(attr.name);
-    });
-    properties.forEach((property) => copy.style.setProperty(property, style.getPropertyValue(property)));
-    if ('value' in original) copy.value = original.value;
-    copy.scrollTop = original.scrollTop;
-  });
-  clone.className = 'motion-exit'; clone.inert = true; clone.setAttribute('aria-hidden', 'true');
-  Object.assign(clone.style, { position:'fixed', left:rect.left+'px', top:rect.top+'px', width:rect.width+'px', height:rect.height+'px', margin:'0', minWidth:'0', maxWidth:'none', minHeight:'0', maxHeight:'none', pointerEvents:'none', zIndex:'96', animation:'none' });
-  if (exitVisuals.size >= 4) { const oldest = exitVisuals.values().next().value; uiAnimations.get(oldest)?.cancel(); oldest.remove(); exitVisuals.delete(oldest); }
-  document.body.append(clone); exitVisuals.add(clone);
-  const animation = uiAnimate(clone, [{ opacity: getComputedStyle(source).opacity }, { opacity: 0 }], MOTION.quick);
-  const cleanup = () => { clone.remove(); exitVisuals.delete(clone); };
-  if (animation) animation.finished.then(cleanup, cleanup); else cleanup();
-}
 function overlayKey(selector) {
   if (selector === '.modal') return state.modal ? (state.modal.poolId || state.modal.type === 'pool' ? 'pool' : state.modal.type + ':' + (state.modal.id || 'new')) : '';
   if (selector === '.peek') return state.peek || '';
@@ -511,8 +299,6 @@ function askToDiscard(leave, stay = () => {}, text = 'Text you typed on this pag
 // so text already typed into a form is never lost.
 const SELS = {}, DPS = {};
 const POP = { el: null, id: null, onKey: null, anchor: /** @type {HTMLElement|null} */ (null), dateTrigger: /** @type {Element|null} */ (null), onClose: /** @type {(()=>void)|null} */ (null), trigger: /** @type {HTMLElement|null} */ (null) };
-const humanFull = (ds) => d(ds).toLocaleDateString('en-US', { timeZone:'UTC', month: 'short', day: 'numeric', year: 'numeric' });
-const cleanStr = (v, max) => String(v ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, max || 500);
 
 function closePop(silent) {
   if (!POP.el) return;
@@ -1160,9 +946,9 @@ function rollbackTaskMove(change) {
 function submitTaskMove(change,onRollback=()=>render()) {
   if (!change) return;
   const pending={};App._boardMovePending=pending;
-  bootWindow.OneloopRuntime.invoke('task.move',change.payload).catch((error)=>{
+  window.OneloopRuntime.invoke('task.move',change.payload).catch((error)=>{
     if(!error?.uncertain&&rollbackTaskMove(change)&&state.view==='board'&&state.projectId===change.projectId)onRollback();
-    bootWindow.OneloopRuntime.report(error);
+    window.OneloopRuntime.report(error);
   }).finally(()=>{if(App._boardMovePending===pending)App._boardMovePending=false;});
 }
 
@@ -1204,7 +990,6 @@ const COLS = [
   { key: 'review', name: 'In Review' },
   { key: 'done', name: 'Done' },
 ];
-const stIcon = (state) => I['st_' + state] || '';
 /** Whether the loaded Done column lists the most recently completed task first. */
 const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
 
@@ -1606,7 +1391,7 @@ function refreshTaskActivity(id,preserveComments=true) {
 }
 
 // A title or description that is not saved yet stays as typed, with Save.
-const taskDraft = (t, field) => bootWindow.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
+const taskDraft = (t, field) => window.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
 function taskDraftNote(t, field) {
   if (!taskDraft(t, field)?.unsaved) return '';
   if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
@@ -2230,14 +2015,14 @@ function refreshBackground(){
 // Snapshot immediately around the DOM swap, never across an awaited read.
 function render(){
   clearTimeout(backgroundRenderTimer);dialogPaintOwed=false;
-  if(!bootWindow.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
+  if(!window.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
   const scope=renderScope(),active=document.activeElement;
   const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
   const focused=preserve&&active?.matches('input:not([type=file]),textarea')?{opener:rememberOpener(active),value:active.value,scrollTop:active.scrollTop}:null;
   // Text typed into a task field whose edit rights just ended stays as a Not saved draft.
   if(focused&&state.view==='task'&&!active.disabled&&!active.readOnly&&!canBoard()){
     const field=active.matches('.tp-title')?'title':active.id==='task-description'?'desc':null,t=taskById(state.taskId);
-    if(field&&t)bootWindow.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
+    if(field&&t)window.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
   }
   const focusedControl=preserve&&!focused&&active?.closest('#app')?rememberOpener(active):null;
   // The page heading and main area outlast any content render of the same page, such as
@@ -2736,27 +2521,6 @@ function mountRoadmap() {
     if (mountedRoadmap === view) mountedRoadmap = null;
   };
 }
-
-// Layout motion uses the current painted positions, so a new drag can interrupt it.
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-const layoutAnimations = new WeakMap();
-const motionKey = (el) => el.dataset.task || el.dataset.track;
-const motionRects = (selector) => new Map([...document.querySelectorAll(selector)].map((el) => [motionKey(el), el.getBoundingClientRect()]));
-function animateLayout(before, selector, skipId) {
-  document.querySelectorAll(selector).forEach((el) => {
-    const from = before.get(motionKey(el));
-    layoutAnimations.get(el)?.cancel();
-    if (!from || motionKey(el) === skipId || reducedMotion.matches) return;
-    const to = el.getBoundingClientRect();
-    const x = from.left - to.left, y = from.top - to.top;
-    if (Math.abs(x) + Math.abs(y) < 1) return;
-    const animation = el.animate([
-      { transform: `translate(${x}px, ${y}px)` },
-      { transform: 'translate(0, 0)' },
-    ], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' });
-    layoutAnimations.set(el, animation);
-  });
-}
 function settleCard(card, from) {
   if (!card || !from || reducedMotion.matches) return;
   const to = card.getBoundingClientRect();
@@ -2788,7 +2552,7 @@ function refreshEpicSummary() {
 }
 
 // ---------- actions ----------
-export const App = {
+Object.assign(App, {
   /** Production compatibility boundary. New modules must not reach private state directly. */
   context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
   updateDocumentTitle,
@@ -3317,10 +3081,10 @@ export const App = {
     focusMovedTrack(id);
     animateLayout(before, '.lane');
     const pending={};App._roadmapMovePending=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
-    bootWindow.OneloopRuntime.invoke('track.reorder',{trackId:id,position:to,optimistic:true}).catch((error)=>{
+    window.OneloopRuntime.invoke('track.reorder',{trackId:id,position:to,optimistic:true}).catch((error)=>{
       const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
       if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');render();animateLayout(rollbackBefore,'.lane');}}
-      bootWindow.OneloopRuntime.report(error);
+      window.OneloopRuntime.report(error);
     }).finally(()=>{if(App._roadmapMovePending===pending)App._roadmapMovePending=false;});
   },
 
@@ -3554,8 +3318,9 @@ export const App = {
   boardSearchKey(event) {
     if(event.key==='Enter'&&!event.isComposing&&event.keyCode!==229){event.preventDefault();if(boardSearchTimer)applyBoardFilters();}
   },
-};
+});
 window.App = App;
+export { App };
 
 // Pointer gestures share the existing destination, optimistic-save and rollback
 // paths. Touch/pen start on grips so the rest of the Board remains scrollable.
@@ -3843,7 +3608,7 @@ window.Uploads?.bind(App,{confirm:askConfirmation,task:taskById,canRead:id=>canR
 setInterval(()=>{
   const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));
   if(!D.session||me()?.mustChange)return;
-  if (state.view==='roadmap'||state.peek) bootWindow.OneloopRuntime.invoke('date.rollover',{}).catch(()=>{});
+  if (state.view==='roadmap'||state.peek) window.OneloopRuntime.invoke('date.rollover',{}).catch(()=>{});
   if(state.view==='task'){
     const late=overdue(taskById(state.taskId)),row=document.querySelector('.task-property-date');
     row?.classList.toggle('late',late);const label=row?.querySelector('.task-overdue');if(label)label.hidden=!late;
@@ -3853,4 +3618,4 @@ setInterval(()=>{
 },60000);
 ensureToastRegion();
 resolveRoute();
-if(!bootWindow.ONELOOP_DEFER_BOOT_RENDER)render();
+if(!window.ONELOOP_DEFER_BOOT_RENDER)render();
