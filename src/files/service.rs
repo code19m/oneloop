@@ -31,8 +31,9 @@ use tokio::{
 };
 
 use super::{
-    AttachmentView, BlobState, FILE_LEASE_SECONDS, FileStore, MAX_HTML_PREVIEW_BYTES,
-    MAX_TEXT_PREVIEW_BYTES, PreviewKind, StoredFile, detect::preview_kind_from_metadata,
+    AttachmentView, BlobState, FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENTS_PER_TASK,
+    MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind, StoredFile,
+    detect::preview_kind_from_metadata,
 };
 use crate::{
     AppError, AppResult, Db,
@@ -267,10 +268,10 @@ fn require_file_access(
     })
 }
 
-/// Attachments that count against a task's limit: available files, files
-/// being removed, and uploads under way.
-fn occupied_slots(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<i64> {
-    Ok(tx.query_row(
+/// Refuses another attachment of a task that has no free slot. Available
+/// files, files being removed and uploads under way take a slot.
+fn require_free_slot(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<()> {
+    let occupied: i64 = tx.query_row(
         "SELECT
            (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
             WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
@@ -278,7 +279,21 @@ fn occupied_slots(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<i6
             WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
         params![task_id, now],
         |row| row.get(0),
-    )?)
+    )?;
+    if occupied >= MAX_ATTACHMENTS_PER_TASK {
+        return Err(AppError::Conflict(format!(
+            "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
+        )));
+    }
+    Ok(())
+}
+
+/// An attachment change names the revision it was based on.
+fn require_revision(expected: i64) -> AppResult<()> {
+    if expected < 1 {
+        return Err(AppError::validation("expectedRevision", "must be positive"));
+    }
+    Ok(())
 }
 
 /// The columns `stored_file_row` reads, in its order.

@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id, occupied_slots,
-    record_attachment_deletion, require_file_access, stored_file_row, task_project,
+    ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id,
+    record_attachment_deletion, require_file_access, require_free_slot, require_revision,
+    stored_file_row, task_project,
 };
 use crate::{
     AppError, AppResult,
@@ -17,7 +18,7 @@ use crate::{
     collaboration::{ActivityInput, record_activity_tx},
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
-        BlobState, MAX_ATTACHMENTS_PER_TASK, StoredFile,
+        BlobState, StoredFile,
     },
     idempotency::{Envelope, Resource},
 };
@@ -66,9 +67,7 @@ impl FileService {
         attachment_id: &str,
         patch: AttachmentPatch,
     ) -> AppResult<AttachmentView> {
-        if patch.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(patch.expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -143,9 +142,7 @@ impl FileService {
                 "expectedRevision": input.expected_revision,
             }),
         )?;
-        if input.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(input.expected_revision)?;
         let actor = actor.clone();
         let task_id = task_id.to_owned();
         self.db
@@ -162,7 +159,7 @@ impl FileService {
                         let resource = Resource {
                             kind: "attachment",
                             id: Some(input.attachment_id.clone()),
-                            project_id: None,
+                            project_id: Some(project_id.clone()),
                         };
                         let mut current = attachment_views(tx, &task_id)?;
                         let previous_positions = current
@@ -271,14 +268,12 @@ impl FileService {
         expected_revision: i64,
         idempotency_key: &str,
     ) -> AppResult<()> {
-        if expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
         let envelope = Envelope::request(
             "attachment.delete",
             idempotency_key,
             &json!({"attachmentId": attachment_id, "expectedRevision": expected_revision}),
         )?;
+        require_revision(expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -350,9 +345,7 @@ impl FileService {
             &input.idempotency_key,
             &json!({"attachmentId": attachment_id, "expectedRevision": input.expected_revision}),
         )?;
-        if input.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(input.expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -373,7 +366,10 @@ impl FileService {
                             return Err(AppError::Conflict("the attachment is not deleted".into()));
                         };
                         if stored.revision != input.expected_revision {
-                            return Err(AppError::revision(input.expected_revision, stored.revision));
+                            return Err(AppError::revision(
+                                input.expected_revision,
+                                stored.revision,
+                            ));
                         }
                         crate::domain::require_undo_window("attachment", deleted_at, now)?;
                         if stored.state == BlobState::Deleting {
@@ -382,12 +378,8 @@ impl FileService {
                                     .into(),
                             ));
                         }
-                        if stored.state == BlobState::Available
-                            && occupied_slots(tx, &stored.task_id, now)? >= MAX_ATTACHMENTS_PER_TASK
-                        {
-                            return Err(AppError::Conflict(format!(
-                                "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
-                            )));
+                        if stored.state == BlobState::Available {
+                            require_free_slot(tx, &stored.task_id, now)?;
                         }
                         let revision = input.expected_revision + 1;
                         tx.execute(

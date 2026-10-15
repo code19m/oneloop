@@ -12,8 +12,8 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{
-    FileService, attachment_by_id, capacity::require_capacity, log_cleanup_failure, occupied_slots,
-    require_file_access, task_project,
+    FileService, attachment_by_id, capacity::require_capacity, log_cleanup_failure,
+    require_file_access, require_free_slot, task_project,
 };
 use crate::{
     AppError, AppResult, Db,
@@ -23,8 +23,8 @@ use crate::{
     db::DataLease,
     disk::DiskReservation,
     files::{
-        AttachmentView, FileStore, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_TASK,
-        MAX_HTML_PREVIEW_BYTES, UPLOAD_RESERVATION_SECONDS,
+        AttachmentView, FileStore, MAX_ATTACHMENT_BYTES, MAX_HTML_PREVIEW_BYTES,
+        UPLOAD_RESERVATION_SECONDS,
         detect::{self, validate_original_name},
     },
     idempotency::{Resource, validate_key as validate_idempotency_key},
@@ -164,11 +164,7 @@ impl FileService {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
 
-                    if occupied_slots(tx, &task_id_owned, now)? >= MAX_ATTACHMENTS_PER_TASK {
-                        return Err(AppError::Conflict(
-                            format!("a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"),
-                        ));
-                    }
+                    require_free_slot(tx, &task_id_owned, now)?;
 
                     require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
