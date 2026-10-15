@@ -1,5 +1,5 @@
 use super::*;
-use jiff::civil::date;
+use jiff::{Timestamp, civil::date};
 
 #[test]
 fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
