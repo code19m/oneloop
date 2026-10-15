@@ -304,8 +304,11 @@ async fn download(State(state): State<AppState>, headers: HeaderMap) -> AppResul
         .files
         .open_for_read(&actor, &attachment_id, ReadMode::Download)
         .await?;
-    // A ticket works once, so the response is always the whole file.
-    crate::http::files::file_response(read, &HeaderMap::new(), true).await
+    // A ticket works once, so the response is always the whole file, and it
+    // offers no ranges.
+    let mut response = crate::http::files::file_response(read, &HeaderMap::new(), true).await?;
+    response.headers_mut().remove(header::ACCEPT_RANGES);
+    Ok(response)
 }
 
 #[derive(serde::Serialize)]

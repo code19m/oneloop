@@ -1024,6 +1024,7 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
         .await
         .unwrap();
     assert_eq!(download.status(), StatusCode::OK);
+    assert!(download.headers().get(header::ACCEPT_RANGES).is_none());
     let disposition = download.headers()[header::CONTENT_DISPOSITION]
         .to_str()
         .unwrap();
