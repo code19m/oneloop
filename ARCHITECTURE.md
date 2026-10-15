@@ -32,7 +32,7 @@ AI client ─ /mcp ──▶ mcp::tools  ─┘            └─▶ FileStore (
 ```
 
 The services are `DomainService`, `CollaborationService`, `FileService`,
-`KnowledgeService` and `AuthService`. Every write is one SQLite transaction
+`KnowledgeService` and `AuthService`. Every command is one SQLite transaction
 that checks access, validates input, compares the expected revision, records
 the idempotency receipt, changes the data, appends audit activity and adds a
 message to the outbox. After it commits, `CollaborationRuntime` delivers the
@@ -208,8 +208,11 @@ and an update here.
 - **The audit trail is append-only.** Activity and security events are only
   ever inserted. Deleting a project detaches its events but keeps them. When a
   stored value is renamed, readers map the old value; history is not rewritten.
-- **Every write is safe to retry and never overwrites blindly.** Writes carry
-  an idempotency key, and edits carry the revision they were based on.
+- **Writes are safe to retry and never overwrite blindly.** Commands and
+  attachment changes carry an idempotency key, and edits carry the revision
+  they were based on. Two kinds of writes take no key: an attachment's
+  **Temporary** setting, which a repeat can't change further, and account and
+  session changes, which only the browser makes.
 - **Secrets are stored only as hashes.** Passwords use Argon2id; session
   tokens, app tokens and transfer tickets are stored as SHA-256 hashes. No
   secret appears in logs or audit payloads. The one exception is a credential

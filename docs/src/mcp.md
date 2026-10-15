@@ -191,7 +191,8 @@ schema describes the payload of each operation.
 - **Retries.** Every write takes an `idempotencyKey` of 1 to 128 visible ASCII
   characters. If you retry with the same key and the same input, oneloop applies
   the change only once. The same key with different input fails with
-  `idempotency_key_reused`.
+  `idempotency_key_reused`. `set_attachment_temporary` takes no key, because
+  repeating it changes nothing.
 - **Conflicts.** Edits and deletions need the `expectedRevision` from your last
   read. A command tool answers a call without it with `precondition_failed`;
   the attachment tools require it. If someone changed the item since then, the
