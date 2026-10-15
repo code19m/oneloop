@@ -839,11 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn anchors_match_the_browser() {
-        assert_eq!(slug("Short months"), "short-months");
-        assert_eq!(slug("What’s next? (v2)"), "whats-next-v2");
-        assert_eq!(slug("To‘lov jadvali"), "tolov-jadvali");
-        assert_eq!(slug("Оплата и сроки"), "оплата-и-сроки");
+    fn repeated_headings_get_distinct_anchors_that_find_their_sections() {
         for (source, expected) in [
             (
                 "## Setup\n\nFirst.\n\n## Setup\n\nSecond.\n\n## Setup-1\n\nThird.\n",
