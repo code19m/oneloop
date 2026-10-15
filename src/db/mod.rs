@@ -589,7 +589,7 @@ pub(crate) fn open_connection(path: &Path) -> AppResult<Connection> {
     Ok(connection)
 }
 
-pub(crate) fn configure_connection(connection: &Connection) -> AppResult<()> {
+fn configure_connection(connection: &Connection) -> AppResult<()> {
     connection.set_prepared_statement_cache_capacity(64);
     connection.create_scalar_function(
         "oneloop_lower",
