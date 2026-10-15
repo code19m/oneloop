@@ -1,11 +1,11 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, settle, deferred, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, tick } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
- const t=boot(),projectId=t.A.context().projectId;
+ const t=bootApp({route:'board'}),projectId=t.A.context().projectId;
  t.D.tasks.splice(0);t.D.projectTaskCounts={};
  const task=(id,position,status='planning')=>({id,taskKey:`BIR-${id}`,projectId,epicId:t.D.epics[0].id,title:id,status,position,revision:1,assigneeIds:[]});
  const empty={items:[],total:0,nextCursor:null},counts={planning:4,inProgress:4,inReview:0,done:0,blocked:0};
@@ -28,7 +28,7 @@ test('live Board moves keep loaded cards in position and ID order across columns
 });
 
 test('Board search renders matching titles and keys with surrounding whitespace',()=>{
- const t=boot(),task=t.D.tasks.find(item=>item.id==='BIR-079');
+ const t=bootApp({route:'board'}),task=t.D.tasks.find(item=>item.id==='BIR-079');
  for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
   t.A.setBoardQ(padded);
   assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card=>card.dataset.task),['BIR-079'],padded);
@@ -36,7 +36,7 @@ test('Board search renders matching titles and keys with surrounding whitespace'
 });
 
 test('live Pool content patches visible titles, descriptions and labels without losing an active draft',()=>{
- const t=boot();t.A.openModal('pool');
+ const t=bootApp({route:'board'});t.A.openModal('pool');
  const rows=[...t.d.querySelectorAll('[data-pool-item]')].slice(0,2);assert.equal(rows.length,2);
  const editing=rows[1],item=t.D.pool.find(item=>item.id===editing.dataset.poolItem);
  t.A.editPoolDescription({currentTarget:editing.querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);
@@ -49,8 +49,6 @@ test('live Pool content patches visible titles, descriptions and labels without 
  t.A.cancelPoolDescription(item.id);assert.equal(editing.querySelector('.pool-description-preview').textContent,'Remote description');
 });
 
-/** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
 /** The Board with its saving runtime functions held until the test settles them. */
 const heldBoard = () => withRuntime('board', ['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard']);
 
@@ -141,7 +139,7 @@ test('accepting another Board page appends cards and leaves loaded cards and col
 });
 
 test('compact deadlines show the year when it differs and expose the complete date', () => {
- const t=boot('board',{prepare:(D,w)=>{
+ const t=bootApp({route:'board',prepare:(D,w)=>{
   const year=new w.Date().getFullYear();
   D.tasks.find(task=>task.id==='BIR-079').deadline=`${year-1}-09-26`;
  }});
@@ -152,7 +150,7 @@ test('compact deadlines show the year when it differs and expose the complete da
 });
 
 test('multi-select filters keep keyboard position through toggles, name the choice and return focus on Escape', () => {
- const t=boot('board'),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+ const t=bootApp({route:'board'}),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
  assert.match(trigger.textContent,/All tracks/);
  t.A.popMulti({preventDefault(){},currentTarget:trigger},'fTrack');
  const key=value=>t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));
@@ -175,7 +173,7 @@ test('Pool Load more reads the next page once per click, before and after the li
 });
 
 test('Pool does not keep unsent entries across tabs or reopening', () => {
- const t=boot();t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
+ const t=bootApp({route:'board'});t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
 });
 
 test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', async () => {

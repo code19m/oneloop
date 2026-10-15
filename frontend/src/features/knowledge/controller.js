@@ -288,13 +288,13 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   // ---------- search ----------
 
   const where = (/** @type {string} */ path, /** @type {KnowledgeView} */ data) => [data.folder, parentPath(path)].filter(Boolean).join('/');
-  const nameHit = (/** @type {string} */ projectId, /** @type {{path:string,folder:boolean}} */ item, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) => `<a class="knowledge-hit knowledge-hit--file" href="${esc(routeHash(projectId, item.folder ? 'tree' : 'blob', item.path))}" data-knowledge-hit>${fileMark(item.path, item.folder)}<span class="knowledge-hit-name">${highlight(baseName(item.path), words, esc)}</span><span class="knowledge-hit-where">${esc(where(item.path, data))}</span></a>`;
+  const nameHit = (/** @type {string} */ projectId, /** @type {{path:string,folder:boolean}} */ item, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) => `<a class="knowledge-hit knowledge-hit--file" href="${esc(routeHash(projectId, item.folder ? 'tree' : 'blob', item.path))}" data-knowledge-hit>${fileMark(item.path, item.folder)}<span class="knowledge-hit-name">${highlight(baseName(item.path), words)}</span><span class="knowledge-hit-where">${esc(where(item.path, data))}</span></a>`;
 
   function documentHits(/** @type {string} */ projectId, /** @type {any} */ doc, /** @type {number} */ limit, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) {
     const shown = doc.hits.slice(0, limit), rest = doc.total - shown.length;
     const sections = shown.map((/** @type {any} */ hit) => {
       const section = hit.section ?? '';
-      return `<a class="knowledge-hit knowledge-hit--text" href="${esc(routeHash(projectId, 'blob', doc.path, section))}" data-knowledge-hit><span class="knowledge-hit-heading">${highlight(hit.heading, words, esc)}</span><span class="knowledge-hit-snippet">${highlight(hit.snippet, words, esc)}</span></a>`;
+      return `<a class="knowledge-hit knowledge-hit--text" href="${esc(routeHash(projectId, 'blob', doc.path, section))}" data-knowledge-hit><span class="knowledge-hit-heading">${highlight(hit.heading, words)}</span><span class="knowledge-hit-snippet">${highlight(hit.snippet, words)}</span></a>`;
     }).join('');
     const more = rest > 0 ? (S.scope === 'all' && doc.hits.length > shown.length
       ? `<button type="button" class="knowledge-finder-more" data-knowledge-action="scope" data-scope="content">${rest} more in this file</button>`

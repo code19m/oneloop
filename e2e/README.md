@@ -62,7 +62,11 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
 - `openApp(page, instance, route)` signs the browser in through the API,
   opens the route and waits until the live event stream is subscribed, so
   changes made afterwards reach the page. Tests of the sign-in screen use
-  `signIn` instead.
+  `signIn` instead, then `expectSignedIn` to wait for the app.
+- `waitForLiveChannel(page)` waits for that event stream again, for example
+  after `page.reload()`.
+- `useTheme(page, theme)` starts every document in the page with a stored
+  theme.
 - `holdResponses(page, pattern)` holds real server responses until released,
   to reproduce slow reads without faking them.
 - `failUntilRetry(page, pattern, failure)` fails reads until the user presses

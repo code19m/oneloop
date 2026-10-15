@@ -8,6 +8,7 @@ import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
 import {useGlobals,deferred,settle,tick,waitFor} from '../../support/helpers.cjs';
 
 const {JSDOM}=createRequire(import.meta.url)('../../support/dom.cjs');
+/* global document, location -- useGlobals below sets them for each test. */
 
 // The bridge finds forms and fields in the page's document, so each test gets a page of its own.
 beforeEach((t)=>{

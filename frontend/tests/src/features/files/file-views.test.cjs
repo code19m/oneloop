@@ -67,7 +67,7 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
 });
 
 test('Markdown can\'t point a label or a control at the app\'s own elements', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const control = d.createElement('input'); control.type = 'checkbox'; control.id = 'app-control'; d.body.append(control);
   const clicks = []; control.addEventListener('click', () => clicks.push('app control'));
   const host = d.createElement('div'); d.body.append(host);
@@ -99,7 +99,7 @@ test('large Markdown previews are bounded in both modes', async () => {
 });
 
 test('math, alerts and footnotes render and footnote links move focus', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const sample = fs.readFileSync(path.join(fixtures, 'math.md'), 'utf8');
   views.markdownView(extras, { name: 'extras.md' }, sample, false);
@@ -116,7 +116,7 @@ test('math, alerts and footnotes render and footnote links move focus', async ()
 });
 
 test('Markdown anchors stay unique when literal suffixes collide with repeated headings', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   for (const [text, expected] of [
     ['## Setup\n\n## Setup\n\n## Setup-1\n\n## md-setup\n', ['md-setup', 'md-setup-1', 'md-setup-1-1', 'md-md-setup']],
     ['## Setup-1\n\n## Setup\n\n## Setup\n', ['md-setup-1', 'md-setup', 'md-setup-2']],
@@ -130,7 +130,7 @@ test('Markdown anchors stay unique when literal suffixes collide with repeated h
 });
 
 test('heading ids match the anchors the server gives search hits and MCP sections', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const fixture = JSON.parse(fs.readFileSync(path.join(fixtures, 'heading-anchors.json'), 'utf8'));
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'guide.md' }, fixture.source, false);
@@ -140,7 +140,7 @@ test('heading ids match the anchors the server gives search hits and MCP section
 });
 
 test('a spoofed heading marker in uploaded HTML gives no server anchor', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'spoof.md' }, '<h2 data-md-heading="x-0">Fake</h2>\n\n## Setup\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
@@ -148,7 +148,7 @@ test('a spoofed heading marker in uploaded HTML gives no server anchor', async (
 });
 
 test('in-page links reach headings in any script', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
@@ -160,7 +160,7 @@ test('in-page links reach headings in any script', async () => {
 });
 
 test('each Markdown block takes its direction from its own text, as Knowledge pages and attachment previews show it', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'دليل.md' }, '# دليل الفريق\n\nهذه فقرة عربية.\n\n- البند الأول\n- البند الثاني\n\n> اقتباس\n\n| العمود | Column |\n| - | - |\n| ١ | 1 |\n\n<p dir="ltr">Kept as written.</p>\n\n```js\nconst code = 1;\n```', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
@@ -172,7 +172,7 @@ test('each Markdown block takes its direction from its own text, as Knowledge pa
 });
 
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
-  const { w, d, views } = boot();
+  const { d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const unsafe = String.raw`Math: $\href{javascript:alert(1)}{unsafe}$ and $\includegraphics{https://example.invalid/tracker.png}$.
 

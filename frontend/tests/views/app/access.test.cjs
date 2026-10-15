@@ -1,7 +1,7 @@
 // views/app.js: project access, users, settings, profile and storage administration.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle } = require('../../support/dom.cjs');
+const { bootApp, settle, tick } = require('../../support/dom.cjs');
 const { ApiError } = require('../../../src/data/api-client.js');
 
 test('Settings can page through the directory and add an eligible account from a later page',async()=>{
@@ -21,9 +21,6 @@ test('Settings can page through the directory and add an eligible account from a
  t.d.querySelector('.pop-opt').click();await settle();
  assert.deepEqual(t.commands.map(command=>[command.operation,command.payload]),[['membership.add',{projectId:t.A.context().projectId,userId:'last',manageRoadmap:false,manageBoard:false}]]);
 });
-
-/** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { prepare, actions } = {}) => bootApp({ route, actions, prepare });
 
 /** A projection with a second project the viewer cannot access. */
 function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}, options = {}) {
@@ -74,7 +71,7 @@ test('ending the session closes open previews and the task page', () => {
 });
 
 test('unknown routes show a page error and keep their address', async () => {
-const missing=boot('missing');assert(missing.d.querySelector('.page-error').textContent.includes('Page not found'));assert.equal(missing.w.location.hash,'#/missing');
+const missing=bootApp({route:'missing'});assert(missing.d.querySelector('.page-error').textContent.includes('Page not found'));assert.equal(missing.w.location.hash,'#/missing');
 // A task the page does not have is the server's to find; the route loader shows its answer.
 const bad=bootApp({route:'task/BAD',reads:{task:async()=>{throw new ApiError('Task not found',{status:404,code:'not_found'});}}});
 await bad.bridge.loadCurrentRoute().catch(error=>bad.w.Recovery.handleRouteError(error));
@@ -82,11 +79,11 @@ assert(bad.d.querySelector('.page-error'));assert.equal(bad.w.location.hash,'#/t
 });
 
 test('Users is admin-only in navigation and at its direct route', () => {
-const {w,d,A}=boot('users',{prepare:D=>{D.users.find(u=>u.id===D.session.userId).admin=false;}});assert(d.querySelector('.page-error').textContent.includes('Access denied'));assert(!d.querySelector('.user-row'));assert.equal(w.location.hash,'#/users');A.userMenu({currentTarget:d.querySelector('.me-chip')});assert(!d.querySelector('.profile-menu').textContent.includes('Users'));
+const {w,d,A}=bootApp({route:'users',prepare:D=>{D.users.find(u=>u.id===D.session.userId).admin=false;}});assert(d.querySelector('.page-error').textContent.includes('Access denied'));assert(!d.querySelector('.user-row'));assert.equal(w.location.hash,'#/users');A.userMenu({currentTarget:d.querySelector('.me-chip')});assert(!d.querySelector('.profile-menu').textContent.includes('Users'));
 });
 
 test('row actions open the right editor, Pool promotion keeps its title and navigation dismisses stale overlays', () => {
-const {w,d,A,D}=boot('roadmap',{actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');d.querySelector('.pool-promote').click();assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
+const {w,d,A,D}=bootApp({route:'roadmap',actions:true});A.openPeek(D.epics.find(e=>e.title==='Reading summaries').id);assert(d.querySelector('.peek'));A.nav('users');assert(!d.querySelector('.peek'));d.querySelector('.user-row').click();assert(d.querySelector('.modal').textContent.includes('Edit user'));A.nav('board');assert(!d.querySelector('.modal'));A.openModal('pool');d.querySelector('.pool-promote').click();assert.equal(d.querySelector('.modal input[name="title"]').value,'Date pickers');w.location.hash='#/profile';w.dispatchEvent(new w.HashChangeEvent('hashchange'));assert(!d.querySelector('.modal'));assert.equal(d.querySelector('.topbar h1').textContent,'Profile');
 });
 
 test('Users pages load 50 at a time and project Settings keep member access separate', async () => {
@@ -100,7 +97,7 @@ test('Users pages load 50 at a time and project Settings keep member access sepa
 });
 
 test('Enter in a project field saves it and leaves it, but not while text is being composed', async () => {
- const t=boot('settings',{actions:true}),commands=()=>t.commands.map(command=>[command.operation,command.payload]);
+ const t=bootApp({route:'settings',actions:true}),commands=()=>t.commands.map(command=>[command.operation,command.payload]);
  const name=t.d.querySelector('.project-fields [name="name"]'),enter=init=>{const event=new t.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...init});name.dispatchEvent(event);return event;};
  name.focus();name.value='Renamed project';
  assert.equal(enter({isComposing:true}).defaultPrevented,false);assert.equal(t.d.activeElement,name);assert.deepEqual(commands(),[]);
@@ -128,9 +125,9 @@ test('project Settings bound member rows, update loading state in place and sear
 test('Storage failures offer a local Retry and keep loaded usage after a background failure', async () => {
   let fail=true;
   const t=bootWithLayout('storage',{api:{storageUsage:async()=>{if(fail)throw Error('Unavailable');return {budgetBytes:1000,usedBytes:125,pendingDeletionBytes:25,highWatermarkBytes:800,lowWatermarkBytes:700,permanentBytes:100,temporaryBytes:0,projects:[],recentCleanup:[],cleanedRecords:0,reservedBytes:0};}}});
-  await new Promise(resolve=>setTimeout(resolve,0));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not load storage usage'));
+  await tick();assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not load storage usage'));
   fail=false;await t.A.retryStorageUsage();assert(t.d.querySelector('.storage-amount')?.textContent.includes('125 B'));assert(t.d.querySelector('.storage-breakdown').textContent.includes('Pending deletion'));assert(!t.d.querySelector('.storage-breakdown').textContent.includes('Other usage'));
-  fail=true;t.runtime.publish({type:'sse'});await new Promise(resolve=>setTimeout(resolve,0));assert(t.d.querySelector('.storage-amount'));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not refresh storage usage'));
+  fail=true;t.runtime.publish({type:'sse'});await tick();assert(t.d.querySelector('.storage-amount'));assert(t.d.querySelector('.storage-page [role="alert"]')?.textContent.includes('Could not refresh storage usage'));
 });
 
 test('temporary passwords show the account, copy exactly, report clipboard failures and clear on session change', async () => {

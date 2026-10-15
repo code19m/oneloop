@@ -1,7 +1,7 @@
 // views/app.js: the Roadmap, its milestones, zoom and track moves.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, deferred, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, tick } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'roadmap', { readOnly = false, prepare } = {}) => bootApp({ route, prepare: (D, w) => {

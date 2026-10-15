@@ -2,6 +2,8 @@
 
 /** Pure Knowledge rules: routes, folder listings, file kinds, links and search shaping. */
 
+import { escapeHtml } from '../../app/markup.js';
+
 /** @typedef {{path:string,size:number,kind:string|null,updatedAt:number,version?:string}} KnowledgeFile */
 /** @typedef {{projectId:string|null,mode:'tree'|'blob',path:string,section:string,valid:boolean}} KnowledgeRoute */
 /** @typedef {{name:string,path:string,folder:boolean,updatedAt:number,kind:string|null}} Entry */
@@ -121,10 +123,10 @@ export const searchTerms = (/** @type {string} */ query) => [...new Set(String(q
 const escapePattern = (/** @type {string} */ value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Escaped text with every search word marked. */
-export function highlight(/** @type {string} */ value, /** @type {string[]} */ words, /** @type {(value:string)=>string} */ escape) {
-  if (!words.length) return escape(value);
+export function highlight(/** @type {string} */ value, /** @type {string[]} */ words) {
+  if (!words.length) return escapeHtml(value);
   const pattern = new RegExp('(' + words.map(escapePattern).join('|') + ')', 'giu');
-  return String(value).split(pattern).map((part, index) => index % 2 ? `<mark>${escape(part)}</mark>` : escape(part)).join('');
+  return String(value).split(pattern).map((part, index) => index % 2 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)).join('');
 }
 
 /** What an administrator can do about a failed sync. */

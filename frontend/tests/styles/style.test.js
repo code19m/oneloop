@@ -6,8 +6,10 @@ import {JSDOM} from 'jsdom';
 const read=path=>readFileSync(new URL(path,import.meta.url),'utf8');
 const stylesheet=name=>read(`../../styles/${name}.css`);
 const css=stylesheet('style');
-// The app's own rules. markdown-preview.css is the vendored GitHub theme followed by these overrides.
-const appCss=[...['style','workspace-pages','comment-threads','pool','knowledge'].map(stylesheet),read('../../../scripts/markdown-preview-overrides.css')].join('\n');
+// The app's own rules: every stylesheet the page links, and the overrides
+// that markdown-preview.css appends to the vendored GitHub theme.
+const linked=[...read('../../index.html').matchAll(/href="\/styles\/([\w-]+)\.css"/g)].map(match=>match[1]);
+const appCss=[...linked.map(stylesheet),read('../../../scripts/markdown-preview-overrides.css')].join('\n');
 const luminance=hex=>{
   const rgb=hex.match(/[\da-f]{2}/gi).map(part=>parseInt(part,16)/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4);
   return rgb[0]*0.2126+rgb[1]*0.7152+rgb[2]*0.0722;

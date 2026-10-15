@@ -3,9 +3,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle } = require('../../support/dom.cjs');
 
-/** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
-
 test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore the host time zone', async t => {
   const originalZone = process.env.TZ;
   let reference;
@@ -74,7 +71,7 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
  t.A.previewAttachment('BIR-079','utc-file');assert(t.d.querySelector('.file-info').textContent.includes(expected));
  t.A.nav('storage');await settle();assert.equal(t.d.querySelector('.storage-history time').textContent,expected);
  t.A.nav('profile');assert(t.d.querySelector('.profile-access').textContent.includes(expected));
- const board=boot('board',{prepare:D=>{D.timeZone='UTC';const task=D.tasks.find(item=>item.id==='BIR-079');task.block={id:'utc-block',reason:'UTC block',by:'robin',at:instant};}});
+ const board=bootApp({route:'board',prepare:D=>{D.timeZone='UTC';const task=D.tasks.find(item=>item.id==='BIR-079');task.block={id:'utc-block',reason:'UTC block',by:'robin',at:instant};}});
  assert(board.d.querySelector('.blocked-badge').dataset.tip.endsWith(expected));
 });
 
@@ -87,11 +84,11 @@ test('relative times count from the server clock, so a computer clock that runs 
 });
 
 test('the instance time zone decides Today across the UTC day boundary', () => {
-const t=boot('board',{prepare:(D,w)=>{const Native=w.Date,fixed=Native.parse('2026-09-12T20:30:00Z');w.Date=class extends Native{constructor(...args){super(...(args.length?args:[fixed]));}static now(){return fixed;}};D.session.authenticatedAt=fixed;D.browserSessions[0].createdAt=fixed;D.browserSessions[0].lastActiveAt=fixed;}});t.A.openModal('epic');assert.equal(t.d.querySelector('[name="start"]').value,'2026-09-13');
+const t=bootApp({route:'board',prepare:(D,w)=>{const Native=w.Date,fixed=Native.parse('2026-09-12T20:30:00Z');w.Date=class extends Native{constructor(...args){super(...(args.length?args:[fixed]));}static now(){return fixed;}};D.session.authenticatedAt=fixed;D.browserSessions[0].createdAt=fixed;D.browserSessions[0].lastActiveAt=fixed;}});t.A.openModal('epic');assert.equal(t.d.querySelector('[name="start"]').value,'2026-09-13');
 });
 
 test('compact Board creation dates use the instance time zone', () => {
- const t=boot('board',{prepare:D=>{D.timeZone='America/Los_Angeles';D.tasks.find(task=>task.id==='BIR-079').created=Date.parse('2026-01-01T01:00:00Z');}});
+ const t=bootApp({route:'board',prepare:D=>{D.timeZone='America/Los_Angeles';D.tasks.find(task=>task.id==='BIR-079').created=Date.parse('2026-01-01T01:00:00Z');}});
  const created=t.d.querySelector('[data-task="BIR-079"] .card-created');
  assert.equal(created.textContent,'Dec 31');assert.equal(created.dataset.tip,'Created 2025-12-31 17:00:00');
 });
