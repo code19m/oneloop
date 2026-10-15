@@ -19,7 +19,9 @@ All notable changes to oneloop are recorded here. The format follows
   fails with `precondition_failed` (412), as changes to tasks and other
   records do. It failed with `validation_failed` (400).
 - In MCP, `list_attachments` and `reorder_attachment` now accept a task key,
-  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does.
+  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does. The
+  browser API's `GET /api/tasks/{id}/attachments` and
+  `POST /api/tasks/{id}/attachments/reorder` accept one too.
 
 ### Fixed
 
