@@ -1,11 +1,13 @@
 //! The documentation site names every command and MCP tool the binary
-//! offers. A unit test in src/config.rs checks the environment variables.
+//! offers, and shows the current schema. A unit test in src/config.rs checks
+//! the environment variables.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use clap::CommandFactory;
 use oneloop::cli::Cli;
+use oneloop::db::CURRENT_SCHEMA_VERSION;
 use serde_json::json;
 
 use crate::mcp::{ALL_SCOPES, fixture, scoped_mcp};
@@ -54,6 +56,52 @@ fn command_reference_names_every_subcommand() {
         missing.is_empty(),
         "docs/src/reference.md does not mention {missing:?}"
     );
+}
+
+/// The number after each `prefix` and then `infix` in `text`: 6 in
+/// "migrated from 2 to 6" for `("migrated from ", " to ")`.
+fn numbers_after(text: &str, prefix: &str, infix: &str) -> Vec<i64> {
+    text.match_indices(prefix)
+        .map(|(start, _)| {
+            let rest = &text[start + prefix.len()..];
+            let rest = rest.split_once(infix).map_or("", |(_, rest)| rest);
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end]
+                .parse()
+                .unwrap_or_else(|_| panic!("no number after {prefix:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn sample_outputs_show_the_current_schema_version() {
+    let docs = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect::<String>();
+    // `db migrate` prints "migrated from 2 to 6" or "is current (schema 6)",
+    // and `/healthz` returns `"schemaVersion":6`.
+    for (prefix, infix) in [
+        ("migrated from ", " to "),
+        ("(schema ", ""),
+        ("\"schemaVersion\":", ""),
+    ] {
+        let shown = numbers_after(&docs, prefix, infix);
+        assert!(
+            !shown.is_empty(),
+            "no {prefix:?} in docs/src; is the pattern stale?"
+        );
+        assert!(
+            shown
+                .iter()
+                .all(|&version| version == CURRENT_SCHEMA_VERSION),
+            "docs/src shows schema {shown:?} after {prefix:?}, not {CURRENT_SCHEMA_VERSION}"
+        );
+    }
 }
 
 #[tokio::test]

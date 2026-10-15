@@ -22,6 +22,13 @@ if (!section) throw new Error(`Add a dated [${version}] CHANGELOG.md section bef
 const notes = section.slice(section.indexOf('\n') + 1).trim();
 // Link reference definitions and HTML comments do not render visible notes.
 if (!parse(notes).replace(/<!--[\s\S]*?(?:-->|$)/g, '').trim()) throw new Error('Release notes are empty');
+// The notes become the GitHub Release text, so they must say how to install this version,
+// and not only a release candidate of it.
+for (const install of [`ghcr.io/code19m/oneloop:${version}`, `--tag ${tag}`]) {
+  if (!notes.split(install).slice(1).some(after => !/^[\w.-]/.test(after))) {
+    throw new Error(`Add a Distribution section that names ${install}`);
+  }
+}
 mkdirSync('target', {recursive: true});
 writeFileSync('target/release-notes.md', notes + '\n');
 
