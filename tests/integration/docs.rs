@@ -77,31 +77,36 @@ fn numbers_after(text: &str, prefix: &str, infix: &str) -> Vec<i64> {
 
 #[test]
 fn sample_outputs_show_the_current_schema_version() {
-    let docs = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
-        .map(|path| std::fs::read_to_string(path).unwrap())
-        .collect::<String>();
     // `db migrate` prints "migrated from 2 to 6" or "is current (schema 6)",
     // and `/healthz` returns `"schemaVersion":6`.
-    for (prefix, infix) in [
+    let patterns = [
         ("migrated from ", " to "),
         ("(schema ", ""),
         ("\"schemaVersion\":", ""),
-    ] {
-        let shown = numbers_after(&docs, prefix, infix);
-        assert!(
-            !shown.is_empty(),
-            "no {prefix:?} in docs/src; is the pattern stale?"
-        );
-        assert!(
-            shown
-                .iter()
-                .all(|&version| version == CURRENT_SCHEMA_VERSION),
-            "docs/src shows schema {shown:?} after {prefix:?}, not {CURRENT_SCHEMA_VERSION}"
-        );
+    ];
+    let mut found = BTreeSet::new();
+    let mut stale = Vec::new();
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src");
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if !name.ends_with(".md") {
+            continue;
+        }
+        let page = read(&format!("docs/src/{name}"));
+        for (prefix, infix) in patterns {
+            for version in numbers_after(&page, prefix, infix) {
+                found.insert(prefix);
+                if version != CURRENT_SCHEMA_VERSION {
+                    stale.push(format!("docs/src/{name}: schema {version}"));
+                }
+            }
+        }
     }
+    assert_eq!(found.len(), patterns.len(), "a pattern went stale");
+    assert!(
+        stale.is_empty(),
+        "update to schema {CURRENT_SCHEMA_VERSION}: {stale:#?}"
+    );
 }
 
 #[tokio::test]

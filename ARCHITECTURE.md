@@ -155,8 +155,9 @@ Numbered SQL files, applied in order by `oneloop db migrate` and listed in
 the first public release. `schema_migrations` records each applied version with
 a checksum, and a changed migration is refused.
 
-To change the schema, add the next numbered file and its `MIGRATIONS` entry.
-A migration may also run a Rust hook in the same transaction; give it a
+To change the schema, add the next numbered file and its `MIGRATIONS` entry,
+and raise `CURRENT_SCHEMA_VERSION`; a docs test then names the sample outputs
+in `docs/src/` that still show the old number. A migration may also run a Rust hook in the same transaction; give it a
 `hook_revision`, which the checksum covers. A migration that rebuilds a table
 other tables reference sets `foreign_keys_off`, so the runner turns foreign
 keys off outside the transaction and checks them all before it commits.
