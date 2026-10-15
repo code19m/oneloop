@@ -49,14 +49,12 @@ async fn comments(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
     ApiQuery(query): ApiQuery<PageQuery>,
-) -> AppResult<Json<serde_json::Value>> {
-    let service = state.collaboration.clone();
-    let page = service
+) -> AppResult<Json<CommentPage>> {
+    state
+        .collaboration
         .comments(&actor, &task_id, query.cursor.as_deref(), query.limit)
-        .await?;
-    Ok(Json(
-        serde_json::to_value(page).unwrap_or_else(|_| json!({"items":[]})),
-    ))
+        .await
+        .map(Json)
 }
 
 async fn comment_context(
@@ -64,13 +62,11 @@ async fn comment_context(
     State(state): State<AppState>,
     Path((task_id, comment_id)): Path<(String, String)>,
 ) -> AppResult<Json<CommentPage>> {
-    Ok(Json(
-        state
-            .collaboration
-            .clone()
-            .comment_context(&actor, &task_id, &comment_id)
-            .await?,
-    ))
+    state
+        .collaboration
+        .comment_context(&actor, &task_id, &comment_id)
+        .await
+        .map(Json)
 }
 
 async fn block_context(
@@ -78,13 +74,11 @@ async fn block_context(
     State(state): State<AppState>,
     Path((task_id, block_id)): Path<(String, String)>,
 ) -> AppResult<Json<ActivityPage>> {
-    Ok(Json(
-        state
-            .collaboration
-            .clone()
-            .block_context(&actor, &task_id, &block_id)
-            .await?,
-    ))
+    state
+        .collaboration
+        .block_context(&actor, &task_id, &block_id)
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -101,18 +95,17 @@ async fn activity(
     Path(project_id): Path<String>,
     ApiQuery(query): ApiQuery<ActivityQuery>,
 ) -> AppResult<Json<ActivityPage>> {
-    let service = state.collaboration.clone();
-    Ok(Json(
-        service
-            .activity(
-                &actor,
-                &project_id,
-                query.task_id.as_deref(),
-                query.cursor.as_deref(),
-                query.limit,
-            )
-            .await?,
-    ))
+    state
+        .collaboration
+        .activity(
+            &actor,
+            &project_id,
+            query.task_id.as_deref(),
+            query.cursor.as_deref(),
+            query.limit,
+        )
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -139,12 +132,11 @@ async fn inbox(
         unread_only: query.unread_only,
         archived: query.archived,
     };
-    let service = state.collaboration.clone();
-    Ok(Json(
-        service
-            .inbox(&actor, filter, query.cursor.as_deref(), query.limit)
-            .await?,
-    ))
+    state
+        .collaboration
+        .inbox(&actor, filter, query.cursor.as_deref(), query.limit)
+        .await
+        .map(Json)
 }
 
 #[derive(Default, Deserialize)]
