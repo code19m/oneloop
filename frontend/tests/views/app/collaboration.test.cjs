@@ -1,9 +1,8 @@
-// views/collaboration.js: comments, mentions, blocks and the discussion feed.
+// views/app/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle, waitFor, deferred } = require('../support/dom.cjs');
-const { createRecoveryController } = require('../../src/features/recovery/controller.js');
-const { ApiError } = require('../../src/data/api-client.js');
+const { bootApp, settle, waitFor, deferred } = require('../../support/dom.cjs');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 // Comments and blocks share one membership check: a new mention needs an active member, a saved one is kept.
 // One case per outcome: an active member for blocks (new comment mentions are sent below), removed and
@@ -104,21 +103,19 @@ for(const phase of ['response','read','choice','latest-read','retry'])for(const 
 });
 
 test('an open comment edit conflicts against its original revision after a live refresh',async()=>{
- const requests=[],reviews=[];
+ const requests=[];
  const t=productionComments(async(_operation,payload,options)=>{
   requests.push(options.expectedRevision);
   if(options.expectedRevision!==t.comment.revision)throw new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
   Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
  });
  await settle();
- globalThis.Recovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
- try{
-  t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
-  Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
-  t.A.addComment('BIR-079');await settle();
-  assert.deepEqual(requests,[1]);assert.deepEqual(reviews,['Remote edit']);
-  assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
- }finally{t.controller.dispose();}
+ t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
+ Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
+ t.A.addComment('BIR-079');
+ await waitFor(()=>t.d.querySelector('[data-recovery-conflict]'),'the conflict prompt opens');
+ assert.deepEqual(requests,[1]);assert.match(t.d.querySelector('[data-recovery-conflict]').textContent,/Latest saved value: Remote edit/);
+ assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
 });
 
 for(const next of ['typing','reply','edit','reopen'])test(`comment completion preserves a newer ${next} draft and focus`,async()=>{

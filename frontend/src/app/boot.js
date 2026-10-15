@@ -60,14 +60,13 @@ const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=
 const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
-installCollaborationController({transport:runtimeHooks});
-installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
 const auth = createAuthController({
   api, data,
   refresh: () => app?.refresh(),
   loadBootstrap: () => signInLoad.load(),
   reportError,
+  getApp: () => app,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
   onSessionChange:(session)=>{
     if(!session)signInLoad.sessionEnded();
@@ -88,6 +87,8 @@ const buildMonitor=createBuildMonitor({
 });
 recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});
 globalThis.Recovery=recovery;
+installCollaborationController({transport:runtimeHooks,recovery});
+installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
 installTooltips(document);
 installDisclosures(document);

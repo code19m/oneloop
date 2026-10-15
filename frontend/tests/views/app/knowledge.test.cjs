@@ -11,7 +11,8 @@ function boot(route, { admin = true } = {}) {
   const calls = [];
   const t = bootApp({
     route,
-    setup: (w) => {
+    prepare: (D, w) => {
+      D.users.find((user) => user.id === D.session.userId).admin = admin;
       w.OneloopKnowledge = {
         route: (value, projectId) => { calls.push(['route', value, projectId]); const named = value.split('/')[1]; return named || projectId; },
         render: (projectId) => { calls.push(['render', projectId]); return `<div class="knowledge-workspace" data-project="${projectId}">Knowledge page</div>`; },
@@ -22,7 +23,6 @@ function boot(route, { admin = true } = {}) {
         modalHtml: () => '<h2>Connect repository</h2><form data-knowledge-form></form>',
       };
     },
-    prepare: (D) => { D.users.find((user) => user.id === D.session.userId).admin = admin; },
   });
   return { ...t, calls };
 }

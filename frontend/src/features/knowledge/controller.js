@@ -12,6 +12,7 @@ import { actionErrorFeedback, errorMessage } from '../../app/action-feedback.js'
 import { completeForm } from '../../app/form-feedback.js';
 import { UIAction, escapeHtml as esc } from '../../app/markup.js';
 import { setTrustedHTML } from '../../app/trusted-types.js';
+import { formatInstant } from '../../data/time.js';
 import { htmlView, markdownView, textView } from '../files/file-views.js';
 import { byteSize, displayText, mountInlinePreview, previewFile } from '../files/preview.js';
 import {
@@ -105,7 +106,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   const isAdmin = () => !!runtime.data?.users?.find?.((/** @type {any} */ user) => user.id === runtime.data?.session?.userId)?.admin;
   const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast?.(text, kind);
   const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => errorMessage(error, fallback) || fallback;
-  const instant = (/** @type {number} */ seconds) => view.OneloopTime?.instant?.(seconds * 1000) ?? new Date(seconds * 1000).toISOString().replace('T', ' ');
+  const instant = (/** @type {number} */ seconds) => formatInstant(seconds * 1000, runtime.data?.timeZone || 'UTC', (message) => toast(message, 'info'));
   const dateOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 10) : '—';
   const timeOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 16) : '';
   const viewOf = (/** @type {string|null} */ projectId) => projectId ? cache.get(projectId)?.data ?? null : null;

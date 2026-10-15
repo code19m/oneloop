@@ -95,7 +95,6 @@ New code imports a module instead of adding one.
 | `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
 | `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
 | `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
-| `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
 | `Theme` | `views/theme.js` | The color theme |
 
 ## Design

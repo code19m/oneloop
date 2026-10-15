@@ -17,7 +17,7 @@ function validateNewPassword(password) {
   if ([...password].length < 5) throw new ApiError('Use at least 5 characters.', { code:'validation_error' });
 }
 
-export function createAuthController({ api, data, refresh, loadBootstrap, reportError, invalidate = () => {}, onSessionChange = (_session) => {} }) {
+export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, onSessionChange = (_session) => {} }) {
   let pendingCredentials = null;
   let pendingCompletion = null;
   let generation=0;
@@ -73,7 +73,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
         return;
       } else if(pendingCompletion)showCompletionRetry(form,()=>login(credentials,form,{resume:true}),'Signed in');
       else if (['invalid_credentials','rate_limited','unavailable'].includes(error?.code)
-        && presentFormError(form,error,globalThis.App)) return;
+        && presentFormError(form,error,getApp())) return;
       else reportError(error, form);
     } finally { if(current(token))disableForm(form, false); }
   }
@@ -229,7 +229,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
           if(!current(authGeneration)){close();reject(error);return;}
           phase='password';submit.disabled=false;
           if(!['incorrect_password','rate_limited','unavailable'].includes(error?.code)
-            || !presentFormError(form,error,globalThis.App)) reportError(error,form);
+            || !presentFormError(form,error,getApp())) reportError(error,form);
           return;
         }
         if(phase==='cancelled'||closed)return;

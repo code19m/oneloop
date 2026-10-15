@@ -68,7 +68,6 @@ test('the configured UTC zone controls every displayed instant, whatever the hos
    D.browserSessions.find(item=>item.id==='web-phone').lastActiveAt=instant;
    Object.assign(D.appGrants[0],{authorizedAt:instant,lastUsedAt:instant,expiresAt:Date.parse('2099-01-03T23:04:05Z')});
  }});
- assert.equal(t.w.OneloopTime.instant(instant),expected);
  assert.equal(t.d.querySelector('.task-created-at').textContent,expected);
  assert.equal(t.d.querySelector('.tl-cmt .act-time').dataset.tip,expected);
  assert.equal(t.d.querySelector('.tl-act .act-time').dataset.tip,expected);

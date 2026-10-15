@@ -6,9 +6,9 @@ const path = require('node:path');
 const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../../../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const scripts = ['theme', 'data', 'recovery', ...previewLibraries, ...markdownLibraries, 'app'];
+const libraries = [...previewLibraries, ...markdownLibraries];
 // KaTeX refuses to render in quirks mode.
-const boot = options => { const t = bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
+const boot = options => { const t = bootApp({ route: 'task/BIR-079', libraries, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
 
 const readme = ['# Review', '', '## Notes', '## Notes', '', '**bold** and ~~old~~', '', '- [x] Ready', '- [ ] Later', '', '| A | B |', '| - | - |', '| 1 | 2 |', '', '```js', 'const total = 2; // <script>bad()</script>', '```', '', '<details><summary>More</summary>Details</details>', '', '[Jump](#notes)', '[Docs](https://example.invalid/docs)', '[Relative](./other.md)', '[Unsafe](javascript:alert(1))', '![Remote](https://example.invalid/image.png)', '', '<script>window.evil=true</script><img src="x" onerror="evil()"><input name="App"><style>body{display:none}</style>'].join('\n');
 const report = '<h1>Report</h1><link rel="stylesheet" href="https://example.invalid/style.css"><script src="https://example.invalid/code.js"></script><img src="https://example.invalid/pic.png" onerror="alert(1)"><iframe src="https://example.invalid/frame"></iframe><form action="https://example.invalid"><button>Go</button></form>';

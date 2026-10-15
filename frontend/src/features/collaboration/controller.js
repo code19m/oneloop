@@ -37,7 +37,7 @@ function replace(array, items) { array.splice(0, array.length, ...items); }
  * updates. views/app/collaboration.js keeps their markup, focus, keys and
  * the text being typed, and binds itself as the facade.
  */
-export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
+export function installCollaborationController({ transport, recovery, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected the runtime transport');
   const data=transport.data;
   let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
@@ -130,7 +130,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||currentTask(task.internalId)!==task||error?.code==='aborted')return {stale:true};
       page.error=true;
       facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:true,hasMore:!!(page.commentsCursor||page.activityCursor),background});
-      if([403,404].includes(error?.status))globalThis.Recovery?.handleRouteError?.(error,{background:true});else report(error,false);
+      if([403,404].includes(error?.status))recovery.handleRouteError(error,{background:true});else report(error,false);
       return {stale:false,error};
     }
   }
@@ -184,10 +184,10 @@ export function installCollaborationController({ transport, eventSourceFactory =
     try{
       response=await execute(operation,payload,{expectedRevision:editing?input.revision:undefined,interactionKey:`${operation}:${input.commentId??input.task.internalId}:${input.interactionId}`});
     }catch(error){
-      if(editing&&globalThis.Recovery?.isRevisionConflict?.(error)){
+      if(editing&&recovery.isRevisionConflict(error)){
         if(!isCurrent())return false;
         try{
-          const resolved=await globalThis.Recovery.resolveConflict({
+          const resolved=await recovery.resolveConflict({
             error,
             reloadLatest:()=>readTask(currentTask(input.task.internalId),{background:true}),
             latestEntity:()=>currentTask(input.task.internalId)?.comments?.find((item)=>item.id===input.commentId),
@@ -298,7 +298,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const mapped=replaceTaskDetail(data,view);
       facade?.canonicalTask?.(mapped.id);
       return mapped;
-    }catch(error){if(currentSession()!==expectedSession||routeKey!==expectedRoute)return null;if([403,404].includes(error?.status))globalThis.Recovery?.handleRouteError?.(error,{background:true});else if(error?.code!=='aborted'&&error?.code!=='network_error')report(error,false);return null;}
+    }catch(error){if(currentSession()!==expectedSession||routeKey!==expectedRoute)return null;if([403,404].includes(error?.status))recovery.handleRouteError(error,{background:true});else if(error?.code!=='aborted'&&error?.code!=='network_error')report(error,false);return null;}
   }
 
   function refreshInbox(filter){
@@ -441,24 +441,24 @@ export function installCollaborationController({ transport, eventSourceFactory =
     try{
       source=eventSourceFactory('/api/events'+(initial&&data.syncCursor?`?cursor=${encodeURIComponent(data.syncCursor)}`:''));
       const activeSource=source;
-      source.addEventListener?.('open',()=>{if(source!==activeSource)return;transport.publish?.({type:'live-open'});globalThis.Recovery?.liveConnected?.();});
+      source.addEventListener?.('open',()=>{if(source!==activeSource)return;transport.publish?.({type:'live-open'});recovery.liveConnected();});
       const receive=(event)=>{if(source!==activeSource)return;let payload={};try{payload=JSON.parse(event.data||'{}');}catch{}
         // The first event names the person the stream is for: the one the
         // browser's cookie names now. Someone else's stream ends this tab's session.
-        if(Object.hasOwn(payload,'userId')&&globalThis.Recovery?.ownsAnswer?.(payload.userId)===false){source?.close?.();source=null;return;}
+        if(Object.hasOwn(payload,'userId')&&recovery.ownsAnswer(payload.userId)===false){source?.close?.();source=null;return;}
         const kind=payload.kind||event.type,context=app?.context?.();if(kind==='ready')return;const visibleTask=context?.view==='task'?currentTask(context.taskId):null;transport.publish?.({type:'sse',kind,taskId:visibleTask&&(!payload.taskId||payload.taskId===visibleTask.internalId)?context.taskId:null,...(payload.entityType?{entityType:payload.entityType}:{}),...(payload.projectId?{projectId:payload.projectId}:{})});void reconcile(kind,payload);};
       source.addEventListener?.('reconcile',receive);source.addEventListener?.('hint',receive);
-      source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();globalThis.Recovery?.livePaused?.(resumeOnUse);});
+      source.addEventListener?.('replaced',()=>{if(source!==activeSource)return;source?.close?.();source=null;waitForUse();recovery.livePaused(resumeOnUse);});
       source.addEventListener?.('error',()=>{
         if(source!==activeSource)return;
         source?.close?.();source=null;
-        globalThis.Recovery?.liveDisconnected?.(()=>startEvents());
+        recovery.liveDisconnected(()=>startEvents());
         if(sessionCheck)return;
         const expectedSession=currentSession();
         const check=transport.api.me({background:true}).then((answer)=>{
-          if(expectedSession===currentSession())globalThis.Recovery?.ownsAnswer?.(answer?.user?.id);
+          if(expectedSession===currentSession())recovery.ownsAnswer(answer?.user?.id);
         },(error)=>{
-          if(expectedSession===currentSession()&&error?.status===401&&!globalThis.Recovery?.sessionExpired?.())globalThis.location?.reload?.();
+          if(expectedSession===currentSession()&&error?.status===401&&!recovery.sessionExpired())globalThis.location?.reload?.();
         }).finally(()=>{if(sessionCheck===check)sessionCheck=null;});
         sessionCheck=check;
       });
