@@ -633,13 +633,15 @@ test('a Pool promotion sends the item\'s title and description only when the per
 
 test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',async(t)=>{
   useGlobals(t,{FormData:FieldsFormData});
-  let target;
+  let target;const redrawn=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
-  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}});
+  const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
   state.app.openModal('epic','e1');
   state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Epic',desc:'',start:'2026-01-05',end:''},{'[name="start"]':{type:'hidden',value:'2026-01-05'}})},'e1');await settle();await settle();
-  assert.equal(target.element,undefined);assert.equal(typeof target.acceptLatest,'function');
+  assert.equal(target.element,undefined,'no field shows the saved date by itself');
   assert.equal(target.latestValue({start:'2026-02-01'}),'2026-02-01','the prompt still names the saved date');
+  target.acceptLatest();
+  assert.deepEqual(redrawn,[true]);
 });
 
 test('a conflict over a milestone\'s name shows the saved name',async(t)=>{

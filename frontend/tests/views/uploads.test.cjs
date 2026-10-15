@@ -390,8 +390,11 @@ test('inline image previews work outside the dialog and stop when disposed', asy
   assert.equal(t.d.querySelector('.file-dialog'), null);
   tools.querySelector('[data-image-in]').click();
   assert.equal(tools.querySelector('[data-image-out]').disabled, false);
+  const stage = host.querySelector('.image-stage');
+  const wheelZooms = () => { const event = new t.w.WheelEvent('wheel', { ctrlKey: true, deltaY: -100, bubbles: true, cancelable: true }); stage.dispatchEvent(event); return event.defaultPrevented; };
+  assert.equal(wheelZooms(), true, 'Ctrl and the wheel zoom the image');
   dispose();
-  assert.equal(typeof dispose, 'function');
+  assert.equal(wheelZooms(), false, 'a disposed preview leaves the wheel to the page');
 });
 
 test('an upload counts as unsaved work until it settles', async () => {
