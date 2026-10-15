@@ -8,7 +8,7 @@ use oneloop::{
     },
 };
 
-use crate::support::{auth_service, database};
+use crate::support::{auth_service, database, query_one};
 
 use super::{PASSWORD, add_user};
 
@@ -97,16 +97,12 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             .await
             .is_ok()
     );
-    let (name, app_revoked): (String, Option<i64>) = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let (name, app_revoked): (String, Option<i64>) = query_one(
+        &db,
+        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
+        [],
+    )
+    .await;
     assert_eq!((name.as_str(), app_revoked), ("person", None));
 }
 
@@ -199,16 +195,12 @@ async fn changing_password_keeps_only_the_current_browser_and_revokes_apps() {
             .await
             .is_ok()
     );
-    let revoked: Option<i64> = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at FROM mcp_grants WHERE id='grant-1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let revoked: Option<i64> = query_one(
+        &db,
+        "SELECT revoked_at FROM mcp_grants WHERE id='grant-1'",
+        [],
+    )
+    .await;
     assert!(revoked.is_some());
 }
 
@@ -290,16 +282,12 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
         .await
         .unwrap();
     assert!(matches!(issued, LoginResult::Authenticated(_)));
-    let count: i64 = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM sessions WHERE user_id=?1 AND revoked_at IS NULL",
-                [user_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(
+        &db,
+        "SELECT COUNT(*) FROM sessions WHERE user_id=?1 AND revoked_at IS NULL",
+        [user_id],
+    )
+    .await;
     assert_eq!(count, 10);
 }
 
@@ -321,16 +309,12 @@ async fn idle_sessions_are_refused_and_revoked() {
         service.authenticate_session(&token, true).await,
         Err(AppError::Unauthorized)
     ));
-    let revoked: Option<i64> = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at FROM sessions WHERE id=?1",
-                [session_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let revoked: Option<i64> = query_one(
+        &db,
+        "SELECT revoked_at FROM sessions WHERE id=?1",
+        [session_id],
+    )
+    .await;
     assert!(revoked.is_some());
 }
 
@@ -368,16 +352,12 @@ async fn passive_authentication_does_not_extend_idle_activity() {
         .unwrap();
     assert_eq!(unchanged, old);
     service.authenticate_session(&token, true).await.unwrap();
-    let updated: i64 = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id=?1",
-                [session_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let updated: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id=?1",
+        [session_id],
+    )
+    .await;
     assert!(updated > old);
 }
 
@@ -877,13 +857,7 @@ async fn password_gates_share_account_delay_across_sessions_and_clear_on_success
     .await
     .unwrap();
     let refreshed = service.recent_authenticate(&other, PASSWORD).await.unwrap();
-    let failures: i64 = db
-        .run(|connection| {
-            Ok(connection
-                .query_row("SELECT COUNT(*) FROM login_throttles", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let failures: i64 = query_one(&db, "SELECT COUNT(*) FROM login_throttles", []).await;
     assert_eq!(failures, 0);
     assert!(
         service
@@ -953,16 +927,12 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
             let service = auth_service(&db);
             let (_, actor) = login(&service, "racing").await;
             let (other_token, _) = login(&service, "racing").await;
-            let before: (String, i64) = db
-                .run(|connection| {
-                    Ok(connection.query_row(
-                        "SELECT password_hash,revision FROM users WHERE username='racing'",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?)
-                })
-                .await
-                .unwrap();
+            let before: (String, i64) = query_one(
+                &db,
+                "SELECT password_hash,revision FROM users WHERE username='racing'",
+                [],
+            )
+            .await;
             let throttle_key = token_hash(&format!("password-confirmation\0{user_id}"));
             let session_id = actor.session_id().unwrap().to_owned();
             // Successful verification clears its prior failure row. This trigger
@@ -990,10 +960,8 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
                 matches!(result, Err(AppError::Unauthorized)),
                 "{condition}, change={change_password}"
             );
-            let after: (String, i64, Option<i64>, i64) = db.run(|connection| Ok(connection.query_row(
-                "SELECT password_hash,revision,(SELECT revoked_at FROM mcp_grants WHERE id='race-grant'),
-                 (SELECT COUNT(*) FROM security_events WHERE event_type='password.changed') FROM users WHERE username='racing'", [],
-                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
+            let after: (String, i64, Option<i64>, i64) = query_one(&db, "SELECT password_hash,revision,(SELECT revoked_at FROM mcp_grants WHERE id='race-grant'),
+                 (SELECT COUNT(*) FROM security_events WHERE event_type='password.changed') FROM users WHERE username='racing'", []).await;
             assert_eq!((after.0, after.1), before);
             assert_eq!(after.2, None);
             assert_eq!(after.3, 0);
@@ -1039,16 +1007,12 @@ async fn session_activity_does_not_wait_for_an_external_sqlite_writer() {
     lock.execute_batch("ROLLBACK").unwrap();
     service.authenticate_session(&token, true).await.unwrap();
     let id = actor.session_id().unwrap().to_owned();
-    let last: i64 = db
-        .run(move |c| {
-            Ok(c.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let last: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id=?1",
+        [id],
+    )
+    .await;
     assert!(last >= unix_now().unwrap() - 2);
 }
 
@@ -1119,16 +1083,12 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
             .unwrap(),
         LoginResult::Authenticated(_)
     ));
-    let count = db
-        .run(|conn| {
-            Ok(conn.query_row(
-                "SELECT count(*) FROM login_throttles WHERE key=?1",
-                [token_hash("login-account\0target")],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count = query_one::<i64>(
+        &db,
+        "SELECT count(*) FROM login_throttles WHERE key=?1",
+        [token_hash("login-account\0target")],
+    )
+    .await;
     assert_eq!(count, 0);
 }
 
@@ -1204,16 +1164,12 @@ async fn unknown_addresses_do_not_share_a_global_login_counter() {
         ));
     }
     login(&service, "target").await;
-    let expired: bool = db
-        .run(|conn| {
-            Ok(conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM login_throttles WHERE key='expired')",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let expired: bool = query_one(
+        &db,
+        "SELECT EXISTS(SELECT 1 FROM login_throttles WHERE key='expired')",
+        [],
+    )
+    .await;
     assert!(!expired, "failed-attempt bookkeeping prunes expired rows");
 }
 

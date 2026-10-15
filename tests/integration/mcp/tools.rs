@@ -76,25 +76,22 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{direction}");
-        let counts: (i64, i64, i64, i64) = db
-            .run(|c| {
-                Ok((
-                    c.query_row(
-                        "SELECT count(*) FROM mcp_grants WHERE revoked_at IS NULL",
-                        [],
-                        |r| r.get(0),
-                    )?,
-                    c.query_row(
-                        "SELECT count(*) FROM mcp_tokens WHERE revoked_at IS NULL",
-                        [],
-                        |r| r.get(0),
-                    )?,
-                    c.query_row("SELECT count(*) FROM task_attachments", [], |r| r.get(0))?,
-                    c.query_row("SELECT count(*) FROM upload_reservations", [], |r| r.get(0))?,
-                ))
-            })
-            .await
-            .unwrap();
+        let counts: (i64, i64, i64, i64) = (
+            query_one(
+                &db,
+                "SELECT count(*) FROM mcp_grants WHERE revoked_at IS NULL",
+                [],
+            )
+            .await,
+            query_one(
+                &db,
+                "SELECT count(*) FROM mcp_tokens WHERE revoked_at IS NULL",
+                [],
+            )
+            .await,
+            query_one(&db, "SELECT count(*) FROM task_attachments", []).await,
+            query_one(&db, "SELECT count(*) FROM upload_reservations", []).await,
+        );
         assert_eq!(counts, (0, 0, i64::from(direction == "download"), 0));
     }
 }
@@ -116,12 +113,7 @@ async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
     .await;
     let task = create_protocol_task(&mut mcp, "project-1", "keyed").await;
     let id = task.clone();
-    let key: String = db
-        .run(
-            move |c| Ok(c.query_row("SELECT task_key FROM tasks WHERE id=?1", [id], |r| r.get(0))?),
-        )
-        .await
-        .unwrap();
+    let key: String = query_one(&db, "SELECT task_key FROM tasks WHERE id=?1", [id]).await;
     let ticket = tool_value(
         &mcp.call(
             "create_attachment_upload",
@@ -465,16 +457,12 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
         .await,
     );
     assert!(!activity["items"].as_array().unwrap().is_empty());
-    let attributed_events: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM activity_events WHERE actor_mcp_grant_id IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let attributed_events: i64 = query_one(
+        &db,
+        "SELECT count(*) FROM activity_events WHERE actor_mcp_grant_id IS NOT NULL",
+        [],
+    )
+    .await;
     assert!(attributed_events > 0);
     let inbox = tool_value(&mcp.call("read_inbox", json!({})).await);
     assert_eq!(inbox["filteredCount"], 0);
@@ -834,10 +822,7 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
             field,
         );
     }
-    let tickets: i64 = db
-        .run(|c| Ok(c.query_row("SELECT COUNT(*) FROM mcp_file_transfers", [], |r| r.get(0))?))
-        .await
-        .unwrap();
+    let tickets: i64 = query_one(&db, "SELECT COUNT(*) FROM mcp_file_transfers", []).await;
     assert_eq!(tickets, 0, "invalid uploads must not allocate tickets");
 
     let bytes = vec![b'x'; 300_000];
@@ -1137,16 +1122,12 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
         .await
         .unwrap();
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
-    let revoked: bool = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at IS NOT NULL FROM mcp_grants WHERE client_id=?1",
-                [client],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let revoked: bool = query_one(
+        &db,
+        "SELECT revoked_at IS NOT NULL FROM mcp_grants WHERE client_id=?1",
+        [client],
+    )
+    .await;
     assert!(revoked);
 }
 
@@ -1342,9 +1323,7 @@ async fn stale_mcp_write_is_a_structured_conflict_with_current_revision() {
 #[tokio::test]
 async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects() {
     use oneloop::auth::{Actor, ActorSource};
-    use oneloop::collaboration::{
-        CollaborationCommand, CollaborationRuntime, CollaborationService,
-    };
+    use oneloop::collaboration::{CollaborationRuntime, CollaborationService};
     let (_dir, db, app, session, user) = fixture().await;
     let owner = user.clone();
     db.transaction(move |tx| {
@@ -1376,22 +1355,18 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
         ("project-1", "@Owner Alpha mention"),
         ("project-2", "@Owner secret budget 4.2M"),
     ] {
-        service.execute(&sender,CollaborationCommand {operation:"discussion.comment.create".into(),
-            payload:json!({"taskId":project,"content":content,"mentions":[{"kind":"user","userId":user,"startOffset":0,"endOffset":6,"label":"@Owner"}]}),
-            idempotency_key:format!("mention-{project}"),expected_revision:None}).await.unwrap();
+        service.execute(&sender,collaboration_command("discussion.comment.create",
+            json!({"taskId":project,"content":content,"mentions":[{"kind":"user","userId":user,"startOffset":0,"endOffset":6,"label":"@Owner"}]}),
+            &format!("mention-{project}"),None)).await.unwrap();
     }
     let runtime = CollaborationRuntime::new(db.clone());
-    while runtime.worker().run_once().await.unwrap() {}
-    let excluded_id: String = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT id FROM notification_events WHERE project_id='project-2'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    drain(&runtime).await;
+    let excluded_id: String = query_one(
+        &db,
+        "SELECT id FROM notification_events WHERE project_id='project-2'",
+        [],
+    )
+    .await;
     let mut mcp = scoped_mcp(
         &app,
         &session,
@@ -1438,7 +1413,7 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
         );
         assert_eq!(result["entities"][0]["changed"], 1);
     }
-    let untouched:bool=db.run(move |connection|Ok(connection.query_row("SELECT read_at IS NULL AND archived_at IS NULL FROM notification_recipients WHERE notification_id=?1 AND user_id=?2",rusqlite::params![excluded_id,user],|row|row.get(0))?)).await.unwrap();
+    let untouched:bool=query_one(&db, "SELECT read_at IS NULL AND archived_at IS NULL FROM notification_recipients WHERE notification_id=?1 AND user_id=?2", (excluded_id, user)).await;
     assert!(untouched);
 }
 
@@ -1520,7 +1495,7 @@ async fn dates_and_hidden_resources_have_matching_browser_and_mcp_contracts() {
 
 #[tokio::test]
 async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
-    use oneloop::collaboration::{CollaborationCommand, CollaborationService};
+    use oneloop::collaboration::CollaborationService;
     let (_dir, db, app, session, _) = fixture().await;
     let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap();
@@ -1540,12 +1515,12 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
     let created = svc
         .execute(
             &actor,
-            CollaborationCommand {
-                operation: "discussion.comment.create".into(),
-                payload: json!({"taskId":task,"content":"comment"}),
-                idempotency_key: "service-create".into(),
-                expected_revision: None,
-            },
+            collaboration_command(
+                "discussion.comment.create",
+                json!({"taskId":task,"content":"comment"}),
+                "service-create",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -1553,12 +1528,12 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
     let edited = svc
         .execute(
             &actor,
-            CollaborationCommand {
-                operation: "discussion.comment.edit".into(),
-                payload: json!({"commentId":comment_id,"content":"edited"}),
-                idempotency_key: "service-edit".into(),
-                expected_revision: Some(1),
-            },
+            collaboration_command(
+                "discussion.comment.edit",
+                json!({"commentId":comment_id,"content":"edited"}),
+                "service-edit",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
@@ -1566,12 +1541,12 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
         !edited.replayed,
         "editing must still work without destructive access"
     );
-    let deletion = CollaborationCommand {
-        operation: "discussion.comment.delete".into(),
-        payload: json!({"commentId":comment_id}),
-        idempotency_key: "service-delete".into(),
-        expected_revision: Some(2),
-    };
+    let deletion = collaboration_command(
+        "discussion.comment.delete",
+        json!({"commentId":comment_id}),
+        "service-delete",
+        Some(2),
+    );
     assert!(matches!(
         svc.execute(&actor, deletion.clone()).await,
         Err(oneloop::AppError::Forbidden)
@@ -1937,8 +1912,7 @@ async fn a_search_without_status_reads_every_column_at_one_moment() {
         })
         .await
         .unwrap();
-    let config = support::config(dir.path(), "http://127.0.0.1:8080", &[]);
-    let app = application(AppState::new(config, reader)).router;
+    let app = support::app(dir.path(), &reader, "http://127.0.0.1:8080", &[]).router;
     let mut mcp = scoped_mcp(
         &app,
         &session,

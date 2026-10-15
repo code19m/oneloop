@@ -10,7 +10,7 @@ use oneloop::{
 };
 
 use super::initialize;
-use crate::support;
+use crate::support::{self, query_one};
 
 #[cfg(unix)]
 #[test]
@@ -69,16 +69,12 @@ async fn cancelled_writer_keeps_its_permit_until_commit_and_does_not_block_reads
             })
             .await
     });
-    let readers = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM app_metadata WHERE key='first-writer'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let readers = query_one::<i64>(
+        &db,
+        "SELECT COUNT(*) FROM app_metadata WHERE key='first-writer'",
+        [],
+    )
+    .await;
     assert_eq!(readers, 0);
     assert!(
         tokio::time::timeout(Duration::from_millis(30), &mut following)
@@ -87,16 +83,12 @@ async fn cancelled_writer_keeps_its_permit_until_commit_and_does_not_block_reads
     );
     release.send(()).unwrap();
     following.await.unwrap().unwrap();
-    let count = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM app_metadata WHERE key IN ('first-writer','second-writer')",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count = query_one::<i64>(
+        &db,
+        "SELECT COUNT(*) FROM app_metadata WHERE key IN ('first-writer','second-writer')",
+        [],
+    )
+    .await;
     assert_eq!(count, 2);
 }
 

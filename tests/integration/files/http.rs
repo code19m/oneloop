@@ -1,7 +1,8 @@
+use super::png;
 use crate::support::{
     self, Role,
     http::{body_bytes, body_json},
-    seed_project, session_cookie,
+    query_one, seed_project, session_cookie,
 };
 use axum::{
     Router,
@@ -566,16 +567,15 @@ async fn conditional_sources_recheck_access_without_allocating_read_leases() {
 
 #[tokio::test]
 async fn avatars_revalidate_versioned_and_unversioned_urls_and_reject_lost_access() {
-    use image::ImageEncoder;
     let f = Fixture::new().await;
     let manager = f.manager.clone();
     let service = oneloop::files::FileService::new(f.db.clone(), 1000000, 0);
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
     let url = service
-        .upload_avatar(&manager, service.avatar_slot(&manager).unwrap(), png)
+        .upload_avatar(
+            &manager,
+            service.avatar_slot(&manager).unwrap(),
+            png(1, 1, false),
+        )
         .await
         .unwrap();
     for url in [
@@ -651,11 +651,8 @@ async fn upload_size_mismatches_release_staging_and_allow_same_key_retry() {
             std::fs::read_dir(f.db.layout().staging()).unwrap().count(),
             0
         );
-        let reservations: i64 = f
-            .db
-            .run(|c| Ok(c.query_row("SELECT count(*) FROM upload_reservations", [], |r| r.get(0))?))
-            .await
-            .unwrap();
+        let reservations: i64 =
+            query_one(&f.db, "SELECT count(*) FROM upload_reservations", []).await;
         assert_eq!(reservations, 0);
         assert_eq!(
             f.upload(&key, "size.bin", &vec![b'x'; claimed]).await.0,
@@ -701,7 +698,7 @@ async fn upload_declarations_are_checked_without_reading_the_body() {
 async fn an_uploaded_avatar_is_served_as_a_256_pixel_png() {
     let f = Fixture::new().await;
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let url = body_json(response).await["avatarUrl"]
@@ -735,17 +732,17 @@ async fn one_person_uploads_one_avatar_at_a_time() {
     let f = Fixture::new().await;
     let slot = f.files.avatar_slot(&f.manager).unwrap();
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     // Someone else's upload goes ahead meanwhile.
     let response = f
-        .put_avatar(&f.outsider_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.outsider_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     drop(slot);
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -769,7 +766,7 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
     // The closing boundary comes in the last chunk, so the flag shows that
     // the whole body was read.
     let read = Arc::new(AtomicBool::new(false));
-    let envelope = file_envelope(&red_pixel());
+    let envelope = file_envelope(&png(1, 1, false));
     let mut chunks = vec![
         envelope[..envelope.len() / 2].to_vec(),
         envelope[envelope.len() / 2..].to_vec(),
@@ -787,16 +784,6 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::RETRY_AFTER], "1");
     assert!(read.load(Ordering::SeqCst), "the body was read");
-}
-
-/// A 1x1 red PNG.
-fn red_pixel() -> Vec<u8> {
-    use image::ImageEncoder;
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
-    png
 }
 
 fn avatar_envelope(bytes: &[u8]) -> Body {

@@ -4,6 +4,26 @@ pub(crate) mod http;
 mod service;
 mod thumbnails;
 
+/// A PNG whose pixels vary along each row, half transparent if asked.
+pub(crate) fn png(width: u32, height: u32, transparent: bool) -> Vec<u8> {
+    use image::ImageEncoder;
+    let pixels = (0..width * height)
+        .flat_map(|index| {
+            [
+                (index % 251) as u8,
+                90,
+                160,
+                if transparent { 128 } else { 255 },
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    bytes
+}
+
 /// A lossless WebP of one colour. Its pixels take no bits, so the file is a
 /// few dozen bytes at any size.
 pub(crate) fn flat_webp(width: u32, height: u32) -> Vec<u8> {

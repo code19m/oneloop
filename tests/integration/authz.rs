@@ -3,10 +3,10 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use oneloop::{
-    AppError, AppState, Db, application,
+    AppError, Db,
     auth::{Actor, ActorSource},
-    collaboration::{CollaborationCommand, CollaborationService},
-    domain::{BootstrapQuery, CommandEnvelope, DomainOperation, DomainService},
+    collaboration::CollaborationService,
+    domain::{BootstrapQuery, DomainOperation, DomainService},
     files::FileService,
 };
 use serde_json::{Value, json};
@@ -14,7 +14,8 @@ use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
 use crate::support::{
-    self, Role, SeededProject, TestInstance, database, now, seed_project, seeded_project,
+    self, Role, SeededProject, TestInstance, collaboration_command, command, database, now,
+    seed_project, seeded_project,
 };
 
 #[tokio::test]
@@ -25,12 +26,12 @@ async fn project_reads_recheck_a_cached_admin_role() {
     let project = DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &instance.owner.actor,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::CreateProject,
-                payload: json!({"name":"Private project","taskPrefix":"PRV"}),
-                idempotency_key: "private-project".into(),
-                expected_revision: None,
-            },
+            command(
+                oneloop::domain::DomainOperation::CreateProject,
+                json!({"name":"Private project","taskPrefix":"PRV"}),
+                "private-project",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -111,12 +112,12 @@ async fn mcp_admin_cannot_moderate_another_authors_comment() {
     let result = CollaborationService::new(db)
         .execute(
             &mcp_admin,
-            CollaborationCommand {
-                operation: "discussion.comment.edit".into(),
-                payload: json!({"commentId":"comment","content":"Moderated through MCP"}),
-                idempotency_key: "mcp-admin-comment-moderation".into(),
-                expected_revision: Some(1),
-            },
+            collaboration_command(
+                "discussion.comment.edit",
+                json!({"commentId":"comment","content":"Moderated through MCP"}),
+                "mcp-admin-comment-moderation",
+                Some(1),
+            ),
         )
         .await;
     assert!(matches!(result, Err(AppError::Forbidden)));
@@ -125,8 +126,7 @@ async fn mcp_admin_cannot_moderate_another_authors_comment() {
 #[tokio::test]
 async fn malformed_auth_json_uses_the_structured_error_contract_without_echoing_secrets() {
     let (root, db) = database();
-    let config = support::config(root.path(), "http://127.0.0.1:8080", &[]);
-    let app = application(AppState::new(config, db)).router;
+    let app = support::app(root.path(), &db, "http://127.0.0.1:8080", &[]).router;
     let secret = "never-echo-this-password";
     let response = app
         .oneshot(
@@ -433,13 +433,11 @@ async fn may_change(domain: &DomainService, actor: &Actor, area: Area) -> bool {
             json!({"trackId":"track","name":"Changed"}),
         ),
     };
-    let command = CommandEnvelope {
-        operation,
-        payload,
-        idempotency_key: uuid::Uuid::now_v7().to_string(),
-        expected_revision: Some(99),
-    };
-    match domain.execute(actor, command).await {
+    let key = uuid::Uuid::now_v7().to_string();
+    match domain
+        .execute(actor, command(operation, payload, &key, Some(99)))
+        .await
+    {
         Err(AppError::RevisionConflict { .. }) => true,
         Err(
             AppError::Forbidden

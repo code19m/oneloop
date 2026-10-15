@@ -12,15 +12,15 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use oneloop::{
-    AppState, Db, application,
+    Db,
     auth::{LoginResult, NewUser, SessionMetadata, create_user, unix_now},
     db::{create_backup, restore_backup},
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::support;
 use crate::support::http::{body_bytes, body_json, body_text};
+use crate::support::{self, collaboration_command, drain, query_one};
 
 pub(crate) async fn fixture() -> (tempfile::TempDir, Db, Router, String, String) {
     fixture_with_trusted_proxies("").await
@@ -40,14 +40,8 @@ async fn fixture_with(
     let user = session.actor.user_id.clone();
     let member = user.clone();
     db.transaction(move |tx|{tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-1','Project','PRJ',1,1)",[])?;tx.execute("INSERT INTO project_sequences(project_id,next_task_number) VALUES('project-1',1)",[])?;tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,1,1,1,1)",[&member])?;Ok(())}).await.unwrap();
-    let config = support::config(dir.path(), "http://127.0.0.1:8080", settings);
-    (
-        dir,
-        db.clone(),
-        application(AppState::new(config, db.clone())).router,
-        session.token,
-        user,
-    )
+    let app = support::app(dir.path(), &db, "http://127.0.0.1:8080", settings).router;
+    (dir, db, app, session.token, user)
 }
 
 async fn register_from(app: &Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {

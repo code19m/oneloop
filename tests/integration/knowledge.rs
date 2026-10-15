@@ -22,7 +22,7 @@ use tower::ServiceExt;
 use crate::support::{
     self, Role,
     http::{body_bytes, body_json},
-    session_cookie,
+    query_one, session_cookie,
 };
 
 const ORIGIN: &str = "https://tasks.example.test";
@@ -311,16 +311,12 @@ impl Fixture {
 
     async fn events(&self, event_type: &str) -> i64 {
         let event_type = event_type.to_owned();
-        self.db
-            .run(move |connection| {
-                Ok(connection.query_row(
-                    "SELECT count(*) FROM activity_events WHERE project_id='p1' AND event_type=?1",
-                    [event_type],
-                    |row| row.get(0),
-                )?)
-            })
-            .await
-            .unwrap()
+        query_one(
+            &self.db,
+            "SELECT count(*) FROM activity_events WHERE project_id='p1' AND event_type=?1",
+            [event_type],
+        )
+        .await
     }
 }
 
@@ -426,17 +422,12 @@ async fn legacy_binary_markdown_is_not_previewed_or_indexed_across_resyncs() {
             .unwrap();
         assert!(found.documents.is_empty(), "{phase}");
     }
-    let repaired: Option<String> = fixture
-        .db
-        .run(|c| {
-            Ok(c.query_row(
-                "SELECT preview_kind FROM knowledge_files WHERE path='binary.md'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let repaired: Option<String> = query_one(
+        &fixture.db,
+        "SELECT preview_kind FROM knowledge_files WHERE path='binary.md'",
+        [],
+    )
+    .await;
     assert!(
         repaired.is_none(),
         "a full resync repairs metadata even when bytes are unchanged"
@@ -1120,17 +1111,12 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
     assert_eq!(source["hasToken"], true);
     assert_eq!(source["repository"], "git.example.test/team/docs");
     assert_eq!(source["transport"], "https");
-    let stored: Vec<u8> = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT token_ciphertext FROM knowledge_sources WHERE project_id='p1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let stored: Vec<u8> = query_one(
+        &fixture.db,
+        "SELECT token_ciphertext FROM knowledge_sources WHERE project_id='p1'",
+        [],
+    )
+    .await;
     assert!(
         !stored
             .windows(token.len())
@@ -1242,17 +1228,12 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         created["entities"][0]["publicKey"], public,
         "the key is kept"
     );
-    let private: Vec<u8> = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT private_key_ciphertext FROM knowledge_deploy_keys WHERE project_id='p1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let private: Vec<u8> = query_one(
+        &fixture.db,
+        "SELECT private_key_ciphertext FROM knowledge_deploy_keys WHERE project_id='p1'",
+        [],
+    )
+    .await;
     assert!(!private.windows(7).any(|window| window == b"OPENSSH"));
 
     let (status, _) = fixture
@@ -1274,18 +1255,8 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(fixture.view(&fixture.admin).await["state"], "unconnected");
-    let remaining: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT count(*) FROM knowledge_sources)+(SELECT count(*) FROM knowledge_deploy_keys)
-                       +(SELECT count(*) FROM knowledge_files)",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let remaining: i64 = query_one(&fixture.db, "SELECT (SELECT count(*) FROM knowledge_sources)+(SELECT count(*) FROM knowledge_deploy_keys)
+                       +(SELECT count(*) FROM knowledge_files)", []).await;
     assert_eq!(remaining, 0);
     assert_eq!(fixture.events("knowledge.disconnected").await, 1);
 }

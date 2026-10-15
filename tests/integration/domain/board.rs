@@ -586,7 +586,7 @@ proptest::proptest! {
                 let target_len = model[target].len() - usize::from(source == target);
                 let position = requested % (target_len + 1);
                 let task = id.clone();
-                let revision: i64 = f.db.run(move |c| Ok(c.query_row("SELECT revision FROM tasks WHERE id=?1", [task], |row| row.get(0))?)).await.unwrap();
+                let revision: i64 = query_one(&f.db, "SELECT revision FROM tasks WHERE id=?1", [task]).await;
                 let result = f.service.execute(&f.manager, command(DomainOperation::MoveTask,
                     json!({"taskId":id,"status":statuses[target],"position":position}), &format!("model-move-{step}"), Some(revision))).await;
                 if source == target && old == position { assert_eq!(result.unwrap_err().code(), "validation_failed"); }
@@ -607,7 +607,7 @@ proptest::proptest! {
                 json!({"taskId":ids[0],"status":"planning","afterTaskId":"missing-anchor"}),
             ] {
                 let task = ids[0].clone();
-                let revision: i64 = f.db.run(move |c| Ok(c.query_row("SELECT revision FROM tasks WHERE id=?1", [task], |r|r.get(0))?)).await.unwrap();
+                let revision: i64 = query_one(&f.db, "SELECT revision FROM tasks WHERE id=?1", [task]).await;
                 let error = f.service.execute(&f.manager, command(DomainOperation::MoveTask, payload, &uuid::Uuid::now_v7().to_string(), Some(revision))).await.unwrap_err();
                 assert_eq!(error.code(), "validation_failed");
             }
@@ -731,10 +731,7 @@ async fn done_column_removal_and_anchored_move_do_not_rewrite_other_cards() {
             .await
             .unwrap();
     }
-    let writes: i64 =
-        f.db.run(|c| Ok(c.query_row("SELECT COUNT(*) FROM position_writes", [], |r| r.get(0))?))
-            .await
-            .unwrap();
+    let writes: i64 = query_one(&f.db, "SELECT COUNT(*) FROM position_writes", []).await;
     assert_eq!(writes, 2, "only the two moved cards write their positions");
     let completion_times =
         f.db.run(|c| {

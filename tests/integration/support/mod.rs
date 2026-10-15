@@ -1,5 +1,7 @@
-//! The only helpers shared between areas: data directories, accounts, actors,
-//! a seeded project, test configuration, HTTP helpers and waiting. The first
+//! Helpers that several areas share: data directories, accounts, actors, a
+//! seeded project, commands, database reads, the application, outbox
+//! delivery, HTTP helpers and waiting. An area may also use another area's
+//! helpers to check that area's contract, as `docs` does with `mcp`. The first
 //! scratch directory turns off SQLite's disk flushes in the process, and
 //! `with_instant_busy_timeout` runs a test that waits for SQLite's busy
 //! timeout without the wait; see `sqlite`.
@@ -24,14 +26,17 @@ use std::{
 };
 
 use oneloop::{
-    Config, Db,
+    AppState, Application, Config, Db,
     auth::{
         Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user,
         password::PasswordPolicy,
     },
+    collaboration::{CollaborationCommand, CollaborationRuntime},
     db::{DataLayout, migrate},
+    domain::{CommandEnvelope, DomainOperation},
     timezone::TimeZone,
 };
+use serde_json::Value;
 use tempfile::TempDir;
 
 pub use project::{Role, SeededProject, add_people, seed_project, seeded_project, session_cookie};
@@ -165,6 +170,48 @@ pub fn database() -> (TempDir, Db) {
     (root, db)
 }
 
+/// The one row that `sql` selects, as one value or a tuple, such as a count
+/// or `(state, size)`. Prefer an API read when one shows the same thing.
+pub async fn query_one<T: Selected>(
+    db: &Db,
+    sql: &str,
+    params: impl rusqlite::Params + Send + 'static,
+) -> T {
+    let sql = sql.to_owned();
+    db.run(move |connection| Ok(connection.query_one(&sql, params, T::read)?))
+        .await
+        .unwrap()
+}
+
+/// What `query_one` reads from a row: one value, or a tuple of values.
+pub trait Selected: Sized + Send + 'static {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self>;
+}
+
+macro_rules! selected {
+    ($($value:ty),*) => {$(
+        impl Selected for $value {
+            fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+                row.get(0)
+            }
+        }
+    )*};
+}
+selected!(bool, i64, String, Vec<u8>, Option<i64>, Option<String>);
+
+macro_rules! selected_tuple {
+    ($($column:ident),+) => {
+        impl<$($column: rusqlite::types::FromSql + Send + 'static),+> Selected for ($($column,)+) {
+            fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+                row.try_into()
+            }
+        }
+    };
+}
+selected_tuple!(A, B);
+selected_tuple!(A, B, C);
+selected_tuple!(A, B, C, D);
+
 /// Configuration for an in-process application backed by `root`.
 pub fn config(root: &Path, public_url: &str, extra: &[(&str, &str)]) -> Config {
     let mut values = vec![
@@ -173,6 +220,11 @@ pub fn config(root: &Path, public_url: &str, extra: &[(&str, &str)]) -> Config {
     ];
     values.extend_from_slice(extra);
     Config::from_os_iter(values).unwrap()
+}
+
+/// The in-process application for `db` in `root`, served at `public_url`.
+pub fn app(root: &Path, db: &Db, public_url: &str, extra: &[(&str, &str)]) -> Application {
+    oneloop::application(AppState::new(config(root, public_url, extra), db.clone()))
 }
 
 /// UTC from the timezone database built into oneloop.
@@ -205,6 +257,43 @@ pub async fn eventually<T>(what: &str, mut check: impl AsyncFnMut() -> Option<T>
         assert!(Instant::now() < deadline, "timed out waiting until {what}");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// A Work command for `DomainService::execute`.
+pub fn command(
+    operation: DomainOperation,
+    payload: Value,
+    key: &str,
+    revision: Option<i64>,
+) -> CommandEnvelope {
+    CommandEnvelope {
+        operation,
+        payload,
+        idempotency_key: key.into(),
+        expected_revision: revision,
+    }
+}
+
+/// A discussion or Inbox command for `CollaborationService::execute`, such as
+/// `discussion.comment.create`.
+pub fn collaboration_command(
+    operation: &str,
+    payload: Value,
+    key: &str,
+    revision: Option<i64>,
+) -> CollaborationCommand {
+    CollaborationCommand {
+        operation: operation.into(),
+        payload,
+        idempotency_key: key.into(),
+        expected_revision: revision,
+    }
+}
+
+/// Delivers every outbox message that is ready now.
+pub async fn drain(runtime: &CollaborationRuntime) {
+    let worker = runtime.worker();
+    while worker.run_once().await.unwrap() {}
 }
 
 /// A cached browser actor, for tests that deliberately bypass authentication

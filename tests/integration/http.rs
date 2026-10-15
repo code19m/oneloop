@@ -3,14 +3,17 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use oneloop::{AppState, Db, application, auth::unix_now};
+use oneloop::{Db, auth::unix_now};
 use serde_json::{Value, json};
 use sha2::Digest;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use crate::support;
-use crate::support::http::{body_bytes, body_json, body_text};
+use crate::support::{
+    self,
+    http::{body_bytes, body_json, body_text},
+    query_one,
+};
 
 async fn fixture() -> (TempDir, Router, String) {
     let support::TestInstance {
@@ -18,16 +21,13 @@ async fn fixture() -> (TempDir, Router, String) {
         db,
         owner: session,
     } = support::TestInstance::new().await;
-    let config = support::config(
+    let app = support::app(
         directory.path(),
+        &db,
         "http://127.0.0.1:8080",
         &[("ONELOOP_TIMEZONE", "Asia/Tashkent")],
     );
-    (
-        directory,
-        application(AppState::new(config, db)).router,
-        session.token,
-    )
+    (directory, app.router, session.token)
 }
 
 #[tokio::test]
@@ -423,16 +423,12 @@ async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
             .await
             .unwrap();
         assert_eq!(response.status(), status, "{path}");
-        let last = db
-            .run(|connection| {
-                Ok(connection.query_row(
-                    "SELECT last_activity_at,idle_expires_at FROM sessions",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-                )?)
-            })
-            .await
-            .unwrap();
+        let last = query_one::<(i64, i64)>(
+            &db,
+            "SELECT last_activity_at,idle_expires_at FROM sessions",
+            [],
+        )
+        .await;
         assert_eq!(last, (before, idle_before), "passive fetch {path}");
     }
     let response = app
@@ -446,16 +442,7 @@ async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let after = db
-        .run(|connection| {
-            Ok(
-                connection.query_row("SELECT last_activity_at FROM sessions", [], |row| {
-                    row.get::<_, i64>(0)
-                })?,
-            )
-        })
-        .await
-        .unwrap();
+    let after = query_one::<i64>(&db, "SELECT last_activity_at FROM sessions", []).await;
     assert!(after > before);
 }
 
@@ -1201,8 +1188,7 @@ async fn misspelled_query_and_attachment_fields_are_actionable_validation_errors
 #[tokio::test]
 async fn health_reports_build_metadata_without_authentication() {
     let (root, db) = support::database();
-    let config = support::config(root.path(), "http://127.0.0.1:8080", &[]);
-    let app = application(AppState::new(config, db)).router;
+    let app = support::app(root.path(), &db, "http://127.0.0.1:8080", &[]).router;
     let response = app
         .clone()
         .oneshot(

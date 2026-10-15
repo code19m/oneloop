@@ -1,6 +1,6 @@
 use oneloop::retention::{prune_login_throttles, prune_transient_state};
 
-use crate::support;
+use crate::support::{self, query_one};
 
 #[tokio::test]
 async fn retention_removes_only_dead_state_preserving_audit_families_and_cursor() {
@@ -81,16 +81,7 @@ async fn retention_batches_limit_writer_work() {
             prune_transient_state(&db, 2_000_000_000).await.unwrap(),
             more
         );
-        let count = db
-            .run(|conn| {
-                Ok(
-                    conn.query_row("SELECT COUNT(*) FROM outbox_messages", [], |row| {
-                        row.get::<_, i64>(0)
-                    })?,
-                )
-            })
-            .await
-            .unwrap();
+        let count = query_one::<i64>(&db, "SELECT COUNT(*) FROM outbox_messages", []).await;
         assert_eq!(count, expected);
     }
 }

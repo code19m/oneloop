@@ -80,8 +80,7 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
     use tower::ServiceExt;
     let (root, db) = crate::support::database();
     let session = crate::support::add_user(&db, "person", false).await;
-    let config = crate::support::config(root.path(), "http://127.0.0.1:18710", &[]);
-    let app = oneloop::application(oneloop::AppState::new(config, db)).router;
+    let app = crate::support::app(root.path(), &db, "http://127.0.0.1:18710", &[]).router;
     let lock_path = root.path().join(".oneloop-data.lock");
     let lock = std::fs::OpenOptions::new()
         .read(true)

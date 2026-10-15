@@ -5,12 +5,15 @@ use axum::{
     response::Response,
 };
 use oneloop::{
-    AppState, Db,
+    Db,
     auth::{NewUser, create_user, password::PasswordPolicy},
 };
 use tower::ServiceExt;
 
-use crate::support::http::{body_bytes, body_json};
+use crate::support::{
+    http::{body_bytes, body_json},
+    query_one,
+};
 
 use super::add_user;
 
@@ -20,9 +23,7 @@ fn application() -> (tempfile::TempDir, Db, Router) {
 
 fn application_at(public_url: &str) -> (tempfile::TempDir, Db, Router) {
     let (directory, db) = crate::support::database();
-    let config = crate::support::config(directory.path(), public_url, &[]);
-    let state = AppState::new(config, db.clone());
-    let app = oneloop::application(state).router;
+    let app = crate::support::app(directory.path(), &db, public_url, &[]).router;
     (directory, db, app)
 }
 
@@ -148,12 +149,7 @@ async fn rejected_login_origins_report_the_configured_address_without_creating_s
             "Open oneloop at https://tasks.example.test/ and try again."
         );
     }
-    let sessions: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let sessions: i64 = query_one(&db, "SELECT count(*) FROM sessions", []).await;
     assert_eq!(sessions, 0);
 }
 
@@ -519,16 +515,7 @@ async fn rotated_cookies_keep_the_original_absolute_deadline() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         cookie = rotated;
     }
-    let saved: i64 = db
-        .run(|connection| {
-            Ok(
-                connection.query_row("SELECT absolute_expires_at FROM sessions", [], |row| {
-                    row.get(0)
-                })?,
-            )
-        })
-        .await
-        .unwrap();
+    let saved: i64 = query_one(&db, "SELECT absolute_expires_at FROM sessions", []).await;
     assert_eq!(saved, deadline);
 }
 

@@ -212,16 +212,8 @@ async fn registration_quota_expires_old_caller_entries() {
         register_from(&app, "198.51.100.7:9000", None).await,
         StatusCode::CREATED
     );
-    let retained: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM oauth_registration_attempts",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let retained: i64 =
+        query_one(&db, "SELECT COUNT(*) FROM oauth_registration_attempts", []).await;
     assert_eq!(retained, 1);
 }
 
@@ -518,16 +510,8 @@ async fn authorization_login_return_is_internal_validated_and_preserved() {
             .1,
         "opaque-login-state"
     );
-    let pending: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM oauth_authorization_requests",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let pending: i64 =
+        query_one(&db, "SELECT COUNT(*) FROM oauth_authorization_requests", []).await;
     assert_eq!(pending, 0, "login redirect must not persist consent state");
 
     db.run(|connection| {
@@ -766,16 +750,12 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
             .is_err(),
         "refresh replay must revoke the entire token family"
     );
-    let grant_revoked: bool = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at IS NOT NULL FROM mcp_grants WHERE client_id=?1",
-                [client],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let grant_revoked: bool = query_one(
+        &db,
+        "SELECT revoked_at IS NOT NULL FROM mcp_grants WHERE client_id=?1",
+        [client],
+    )
+    .await;
     assert!(
         grant_revoked,
         "refresh replay revokes the connected app grant"
@@ -1347,12 +1327,7 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
 
         // A reset signs every browser out and requires another password change.
         // Inspect pending consent here so those separate guards cannot mask it.
-        let pending: i64 = db.run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL",
-                [user], |row| row.get(0),
-            )?)
-        }).await.unwrap();
+        let pending: i64 = query_one(&db, "SELECT COUNT(*) FROM oauth_authorization_requests WHERE user_id=?1 AND consumed_at IS NULL", [user]).await;
         assert_eq!(pending, 0, "admin reset={reset}");
 
         let other_tokens = issue(&app, &client, &other_code, &other_verifier).await;
@@ -1476,16 +1451,12 @@ async fn restored_pending_authorization_code_cannot_mint_credentials() {
     let (dir, db, app, session, _user) = fixture().await;
     let client = register(&app).await;
     let (code, verifier) = authorize(&app, &session, &client).await;
-    let pending: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM oauth_authorization_codes WHERE used_at IS NULL",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let pending: i64 = query_one(
+        &db,
+        "SELECT count(*) FROM oauth_authorization_codes WHERE used_at IS NULL",
+        [],
+    )
+    .await;
     assert_eq!(pending, 1);
     drop(app);
     drop(db);
@@ -1497,18 +1468,13 @@ async fn restored_pending_authorization_code_cannot_mint_credentials() {
     let restored = restore_parent.path().join("restored");
     restore_backup(&backup, &restored).unwrap();
     let restored_db = Db::open(&restored).unwrap();
-    let restored_config = support::config(&restored, "http://127.0.0.1:8080", &[]);
-    let restored_app = application(AppState::new(restored_config, restored_db.clone())).router;
-    let restored_pending: i64 = restored_db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM oauth_authorization_codes",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let restored_app = support::app(&restored, &restored_db, "http://127.0.0.1:8080", &[]).router;
+    let restored_pending: i64 = query_one(
+        &restored_db,
+        "SELECT count(*) FROM oauth_authorization_codes",
+        [],
+    )
+    .await;
     assert_eq!(restored_pending, 0);
     let redemption = restored_app
         .oneshot(code_request(&client, &code, &verifier))
@@ -1770,13 +1736,7 @@ async fn consent_discloses_destination_and_recovers_validation_without_consuming
     statuses.sort();
     assert_eq!(statuses, [303, 412]);
     assert_eq!(
-        db.run(|c| Ok(
-            c.query_row("SELECT COUNT(*) FROM oauth_authorization_codes", [], |r| {
-                r.get::<_, i64>(0)
-            })?
-        ))
-        .await
-        .unwrap(),
+        query_one::<i64>(&db, "SELECT COUNT(*) FROM oauth_authorization_codes", []).await,
         1
     );
 }
@@ -1976,7 +1936,7 @@ async fn concurrent_refreshes_keep_the_grant_active_without_extending_grace() {
             .status(),
         StatusCode::OK
     );
-    let row: (i64, bool, bool) = db.run(move |c| Ok(c.query_row("SELECT last_used_at,revoked_at IS NOT NULL,rotated_to_id IS NOT NULL FROM mcp_tokens WHERE token_hash=?1", [old_hash], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await.unwrap();
+    let row: (i64, bool, bool) = query_one(&db, "SELECT last_used_at,revoked_at IS NOT NULL,rotated_to_id IS NOT NULL FROM mcp_tokens WHERE token_hash=?1", [old_hash]).await;
     assert_eq!(row, (rotation, true, true));
     // Revocation must still take effect inside the grace window.
     app.clone()
@@ -2063,16 +2023,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
     oneloop::retention::prune_transient_state(&db, unix_now().unwrap())
         .await
         .unwrap();
-    let codes: i64 = db
-        .run(|c| {
-            Ok(
-                c.query_row("SELECT COUNT(*) FROM oauth_authorization_codes", [], |r| {
-                    r.get(0)
-                })?,
-            )
-        })
-        .await
-        .unwrap();
+    let codes: i64 = query_one(&db, "SELECT COUNT(*) FROM oauth_authorization_codes", []).await;
     assert_eq!(codes, 0, "revoked grants need no code replay evidence");
 }
 

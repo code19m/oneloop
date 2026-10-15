@@ -1,14 +1,12 @@
 use oneloop::{
     AppError, Db,
     auth::Actor,
-    collaboration::{
-        CollaborationCommand, CollaborationRuntime, CollaborationService, InboxFilter,
-    },
+    collaboration::{CollaborationRuntime, CollaborationService, InboxFilter},
 };
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::support::{Role, now, seed_project};
+use crate::support::{Role, collaboration_command, drain, now, query_one, seed_project};
 
 struct Fixture {
     _root: TempDir,
@@ -45,25 +43,6 @@ impl Fixture {
     }
 }
 
-fn command(
-    operation: &str,
-    payload: serde_json::Value,
-    key: &str,
-    revision: Option<i64>,
-) -> CollaborationCommand {
-    CollaborationCommand {
-        operation: operation.into(),
-        payload,
-        idempotency_key: key.into(),
-        expected_revision: revision,
-    }
-}
-
-async fn drain(runtime: &CollaborationRuntime) {
-    let worker = runtime.worker();
-    while worker.run_once().await.unwrap() {}
-}
-
 #[tokio::test]
 async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one_snapshot() {
     use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -89,7 +68,7 @@ async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one
         let root = service
             .execute(
                 &f.alice,
-                command(
+                collaboration_command(
                     "discussion.comment.create",
                     json!({"taskId":"task","content":"@Bob old","mentions":mentions}),
                     "root",
@@ -102,7 +81,7 @@ async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one
             .as_str()
             .unwrap()
             .to_owned();
-        let reply = service.execute(&f.alice, command("discussion.comment.create",
+        let reply = service.execute(&f.alice, collaboration_command("discussion.comment.create",
             json!({"taskId":"task","replyToId":root,"content":"@Bob old","mentions":mentions}), "reply", None,
         )).await.unwrap().entities[0]["id"].as_str().unwrap().to_owned();
         let reader = Db::open_with_pool_size(f._root.path(), 1).unwrap();
@@ -132,7 +111,7 @@ async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one
         .await
         .unwrap();
         for id in [&root, &reply] {
-            service.execute(&f.alice, command("discussion.comment.edit",
+            service.execute(&f.alice, collaboration_command("discussion.comment.edit",
                 json!({"commentId":id,"content":"prefix @Alice updated","mentions":[{
                     "kind":"user","userId":"alice","startOffset":7,"endOffset":13,"label":"@Alice"
                 }]}), id, Some(1),
@@ -141,7 +120,7 @@ async fn comment_pages_and_exact_context_keep_content_mentions_and_counts_in_one
         service
             .execute(
                 &f.alice,
-                command(
+                collaboration_command(
                     "discussion.comment.create",
                     json!({"taskId":"task","replyToId":root,"content":"New reply"}),
                     "new-reply",
@@ -176,7 +155,7 @@ async fn comment_edits_retain_departed_mentions_but_reject_new_selections() {
         let id = service
             .execute(
                 &f.alice,
-                command(
+                collaboration_command(
                     "discussion.comment.create",
                     json!({"taskId":"task","content":"@Bob old","mentions":mentions}),
                     "retained-create",
@@ -206,7 +185,7 @@ async fn comment_edits_retain_departed_mentions_but_reject_new_selections() {
         let edited = service
             .execute(
                 &f.alice,
-                command(
+                collaboration_command(
                     "discussion.comment.edit",
                     json!({"commentId":id,"content":"@Bob corrected","mentions":mentions}),
                     "retained-edit",
@@ -217,7 +196,7 @@ async fn comment_edits_retain_departed_mentions_but_reject_new_selections() {
             .unwrap();
         assert_eq!(edited.entities[0]["mentions"], mentions);
         assert_eq!(edited.entities[0]["revision"], 2);
-        let error = service.execute(&f.alice, command("discussion.comment.edit",
+        let error = service.execute(&f.alice, collaboration_command("discussion.comment.edit",
             json!({"commentId":id,"content":"@Carol new","mentions":[{
                 "kind":"user","userId":"carol","startOffset":0,"endOffset":6,"label":"@Carol"
             }]}), "new-departed-mention", Some(2),
@@ -225,16 +204,12 @@ async fn comment_edits_retain_departed_mentions_but_reject_new_selections() {
         assert!(matches!(error, AppError::Validation { field, .. } if field == "mentions"));
         let runtime = CollaborationRuntime::new(f.db.clone());
         drain(&runtime).await;
-        let delivered =
-            f.db.run(|conn| {
-                Ok(conn.query_row(
-                    "SELECT count(*) FROM notification_recipients WHERE delivered_at IS NOT NULL",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )?)
-            })
-            .await
-            .unwrap();
+        let delivered = query_one::<i64>(
+            &f.db,
+            "SELECT count(*) FROM notification_recipients WHERE delivered_at IS NOT NULL",
+            [],
+        )
+        .await;
         assert_eq!(delivered, 0);
     }
 }
@@ -254,7 +229,7 @@ async fn moderator_edits_notify_new_mentions_without_notifying_retained_self_men
     let id = service
         .execute(
             &f.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"@Alice old","mentions":mentions}),
                 "self-create",
@@ -271,7 +246,7 @@ async fn moderator_edits_notify_new_mentions_without_notifying_retained_self_men
     service
         .execute(
             &f.bob,
-            command(
+            collaboration_command(
                 "discussion.comment.edit",
                 json!({"commentId":id,"content":"@Alice @Carol corrected","mentions":mentions}),
                 "moderator-edit",
@@ -300,7 +275,7 @@ async fn selected_utf16_mentions_notify_once_and_deleted_roots_preserve_replies(
     let created = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"🙂 @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":3,"endOffset":7,"label":"@Bob"
@@ -325,7 +300,7 @@ async fn selected_utf16_mentions_notify_once_and_deleted_roots_preserve_replies(
     let reply = service
         .execute(
             &fixture.bob,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Reply","replyToId":root_id}),
                 "create-reply",
@@ -338,7 +313,7 @@ async fn selected_utf16_mentions_notify_once_and_deleted_roots_preserve_replies(
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":root_id}),
                 "delete-root",
@@ -369,7 +344,7 @@ async fn comment_edit_activity_consolidates_reverts_and_never_resends_receipts()
     let created = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Hello @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":6,"endOffset":10,"label":"@Bob"
@@ -389,7 +364,7 @@ async fn comment_edit_activity_consolidates_reverts_and_never_resends_receipts()
         service
             .execute(
                 &fixture.alice,
-                command(
+                collaboration_command(
                     "discussion.comment.edit",
                     json!({"commentId":id,"content":content,"mentions":[{
                         "kind":"user","userId":"bob","startOffset":6,"endOffset":10,"label":"@Bob"
@@ -413,17 +388,12 @@ async fn comment_edit_activity_consolidates_reverts_and_never_resends_receipts()
             .count(),
         0
     );
-    let recipients: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM notification_recipients WHERE user_id='bob'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let recipients: i64 = query_one(
+        &fixture.db,
+        "SELECT COUNT(*) FROM notification_recipients WHERE user_id='bob'",
+        [],
+    )
+    .await;
     assert_eq!(recipients, 1);
 }
 
@@ -434,7 +404,7 @@ async fn everyone_is_members_only_and_rate_limited_across_comments() {
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"@everyone first","mentions":[{
                     "kind":"everyone","startOffset":0,"endOffset":9,"label":"@everyone"
@@ -448,7 +418,7 @@ async fn everyone_is_members_only_and_rate_limited_across_comments() {
     let error = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"@everyone second","mentions":[{
                     "kind":"everyone","startOffset":0,"endOffset":9,"label":"@everyone"
@@ -480,7 +450,7 @@ async fn everyone_is_members_only_and_rate_limited_across_comments() {
 async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
     let fixture = Fixture::new().await;
     let service = fixture.service();
-    let plain = command(
+    let plain = collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"Plain comment"}),
         "plain-before-broadcast",
@@ -488,7 +458,7 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
     );
     let created = service.execute(&fixture.alice, plain).await.unwrap();
     let id = created.entities[0]["id"].as_str().unwrap().to_owned();
-    let broadcast = command(
+    let broadcast = collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"@everyone now","mentions":[{
             "kind":"everyone","startOffset":0,"endOffset":9,"label":"@everyone"
@@ -497,10 +467,7 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
         None,
     );
     service.execute(&fixture.alice, broadcast).await.unwrap();
-    let false_receipts: i64 = fixture.db.run(move |connection| Ok(connection.query_row(
-        "SELECT COUNT(*) FROM notification_events WHERE comment_id=?1 AND json_extract(payload_json,'$.broadcast')=1",
-        [&id], |row| row.get(0),
-    )?)).await.unwrap();
+    let false_receipts: i64 = query_one(&fixture.db, "SELECT COUNT(*) FROM notification_events WHERE comment_id=?1 AND json_extract(payload_json,'$.broadcast')=1", [id]).await;
     assert_eq!(false_receipts, 0);
 
     let second = Fixture::new().await;
@@ -508,7 +475,7 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
     let created = service
         .execute(
             &second.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Plain comment"}),
                 "plain-then-edit",
@@ -521,7 +488,7 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
     service
         .execute(
             &second.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.edit",
                 json!({"commentId":id,"content":"@everyone now","mentions":[{
                     "kind":"everyone","startOffset":0,"endOffset":9,"label":"@everyone"
@@ -532,11 +499,8 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
         )
         .await
         .unwrap();
-    let recipients: i64 = second.db.run(move |connection| Ok(connection.query_row(
-        "SELECT COUNT(*) FROM notification_recipients r JOIN notification_events n ON n.id=r.notification_id
-         WHERE n.comment_id=?1 AND json_extract(n.payload_json,'$.broadcast')=1",
-        [&id], |row| row.get(0),
-    )?)).await.unwrap();
+    let recipients: i64 = query_one(&second.db, "SELECT COUNT(*) FROM notification_recipients r JOIN notification_events n ON n.id=r.notification_id
+         WHERE n.comment_id=?1 AND json_extract(n.payload_json,'$.broadcast')=1", [id]).await;
     assert_eq!(recipients, 2);
 }
 
@@ -544,7 +508,7 @@ async fn plain_comments_do_not_reserve_or_prevent_an_everyone_broadcast() {
 async fn deletion_tombstones_create_and_edit_retry_receipts() {
     let fixture = Fixture::new().await;
     let service = fixture.service();
-    let create = command(
+    let create = collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"Secret @Bob","mentions":[{
             "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
@@ -557,7 +521,7 @@ async fn deletion_tombstones_create_and_edit_retry_receipts() {
         .await
         .unwrap();
     let id = created.entities[0]["id"].as_str().unwrap().to_owned();
-    let edit = command(
+    let edit = collaboration_command(
         "discussion.comment.edit",
         json!({"commentId":id,"content":"Even more secret"}),
         "edit-to-delete",
@@ -577,7 +541,7 @@ async fn deletion_tombstones_create_and_edit_retry_receipts() {
     service
         .execute(
             &moderator,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":id}),
                 "moderator-delete",
@@ -602,7 +566,7 @@ async fn deletion_tombstones_create_and_edit_retry_receipts() {
         connection.execute("UPDATE idempotency_keys SET response_json=?1 WHERE idempotency_key='edit-to-delete'", [stale_edit])?;
         Ok(())
     }).await.unwrap();
-    let legacy_create = command(
+    let legacy_create = collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"Secret @Bob","mentions":[{
             "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
@@ -619,7 +583,7 @@ async fn deletion_tombstones_create_and_edit_retry_receipts() {
     assert_eq!(replay.entities[0]["mentions"], json!([]));
     assert_eq!(replay.entities[0]["revision"], 3);
     assert!(replay.entities[0]["deletedAt"].as_i64().is_some());
-    let legacy_edit = command(
+    let legacy_edit = collaboration_command(
         "discussion.comment.edit",
         json!({"commentId":id,"content":"Even more secret"}),
         "edit-to-delete",
@@ -649,7 +613,7 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Hello @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":6,"endOffset":10,"label":"@Bob"
@@ -708,7 +672,7 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Again @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":6,"endOffset":10,"label":"@Bob"
@@ -731,9 +695,7 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
         .await
         .unwrap();
     drain(&runtime).await;
-    let delivered: i64 = fixture.db.run(|connection| Ok(connection.query_row(
-        "SELECT COUNT(*) FROM notification_recipients WHERE user_id='bob' AND delivered_at IS NOT NULL", [], |row| row.get(0),
-    )?)).await.unwrap();
+    let delivered: i64 = query_one(&fixture.db, "SELECT COUNT(*) FROM notification_recipients WHERE user_id='bob' AND delivered_at IS NOT NULL", []).await;
     assert_eq!(delivered, 1);
 }
 
@@ -741,7 +703,7 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
 async fn idempotent_comment_replay_rechecks_current_project_access() {
     let fixture = Fixture::new().await;
     let service = fixture.service();
-    let original = command(
+    let original = collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"Private context"}),
         "replay-after-revoke",
@@ -775,7 +737,7 @@ async fn comments_of_a_deleted_task_can_no_longer_change() {
     let created = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Before"}),
                 "before-task-deletion",
@@ -806,7 +768,7 @@ async fn comments_of_a_deleted_task_can_no_longer_change() {
         let result = service
             .execute(
                 &fixture.alice,
-                command(operation, payload, operation, Some(1)),
+                collaboration_command(operation, payload, operation, Some(1)),
             )
             .await;
         assert!(
@@ -902,7 +864,7 @@ async fn comment_limit_matches_browser_utf16_length() {
     let too_long = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"🙂".repeat(1001)}),
                 "too-many-units",
@@ -915,7 +877,7 @@ async fn comment_limit_matches_browser_utf16_length() {
     let valid = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"🙂".repeat(1000)}),
                 "at-unit-limit",
@@ -931,7 +893,7 @@ async fn comment_limit_matches_browser_utf16_length() {
 async fn comment_whitespace_preserves_selected_mention_offsets() {
     let fixture = Fixture::new().await;
     let content = "\r\n  @Bob\r\n";
-    let created = fixture.service().execute(&fixture.alice, command("discussion.comment.create", json!({
+    let created = fixture.service().execute(&fixture.alice, collaboration_command("discussion.comment.create", json!({
         "taskId":"task","content":content,"mentions":[{"kind":"user","userId":"bob","startOffset":4,"endOffset":8,"label":"@Bob"}]
     }), "whitespace-mention", None)).await.unwrap();
     assert_eq!(created.entities[0]["content"], content);
@@ -952,7 +914,7 @@ async fn comment_edit_comparison_values_never_leave_activity_reads() {
     let created = service
         .execute(
             &f.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"draft"}),
                 "fingerprint-create",
@@ -965,7 +927,7 @@ async fn comment_edit_comparison_values_never_leave_activity_reads() {
     service
         .execute(
             &f.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.edit",
                 json!({"commentId":id,"content":"yes"}),
                 "fingerprint-edit",
@@ -979,7 +941,7 @@ async fn comment_edit_comparison_values_never_leave_activity_reads() {
             service
                 .execute(
                     &f.alice,
-                    command(
+                    collaboration_command(
                         "discussion.comment.delete",
                         json!({"commentId":id}),
                         "fingerprint-delete",
@@ -1043,7 +1005,7 @@ async fn bulk_inbox_uses_displayed_filter_and_actor_identity_is_immutable() {
     let result = service
         .execute(
             &f.bob,
-            command(
+            collaboration_command(
                 "inbox.bulkMarkRead",
                 json!({"filter":{"projectIds":["p1"],"unreadOnly":true}}),
                 "bulk-filter",
@@ -1079,7 +1041,7 @@ async fn inbox_comment_excerpts_are_bounded_current_and_cleared_on_delete() {
     let created = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":content,"mentions":mentions}),
                 "long-excerpt",
@@ -1104,7 +1066,7 @@ async fn inbox_comment_excerpts_are_bounded_current_and_cleared_on_delete() {
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.edit",
                 json!({"commentId":id,"content":"@Bob revised","mentions":mentions}),
                 "edit-excerpt",
@@ -1121,7 +1083,7 @@ async fn inbox_comment_excerpts_are_bounded_current_and_cleared_on_delete() {
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":id}),
                 "delete-excerpt",
@@ -1142,7 +1104,7 @@ async fn comment_edits_and_deletes_invalidate_original_recipients_privately() {
     let fixture = Fixture::new().await;
     let service = fixture.service();
     let runtime = CollaborationRuntime::new(fixture.db.clone());
-    let created = service.execute(&fixture.alice, command(
+    let created = service.execute(&fixture.alice, collaboration_command(
         "discussion.comment.create",
         json!({"taskId":"task","content":"Secret @Bob","mentions":[{"kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"}]}),
         "excerpt-create", None,
@@ -1167,7 +1129,7 @@ async fn comment_edits_and_deletes_invalidate_original_recipients_privately() {
         service
             .execute(
                 &fixture.alice,
-                command(operation, payload, operation, Some(revision)),
+                collaboration_command(operation, payload, operation, Some(revision)),
             )
             .await
             .unwrap();
@@ -1275,7 +1237,7 @@ async fn mentioning_comment(fixture: &Fixture, key: &str) -> String {
         .service()
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Secret @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
@@ -1299,7 +1261,7 @@ async fn undo_brings_back_a_deleted_comment_without_notifying_again() {
     let deleted = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":id}),
                 "undo-delete",
@@ -1323,7 +1285,7 @@ async fn undo_brings_back_a_deleted_comment_without_notifying_again() {
         .unwrap();
     assert!(inbox.items[0].excerpt.is_none());
 
-    let restore = command(
+    let restore = collaboration_command(
         "discussion.comment.restore",
         json!({"commentId":id}),
         "undo-restore",
@@ -1360,7 +1322,7 @@ async fn undo_brings_back_a_deleted_comment_without_notifying_again() {
     let replay = service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.create",
                 json!({"taskId":"task","content":"Secret @Bob","mentions":[{
                     "kind":"user","userId":"bob","startOffset":7,"endOffset":11,"label":"@Bob"
@@ -1380,7 +1342,7 @@ async fn only_people_who_could_delete_a_comment_restore_it_in_time() {
     let service = fixture.service();
     let id = mentioning_comment(&fixture, "guarded-create").await;
     let restore = |key: &str, revision| {
-        command(
+        collaboration_command(
             "discussion.comment.restore",
             json!({"commentId":id}),
             key,
@@ -1394,7 +1356,7 @@ async fn only_people_who_could_delete_a_comment_restore_it_in_time() {
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":id}),
                 "guarded-delete",
@@ -1439,7 +1401,7 @@ async fn the_purge_removes_deleted_comment_text_after_the_undo_window() {
     service
         .execute(
             &fixture.alice,
-            command(
+            collaboration_command(
                 "discussion.comment.delete",
                 json!({"commentId":id}),
                 "purged-delete",

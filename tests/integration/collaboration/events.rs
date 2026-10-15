@@ -5,7 +5,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oneloop::{
-    AppState, Db,
+    Db,
     auth::Actor,
     collaboration::{ActivityInput, CollaborationRuntime, record_activity_tx},
     domain::DomainService,
@@ -14,14 +14,15 @@ use serde_json::json;
 use tokio::time::{Duration, timeout};
 use tower::ServiceExt;
 
-use crate::support::{self, Role, SeededProject, now, seeded_project, session_cookie};
+use crate::support::{
+    self, Role, SeededProject, command, drain, now, query_one, seeded_project, session_cookie,
+};
 
 async fn app() -> (tempfile::TempDir, Db, Actor, Router, CollaborationRuntime) {
     let SeededProject {
         root, db, alice, ..
     } = seeded_project().await;
-    let config = support::config(root.path(), "https://tasks.example.test", &[]);
-    let application = oneloop::application(AppState::new(config, db.clone()));
+    let application = support::app(root.path(), &db, "https://tasks.example.test", &[]);
     (
         root,
         db,
@@ -241,7 +242,7 @@ async fn lagging_streams_reconcile_and_shutdown_cancels_a_blocked_sender() {
     })
     .await
     .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     drop((left, right));
     let mut reconciled = false;
     for _ in 0..3 {
@@ -364,8 +365,7 @@ async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
         })
         .await
         .unwrap();
-    let config = support::config(root.path(), "https://tasks.example.test", &[]);
-    let application = oneloop::application(AppState::new(config, traced));
+    let application = support::app(root.path(), &traced, "https://tasks.example.test", &[]);
     let (app, runtime) = (application.router, application.collaboration);
     let mut oldest = events(&app, "/api/events").await.into_body();
     frame(&mut oldest).await;
@@ -395,7 +395,7 @@ async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
     })
     .await
     .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     support::eventually("the stream's queue is full", async || {
         (CHECKS.load(Ordering::SeqCst) >= 63).then_some(())
     })
@@ -481,21 +481,21 @@ async fn membership_removal_reconciles_and_session_revocation_closes_stream() {
     DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::RemoveMembership,
-                payload: json!({"projectId":"p1","userId":"alice"}),
-                idempotency_key: "remove-http".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::RemoveMembership,
+                json!({"projectId":"p1","userId":"alice"}),
+                "remove-http",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1"));
     support::auth_service(&db).logout(&alice).await.unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     assert!(
         timeout(Duration::from_secs(1), body.frame())
             .await
@@ -510,16 +510,12 @@ async fn periodic_revalidation_closes_idle_revoked_session_without_extending_it(
     let (_root, db, _alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
-    let before: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let before: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
+        [],
+    )
+    .await;
     db.transaction(|tx| {
         tx.execute("UPDATE sessions SET revoked_at=1 WHERE id='s-alice'", [])?;
         Ok(())
@@ -556,16 +552,12 @@ async fn periodic_revalidation_closes_idle_revoked_session_without_extending_it(
         timeout(Duration::from_secs(5), closed).await.unwrap();
     }
     receivers(&runtime, 0).await;
-    let after: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let after: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
+        [],
+    )
+    .await;
     assert_eq!(before, after);
 }
 
@@ -602,16 +594,16 @@ async fn project_deletion_reconciles_former_members_without_disclosing_context()
     DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::DeleteProject,
-                payload: json!({"projectId":"p1","confirmedName":"Project"}),
-                idempotency_key: "delete-http".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::DeleteProject,
+                json!({"projectId":"p1","confirmedName":"Project"}),
+                "delete-http",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1") && !reconcile.contains("Project"));

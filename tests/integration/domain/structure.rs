@@ -75,7 +75,7 @@ async fn membership_addition_sends_an_account_addressed_access_hint() {
         )
         .await
         .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let mut hints = Vec::new();
     while let Ok(hint) = events.try_recv() {
         if hint.kind == "access.changed" {
@@ -454,16 +454,12 @@ async fn membership_removal_and_unblock_complete_preserve_invariants_atomically(
         )
         .await
         .unwrap();
-    let count: i64 =
-        f.db.run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM project_memberships WHERE project_id='p1' AND user_id='u3'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(
+        &f.db,
+        "SELECT COUNT(*) FROM project_memberships WHERE project_id='p1' AND user_id='u3'",
+        [],
+    )
+    .await;
     assert_eq!(count, 0);
 }
 
@@ -503,16 +499,12 @@ async fn epic_edits_consolidate_per_field_and_reverts_keep_other_changes() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].field_key.as_deref(), Some("description"));
     assert_eq!(page.items[0].after, Some(json!("Useful details")));
-    let raw_count =
-        f.db.run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM activity_events WHERE entity_type='epic' AND entity_id='e1'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let raw_count = query_one::<i64>(
+        &f.db,
+        "SELECT COUNT(*) FROM activity_events WHERE entity_type='epic' AND entity_id='e1'",
+        [],
+    )
+    .await;
     assert_eq!(raw_count, 3);
 }
 
@@ -610,29 +602,7 @@ async fn assignee_activity_consolidates_both_membership_directions_without_rewri
                 .all(|event| !event.event_type.starts_with("task.assignee."))
         );
     }
-    let (raw, projected, hidden): (i64, i64, i64) = f
-        .db
-        .run(|connection| {
-            Ok((
-                connection.query_row(
-                    "SELECT count(*) FROM activity_events WHERE field_key='assignee:u3'",
-                    [],
-                    |row| row.get(0),
-                )?,
-                connection.query_row(
-                    "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3'",
-                    [],
-                    |row| row.get(0),
-                )?,
-                connection.query_row(
-                    "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3' AND is_hidden=1",
-                    [],
-                    |row| row.get(0),
-                )?,
-            ))
-        })
-        .await
-        .unwrap();
+    let (raw, projected, hidden): (i64, i64, i64) = (query_one(&f.db, "SELECT count(*) FROM activity_events WHERE field_key='assignee:u3'", []).await, query_one(&f.db, "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3'", []).await, query_one(&f.db, "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3' AND is_hidden=1", []).await);
     assert_eq!((raw, projected, hidden), (4, 2, 2));
 }
 
@@ -1011,17 +981,10 @@ async fn track_noop_is_rejected_and_reorders_stay_only_in_raw_audit() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "validation_failed");
-    let counts: (i64, i64) =
-        f.db.run(|c| {
-            Ok((
-                c.query_row("SELECT revision FROM tracks WHERE id='tr1'", [], |r| {
-                    r.get(0)
-                })?,
-                c.query_row("SELECT COUNT(*) FROM activity_events", [], |r| r.get(0))?,
-            ))
-        })
-        .await
-        .unwrap();
+    let counts: (i64, i64) = (
+        query_one(&f.db, "SELECT revision FROM tracks WHERE id='tr1'", []).await,
+        query_one(&f.db, "SELECT COUNT(*) FROM activity_events", []).await,
+    );
     assert_eq!(counts, (1, 0));
     let track = f
         .service
@@ -1063,11 +1026,26 @@ async fn track_noop_is_rejected_and_reorders_stay_only_in_raw_audit() {
             .await
             .unwrap();
     }
-    let (raw,visible,open):(i64,i64,i64)=f.db.run(|c|Ok((
-        c.query_row("SELECT COUNT(*) FROM activity_events WHERE field_key='position'",[],|r|r.get(0))?,
-        c.query_row("SELECT COUNT(*) FROM activity_projection WHERE field_key='position' AND is_hidden=0",[],|r|r.get(0))?,
-        c.query_row("SELECT COUNT(*) FROM activity_projection WHERE field_key='position' AND is_open=1",[],|r|r.get(0))?
-    ))).await.unwrap();
+    let (raw, visible, open): (i64, i64, i64) = (
+        query_one(
+            &f.db,
+            "SELECT COUNT(*) FROM activity_events WHERE field_key='position'",
+            [],
+        )
+        .await,
+        query_one(
+            &f.db,
+            "SELECT COUNT(*) FROM activity_projection WHERE field_key='position' AND is_hidden=0",
+            [],
+        )
+        .await,
+        query_one(
+            &f.db,
+            "SELECT COUNT(*) FROM activity_projection WHERE field_key='position' AND is_open=1",
+            [],
+        )
+        .await,
+    );
     assert_eq!((raw, visible, open), (3, 0, 0));
     let feed = CollaborationService::new(f.db.clone())
         .activity(&f.member, "p1", Some("order-1"), None, Some(100))

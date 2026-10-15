@@ -11,7 +11,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 use super::initialize;
-use crate::support;
+use crate::support::{self, collaboration_command, command, query_one};
 
 #[tokio::test]
 async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore() {
@@ -84,9 +84,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     let files = oneloop::files::FileService::new(db.clone(), 100 * 1024 * 1024, 0);
     assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 1);
     assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 0);
-    let attribution: (String,String,String) = db.run(|c| Ok(c.query_row(
-        "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'",
-        [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await.unwrap();
+    let attribution: (String,String,String) = query_one(&db, "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'", []).await;
     assert_eq!(attribution, ("u".into(), "g".into(), "Original".into()));
 }
 
@@ -226,12 +224,12 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let restore_gone = oneloop::domain::DomainService::new(db.clone(), support::utc())
         .execute(
             &owner,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::RestoreTask,
-                payload: serde_json::json!({"id":"gone"}),
-                idempotency_key: "undo-gone".into(),
-                expected_revision: Some(2),
-            },
+            command(
+                oneloop::domain::DomainOperation::RestoreTask,
+                serde_json::json!({"id":"gone"}),
+                "undo-gone",
+                Some(2),
+            ),
         )
         .await;
     assert!(
@@ -241,12 +239,12 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let restore_emptied = oneloop::collaboration::CollaborationService::new(db.clone())
         .execute(
             &owner,
-            oneloop::collaboration::CollaborationCommand {
-                operation: "discussion.comment.restore".into(),
-                payload: serde_json::json!({"commentId":"emptied"}),
-                idempotency_key: "undo-emptied".into(),
-                expected_revision: Some(2),
-            },
+            collaboration_command(
+                "discussion.comment.restore",
+                serde_json::json!({"commentId":"emptied"}),
+                "undo-emptied",
+                Some(2),
+            ),
         )
         .await;
     assert!(
@@ -257,9 +255,7 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
 
 #[tokio::test]
 async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first() {
-    use oneloop::domain::{
-        BoardQuery, CommandEnvelope, DomainOperation, DomainService, DoneOrder, TaskStatus,
-    };
+    use oneloop::domain::{BoardQuery, DomainOperation, DomainService, DoneOrder, TaskStatus};
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
@@ -306,12 +302,12 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
     service
         .execute(
             &owner,
-            CommandEnvelope {
-                operation: DomainOperation::MoveTask,
-                payload: serde_json::json!({"taskId":"open","status":"done"}),
-                idempotency_key: "finish-open".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                DomainOperation::MoveTask,
+                serde_json::json!({"taskId":"open","status":"done"}),
+                "finish-open",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
