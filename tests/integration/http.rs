@@ -78,6 +78,19 @@ async fn serves_frontend_tree_and_excludes_development_files() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
     }
+    // A navigation to a path without an extension gets the app, so this asks
+    // as a script would. THIRD_PARTY_NOTICES.md carries the license texts.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/vendor/katex/LICENSE")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     for path in [
         "/views/app.js",
         "/views/collaboration.js",

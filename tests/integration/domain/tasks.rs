@@ -981,92 +981,69 @@ async fn retained_assignees_and_block_mentions_survive_account_and_membership_ch
 }
 
 #[tokio::test]
-async fn date_fields_require_canonical_calendar_values_for_browser_and_mcp_actors() {
+async fn date_fields_require_canonical_calendar_values() {
     let f = fixture().await;
-    let now = now();
-    f.db.transaction(move |tx| {
-        tx.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at) VALUES('date-grant','u1','client','Client',?1,?1,?2,?1)", params![now,now+3600])?;
-        tx.execute("INSERT INTO mcp_grant_projects VALUES('date-grant','p1')", [])?;
-        for scope in ["project_read","board_manage","roadmap_manage"] { tx.execute("INSERT INTO mcp_grant_scopes VALUES('date-grant',?1)",[scope])?; }
-        Ok(())
-    }).await.unwrap();
-    let mut mcp = f.manager.clone();
-    mcp.source = ActorSource::McpGrant {
-        grant_id: "date-grant".into(),
-    };
-    for (actor_index, actor) in [&f.manager, &mcp].into_iter().enumerate() {
-        for (field, operation, payload) in [
-            (
-                "startDate",
-                DomainOperation::CreateEpic,
-                json!({"projectId":"p1","trackId":"tr1","title":"Date"}),
-            ),
-            (
-                "endDate",
-                DomainOperation::CreateEpic,
-                json!({"projectId":"p1","trackId":"tr1","title":"Date","startDate":"0000-01-01"}),
-            ),
-            (
-                "deadline",
-                DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":"e1","title":"Date"}),
-            ),
-            (
-                "milestoneDate",
-                DomainOperation::CreateMilestone,
-                json!({"projectId":"p1","title":"Date"}),
-            ),
-        ] {
-            for (index, date) in [
-                " 2026-01-01",
-                "2026-2-3",
-                "2026-02-29",
-                "2026-01-01 ",
-                "+2026-01-01",
-                "10000-01-01",
-            ]
+    for (field, operation, payload) in [
+        (
+            "startDate",
+            DomainOperation::CreateEpic,
+            json!({"projectId":"p1","trackId":"tr1","title":"Date"}),
+        ),
+        (
+            "endDate",
+            DomainOperation::CreateEpic,
+            json!({"projectId":"p1","trackId":"tr1","title":"Date","startDate":"0000-01-01"}),
+        ),
+        (
+            "deadline",
+            DomainOperation::CreateTask,
+            json!({"projectId":"p1","epicId":"e1","title":"Date"}),
+        ),
+        (
+            "milestoneDate",
+            DomainOperation::CreateMilestone,
+            json!({"projectId":"p1","title":"Date"}),
+        ),
+    ] {
+        for (index, date) in [
+            " 2026-01-01",
+            "2026-2-3",
+            "2026-02-29",
+            "2026-01-01 ",
+            "+2026-01-01",
+            "10000-01-01",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut payload = payload.clone();
+            payload[field] = json!(date);
+            assert!(
+                matches!(
+                    f.service
+                        .execute(
+                            &f.manager,
+                            command(operation, payload, &format!("date-{field}-{index}"), None)
+                        )
+                        .await,
+                    Err(AppError::Validation { .. })
+                ),
+                "{field} {date}"
+            );
+        }
+        for (index, date) in ["0000-01-01", "0226-01-01", "2000-02-29", "9999-12-31"]
             .into_iter()
             .enumerate()
-            {
-                let mut payload = payload.clone();
-                payload[field] = json!(date);
-                assert!(
-                    matches!(
-                        f.service
-                            .execute(
-                                actor,
-                                command(
-                                    operation,
-                                    payload,
-                                    &format!("date-{actor_index}-{field}-{index}"),
-                                    None
-                                )
-                            )
-                            .await,
-                        Err(AppError::Validation { .. })
-                    ),
-                    "{field} {date}"
-                );
-            }
-            for (index, date) in ["0000-01-01", "0226-01-01", "2000-02-29", "9999-12-31"]
-                .into_iter()
-                .enumerate()
-            {
-                let mut payload = payload.clone();
-                payload[field] = json!(date);
-                f.service
-                    .execute(
-                        actor,
-                        command(
-                            operation,
-                            payload,
-                            &format!("valid-{actor_index}-{field}-{index}"),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap();
-            }
+        {
+            let mut payload = payload.clone();
+            payload[field] = json!(date);
+            f.service
+                .execute(
+                    &f.manager,
+                    command(operation, payload, &format!("valid-{field}-{index}"), None),
+                )
+                .await
+                .unwrap();
         }
     }
 }

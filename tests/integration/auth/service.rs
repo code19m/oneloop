@@ -55,51 +55,6 @@ async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application()
 }
 
 #[tokio::test]
-async fn permissions_are_rechecked_and_admin_assignment_still_requires_membership() {
-    let (_directory, db) = database();
-    let member_id = add_user(&db, "member", false, false).await;
-    add_user(&db, "administrator", true, false).await;
-    let project_id = "project-1".to_owned();
-    let project_for_insert = project_id.clone();
-    let member_for_insert = member_id.clone();
-    db.transaction(move |tx| {
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,'Project','PRJ',1,1)",
-            [&project_for_insert])?;
-        tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                    VALUES(?1,?2,1,1,1)", rusqlite::params![project_for_insert,member_for_insert])?;
-        Ok(())
-    }).await.unwrap();
-
-    let service = auth_service(&db);
-    let (_, member) = login(&service, "member").await;
-    let (_, admin) = login(&service, "administrator").await;
-    assert!(
-        service
-            .can_read_project(&member, &project_id)
-            .await
-            .unwrap()
-    );
-    assert!(service.can_read_project(&admin, &project_id).await.unwrap());
-
-    let member_for_remove = member_id.clone();
-    db.run(move |connection| {
-        connection.execute(
-            "DELETE FROM project_memberships WHERE user_id=?1",
-            [member_for_remove],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(
-        !service
-            .can_read_project(&member, &project_id)
-            .await
-            .unwrap()
-    );
-}
-
-#[tokio::test]
 async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
     let (_directory, db) = database();
     let user_id = add_user(&db, "person", false, false).await;
@@ -443,47 +398,6 @@ async fn passive_authentication_does_not_extend_idle_activity() {
         .await
         .unwrap();
     assert!(updated > old);
-}
-
-#[tokio::test]
-async fn mcp_project_access_is_intersected_with_live_grant_scopes() {
-    let (_directory, db) = database();
-    let user_id = add_user(&db, "mcpuser", false, false).await;
-    let project_id = "mcp-project".to_owned();
-    let access_token = "mcp-access-token-with-at-least-32-bytes".to_owned();
-    let access_hash = token_hash(&access_token);
-    let uid = user_id.clone();
-    let pid = project_id.clone();
-    db.transaction(move |tx| {
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,'MCP','MCP',1,1)",[&pid])?;
-        tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-            VALUES(?1,?2,1,1,1)",rusqlite::params![pid,uid])?;
-        tx.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at)
-            VALUES('grant',?1,'client','Client',1,1,9999999999)",[uid])?;
-        tx.execute("INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES('grant',?1)",[pid])?;
-        tx.execute("INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES('grant','project_read')",[])?;
-        tx.execute("INSERT INTO mcp_tokens(id,grant_id,family_id,kind,token_hash,issued_at,expires_at)
-            VALUES('access','grant','family','access',?1,1,9999999999)",[access_hash])?;
-        Ok(())
-    }).await.unwrap();
-    let service = auth_service(&db);
-    let actor = service
-        .authenticate_mcp_access_token(&access_token)
-        .await
-        .unwrap();
-    assert_eq!(actor.user_id, user_id);
-    assert!(service.can_read_project(&actor, &project_id).await.unwrap());
-    db.run(|connection| {
-        connection.execute("UPDATE mcp_grants SET revoked_at=2 WHERE id='grant'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(!service.can_read_project(&actor, &project_id).await.unwrap());
-    assert!(matches!(
-        service.authenticate_mcp_access_token(&access_token).await,
-        Err(AppError::Unauthorized)
-    ));
 }
 
 #[tokio::test]

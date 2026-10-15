@@ -456,11 +456,12 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
             .iter()
             .any(|field| field == "idempotencyKey")
     );
-    assert!(
-        !names
+    // Account, membership and storage administration stay in the browser.
+    assert!(!names.iter().any(|name| {
+        ["user", "account", "membership", "storage"]
             .iter()
-            .any(|name| name.contains("user") || name.contains("membership"))
-    );
+            .any(|word| name.contains(word))
+    }));
 }
 
 #[tokio::test]

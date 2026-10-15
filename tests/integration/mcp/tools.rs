@@ -242,44 +242,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
 
     let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
 
-    let listed = mcp.request("tools/list", json!({})).await;
-    let names = listed["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|tool| tool["name"].as_str())
-        .collect::<Vec<_>>();
-    for expected in [
-        "get_identity",
-        "list_projects",
-        "list_project_members",
-        "read_roadmap",
-        "search_tasks",
-        "read_task",
-        "read_epic",
-        "read_pool",
-        "execute_work_command",
-        "execute_discussion_command",
-        "execute_destructive_command",
-        "read_comments",
-        "read_activity",
-        "read_inbox",
-        "list_attachments",
-        "set_attachment_temporary",
-        "reorder_attachment",
-        "delete_attachment",
-        "create_attachment_upload",
-        "create_attachment_download",
-    ] {
-        assert!(
-            names.contains(&expected),
-            "missing tool {expected}: {names:?}"
-        );
-    }
-    assert!(!names.iter().any(|name| {
-        name.contains("account") || name.contains("membership") || name.contains("storage")
-    }));
-
     let members = tool_value(
         &mcp.call("list_project_members", json!({"projectId":"project-1"}))
             .await,

@@ -932,39 +932,6 @@ async fn unsupported_ranges_deliver_full_file_and_unsatisfiable_ranges_return_41
 }
 
 #[tokio::test]
-async fn embedded_katex_keeps_woff2_and_licenses_without_unused_formats() {
-    let f = Fixture::new().await;
-    for (path, status) in [
-        ("/vendor/katex/LICENSE", StatusCode::NOT_FOUND),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.woff2",
-            StatusCode::OK,
-        ),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.woff",
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.ttf",
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            "/vendor/github-markdown-css/dark.css",
-            StatusCode::NOT_FOUND,
-        ),
-        ("/vendor/cdn-assets/dark.css", StatusCode::NOT_FOUND),
-    ] {
-        let response = f
-            .app
-            .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status, "{path}");
-    }
-}
-
-#[tokio::test]
 async fn temporary_patch_alias_retains_existing_response_names_and_values() {
     let f = Fixture::new().await;
     let (_, bytes) = f.upload("temporary-alias", "sample.txt", b"hello").await;

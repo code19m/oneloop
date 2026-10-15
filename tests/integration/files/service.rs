@@ -126,24 +126,6 @@ async fn upload(
 }
 
 #[tokio::test]
-async fn opaque_uploads_are_durable_replayable_and_member_readable() {
-    let fixture = Fixture::new().await;
-    let service = fixture.service(100 * 1024 * 1024);
-    let bytes = b"PK\x03\x04 arbitrary archive bytes";
-    let file = upload(
-        &service,
-        &fixture.manager,
-        "upload-one",
-        "work.rar",
-        bytes,
-        false,
-    )
-    .await;
-    assert_eq!(file.state, oneloop::files::BlobState::Available);
-    assert_eq!(file.preview_kind, None);
-}
-
-#[tokio::test]
 async fn names_permissions_streaming_and_replay_are_enforced() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);

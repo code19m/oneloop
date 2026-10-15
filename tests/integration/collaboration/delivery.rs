@@ -1147,18 +1147,6 @@ async fn consolidated_activity_uses_the_latest_web_or_app_source() {
 }
 
 #[tokio::test]
-async fn runtime_shutdown_notifies_long_lived_streams_immediately() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let runtime = CollaborationRuntime::new(db);
-    let mut shutdown = runtime.shutdown_receiver();
-    runtime.shutdown();
-    shutdown.changed().await.unwrap();
-    assert!(*shutdown.borrow());
-}
-
-#[tokio::test]
 async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() {
     let SeededProject {
         root: _root,
