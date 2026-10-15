@@ -93,7 +93,7 @@ pub(super) fn update_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let epic_id = input.epic_id.unwrap_or(before.epic_id.clone());
     if epic_id != before.epic_id {
         ensure_open_epic(tx, &epic_id, &before.project_id)?;
@@ -277,7 +277,7 @@ pub(super) fn move_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let status = input.status.as_str();
     if status == "done" {
         let blocked: bool = tx.query_row(
@@ -416,7 +416,7 @@ pub(super) fn delete_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.id)?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     tx.execute("UPDATE tasks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = deleted("task", &input.id, &before.project_id, expected + 1);
     let event = activity(
@@ -461,7 +461,7 @@ pub(super) fn restore_task(
     let Some(deleted_at) = deleted_at else {
         return Err(AppError::Conflict("the task is not deleted".into()));
     };
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     require_undo_window("task", deleted_at, now)?;
     // A purge that already claimed its files would remove them from the
     // restored task, as after the clock stepped back.

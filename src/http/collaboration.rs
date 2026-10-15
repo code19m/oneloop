@@ -1,5 +1,5 @@
-use super::input::ApiQuery;
-use std::{collections::BTreeSet, convert::Infallible};
+use super::input::{ApiQuery, id_list};
+use std::convert::Infallible;
 
 use axum::{
     Extension, Json, Router,
@@ -19,6 +19,7 @@ use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     collaboration::{ActivityPage, CommentPage, InboxFilter, InboxPage, LiveEvent},
+    domain::PageQuery,
 };
 
 pub(crate) fn router() -> Router<AppState> {
@@ -35,13 +36,6 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/inbox", get(inbox))
         .route("/events", get(events))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageQuery {
-    cursor: Option<String>,
-    limit: Option<usize>,
 }
 
 async fn comments(
@@ -126,9 +120,10 @@ async fn inbox(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<InboxQuery>,
 ) -> AppResult<Json<InboxPage>> {
-    let project_ids = parse_project_ids(query.project_ids.as_deref())?;
     let filter = InboxFilter {
-        project_ids,
+        project_ids: id_list("projectIds", query.project_ids.as_deref())?
+            .into_iter()
+            .collect(),
         unread_only: query.unread_only,
         archived: query.archived,
     };
@@ -220,40 +215,4 @@ async fn events(
         ],
         Sse::new(events).keep_alive(KeepAlive::default()),
     ))
-}
-
-fn parse_project_ids(value: Option<&str>) -> AppResult<BTreeSet<String>> {
-    let mut result = BTreeSet::new();
-    let Some(value) = value else {
-        return Ok(result);
-    };
-    if value.len() > 4_096 {
-        return Err(AppError::validation("projectIds", "is too long"));
-    }
-    for item in value.split(',') {
-        let item = item.trim();
-        if item.is_empty() || item.len() > 128 {
-            return Err(AppError::validation(
-                "projectIds",
-                "must contain comma-separated project IDs",
-            ));
-        }
-        result.insert(item.to_owned());
-    }
-    Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inbox_project_filter_uses_one_comma_separated_query_value() {
-        let ids = parse_project_ids(Some("project-a,project-b,project-a")).unwrap();
-        assert_eq!(
-            ids.into_iter().collect::<Vec<_>>(),
-            ["project-a", "project-b"]
-        );
-        assert!(parse_project_ids(Some("project-a,,project-b")).is_err());
-    }
 }

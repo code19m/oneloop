@@ -1,4 +1,4 @@
-use super::input::ApiQuery;
+use super::input::{ApiQuery, id_list};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -74,9 +74,9 @@ async fn board_view(
                 project_id,
                 limit: query.limit,
                 search: query.search,
-                track_ids: csv(query.track_ids),
-                epic_ids: csv(query.epic_ids),
-                assignee_ids: csv(query.assignee_ids),
+                track_ids: id_list("trackIds", query.track_ids.as_deref())?,
+                epic_ids: id_list("epicIds", query.epic_ids.as_deref())?,
+                assignee_ids: id_list("assigneeIds", query.assignee_ids.as_deref())?,
                 no_assignee: query.no_assignee,
                 blocked: query.blocked,
                 done_order: query.done_order,
@@ -129,9 +129,9 @@ async fn board(
                 cursor: query.cursor,
                 limit: query.limit,
                 search: query.search,
-                track_ids: csv(query.track_ids),
-                epic_ids: csv(query.epic_ids),
-                assignee_ids: csv(query.assignee_ids),
+                track_ids: id_list("trackIds", query.track_ids.as_deref())?,
+                epic_ids: id_list("epicIds", query.epic_ids.as_deref())?,
+                assignee_ids: id_list("assigneeIds", query.assignee_ids.as_deref())?,
                 no_assignee: query.no_assignee,
                 blocked: query.blocked,
                 done_order: query.done_order,
@@ -210,18 +210,4 @@ async fn epic_activity(
         .epic_activity(&actor, &epic_id, query.cursor.as_deref(), query.limit)
         .await
         .map(Json)
-}
-
-fn csv(value: Option<String>) -> Vec<String> {
-    value
-        .into_iter()
-        .flat_map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }

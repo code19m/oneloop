@@ -34,7 +34,7 @@ use crate::{
         mentions::{self, MentionNotice, Mentioned},
         record_activity_tx, snapshot_notification_tx,
     },
-    command::{Command, CommandResult, Mutation},
+    command::{Command, CommandResult, Mutation, check_revision},
     error::{AppError, AppResult},
     text,
     timezone::TimeZone,

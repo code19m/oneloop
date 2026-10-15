@@ -73,7 +73,7 @@ pub(super) fn update_track(
         .optional()?
         .ok_or_else(|| not_found("track"))?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let name = input
         .name
         .as_deref()
@@ -136,7 +136,7 @@ pub(super) fn reorder_track(
         .optional()?
         .ok_or_else(|| not_found("track"))?;
     require_project(tx, actor, &project_id, Need::Roadmap, false)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let mut ids = active_ids(tx, "tracks", "project_id", &project_id, None)?;
     let old = ids
         .iter()
@@ -201,7 +201,7 @@ pub(super) fn delete_track(
         .optional()?
         .ok_or_else(|| not_found("track"))?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let has_children: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL)",
         [&input.id],
@@ -336,7 +336,7 @@ pub(super) fn update_epic(
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let track_id = input.track_id.unwrap_or(before.track_id.clone());
     ensure_track_project(tx, &track_id, &before.project_id)?;
     let title = input
@@ -495,7 +495,7 @@ pub(super) fn set_epic_state(
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
     require_project(tx, actor, &project_id, Need::Roadmap, false)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     if before == state {
         return Err(AppError::validation(
             "state",
@@ -561,7 +561,7 @@ pub(super) fn delete_epic(
         .optional()?
         .ok_or_else(|| not_found("epic"))?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let tasks: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE epic_id=?1 AND deleted_at IS NULL)",
         [&input.id],
@@ -664,7 +664,7 @@ pub(super) fn update_milestone(
         .optional()?
         .ok_or_else(|| not_found("milestone"))?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let title = input
         .title
         .as_deref()
@@ -758,7 +758,7 @@ pub(super) fn delete_milestone(
         .optional()?
         .ok_or_else(|| not_found("milestone"))?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     tx.execute("UPDATE milestones SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = deleted("milestone", &input.id, &project_id, revision + 1);
     let event = activity(

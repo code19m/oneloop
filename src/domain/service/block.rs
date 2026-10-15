@@ -10,7 +10,7 @@ pub(super) fn block_task(
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
-    ensure_revision(task.revision, expected)?;
+    check_revision(expected, task.revision)?;
     if task.status == "done" {
         return Err(AppError::PreconditionFailed(
             "completed tasks cannot be blocked".into(),
@@ -106,7 +106,7 @@ pub(super) fn update_block_reason(
         .optional()?
         .ok_or_else(|| not_found("active task block"))?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
     let old_mentions = mentions::load(tx, Mentioned::Block(&input.block_id))?;
     let retained: Vec<_> = old_mentions
@@ -188,7 +188,7 @@ pub(super) fn unblock_task(
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
-    ensure_revision(task.revision, expected)?;
+    check_revision(expected, task.revision)?;
     let (block_id, block_revision, block_reason): (String, i64, String) = tx
         .query_row(
             "SELECT id,revision,reason FROM task_blocks WHERE task_id=?1 AND resolved_at IS NULL",

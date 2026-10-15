@@ -85,7 +85,7 @@ pub(super) fn update_membership(
         )
         .optional()?
         .ok_or_else(|| not_found("membership"))?;
-    ensure_revision(before.2, expected)?;
+    check_revision(expected, before.2)?;
     if before.0 == input.manage_roadmap && before.1 == input.manage_board {
         return Err(AppError::validation(
             "payload",
@@ -153,7 +153,7 @@ pub(super) fn remove_membership(
         )
         .optional()?
         .ok_or_else(|| not_found("membership"))?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let unfinished: bool = tx.query_row(
         HAS_OPEN_ASSIGNMENTS_SQL,
         params![input.user_id, input.project_id],

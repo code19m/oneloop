@@ -66,7 +66,7 @@ pub(super) fn update_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = pool_item_for(tx, actor, &input.pool_item_id, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let title = input
         .title
         .as_deref()
@@ -142,7 +142,7 @@ pub(super) fn delete_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = pool_item_for(tx, actor, &input.id, true)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let event = activity(
         tx,
         actor,
@@ -177,7 +177,7 @@ pub(super) fn promote_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let item = pool_item_for(tx, actor, &input.pool_item_id, false)?;
-    ensure_revision(item.revision, expected)?;
+    check_revision(expected, item.revision)?;
     // Promotion creates shared project work, so personal ownership alone is insufficient.
     require_project(tx, actor, &item.project_id, Need::Board, false)?;
     let task = TaskCreate {

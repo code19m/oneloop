@@ -96,6 +96,15 @@ impl RevisionRule {
     }
 }
 
+/// Refuses an edit based on revision `expected` of a record that is now at
+/// `current`.
+pub(crate) fn check_revision(expected: i64, current: i64) -> AppResult<()> {
+    if expected != current {
+        return Err(AppError::revision(expected, current));
+    }
+    Ok(())
+}
+
 /// A request to change data, from the browser or MCP. The actor always comes
 /// from authentication, never from the request.
 #[derive(Clone, Debug)]

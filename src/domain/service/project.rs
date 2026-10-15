@@ -72,7 +72,7 @@ pub(super) fn update_project(
         )
         .optional()?
         .ok_or_else(|| not_found("project"))?;
-    ensure_revision(before.2, expected)?;
+    check_revision(expected, before.2)?;
     let name = input
         .name
         .as_deref()
@@ -159,7 +159,7 @@ pub(super) fn delete_project(
         )
         .optional()?
         .ok_or_else(|| not_found("project"))?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     if input.confirmed_name != name {
         return Err(AppError::validation(
             "confirmedName",

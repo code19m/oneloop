@@ -1,4 +1,4 @@
-//! Date and revision validation, preserving the exact date contract.
+//! Date validation, preserving the exact date contract.
 use super::*;
 
 pub(super) fn date(value: &str, field: &'static str) -> AppResult<String> {
@@ -21,11 +21,4 @@ pub(super) fn optional_date(
     field: &'static str,
 ) -> AppResult<Option<String>> {
     value.map(|value| date(&value, field)).transpose()
-}
-
-pub(super) fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
-    if actual != expected {
-        return Err(AppError::revision(expected, actual));
-    }
-    Ok(())
 }

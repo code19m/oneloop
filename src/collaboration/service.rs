@@ -22,7 +22,7 @@ use crate::{
     access::{self, Need, require_project},
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
-    command::{Command, CommandResult, Mutation},
+    command::{Command, CommandResult, Mutation, check_revision},
     input::parse_payload,
 };
 

@@ -226,7 +226,7 @@ pub(super) fn edit_comment(
             "deleted comments cannot be edited".into(),
         ));
     }
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let retained: Vec<_> = before
         .mentions
@@ -314,7 +314,7 @@ pub(super) fn delete_comment(
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict("comment is already deleted".into()));
     }
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     // The text and mentions stay hidden for the Undo window; the purge in
     // `purge_deleted_comments` removes them after it.
     tx.execute(
@@ -372,7 +372,7 @@ pub(super) fn restore_comment(
     let Some(deleted_at) = before.deleted_at else {
         return Err(AppError::Conflict("the comment is not deleted".into()));
     };
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     crate::domain::require_undo_window("comment", deleted_at, now)?;
     let content: String = tx.query_row(
         "SELECT content FROM comments WHERE id=?1",
@@ -652,14 +652,6 @@ pub(super) fn show_deleted_comment(
         replace_comment(replay, &current)?;
     }
     Ok(())
-}
-
-fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(AppError::revision(expected, actual))
-    }
 }
 
 #[cfg(test)]

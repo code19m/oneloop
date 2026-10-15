@@ -178,9 +178,10 @@ const RESERVED_SCHEMES: &[&str] = &[
     "wss",
 ];
 
-/// The items of a setting separated by commas, without the spaces around
-/// them. Empty items, such as after a trailing comma, are skipped.
-fn comma_list(raw: &str) -> impl Iterator<Item = &str> {
+/// The items of a setting or a query value separated by commas, without the
+/// spaces around them. Empty items, such as after a trailing comma, are
+/// skipped.
+pub(crate) fn comma_list(raw: &str) -> impl Iterator<Item = &str> {
     raw.split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
