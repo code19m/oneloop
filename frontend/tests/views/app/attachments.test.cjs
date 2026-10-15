@@ -1,10 +1,8 @@
-// views/uploads.js: attachments, previews, retention, drag and drop, limits and PDFs.
+// views/app/attachments.js: attachments, their previews, retention, drag and drop and limits.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { bootApp, source, load, waitFor, settle } = require('../support/dom.cjs');
-const { ApiError } = require('../../src/data/api-client.js');
+const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
 
@@ -101,7 +99,7 @@ test('Office and binary files are download-only and images show a thumbnail', as
   const downloads = []; w.HTMLAnchorElement.prototype.click = function () { downloads.push(this.download); };
   for (const ext of ['docx', 'xlsx', 'pptx', 'zip', 'exe']) {
     const office = { id: ext, name: 'report.' + ext, size: 4, url: 'blob:sample' }; task.attachments.push(office);
-    assert.equal(w.Uploads.canPreview(office), false); A.previewAttachment(task.id, office.id); assert(!d.querySelector('.file-dialog')); assert.equal(downloads.at(-1), office.name);
+    A.previewAttachment(task.id, office.id); assert(!d.querySelector('.file-dialog')); assert.equal(downloads.at(-1), office.name);
   }
   withImage(t);
   assert(d.querySelector('.attachment-thumbnail img'));
@@ -117,7 +115,7 @@ test('file details show the upload time and a positioned retention tooltip that 
   const help = d.querySelector('.retention-help button');
   help.getBoundingClientRect = () => ({ left: 940, right: 968, top: 600, bottom: 628, width: 28, height: 28 });
   d.querySelector('.file-info').getBoundingClientRect = () => ({ top: 100, bottom: 750, height: 650 });
-  d.querySelector('#retention-help-text').getBoundingClientRect = () => ({ width: 240, height: 61 });
+  Object.defineProperties(d.querySelector('#retention-help-text'), { offsetWidth: { value: 240 }, offsetHeight: { value: 61 } });
   help.click(); assert.equal(help.getAttribute('aria-expanded'), 'true'); assert(d.querySelector('[role=tooltip]').textContent.includes('storage is low'));
   const tip = d.querySelector('#retention-help-text'); assert(!tip.closest('.file-info')); assert.equal(tip.style.left, '728px'); assert.equal(tip.style.top, '636px');
   help.getBoundingClientRect = () => ({ left: 940, right: 968, top: 720, bottom: 748, width: 28, height: 28 }); w.dispatchEvent(new w.Event('resize')); assert.equal(tip.style.top, '651px');
@@ -197,22 +195,13 @@ test('a task holds at most 25 files, uploads them as permanent and previews text
   A.attachFiles(task.id, { files: [new w.File(['name,value\n"hello, world",<script>'], 'sample.txt', { type: 'text/plain' })], value: '' });
   const upload = t.calls.find(call => call.method === 'uploadAttachment'); assert.equal(upload.args[1].ephemeral, false);
   upload.resolve(serverFile('sample', 'sample.txt', 'text')); await settle();
-  assert.equal(w.Uploads.available(task).length, 25);
+  assert.equal(d.querySelectorAll('.attachment-card').length, 25);
   A.previewAttachment(task.id, 'sample');
   await waitFor(() => d.querySelector('.file-preview-content pre'), 'the text loads');
   assert(d.querySelector('.file-preview-content pre').textContent.includes('hello, world')); assert(!d.querySelector('.file-preview-content script'));
   d.querySelector('[data-file-close]').click();
   A.attachFiles(task.id, { files: [new w.File(['x'], 'overflow.txt', { type: 'text/plain' })], value: '' });
   assert(d.querySelector('.upload-state').textContent.includes('25 available')); assert.equal(t.calls.filter(call => call.method === 'uploadAttachment').length, 1);
-});
-
-test('text file names match the server detection list', () => {
-  const read = file => fs.readFileSync(path.resolve(__dirname, '../../..', file), 'utf8');
-  const js = read('frontend/views/uploads.js'), rust = read('src/files/detect.rs');
-  const body = rust.slice(rust.indexOf('fn is_text_name('), rust.indexOf('fn is_text_name(') + 8000).split('\n}')[0];
-  const ext = js.match(/textExtensions=new Set\('([^']+)'/)[1].split(' ');
-  const names = [...js.match(/textNames=new Set\(\[(.*?)\]/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
-  assert.deepEqual(new Set([...body.matchAll(/"([^"]+)"/g)].map(match => match[1])), new Set([...ext, ...names]));
 });
 
 /** Dispatch a drag event with a synthetic DataTransfer. */
@@ -284,117 +273,6 @@ test('attachment order is shared by keyboard and pointer moves, which Escape and
   assert.deepEqual(order(), reordered);
   geometry(); pointer('pointerdown', grip(), 20, 320); pointer('pointermove', d, 700, 110); pointer('pointerup', d, 700, 110); assert.deepEqual(order(), reordered);
   assert.equal(A.reorderAttachment(task.id, original[0], original[0]), false); assert.equal(moves().length, sent);
-});
-
-/** Boot a task page whose PDF.js module and canvas are test doubles. */
-async function pdfPreview(url, scriptPath) {
-  const state = { renders: 0, textReads: 0, fades: 0, documentOptions: null, importURL: null }, observers = [];
-  const page = { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }), render() { state.renders++; return { promise: Promise.resolve(), cancel() {} }; }, getTextContent() { state.textReads++; return Promise.resolve({ items: [] }); } };
-  const pdf = { id: 'pdf', name: 'test.pdf', size: 9, mediaType: 'application/pdf', previewKind: 'pdf', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content/pdf', downloadUrl: '/download/pdf' };
-  // uploads.js and app.js load below, with the page's script URL and a PDF.js double.
-  const t = bootApp({
-    url: url + '#/task/BIR-079', media: () => false, scripts: ['theme', 'data', 'recovery', 'collaboration'],
-    api: { attachments: async () => ({ items: [pdf] }) },
-    setup: w => {
-      w.URL.createObjectURL = () => 'blob:pdf'; w.HTMLCanvasElement.prototype.getContext = () => ({});
-      w.ResizeObserver = class { constructor(fn) { this.fn = fn; observers.push(this); } observe(el) { this.el = el; } disconnect() { this.stopped = true; } };
-      w.fetch = async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('%PDF-test').buffer });
-      w.pdfTestImport = moduleUrl => { state.importURL = moduleUrl; return Promise.resolve(w.pdfTestModule); };
-      w.pdfTestModule = { GlobalWorkerOptions: {}, getDocument: options => { state.documentOptions = options; return { promise: Promise.resolve({ numPages: 2, getPage: async () => page }), destroy: async () => {} }; } };
-    },
-  });
-  const { w, d } = t;
-  const script = scriptPath ? d.createElement('script') : null;
-  if (script) script.src = new URL(scriptPath, url).href;
-  Object.defineProperty(d, 'currentScript', { configurable: true, value: script });
-  w.eval(source('uploads').replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)"));
-  Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
-  load(t.dom, 'app');
-  t.start();
-  w.UIMotion.fade = el => { if (el?.tagName === 'CANVAS') state.fades++; };
-  const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
-  await waitFor(() => task.attachments?.length, 'the PDF is listed');
-  const open = () => {
-    w.App.previewAttachment(task.id, task.attachments[0].id);
-    const host = d.querySelector('.file-preview-content'); Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
-    return host;
-  };
-  return { w, d, state, observers, open };
-}
-
-// A page in a folder tells the script URL from the page URL; without a script URL the code falls back.
-for (const [url, scriptPath] of [['http://localhost/x/y', '/views/uploads.js'], ['http://localhost/', null]]) {
-  const label = scriptPath ? `the script URL from ${new URL(url).pathname}` : 'the evaluation fallback';
-  test(`PDF previews resolve bundled assets through ${label}`, async () => {
-    const { w, d, state, open } = await pdfPreview(url, scriptPath);
-    open();
-    await waitFor(() => state.fades === 1, 'the first page is painted');
-    const root = 'http://localhost/vendor/pdfjs/';
-    assert.equal(state.importURL, root + 'pdf.mjs'); assert.equal(w.pdfTestModule.GlobalWorkerOptions.workerSrc, root + 'pdf.worker.mjs');
-    assert.equal(state.documentOptions.standardFontDataUrl, root + 'standard_fonts/'); assert.equal(state.documentOptions.cMapUrl, root + 'cmaps/');
-    assert.equal(state.renders, 1); assert.equal(state.textReads, 0); assert(!d.querySelector('.pdf-text-version'));
-  });
-}
-
-test('PDF previews redraw only on width changes, zoom and paging, and stop when closed', async t => {
-  const { d, state, observers, open } = await pdfPreview('http://localhost/', '/views/uploads.js');
-  // Width changes are debounced for 120 ms; drive the clock instead of sleeping.
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const advance = async milliseconds => { t.mock.timers.tick(milliseconds); for (let i = 0; i < 5; i++) await settle(); };
-  const host = open(); await advance(0);
-  const observer = observers.find(o => o.el === host);
-  assert.equal(state.renders, 1);
-  // Initial and height-only resize callbacks keep the original canvas.
-  const canvas = d.querySelector('.pdf-surface canvas'); observer.fn(); observer.fn(); await advance(150); assert.equal(state.renders, 1); assert.strictEqual(d.querySelector('.pdf-surface canvas'), canvas);
-  d.querySelector('[data-pdf-fit]').click(); await advance(0); assert.equal(state.renders, 1);
-  Object.defineProperty(host, 'clientWidth', { value: 620, configurable: true }); observer.fn(); observer.fn(); await advance(150); assert.equal(state.renders, 2); assert.equal(state.fades, 1);
-  d.querySelector('[data-pdf-in]').click(); await advance(0); assert.equal(state.renders, 3); assert.equal(state.fades, 1);
-  d.querySelector('[data-pdf-next]').click(); await advance(0); assert.equal(state.renders, 4); assert.equal(state.fades, 2); assert.equal(d.querySelector('[data-pdf-page]').textContent, 'Page 2 of 2');
-  // A pending resize cannot redraw after closing or replace another preview.
-  Object.defineProperty(host, 'clientWidth', { value: 500, configurable: true }); observer.fn(); d.querySelector('[data-file-close]').click(); await advance(150); assert.equal(state.renders, 4); assert(observer.stopped);
-  open(); await advance(0); assert.equal(state.renders, 5);
-  const retention = d.querySelector('[data-file-retention]');
-  assert.equal(retention.parentElement, d.querySelector('[data-file-ephemeral]').parentElement); assert(retention.parentElement.querySelector('.retention-help')); assert(d.querySelector('.file-overlay > .retention-tooltip'));
-  // Restore real timers before the harness closes the window, so it can clear
-  // the real timers that were started before the clock was mocked.
-  t.mock.timers.reset();
-});
-
-test('read-only collections open in the file dialog with their path and date, never retention controls', async () => {
-  const t = bootApp({ route: 'board' });
-  let readable = true;
-  const file = { id: 'knowledge:p1:guides/setup.md:v1', name: 'setup.md', path: 'docs/guides/setup.md', size: 12, updatedAt: 1_700_000_000, previewKind: 'image', state: 'available', url: 'blob:knowledge', contentUrl: 'blob:knowledge', downloadUrl: '/api/projects/p1/knowledge/download?path=guides%2Fsetup.md' };
-  t.w.Uploads.previewCollection([file], file.id, () => readable);
-  const dialog = t.d.querySelector('.file-dialog');
-  assert(dialog, 'the dialog opens');
-  const details = dialog.querySelector('.file-info dl').textContent;
-  assert.match(details, /Path.*docs\/guides\/setup\.md/s);
-  assert.match(details, /Updated/);
-  assert.doesNotMatch(details, /Uploaded by|Retention/);
-  assert.equal(dialog.querySelector('[data-file-download]').getAttribute('href'), file.downloadUrl);
-  assert(dialog.querySelector('.file-navigation').hidden);
-  readable = false;
-  t.w.Uploads.validateAccess();
-  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting]) .file-dialog'), null, 'losing access closes it');
-  t.w.Uploads.previewCollection([file], file.id, () => false);
-  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting])'), null, 'an unreadable collection never opens');
-});
-
-test('inline image previews work outside the dialog and stop when disposed', async () => {
-  const t = bootApp({ route: 'board' });
-  const host = t.d.createElement('div'), tools = t.d.createElement('div');
-  t.d.body.append(tools, host);
-  const dispose = t.w.Uploads.mountInlinePreview(host, { id: 'inline-image', name: 'logo.png', size: 10, previewKind: 'image', url: 'blob:logo' }, tools);
-  assert.equal(host.querySelector('img').getAttribute('src'), 'blob:logo');
-  assert(tools.querySelector('.image-controls'), 'zoom controls move to the page header');
-  assert.equal(t.d.querySelector('.file-dialog'), null);
-  tools.querySelector('[data-image-in]').click();
-  assert.equal(tools.querySelector('[data-image-out]').disabled, false);
-  const stage = host.querySelector('.image-stage');
-  const wheelZooms = () => { const event = new t.w.WheelEvent('wheel', { ctrlKey: true, deltaY: -100, bubbles: true, cancelable: true }); stage.dispatchEvent(event); return event.defaultPrevented; };
-  assert.equal(wheelZooms(), true, 'Ctrl and the wheel zoom the image');
-  dispose();
-  assert.equal(wheelZooms(), false, 'a disposed preview leaves the wheel to the page');
 });
 
 test('an upload counts as unsaved work until it settles', async () => {

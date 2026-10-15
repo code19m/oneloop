@@ -109,12 +109,14 @@ const sharedModules = new Map([[path.join(frontend, 'src/data/api-client.js'), r
 /**
  * Import `file`, an ES module, and the modules it imports into the window of
  * `dom`, as a browser does: each window has one instance of each module, at
- * the URL the server gives it, and `stubs` (paths in frontend/ to exports)
- * stand in for some of them. Returns the module's exports.
+ * the URL the server gives it. `dom.stubs` (paths in frontend/ to exports),
+ * set before the first import, stand in for some modules. Returns the
+ * module's exports.
  */
-function importModule(dom, file, stubs = {}) {
+function importModule(dom, file) {
   file = path.resolve(frontend, file);
   dom.modules ??= new Map();
+  const stubs = dom.stubs ?? {};
   const context = dom.getInternalVMContext(), loaded = dom.modules;
   const origin = dom.window.location.origin === 'null' ? 'http://localhost' : dom.window.location.origin;
   const urlOf = file => new URL(path.relative(frontend, file).split(path.sep).join('/'), `${origin}/`).href;
@@ -160,7 +162,7 @@ function load(dom, name) {
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
 /** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const appScripts = ['theme', 'data', 'recovery', ...previewLibraries, 'collaboration', 'app'];
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {
@@ -257,6 +259,7 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {Record<string,unknown>} [options.auth] auth controller methods to replace
  * @param {(scope?: object) => Promise<unknown>} [options.reloadBootstrap] the bootstrap reload
  * @param {boolean} [options.layout] give every element the same 300 by 500 pixel box, as jsdom lays nothing out
+ * @param {Record<string,object>} [options.modules] exports that stand in for modules, by their path in frontend/
  * @param {(window: any) => void} [options.setup] runs before any script
  * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
  * @param {(window: any) => void} [options.collaboration] runs just before collaboration.js, to replace its controller
@@ -265,9 +268,10 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
 function bootApp({
   route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
   media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
-  api, reads, auth, reloadBootstrap, layout = false, setup, prepare, collaboration, beforeScript,
+  api, reads, auth, reloadBootstrap, layout = false, modules, setup, prepare, collaboration, beforeScript,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
+  dom.stubs = modules;
   const w = dom.window;
   w.matchMedia = query => ({ matches: media(query), addEventListener() {}, removeEventListener() {} });
   w.TextDecoder = TextDecoder;
@@ -280,6 +284,7 @@ function bootApp({
   if (actions) installViewActions(w.document);
   const motion = importModule(dom, path.join(frontend, 'src/app/motion.js'));
   motion.installDisclosures(w.document);
+  importModule(dom, 'src/features/files/preview.js').installPreviews(w.document);
   w.UIMotion = motion.UIMotion;
   setup?.(w);
   let wiring = null;
@@ -292,7 +297,7 @@ function bootApp({
     prepare?.(w.DATA, w);
   }
   const bridge = wiring && w.App ? wiring.start() : null;
-  return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, ...wiring };
+  return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, module: file => importModule(dom, file), ...wiring };
 }
 
 /**

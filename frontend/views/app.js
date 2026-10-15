@@ -6,6 +6,8 @@
    action. */
 
 import { UIMotion } from '../src/app/motion.js';
+import { checkPreviewAccess } from '../src/features/files/preview.js';
+import { attachmentsHtml, mountAttachments } from './app/attachments.js';
 import {
   boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch,
   clearFilterMotion, renderBoard,
@@ -34,6 +36,7 @@ import {
 import {
   mountRoadmap, renderPeek, renderRoadmap, roadmapHeight, roadmapMovePending, roadmapTopbarHtml,
 } from './app/roadmap.js';
+import { storageHtml } from './app/storage.js';
 import { ensureToastRegion } from './app/toasts.js';
 
 const TOUCH = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
@@ -252,8 +255,6 @@ function renderTask() {
   if (!t) { state.view = 'board'; return renderBoard(); }
   const canEdit = canBoard();
   const title = taskDraft(t, 'title')?.value ?? t.title, desc = taskDraft(t, 'desc')?.value ?? t.desc ?? '';
-  const atts = window.Uploads?.renderAttachments(t,canEdit) || '';
-
   const feed = taskActivityHtml(t);
 
   const late = overdue(t);
@@ -274,9 +275,7 @@ function renderTask() {
       <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
         <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value) : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
         <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
-      <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
-        ${canEdit ? `<input type="file" id="attIn" multiple hidden ${UIAction.on('change', 'attachFiles', t.id, UIAction.element)}>` : ''}
-        ${atts}<div class="upload-list"></div></div>
+      ${attachmentsHtml(t, canEdit)}
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
         <div class="comment-composer-home">${collaboration?.composerHtml(t) || ''}</div></div>
@@ -500,7 +499,7 @@ function renderContent() {
   if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
   today.setTime(instanceToday().getTime());
   if (pendingConfirmation && (pendingConfirmation.session !== D.session?.id || pendingConfirmation.hash !== location.hash || !D.session)) pendingConfirmation.close(false, false);
-  window.Uploads?.validateAccess();
+  checkPreviewAccess();
   collaboration?.beforeRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
   const renderMotion = prepareRenderMotion();
   clearFilterMotion();
@@ -521,7 +520,7 @@ function renderContent() {
   const p = project() || {name:'No projects'};
   const u = me();
   const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${window.Uploads?.storageHtml() || ''}</div>` : renderSettings();
+  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`
     <a class="skip-link" href="#main">Skip to content</a>
@@ -574,7 +573,7 @@ function renderContent() {
 
   document.querySelectorAll('.timeline > [data-feed-key]').forEach(el=>feedRowMarkup.set(el,el.outerHTML));
   mountDescription();
-  if (state.view === 'task') window.Uploads?.mount(state.taskId);
+  if (state.view === 'task') mountAttachments(state.taskId);
   if (state.view === 'roadmap' && !error) mountRoadmap();
   window.OneloopKnowledge?.mount();
   finishRenderMotion(renderMotion);
@@ -670,6 +669,7 @@ Object.assign(App, {
   noteTaskSaving: taskSaving,
   clearTaskSaving,
   retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
+  refreshTaskActivity,
   followAddress,
   selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
   acceptMoreUsers() { if(state.view==='settings'){App.refreshUsers();return;}state.usersLimit+=50;render(); },
@@ -886,7 +886,6 @@ collaboration?.bind(App,{task:taskById,projects:visibleProjects,view:()=>state.v
   refreshComments:(id,composer=false)=>{if(state.view!=='task'||state.taskId!==id)return;const task=taskById(id),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment'),focused=document.activeElement?.dataset.replyRoot;if(timeline){setHTML(timeline,collaboration.feedHtml(task));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);if(focused)[...timeline.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===focused)?.focus({preventScroll:true});}if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,Collab.composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}},
 });
 window.Recovery?.bind(App,{refresh:render});
-window.Uploads?.bind(App,{confirm:askConfirmation,task:taskById,canRead:id=>canReadTask(taskById(id)),can:id=>hasPermission('manage_board',trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId),refresh:render,me,instant:formatInstant,refreshAttachments:id=>{if(state.view!=='task'||state.taskId!==id)return;const template=document.createElement('template');setHTML(template,renderTask());const oldAttachments=document.querySelector('.task-attachments'),before=oldAttachments?.getBoundingClientRect().height,rows=UIMotion.rows(oldAttachments,'[data-attachment-id]','data-attachment-id');oldAttachments?.replaceWith(template.content.querySelector('.task-attachments'));const nextAttachments=document.querySelector('.task-attachments');UIMotion.height(nextAttachments,before);UIMotion.reflow(nextAttachments,'[data-attachment-id]','data-attachment-id',rows);refreshTaskActivity(id);window.Uploads.mount(id);}});
 setInterval(()=>{
   const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));
   if(!D.session||me()?.mustChange)return;

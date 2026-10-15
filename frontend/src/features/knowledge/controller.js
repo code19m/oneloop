@@ -8,10 +8,12 @@
  * actions (`UIAction`).
  */
 
-import { actionErrorFeedback } from '../../app/action-feedback.js';
+import { actionErrorFeedback, errorMessage } from '../../app/action-feedback.js';
 import { completeForm } from '../../app/form-feedback.js';
 import { UIAction, escapeHtml as esc } from '../../app/markup.js';
 import { setTrustedHTML } from '../../app/trusted-types.js';
+import { htmlView, markdownView, textView } from '../files/file-views.js';
+import { byteSize, displayText, mountInlinePreview, previewFile } from '../files/preview.js';
 import {
   baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, highlight,
   iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
@@ -102,7 +104,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   const context = () => app()?.context?.() ?? {};
   const isAdmin = () => !!runtime.data?.users?.find?.((/** @type {any} */ user) => user.id === runtime.data?.session?.userId)?.admin;
   const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast?.(text, kind);
-  const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => view.OneloopErrorMessage?.(error, fallback) || fallback;
+  const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => errorMessage(error, fallback) || fallback;
   const instant = (/** @type {number} */ seconds) => view.OneloopTime?.instant?.(seconds * 1000) ?? new Date(seconds * 1000).toISOString().replace('T', ' ');
   const dateOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 10) : '—';
   const timeOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 16) : '';
@@ -433,21 +435,20 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const tools = host.closest('.knowledge-preview')?.querySelector('.knowledge-preview-modes');
     const moveTools = () => { const found = host.querySelector('.html-preview-tools'); if (found && tools) tools.append(found); };
     const unavailable = (/** @type {string} */ text) => setTrustedHTML(host, `<p class="preview-unavailable">${text}</p>`);
-    const viewer = viewerFile(projectId, file), views = view.FileViews;
+    const viewer = viewerFile(projectId, file);
     if (file.kind === 'image' || file.kind === 'pdf') {
       host.classList.add('knowledge-media-body', 'file-preview-content'); host.setAttribute('data-inline-kind', file.kind);
-      const dispose = view.Uploads?.mountInlinePreview?.(host, viewer, tools);
-      if (typeof dispose === 'function') previews.set(host, dispose);
+      previews.set(host, mountInlinePreview(host, viewer, tools, () => runtime.data.session));
       return;
     }
-    if (!file.kind || !views) { unavailable('Preview is not available for this format. Download the original file.'); return; }
+    if (!file.kind) { unavailable('Preview is not available for this format. Download the original file.'); return; }
     setTrustedHTML(host, '<p class="access-note" role="status">Loading preview…</p>');
     textOf(projectId, file).then(({ text, truncated }) => {
       if (!host.isConnected) return;
       host.replaceChildren();
-      if (file.kind === 'markdown') { views.markdown(host, viewer, text, truncated, viewer.markdownContext); enhanceMarkdown(host); }
-      else if (file.kind === 'html') views.html(host, viewer, text);
-      else views.text(host, viewer, text, truncated);
+      if (file.kind === 'markdown') { markdownView(host, viewer, text, truncated, viewer.markdownContext); enhanceMarkdown(host); }
+      else if (file.kind === 'html') htmlView(host, viewer, text);
+      else textView(host, viewer, text, truncated);
       moveTools();
     }).catch(() => { if (host.isConnected) unavailable('Preview unavailable. Download the original file.'); });
   }
@@ -496,9 +497,12 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
 
   function fullView(/** @type {string} */ path) {
     const projectId = S.projectId, data = viewOf(projectId), file = data && projectId ? fileAt(data.files, path) : null;
-    if (!file?.kind || !projectId || !view.Uploads?.previewCollection) return;
+    const canRead = () => context().view === 'knowledge' && context().projectId === projectId;
+    if (!file?.kind || !projectId || !runtime.data.session || !canRead()) return;
     const viewer = viewerFile(projectId, file);
-    view.Uploads.previewCollection([viewer], viewer.id, () => context().view === 'knowledge' && context().projectId === projectId);
+    // A synced file has a path and a date, never an uploader or a retention choice.
+    const details = `<dt>File name</dt><dd>${esc(displayText(viewer.name))}</dd><dt>Path</dt><dd>${esc(displayText(viewer.path || viewer.name))}</dd><dt>Size</dt><dd>${byteSize(viewer.size)}</dd>${viewer.updatedAt ? `<dt>Updated</dt><dd>${instant(viewer.updatedAt)}</dd>` : ''}`;
+    previewFile({ file: viewer, files: [viewer], details, canRead, session: () => runtime.data.session, open: () => {} });
     documentObject.querySelector('.file-overlay:not([data-motion-exiting])')?.classList.add('knowledge-full-view');
   }
 

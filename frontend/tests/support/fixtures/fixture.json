@@ -1,5 +1,6 @@
 {
   "timeZone": "Asia/Tashkent",
+  "limits": { "maxAttachmentBytes": 26214400, "maxAvatarBytes": 5242880, "maxAttachmentsPerTask": 25 },
   "users": [
     {
       "id": "taylorwu",

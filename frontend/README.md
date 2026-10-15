@@ -34,8 +34,8 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 - **Actions.** To change an action that saves, start from
   `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
   `saveTask`, and wraps a few of the views' own, such as `nav`.
-  `views/collaboration.js` and `views/uploads.js` add the comment and
-  attachment actions.
+  `views/collaboration.js` adds the comment actions, and
+  `views/app/attachments.js` the attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
   `App` method that its click runs in `data-action`, or that another event runs
   in `data-action-<event>`, with JSON arguments in `data-args`. Write these
@@ -79,7 +79,7 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads the classic scripts file views, uploads and collaboration in order, then imports the `app.js` module. The view bridge installs
+loads the classic collaboration script, then imports the `app.js` module. The view bridge installs
 server-backed actions before the first application render; preview libraries
 load on demand.
 
@@ -94,11 +94,10 @@ New code imports a module instead of adding one.
 | `OneloopTransport` | `boot.js` | The API, commands and live updates for the classic scripts |
 | `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
 | `UIHTML`, `UIEscape`, `UIAction`, `UIMotion` | `boot.js` | The HTML and motion helpers of the classic scripts |
-| `OneloopErrorMessage`, `OneloopRetryable` | `boot.js` | How a failure reads, and whether trying again can help |
 | `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
 | `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
 | `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
-| `Theme`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, file previews, attachments, comments and the Inbox |
+| `Theme`, `Collab` | the classic scripts in `views/` | Theme, comments and the Inbox |
 
 ## Design
 

@@ -12,7 +12,7 @@ import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
 import { installViewActions } from './view-actions.js';
 import { createRuntimeHooks } from './runtime-hooks.js';
-import { actionErrorFeedback, retryableFailure } from './action-feedback.js';
+import { actionErrorFeedback } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
 import { installCollaborationController } from '../features/collaboration/controller.js';
@@ -23,6 +23,7 @@ import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted
 import { UIAction, escapeHtml } from './markup.js';
 import { installTooltips } from './tooltips.js';
 import { UIMotion, installDisclosures } from './motion.js';
+import { installPreviews } from '../features/files/preview.js';
 
 installTrustedTypes();
 // The classic view scripts build HTML with UIEscape and UIAction and write it
@@ -54,10 +55,6 @@ const reportError = (error, form = null) => {
   if (app) app.toast(feedback.message || 'The request could not be completed.', 'error');
   else showStartupError(error);
 };
-globalThis.OneloopErrorMessage=(error,fallback='The request could not be completed.')=>{
-  const feedback=actionErrorFeedback(error);return feedback.silent?'':feedback.message||fallback;
-};
-globalThis.OneloopRetryable=retryableFailure;
 const bootstrap = createBootstrapController({ api, data, onReady: (projection) => runtimeHooks?.publish({ type:'bootstrap', projection }), onError: (error) => {
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
@@ -102,6 +99,7 @@ globalThis.Recovery=recovery;
 
 installTooltips(document);
 installDisclosures(document);
+installPreviews(document);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
@@ -127,7 +125,7 @@ try {
 
 async function loadViewDependencies() {
   await Promise.all([
-    '/views/file-views.js','/views/uploads.js','/views/collaboration.js',
+    '/views/collaboration.js',
   ].map(loadClassic));
 }
 

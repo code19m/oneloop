@@ -90,7 +90,8 @@ pub(super) fn extension(name: &str) -> String {
         .unwrap_or_default()
 }
 pub(super) fn is_text_name(name: &str, ext: &str) -> bool {
-    // Kept in parity with uploads.js by frontend/tests/views/uploads.test.cjs.
+    // Kept in parity with frontend/src/features/files/preview.js by
+    // frontend/tests/src/features/files/preview.test.cjs.
     matches!(
         ext,
         "txt"

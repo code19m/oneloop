@@ -23,7 +23,7 @@ test('HTML and action escaping keep hostile values whole without adding attribut
 test('templates encode URLs and data attributes',()=>{
   const frontend=new URL('../../',import.meta.url);
   // The templates that show user data; file-views.js only numbers its placeholders.
-  const files=['views/','src/'].flatMap(folder=>readdirSync(new URL(folder,frontend),{recursive:true}).filter(name=>name.endsWith('.js')).map(name=>folder+name)).filter(file=>file!=='views/file-views.js');
+  const files=['views/','src/'].flatMap(folder=>readdirSync(new URL(folder,frontend),{recursive:true}).filter(name=>name.endsWith('.js')).map(name=>folder+name)).filter(file=>file!=='src/features/files/file-views.js');
   assert.ok(files.includes('views/app/board.js'));
   for(const file of files){
     const source=readFileSync(new URL(file,frontend),'utf8');
