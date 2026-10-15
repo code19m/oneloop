@@ -178,13 +178,17 @@ const RESERVED_SCHEMES: &[&str] = &[
     "wss",
 ];
 
-fn parse_redirect_schemes(raw: &str) -> AppResult<Vec<String>> {
-    let mut schemes = Vec::new();
-    for item in raw
-        .split(',')
+/// The items of a setting separated by commas, without the spaces around
+/// them. Empty items, such as after a trailing comma, are skipped.
+fn comma_list(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
-    {
+}
+
+fn parse_redirect_schemes(raw: &str) -> AppResult<Vec<String>> {
+    let mut schemes = Vec::new();
+    for item in comma_list(raw) {
         let scheme = item.to_ascii_lowercase();
         let mut characters = scheme.chars();
         let valid = characters
@@ -216,11 +220,7 @@ fn parse_redirect_schemes(raw: &str) -> AppResult<Vec<String>> {
 
 fn parse_allowed_origins(raw: &str) -> AppResult<Vec<String>> {
     let mut origins = Vec::new();
-    for item in raw
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-    {
+    for item in comma_list(raw) {
         let invalid = || {
             invalid_env(
                 MCP_ALLOWED_ORIGINS_ENV,
@@ -504,15 +504,8 @@ fn parse_size(variable: &'static str, raw: &str) -> AppResult<u64> {
 }
 
 fn parse_trusted_proxies(raw: &str) -> AppResult<Vec<IpNet>> {
-    if raw.trim().is_empty() {
-        return Ok(Vec::new());
-    }
     let mut proxies = Vec::new();
-    for item in raw.split(',') {
-        let value = item.trim();
-        if value.is_empty() {
-            return Err(invalid_env(TRUSTED_PROXIES_ENV, "empty proxy entry"));
-        }
+    for value in comma_list(raw) {
         let network = IpNet::from_str(value)
             .or_else(|_| IpAddr::from_str(value).map(IpNet::from))
             .map_err(|_| invalid_env(TRUSTED_PROXIES_ENV, "expected IP addresses or CIDRs"))?;

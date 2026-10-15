@@ -11,6 +11,8 @@ service manager can load them for it.
   that starts with `ONELOOP_`. This way, a typo can't go unnoticed.
 - `oneloop serve --check` checks the settings, and the database if there is
   one, without starting the server. Run it after every change.
+- In a list separated by commas, spaces around an item and empty items, such
+  as after a trailing comma, are ignored.
 - The other commands read only `ONELOOP_DATA_DIR`, and `user add` and
   `user passwd` also read the [password settings](#passwords). Still, run them
   as the same system account and with the same environment as the server.
