@@ -1532,109 +1532,6 @@ impl AttachmentAssertions for oneloop::files::AttachmentView {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "opt-in large file-library scheduler workload"]
-async fn large_library_reconciliation_keeps_the_async_executor_responsive() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use std::time::Instant;
-    let f = Fixture::new().await;
-    let service = f.service(u64::MAX / 2);
-    let store = oneloop::files::FileStore::new(f.db.layout().clone());
-    let count: usize = std::env::var("ONELOOP_TEST_FILE_COUNT")
-        .ok()
-        .map(|v| v.parse().unwrap())
-        .unwrap_or(20_000);
-    let mut keys = Vec::with_capacity(count);
-    for _ in 0..count {
-        let key = store.new_storage_key().unwrap();
-        let path = store.file_path(&key).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"x").unwrap();
-        keys.push(key);
-    }
-    f.db.transaction(move |tx| {
-        let mut task = tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-            VALUES(?1,'p1','epic',?2,?1,'Scale task','planning',?2,'manager',?3,?3)")?;
-        let mut blob = tx.prepare("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
-            VALUES(?1,?2,?3,1,'application/octet-stream','available',?4)")?;
-        let mut attachment = tx.prepare("INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,position,created_at,last_accessed_at,updated_at)
-            VALUES(?1,'p1',?2,?1,'scale.bin','manager',0,?3,?4,?4,?4)")?;
-        for (index,key) in keys.into_iter().enumerate() {
-            let task_id = format!("scale-task-{}", index/25);
-            if index%25 == 0 { task.execute(rusqlite::params![task_id, (index/25+2) as i64, now()])?; }
-            let id = format!("scan-{index}");
-            blob.execute(rusqlite::params![id,key,"0".repeat(64),now()])?;
-            attachment.execute(rusqlite::params![id,task_id,(index%25) as i64,now()])?;
-        }
-        Ok(())
-    }).await.unwrap();
-    let running = Arc::new(AtomicBool::new(true));
-    let heartbeat = running.clone();
-    let ticks = tokio::spawn(async move {
-        let mut gaps = Vec::new();
-        let mut previous = Instant::now();
-        while heartbeat.load(Ordering::Relaxed) {
-            sleep(Duration::from_millis(1)).await;
-            gaps.push(previous.elapsed().as_secs_f64() * 1000.0);
-            previous = Instant::now();
-        }
-        gaps
-    });
-    let started = Instant::now();
-    let report = service.reconcile().await.unwrap();
-    let elapsed = started.elapsed();
-    running.store(false, Ordering::Relaxed);
-    let mut gaps = ticks.await.unwrap();
-    gaps.sort_by(f64::total_cmp);
-    assert_eq!(report.orphan_files_removed, 0);
-    assert!(!gaps.is_empty());
-    assert_eq!(report.deletion_jobs_completed, 0);
-    assert_eq!(stored_file_count(&f.db.layout().files()), count);
-    let constrained = f.service((count as u64) * 100 / 85);
-    let started_uploads = Instant::now();
-    for index in 0..4 {
-        let AttachmentUpload::Pending(pending) = constrained
-            .begin_attachment_upload(
-                &f.manager,
-                "task",
-                "scale-upload.bin",
-                1,
-                false,
-                &format!("scale-admit-{index}"),
-            )
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        pending.abort().await.unwrap();
-    }
-    eprintln!(
-        "FILE_ADMISSION files={count} four_starts_and_aborts_ms={:.1}",
-        started_uploads.elapsed().as_secs_f64() * 1000.0
-    );
-    f.db.run(|c| {
-        let query = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available','deleting')";
-        for indexed in [true,false] {
-            if !indexed {c.execute("DROP INDEX file_blobs_state_size_idx",[])?;}
-            let started=Instant::now();
-            for _ in 0..20 {let _:i64=c.query_row(query,[],|r|r.get(0))?;}
-            eprintln!("CAPACITY_SUM covering_index={indexed} mean_ms={:.3}",started.elapsed().as_secs_f64()*1000.0/20.0);
-        }
-        c.execute("CREATE INDEX file_blobs_state_size_idx ON file_blobs(state,size_bytes)",[])?;
-        Ok(())
-    }).await.unwrap();
-    eprintln!(
-        "FILE_SCAN files={count} duration_ms={:.1} heartbeat_ticks={} max_gap_ms={:.1}",
-        elapsed.as_secs_f64() * 1000.0,
-        gaps.len(),
-        gaps.last().unwrap()
-    );
-}
-
 #[tokio::test]
 async fn stalled_upload_does_not_hold_back_a_complete_backup() {
     let fixture = Fixture::new().await;
@@ -1861,36 +1758,6 @@ async fn cleanup_stops_at_watermark_and_respects_lru_and_active_leases() {
         );
     }
     drop(lease);
-}
-
-#[tokio::test]
-async fn deleted_parent_discovery_uses_the_small_deleted_task_index() {
-    let fixture = Fixture::new().await;
-    let plan: Vec<String> = fixture
-        .db
-        .run(|connection| {
-            let mut query = connection.prepare(
-                "EXPLAIN QUERY PLAN SELECT b.id,b.storage_key FROM tasks t
-             CROSS JOIN task_attachments a ON a.task_id=t.id
-             JOIN file_blobs b ON b.id=a.blob_id
-             WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'",
-            )?;
-            Ok(query
-                .query_map([0], |r| r.get(3))?
-                .collect::<Result<_, _>>()?)
-        })
-        .await
-        .unwrap();
-    assert!(
-        plan.iter().any(|step| step.contains("tasks_deleted_idx")),
-        "{plan:?}"
-    );
-    assert!(
-        !plan
-            .iter()
-            .any(|step| step.contains("file_blobs_cleanup_idx")),
-        "{plan:?}"
-    );
 }
 
 #[tokio::test]
@@ -2263,19 +2130,6 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
 }
 
 #[tokio::test]
-async fn capacity_queries_use_covering_index() {
-    let f = Fixture::new().await;
-    let plan: Vec<String> = f.db.run(|c| Ok(c.prepare(
-        "EXPLAIN QUERY PLAN SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available','deleting')")?
-        .query_map([],|r|r.get(3))?.collect::<Result<_,_>>()?)).await.unwrap();
-    assert!(
-        plan.iter()
-            .any(|line| line.contains("COVERING INDEX file_blobs_state_size_idx")),
-        "{plan:?}"
-    );
-}
-
-#[tokio::test]
 async fn storage_accounts_for_pending_deletion_separately() {
     let f = Fixture::new().await;
     let service = f.service(1000);
@@ -2410,89 +2264,6 @@ async fn concurrent_upload_reservations_protect_the_disk_floor() {
                 ..
             }) => {}
             _ => panic!("unexpected reservation outcome"),
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "local 25 MiB download measurement with four CPU workers"]
-async fn download_buffer_measurement_under_cpu_load() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use tokio_stream::StreamExt;
-    struct CpuLoad {
-        stop: Arc<AtomicBool>,
-        workers: Vec<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for CpuLoad {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            for worker in self.workers.drain(..) {
-                worker.join().unwrap();
-            }
-        }
-    }
-    let f = Fixture::new().await;
-    let service = f.service(100 * 1024 * 1024);
-    let size = oneloop::files::MAX_ATTACHMENT_BYTES;
-    let AttachmentUpload::Pending(mut pending) = service
-        .begin_attachment_upload(
-            &f.manager,
-            "task",
-            "bench.bin",
-            size,
-            false,
-            "buffer-measurement",
-        )
-        .await
-        .unwrap()
-    else {
-        panic!()
-    };
-    pending
-        .write_chunk(&vec![0x5a; size as usize])
-        .await
-        .unwrap();
-    let file = pending.finish().await.unwrap();
-    let mut load = CpuLoad {
-        stop: Arc::new(AtomicBool::new(false)),
-        workers: Vec::new(),
-    };
-    for _ in 0..4 {
-        let stop = load.stop.clone();
-        load.workers.push(std::thread::spawn(move || {
-            let mut value = 1_u64;
-            while !stop.load(Ordering::Relaxed) {
-                for _ in 0..1000 {
-                    value = std::hint::black_box(
-                        value.wrapping_mul(6364136223846793005).wrapping_add(1),
-                    );
-                }
-            }
-        }));
-    }
-    for sample in 1..=3 {
-        for capacity in [4096, 65536] {
-            let read = service
-                .open_for_read(&f.manager, &file.id, ReadMode::Download)
-                .await
-                .unwrap();
-            let mut stream = tokio_util::io::ReaderStream::with_capacity(read.file, capacity);
-            let start = std::time::Instant::now();
-            let (mut total, mut chunks) = (0_u64, 0);
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.unwrap();
-                assert_eq!(chunk[0], 0x5a);
-                total += chunk.len() as u64;
-                chunks += 1;
-            }
-            assert_eq!(total, size);
-            eprintln!(
-                "sample={sample} capacity={capacity} chunks={chunks} elapsed_ms={:.2}",
-                start.elapsed().as_secs_f64() * 1000.0
-            );
         }
     }
 }

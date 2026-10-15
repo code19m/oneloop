@@ -7,6 +7,34 @@ use super::*;
 pub(super) const CLEANUP_HIGH_PERCENT: u64 = 80;
 const CLEANUP_LOW_PERCENT: u64 = 70;
 
+/// Bytes of stored files, from a covering index.
+const STORED_BYTES_SQL: &str = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
+     WHERE state IN ('pending','available','deleting')";
+
+/// Stored bytes and the bytes that uploads under way have reserved.
+const CAPACITY_USED_SQL: &str = "SELECT
+       coalesce((SELECT sum(size_bytes) FROM file_blobs
+                 WHERE state IN ('pending','available','deleting')),0) +
+       coalesce((SELECT sum(size_bytes) FROM upload_reservations
+                 WHERE committed_at IS NULL AND expires_at>?1),0)";
+
+/// The available files of tasks and attachments deleted up to `?1`, and
+/// files that nothing refers to: their blob, key and deletion reason. Deleted
+/// tasks are few, so their files are found from the deleted tasks.
+const DELETION_CANDIDATES_SQL: &str = "SELECT b.id,b.storage_key,'manual' FROM tasks t
+     CROSS JOIN task_attachments a ON a.task_id=t.id
+     JOIN file_blobs b ON b.id=a.blob_id
+     WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
+     UNION ALL
+     SELECT b.id,b.storage_key,'manual' FROM task_attachments a
+     JOIN file_blobs b ON b.id=a.blob_id
+     WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
+     UNION ALL
+     SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
+     WHERE b.state='available'
+       AND NOT EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=b.id)
+       AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)";
+
 #[derive(Default)]
 pub(super) struct CapacityUsage {
     blob_bytes: u64,
@@ -751,21 +779,7 @@ impl FileService {
     ) -> AppResult<Vec<(String, String, String)>> {
         self.db
             .run(move |connection| {
-                let mut statement = connection.prepare(
-                    "SELECT b.id,b.storage_key,'manual' FROM tasks t
-                 CROSS JOIN task_attachments a ON a.task_id=t.id
-                 JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
-                 UNION ALL
-                 SELECT b.id,b.storage_key,'manual' FROM task_attachments a
-                 JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
-                 UNION ALL
-                 SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
-                 WHERE b.state='available'
-                   AND NOT EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=b.id)
-                   AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)",
-                )?;
+                let mut statement = connection.prepare(DELETION_CANDIDATES_SQL)?;
                 Ok(statement
                     .query_map([restorable_after], |row| {
                         Ok((
@@ -887,12 +901,7 @@ impl FileService {
         let (blob_bytes, reserved_bytes, staging_keys) = self
             .db
             .run(move |connection| {
-                let blob: i64 = connection.query_row(
-                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
-                     WHERE state IN ('pending','available','deleting')",
-                    [],
-                    |r| r.get(0),
-                )?;
+                let blob: i64 = connection.query_row(STORED_BYTES_SQL, [], |r| r.get(0))?;
                 let mut statement = connection.prepare(
                     "SELECT staging_key,size_bytes FROM upload_reservations
                      WHERE committed_at IS NULL AND expires_at>?1",
@@ -970,15 +979,7 @@ pub(super) fn require_capacity(
     size: u64,
     limit: u64,
 ) -> AppResult<()> {
-    let used: i64 = tx.query_row(
-        "SELECT
-           coalesce((SELECT sum(size_bytes) FROM file_blobs
-                     WHERE state IN ('pending','available','deleting')),0) +
-           coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                     WHERE committed_at IS NULL AND expires_at>?1),0)",
-        [now],
-        |row| row.get(0),
-    )?;
+    let used: i64 = tx.query_row(CAPACITY_USED_SQL, [now], |row| row.get(0))?;
     if (used.max(0) as u64)
         .saturating_add(non_database_bytes)
         .saturating_add(size)
@@ -1247,4 +1248,43 @@ fn record_system_cleanup(
         now,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The query plan of `sql`, one step per line.
+    fn plan(connection: &rusqlite::Connection, sql: &str, values: impl rusqlite::Params) -> String {
+        connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(values, |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+    }
+
+    #[test]
+    fn file_queries_use_their_indexes() {
+        let root = tempfile::tempdir().unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let connection = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+        for (sql, values) in [(STORED_BYTES_SQL, vec![]), (CAPACITY_USED_SQL, vec![0])] {
+            let plan = plan(&connection, sql, rusqlite::params_from_iter(values));
+            assert!(
+                plan.contains("COVERING INDEX file_blobs_state_size_idx"),
+                "{sql}\n{plan}"
+            );
+        }
+        // Deleted tasks are few; their files must not be found by scanning
+        // every stored file.
+        let plan = plan(&connection, DELETION_CANDIDATES_SQL, [0]);
+        assert!(
+            plan.contains("SCAN t USING INDEX tasks_deleted_idx")
+                && !plan.contains("file_blobs_cleanup_idx"),
+            "{plan}"
+        );
+    }
 }

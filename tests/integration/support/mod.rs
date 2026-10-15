@@ -79,7 +79,7 @@ pub fn data_dir() -> TempDir {
         layout.files(),
         layout.staging(),
         layout.keys(),
-        root.path().join("previews"),
+        layout.previews(),
     ] {
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
