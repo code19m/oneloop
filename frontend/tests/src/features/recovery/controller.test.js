@@ -2,22 +2,31 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
-import {createRecoveryController,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
+import {leaveUnavailableProject} from '../../../../src/features/recovery/controller.js';
 import {createBuildMonitor} from '../../../../src/app/build-info.js';
-import {useGlobals,settle} from '../../../support/helpers.cjs';
-const {JSDOM}=createRequire(import.meta.url)('../../../support/dom.cjs');
+import {settle} from '../../../support/helpers.cjs';
+const {JSDOM,importModule}=createRequire(import.meta.url)('../../../support/dom.cjs');
+
+/** A jsdom page holding `html`, with the recovery module loaded into it, as the app loads it. */
+function page(html=''){
+  const dom=new JSDOM(`<!doctype html><body>${html}</body>`,{url:'http://localhost/',runScripts:'outside-only',pretendToBeVisual:true});
+  return {window:dom.window,document:dom.window.document,createRecoveryController:importModule(dom,'src/features/recovery/controller.js').createRecoveryController};
+}
+
+/** The views' methods that Recovery calls, with the toasts and repaints recorded. */
+const appFor=(context)=>({toasts:[],refreshes:0,context,refresh(){this.refreshes++;},toast(...args){this.toasts.push(args);},commentDraft:()=>null,restoreCommentDraft(){},autoReloadChanged(){},noteTaskSaving(){},clearTaskSaving(){}});
 
 function fixture(overrides={}){
+  const {window,document,createRecoveryController}=page(overrides.html);
   const data={session:{id:'s1',userId:'u1'},tasks:[]};
-  const app={toasts:[],refreshes:0,context:()=>({view:'board',projectId:'p1'}),refresh(){this.refreshes++;},toast(...args){this.toasts.push(args);}};
+  const app=appFor(()=>({view:'board',projectId:'p1'}));
   let expires=0,reloads=0;
   const controller=createRecoveryController({
-    data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
-    reload:async()=>{reloads++;return {};},presentConflict:overrides.presentConflict,
-    setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),
-    documentObject:null,windowObject:overrides.windowObject??null,random:()=>0,
+    data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},hasPending:()=>false,...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
+    reload:async()=>{reloads++;return {};},
+    setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),random:()=>0,
   });
-  return {controller,data,app,get expires(){return expires;},get reloads(){return reloads;}};
+  return {controller,data,app,window,document,get expires(){return expires;},get reloads(){return reloads;}};
 }
 
 test('recognizes revision conflicts by their code, not their wording',()=>{
@@ -25,18 +34,6 @@ test('recognizes revision conflicts by their code, not their wording',()=>{
   assert.equal(controller.isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);
   assert.equal(controller.isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),false);
   controller.dispose();
-});
-
-test('conflict review can use latest without writing or retry mine at the latest revision',async()=>{
-  let latest={revision:4,title:'Latest'},retried=null;
-  const first=fixture({presentConflict:async()=> 'latest'});
-  const error=new ApiError('record changed; latest revision is 4',{status:409,code:'revision_conflict'});
-  const accepted=await first.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
-  assert.deepEqual(accepted,{handled:true,saved:false,latest,choice:'latest'});assert.equal(retried,null);
-
-  const second=fixture({presentConflict:async({latestValue,myValue})=>{assert.equal(latestValue,'Latest');assert.equal(myValue,'Mine');return 'mine';}});
-  const kept=await second.controller.resolveConflict({error,reloadLatest:async()=>{},latestEntity:()=>latest,retry:async(revision)=>{retried=revision;return {revision:5};},target:{latestValue:(entity)=>entity.title},myValue:'Mine'});
-  assert.equal(retried,4);assert.equal(kept.saved,true);assert.deepEqual(kept.result,{revision:5});
 });
 
 test('ordinary API 401 expires the in-memory session flow without touching login failures',()=>{
@@ -87,18 +84,17 @@ test('a passive current-view probe detects access loss even when no SSE recipien
 });
 
 test('an open editor keeps its focus-time revision across a live projection refresh',()=>{
-  const root={},listeners={};
-  const documentObject={addEventListener:(name,listener)=>{listeners[name]=listener;},querySelectorAll:()=>[root]};
+  const {window,document,createRecoveryController}=page('<div class="task-page"><textarea class="tp-title"></textarea></div>');
   const task={id:'ONE-1',internalId:'opaque-1',revision:1};
   const data={session:{id:'s1',userId:'u1'},tasks:[task],projects:[],tracks:[],epics:[],milestones:[],pool:[]};
-  const app={context:()=>({view:'task',taskId:'ONE-1',projectId:'p1'}),refresh(){}};
-  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
+  const app=appFor(()=>({view:'task',taskId:'ONE-1',projectId:'p1'}));
+  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true});
   controller.start();
-  const target={closest:(selector)=>selector.includes('.task-page')?root:null};
-  listeners.focusin({target});
+  const focus=()=>document.querySelector('.tp-title').dispatchEvent(new window.FocusEvent('focusin',{bubbles:true}));
+  focus();
   const key=controller.revisionKey(task);
   task.revision=2;
-  listeners.focusin({target});
+  focus();
   assert.equal(controller.expectedRevision(key,task.revision),1);
   controller.finishRevision(key);
   assert.equal(controller.expectedRevision(key,task.revision),2);
@@ -127,12 +123,11 @@ test('responses and command failures from an expired session cannot expire its r
 
 test('late read and reconnect success cannot override a newer browser offline event',async()=>{
   let online=true,resolveProbe;
-  const listeners={};
-  const state=fixture({online:()=>online,windowObject:{addEventListener:(name,listener)=>listeners[name]=listener},api:{me:()=>new Promise(resolve=>resolveProbe=resolve)}});
+  const state=fixture({online:()=>online,api:{me:()=>new Promise(resolve=>resolveProbe=resolve)}});
   state.controller.start();
   const oldContext=state.controller.requestContext();
   const reconnect=state.controller.reconnect();
-  online=false;listeners.offline();
+  online=false;state.window.dispatchEvent(new state.window.Event('offline'));
   state.controller.observeResponse({ok:true,path:'/api/bootstrap',requestContext:oldContext});
   resolveProbe({});await reconnect;
   assert.equal(state.controller.connection,'offline');assert.equal(state.controller.ensureOnline(),false);assert.equal(state.reloads,0);
@@ -207,7 +202,7 @@ test('composed API observer and reconnect retain unavailability through service 
   const api=createApiClient({getRequestContext:()=>controller.requestContext(),onResponse:event=>controller.observeResponse(event),fetchImpl:async()=>{
     attempts++;return attempts<3?new Response('<html>Unavailable</html>',{status:503}):Response.json({});
   }});
-  controller=createRecoveryController({data:{session:{id:'s1'}},api,gateway:{},reload:async()=>{reloads++;},online:()=>true,setTimer:()=>0,clearTimer:()=>{},documentObject:null,windowObject:null});
+  controller=page().createRecoveryController({data:{session:{id:'s1'}},api,gateway:{},reload:async()=>{reloads++;},online:()=>true,setTimer:()=>0,clearTimer:()=>{}});
   controller.observeResponse({ok:false,error:new ApiError('Network',{code:'network_error'})});
   for(let i=0;i<2;i++){await controller.reconnect();assert.equal(controller.connection,'offline');assert.equal(reloads,0);}
   await controller.reconnect();assert.equal(controller.connection,'live');assert.equal(reloads,1);
@@ -251,15 +246,14 @@ test('background refresh feedback is scoped and clears on success without repain
 
 
 test('a promotion editor keeps the Pool source focus-time revision after a background replacement',()=>{
-  const root={},listeners={};
-  const documentObject={addEventListener:(name,listener)=>{listeners[name]=listener;},querySelectorAll:()=>[root]};
+  const {window,document,createRecoveryController}=page('<div class="modal"><div class="pool-editor"><form><input name="title"></form></div></div>');
   const source={id:'pool1',revision:1};
   const data={session:{id:'s1',userId:'u1'},pool:[source]};
-  const app={context:()=>({view:'board',projectId:'p1',modal:{type:'task',poolId:'pool1'}}),refresh(){}};
-  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
+  const app=appFor(()=>({view:'board',projectId:'p1',modal:{type:'task',poolId:'pool1'}}));
+  const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true});
   controller.start();
-  const target={closest:selector=>selector==='.pool-editor'||selector.startsWith('.modal,')?root:null};
-  listeners.focusin({target});data.pool=[{id:'pool1',revision:2}];listeners.focusin({target});
+  const focus=()=>document.querySelector('[name="title"]').dispatchEvent(new window.FocusEvent('focusin',{bubbles:true}));
+  focus();data.pool=[{id:'pool1',revision:2}];focus();
   assert.equal(controller.expectedRevision(controller.revisionKey(data.pool[0]),2),1);
   controller.dispose();
 });
@@ -316,51 +310,37 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
     const state=fixture({api:{counts:async(...args)=>calls.push(args)},setTimer:callback=>{timers.push(callback);return timers.length;}});
     state.app.context=()=>({view,projectId:'p1'});
     state.controller.start();await timers[0]();
-    assert.deepEqual(calls,[['p1',{background:true}]]);state.controller.dispose();
+    assert.deepEqual(structuredClone(calls),[['p1',{background:true}]]);state.controller.dispose();
   }
-});
-
-test('blur conflict stays beside its field and reveals long latest values on demand',async(t)=>{
-  const document=onPage(t,'<main class="content"><div class="task-page"><section class="tp-sec"><textarea id="description">mine</textarea></section></div></main>');
-  const field=document.querySelector('textarea');
-  const value='<script>do not execute</script>'+ ' saved'.repeat(80);
-  const pending=presentDomConflict({target:field,latestValue:value,myValue:'mine'});
-  const box=document.querySelector('[data-recovery-conflict]');assert.equal(box.parentElement,field.parentElement);assert.equal(document.querySelectorAll('script').length,0);
-  assert.ok(box.querySelector('span').textContent.length<260);
-  const show=[...box.querySelectorAll('button')].find(button=>button.textContent==='Show all');show.click();assert.ok(box.textContent.includes(value));assert.equal(show.getAttribute('aria-expanded'),'true');
-  [...box.querySelectorAll('button')].find(button=>button.textContent==='Use latest').click();assert.equal(await pending,'latest');assert.equal(field.value,value);assert.equal(document.querySelector('[data-recovery-conflict]'),null);
-});
-
-test('removing an unresolved editor cancels its prompt without retaining a draft',async(t)=>{
-  const document=onPage(t,'<div class="task-page"><textarea>mine</textarea></div>');
-  const pending=presentDomConflict({target:document.querySelector('textarea'),latestValue:'latest',myValue:'mine'});document.body.replaceChildren();assert.equal(await pending,'cancelled');
 });
 
 /**
  * A page that learns about an update, with storage, visibility and a clock
- * the test controls. `stores` is the tab's storage, which a reload keeps.
- * The page checks the server's version the way the app does, with the build
- * monitor; `server` is the version the server answers with.
+ * the test controls. `stores` is the tab's storage, which a reload keeps; a
+ * reload is counted, since jsdom can't run one. The page checks the server's
+ * version the way the app does, with the build monitor; `server` is the
+ * version the server answers with.
  */
 function updatable({autoReload=true,hidden=false,stores={local:new Map(),session:new Map()}}={}){
-  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0;
+  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0,visibility=hidden?'hidden':'visible';
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
   if(autoReload)stores.local.set('oneloop.autoReload','on');
-  const documentObject={visibilityState:hidden?'hidden':'visible',activeElement:null,querySelectorAll:()=>[],addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);}};
-  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{reload:()=>{reloads++;}},addEventListener:(type,listener)=>{(listeners[`window:${type}`]??=[]).push(listener);}};
-  const app={context:()=>({view:'board',projectId:'p1'}),refresh(){}};
+  const {window,document,createRecoveryController}=page();
+  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visibility});
+  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);},removeEventListener(){}};
+  const app=appFor(()=>({view:'board',projectId:'p1'}));
   let server=oldVersion;
   const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
   const controller=createRecoveryController({data:{session:{id:'s1',userId:'u1'}},api:{counts:async()=>({})},gateway:{hasPending:()=>saving,invalidate(){}},getApp:()=>app,
-    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject,
+    setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,windowObject,
     checkBuild:()=>monitor.check()});
   controller.start();
-  const fire=type=>{for(const listener of listeners[type]??[])listener({});};
-  return {controller,stores,documentObject,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
+  const fire=type=>document.dispatchEvent(new window.Event(type));
+  return {controller,stores,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
     /** Another tab of this browser changes the stored setting. */
-    otherTab(value){if(value)stores.local.set('oneloop.autoReload',value);else stores.local.delete('oneloop.autoReload');for(const listener of listeners['window:storage']??[])listener({key:'oneloop.autoReload',newValue:value});},
+    otherTab(value){if(value)stores.local.set('oneloop.autoReload',value);else stores.local.delete('oneloop.autoReload');for(const listener of listeners.storage??[])listener({key:'oneloop.autoReload',newValue:value});},
     /** The tab hides, or shows again. */
-    show(visible){documentObject.visibilityState=visible?'visible':'hidden';fire('visibilitychange');},
+    show(visible){visibility=visible?'visible':'hidden';fire('visibilitychange');},
     /** Move the clock on, run the timers that are due, and let the checks they start finish. */
     async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await settle();}};
 }
@@ -451,50 +431,59 @@ test('turning Reload after updates on applies to an update that is already waiti
   page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
 });
 
-/** A jsdom page: the document the conflict prompt uses until test `t` ends. */
-function onPage(t,html){
-  const {window}=new JSDOM(html);
-  useGlobals(t,{document:window.document,Event:window.Event});
-  return window.document;
+/**
+ * A task page with a conflict over its description: Recovery reads the
+ * latest saved value and asks the person in its prompt. `answer` resolves
+ * with the outcome; `retried` lists the revisions Keep my changes saved at.
+ */
+function conflictPage(latestValue='theirs'){
+  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
+  const state=fixture({html:`<main class="content"><div class="task-page">${section}</div></main>`}),{document}=state,retried=[];
+  const field=()=>document.getElementById('task-description');
+  const review=()=>state.controller.resolveConflict({
+    error:new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'}),
+    reloadLatest:async()=>{},latestEntity:()=>({desc:latestValue,revision:2}),retry:async(revision)=>{retried.push(revision);return {};},
+    target:{element:field,latestValue:(entity)=>entity.desc},myValue:'mine',
+  });
+  const prompt=()=>document.querySelector('[data-recovery-conflict]');
+  const button=(label)=>[...prompt().querySelectorAll('button')].find(item=>item.textContent===label);
+  /** The page draws the task again, as a live update does; `readonly` once edit rights end. */
+  const redraw=(readonly=false)=>{document.querySelector('.task-page').innerHTML=readonly?section.replace('<textarea','<textarea readonly'):section;};
+  return {...state,field,review,prompt,button,redraw,retried};
 }
-const answer=(document,label)=>[...document.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label).click();
 
-test('a redraw moves an unanswered prompt beside the redrawn field, where Use latest fills it in',async(t)=>{
-  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
-  const document=onPage(t,`<div class="task-page">${section}</div>`);
-  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-  const box=document.querySelector('[data-recovery-conflict]');
-  document.querySelector('.task-page').innerHTML=section;
-  await settle();
-  const redrawn=document.getElementById('task-description');
-  assert.equal(box.parentElement,redrawn.parentElement,'beside the new field');
-  answer(document,'Use latest');
-  assert.equal(await pending,'latest');assert.equal(redrawn.value,'theirs');
+test('a conflict prompt stays beside its field and shows a long latest value only on demand',async()=>{
+  const value='<script>do not execute</script>'+' saved'.repeat(80),t=conflictPage(value);
+  const answer=t.review();await settle();
+  assert.equal(t.prompt().closest('.tp-sec'),t.field().closest('.tp-sec'));assert.equal(t.document.querySelectorAll('script').length,0);
+  assert.ok(t.prompt().querySelector('span').textContent.length<260);
+  const show=t.button('Show all');show.click();assert.ok(t.prompt().textContent.includes(value));assert.equal(show.getAttribute('aria-expanded'),'true');
+  t.button('Use latest').click();
+  assert.deepEqual({...await answer},{handled:true,saved:false,latest:{desc:value,revision:2},choice:'latest'});
+  assert.equal(t.field().value,value);assert.equal(t.prompt(),null);assert.deepEqual(t.retried,[]);
 });
 
-test('a prompt closes without an answer when its redrawn field can no longer be edited',async(t)=>{
-  const document=onPage(t,'<div class="task-page"><section class="tp-sec"><textarea id="task-description">mine</textarea></section></div>');
-  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-  document.querySelector('.task-page').innerHTML='<section class="tp-sec"><textarea id="task-description" readonly>mine</textarea></section>';
-  assert.equal(await pending,'cancelled');assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+test('a conflict prompt closes without an answer when its field goes, or can no longer be edited',async()=>{
+  for(const readonly of [false,true]){
+    const t=conflictPage(),answer=t.review();await settle();
+    if(readonly)t.redraw(true);else t.document.querySelector('.task-page').remove();
+    assert.deepEqual({...await answer},{handled:true,saved:false});assert.equal(t.prompt(),null);
+  }
 });
 
-test('a newer prompt replaces one still waiting, which closes without an answer',async(t)=>{
-  const document=onPage(t,'<div class="task-page"><section class="tp-sec"><textarea id="a">a</textarea></section><section class="tp-sec"><textarea id="b">b</textarea></section></div>');
-  const field=id=>document.getElementById(id);
-  const first=presentDomConflict({target:field('a'),locate:()=>field('a'),latestValue:'A',myValue:'a'});
-  const second=presentDomConflict({target:field('b'),locate:()=>field('b'),latestValue:'B',myValue:'b'});
-  assert.equal(await first,'cancelled');
-  assert.equal(document.querySelectorAll('[data-recovery-conflict]').length,1);
-  answer(document,'Keep my changes');assert.equal(await second,'mine');
+test('a newer conflict prompt replaces one still waiting, which closes without an answer',async()=>{
+  const t=conflictPage(),first=t.review();await settle();
+  const second=t.review();await settle();
+  assert.deepEqual({...await first},{handled:true,saved:false});
+  assert.equal(t.document.querySelectorAll('[data-recovery-conflict]').length,1);
+  t.button('Keep my changes').click();
+  assert.equal((await second).saved,true);assert.deepEqual(t.retried,[2]);
 });
 
-test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async(t)=>{
-  const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
-  const document=onPage(t,`<div class="task-page">${section}</div>`);
-  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-  answer(document,'Keep my changes');assert.equal(await pending,'mine');
-  assert.match(document.querySelector('[data-recovery-conflict]').textContent,/Saving your changes/);
-  document.querySelector('.task-page').innerHTML=section;await settle();
-  assert.equal(document.querySelector('[data-recovery-conflict]'),null);
+test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async()=>{
+  const t=conflictPage(),answer=t.review();await settle();
+  t.button('Keep my changes').click();
+  assert.equal((await answer).saved,true);assert.match(t.prompt().textContent,/Saving your changes/);
+  t.redraw();await settle();
+  assert.equal(t.prompt(),null);
 });

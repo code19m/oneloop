@@ -54,8 +54,8 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   async function login(credentials, form, {resume=false}={}) {
     if(isFormRetryPending(form))return false;
     const token=begin();
-    form?.querySelector?.('.auth-address-error')?.remove();
-    form?.querySelector?.('.server-feedback')?.remove();
+    form?.querySelector('.auth-address-error')?.remove();
+    form?.querySelector('.server-feedback')?.remove();
     disableForm(form, true);
     try {
       const auth = resume&&pendingCompletion ? pendingCompletion : await api.login(credentials);
@@ -109,7 +109,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   }
 
   function showCompletionRetry(form,retry,title) {
-    const card=form?.closest?.('.auth-card')??form?.parentElement;if(!card)return false;
+    const card=form?.closest('.auth-card')??form?.parentElement;if(!card)return false;
     const section=document.createElement('section');section.className='session-limit-list auth-completion-retry';
     const heading=document.createElement('h2');heading.textContent=title;
     const copy=document.createElement('p');copy.className='auth-notice';copy.textContent='Your workspace could not load. Check your connection and try again.';

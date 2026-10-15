@@ -1,29 +1,53 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test,{beforeEach} from 'node:test';
+import {createRequire} from 'node:module';
 import {installViewBridge} from '../../../src/app/view-bridge.js';
 import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {ApiError} from '../../../src/data/api-client.js';
 import {savedDoneOrder,saveDoneOrder} from '../../../src/data/done-order.js';
-import {useGlobals,deferred,settle,waitFor} from '../../support/helpers.cjs';
+import {useGlobals,deferred,settle,tick,waitFor} from '../../support/helpers.cjs';
 
-/** A FormData that reads a fake form's `fields`. */
-class FieldsFormData {constructor(form){this.fields=form.fields;}get(name){return this.fields[name]??null;}getAll(name){return [].concat(this.fields[name]??[]);}}
+const {JSDOM}=createRequire(import.meta.url)('../../support/dom.cjs');
+
+// The bridge finds forms and fields in the page's document, so each test gets a page of its own.
+beforeEach((t)=>{
+  const {window}=new JSDOM('<!doctype html><body></body>',{url:'http://localhost/'});
+  useGlobals(t,{document:window.document,location:window.location,FormData:window.FormData,Event:window.Event});
+});
+
+/** A form in the page, holding `html`; with `dialog`, inside an open dialog. */
+function form(html,{dialog=false}={}){
+  const element=document.createElement('form');element.innerHTML=html;
+  if(dialog){const modal=document.createElement('div');modal.className='modal';modal.append(element);document.body.append(modal);}
+  else document.body.append(element);
+  return element;
+}
+/** Text inputs named and filled after `values`. */
+const inputs=values=>Object.entries(values).map(([name,value])=>`<input name="${name}" value="${value}">`).join('');
+/** The event of submitting `element`. */
+const submit=element=>({target:element,preventDefault(){}});
+
+/** Recovery with a connection and no conflicts; a test replaces what it needs. */
+const quietRecovery={ensureOnline:()=>true,connection:'live',whenOnline(){},trackUnsaved(){},trackWrite(){},hasUnsavedInput:()=>false,revisionKey:()=>null,expectedRevision:(_key,fallback)=>fallback,finishRevision(){},isRevisionConflict:()=>false,async resolveConflict(){return {handled:false};},async handleCommandFailure(){},refreshFailed(){},isSavingTask:()=>false,clearPageError(){},beginRouteLoad(){}};
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
-  const app={context:()=>context,openPeek(){},openModal(){},prepareBlock:()=>({mentions:[]}),openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
+  // The views' methods the bridge calls. Background and dialog-aware repaints count as whole repaints.
+  const app={context:()=>context,openPeek(){},openModal(){},prepareBlock:()=>({mentions:[]}),openTask(id){opened.push(id);},refresh(){paints.push('all');},refreshBackground(){paints.push('all');},refreshAfterDialog(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},
+    refreshCounts(){},refreshEpic(){},refreshPool(){},refreshRoadmap(){},refreshTaskDrafts(){},refreshTaskHeader(){},refreshUsers(){},redrawDialog(){},showBlocked(){},togglePoolDescription(){},fieldError(){},isRendering:()=>false,validateFormDates:()=>true,signOutText:()=>'End your current browser session.',
+    acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
-    async counts(id){calls.push(['counts',id]);},async board(){},async roadmap(){},async pool(){},cancel(){},async epic(){},async moreEpicTasks(){},async moreEpicActivity(){},
+    async counts(id){calls.push(['counts',id]);},async board(){},adoptBoard:()=>false,async roadmap(){},async pool(){},cancel(){},async epic(){},async moreEpicTasks(){},async moreEpicActivity(){},
     ...overrides.reads,
   };
-  const bridge=installViewBridge({app,data,reads,api:overrides.api??{},gateway:overrides.gateway??{},auth:overrides.auth??{},recovery:overrides.recovery??{},reloadBootstrap:overrides.reloadBootstrap??(async()=>({}))});
+  const bridge=installViewBridge({app,data,reads,api:overrides.api??{},gateway:{hasUncertain:()=>false,...overrides.gateway},auth:overrides.auth??{},recovery:{...quietRecovery,...overrides.recovery},reloadBootstrap:overrides.reloadBootstrap??(async()=>({}))});
   return {app,data,reads,bridge,opened,calls,paints,toasts,saved,get closed(){return closed;}};
 }
 
-test('an unloaded valid task hash is fetched before the shell decides it is missing',async(t)=>{
-  useGlobals(t,{location:{hash:'#/task/ONE-1'}});
+test('an unloaded valid task hash is fetched before the shell decides it is missing',async()=>{
+  location.hash='#/task/ONE-1';
   const state=fixture({view:'notfound',taskId:'ONE-1',projectId:'p1',board:{}});
   await state.bridge.loadCurrentRoute();
   assert.deepEqual(state.calls,[['task','ONE-1'],['counts','p1']]);
@@ -124,8 +148,9 @@ test('project autosave keeps the latest name while an earlier name is saving',as
   Object.assign(state.data.projects[0],{revision:1,name:'Original'});
   const requests=[],pending=[];
   gateway=createCommandGateway({data:state.data,api:{command:command=>{requests.push(command);return new Promise(resolve=>pending.push(resolve));}}});
-  state.app.updateProjectField({name:'name',value:'First'});
-  state.app.updateProjectField({name:'name',value:'Latest'});
+  const field=form('<div class="project-fields"><input name="name" value="Original"></div>').querySelector('[name="name"]');
+  field.value='First';state.app.updateProjectField(field);
+  field.value='Latest';state.app.updateProjectField(field);
   pending[0]({entities:[{entityType:'project',id:'p1',name:'First',revision:2}],events:[]});await settle();
   assert.equal(requests.length,2);assert.equal(requests[1].payload.name,'Latest');assert.equal(requests[1].expectedRevision,2);
   pending[1]({entities:[{entityType:'project',id:'p1',name:'Latest',revision:3}],events:[]});await settle();
@@ -133,34 +158,32 @@ test('project autosave keeps the latest name while an earlier name is saving',as
 });
 
 test('a profile response from an ended session cannot repopulate private access data',async()=>{
-  let resolveSessions,resolveApps;
-  const sessions=new Promise((resolve)=>{resolveSessions=resolve;}),apps=new Promise((resolve)=>{resolveApps=resolve;});
+  const sessions=deferred(),apps=deferred();
   const context={view:'profile',projectId:'p1',board:{}};
-  const state=fixture(context,{api:{sessions:()=>sessions,connectedApps:()=>apps}});
+  const state=fixture(context,{api:{sessions:()=>sessions.promise,connectedApps:()=>apps.promise}});
   state.data.browserSessions.push({id:'old'});state.data.appGrants.push({id:'old'});
   const loading=state.bridge.loadCurrentRoute();
   state.data.session=null;state.data.browserSessions.length=0;state.data.appGrants.length=0;
-  resolveSessions({sessions:[{id:'leaked',clientName:'Browser',createdAt:1,lastActivityAt:1,current:false}]});
-  resolveApps({apps:[{id:'leaked',clientName:'Client',createdAt:1,expiresAt:2,projects:[],scopes:[]}]});
+  sessions.resolve({sessions:[{id:'leaked',clientName:'Browser',createdAt:1,lastActivityAt:1,current:false}]});
+  apps.resolve({apps:[{id:'leaked',clientName:'Client',createdAt:1,expiresAt:2,projects:[],scopes:[]}]});
   await loading;
   assert.deepEqual(state.data.browserSessions,[]);assert.deepEqual(state.data.appGrants,[]);
 });
 
 test('an admin-list response cannot mutate or repaint a page that has been left',async()=>{
-  let resolveUsers;const users=new Promise((resolve)=>{resolveUsers=resolve;});
-  const context={view:'users',projectId:'p1',board:{}};
-  const state=fixture(context,{api:{users:()=>users}});
+  const users=deferred(),context={view:'users',projectId:'p1',board:{}};
+  const state=fixture(context,{api:{users:()=>users.promise}});
   const loading=state.bridge.loadCurrentRoute();context.view='board';
-  resolveUsers({users:[{id:'u2',username:'member',displayName:'Member',isAdmin:false,isActive:true,mustChangePassword:false,revision:1}],nextCursor:null});
+  users.resolve({users:[{id:'u2',username:'member',displayName:'Member',isAdmin:false,isActive:true,mustChangePassword:false,revision:1}],nextCursor:null});
   await loading;
   assert.equal(state.data.adminUsers.loaded,false);assert.deepEqual(state.data.adminUsers.ids,[]);assert.equal(state.data.users.length,0);
 });
 
 test('rapid assignee toggles serialize the latest intent without an intermediate repaint',async()=>{
-  const requests=[];let releaseFirst,releaseSecond;
+  const requests=[],replies=[deferred(),deferred()];
   const gateway={execute:async(operation,payload,options)=>{
     requests.push({operation,payload,options});
-    return new Promise((resolve)=>{if(requests.length===1)releaseFirst=resolve;else releaseSecond=resolve;});
+    return replies[requests.length-1].promise;
   }};
   const recovery={revisionKey:(item)=>`task:${item.internalId}`,expectedRevision:(_key,fallback)=>fallback,finishRevision(){},captureEditor:()=>null};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,recovery});
@@ -168,10 +191,10 @@ test('rapid assignee toggles serialize the latest intent without an intermediate
   const first=state.bridge.setAssignees('ONE-1',['u2']);
   const second=state.bridge.setAssignees('ONE-1',['u2','u3']);
   assert.equal(requests.length,1);assert.deepEqual(requests[0].payload.assigneeIds,['u2']);assert.equal(requests[0].options.expectedRevision,1);
-  Object.assign(item,{revision:2,assignees:['u2']});releaseFirst({entities:[],events:[]});
-  while(requests.length<2)await new Promise((resolve)=>setTimeout(resolve,0));
+  Object.assign(item,{revision:2,assignees:['u2']});replies[0].resolve({entities:[],events:[]});
+  await waitFor(()=>requests.length===2,'the newer intent is sent');
   assert.deepEqual(requests[1].payload.assigneeIds,['u2','u3']);assert.equal(requests[1].options.expectedRevision,2);
-  Object.assign(item,{revision:3,assignees:['u2','u3']});releaseSecond({entities:[],events:[]});
+  Object.assign(item,{revision:3,assignees:['u2','u3']});replies[1].resolve({entities:[],events:[]});
   await Promise.all([first,second]);
   assert.deepEqual(item.assignees,['u2','u3']);assert.deepEqual(state.paints,[]);assert.deepEqual(state.toasts,[]);assert.deepEqual(state.saved,['ONE-1']);
 });
@@ -194,22 +217,21 @@ test('failed assignee saves retain the canonical list loaded during conflict rec
 });
 
 test('an old assignee response cannot mutate a same-id task in a replacement session',async()=>{
-  let release;const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:()=>new Promise((resolve)=>{release=resolve;})}});
+  const reply=deferred(),state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:()=>reply.promise}});
   state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1,assignees:[]});
   const pending=state.bridge.setAssignees('ONE-1',['u2']);
   const replacement={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:8,assignees:['u9']};
-  state.data.session={id:'s2',userId:'u2'};state.data.tasks.splice(0,state.data.tasks.length,replacement);release({entities:[],events:[]});
+  state.data.session={id:'s2',userId:'u2'};state.data.tasks.splice(0,state.data.tasks.length,replacement);reply.resolve({entities:[],events:[]});
   await pending;assert.deepEqual(replacement.assignees,['u9']);assert.equal(replacement.revision,8);
 });
 
-test('a command response from an ended session cannot close or repaint the next session',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
-  let release;const gateway={execute:()=>new Promise((resolve)=>{release=resolve;})};
+test('a command response from an ended session cannot close or repaint the next session',async()=>{
+  const reply=deferred(),gateway={execute:()=>reply.promise};
   const context={view:'roadmap',projectId:'p1',board:{}};
   const state=fixture(context,{gateway});state.data.tracks.push({id:'track-1',projectId:'p1',name:'Old',revision:1});
-  state.app.saveTrack({preventDefault(){},target:{fields:{name:'New'}}},'track-1');
-  state.data.session={id:'s2',userId:'u2'};release({entities:[],events:[]});
-  await new Promise((resolve)=>setTimeout(resolve,0));
+  state.app.saveTrack(submit(form(inputs({name:'New'}))),'track-1');
+  state.data.session={id:'s2',userId:'u2'};reply.resolve({entities:[],events:[]});
+  await tick();
   assert.equal(state.closed,0);assert.deepEqual(state.paints,[]);assert.deepEqual(state.toasts,[]);
 });
 
@@ -218,11 +240,11 @@ test('profile writes are ordered and only the latest value updates the current v
   const state=fixture(context,{api:{updateProfile:(displayName)=>new Promise((resolve)=>pending.push({displayName,resolve}))}});
   const me={id:'u1',name:'Original'};state.data.users.push(me);
   state.app.updMe('First');state.app.updMe('Second');
-  while(pending.length<1)await new Promise((resolve)=>setTimeout(resolve,0));
-  assert.equal(pending.length,1);pending[0].resolve({user:{displayName:'First',avatarUrl:null}});
-  while(pending.length<2)await new Promise((resolve)=>setTimeout(resolve,0));
+  await waitFor(()=>pending.length===1,'the first name is sent');
+  pending[0].resolve({user:{displayName:'First',avatarUrl:null}});
+  await waitFor(()=>pending.length===2,'the second name is sent after the first');
   assert.equal(me.name,'Original');assert.deepEqual(state.paints,[]);
-  pending[1].resolve({user:{displayName:'Second',avatarUrl:null}});await new Promise((resolve)=>setTimeout(resolve,0));
+  pending[1].resolve({user:{displayName:'Second',avatarUrl:null}});await tick();
   assert.equal(me.name,'Second');assert.deepEqual(state.paints,['all']);assert.deepEqual(state.toasts,[['Profile saved']]);
 });
 
@@ -254,12 +276,11 @@ test('routine member actions never invoke password confirmation',async()=>{
 });
 
 
-test('task creation stays one interaction across acceptance and a slow follow-up read',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('task creation stays one interaction across acceptance and a slow follow-up read',async()=>{
   const write=deferred(),read=deferred();let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:()=>{writes++;return write.promise;}},reloadBootstrap:()=>read.promise});
   state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const button={disabled:false},form={fields:{epicId:'e1',title:'One task'},querySelectorAll:()=>[button]},event={target:form,preventDefault(){}};
+  const element=form(inputs({epicId:'e1',title:'One task'})+'<button type="submit">Save</button>'),button=element.querySelector('button'),event=submit(element);
   state.app.saveTask(event);state.app.saveTask(event);
   assert.equal(writes,1);assert.equal(button.disabled,true);
   write.resolve({entities:[],events:[]});await settle();
@@ -269,12 +290,11 @@ test('task creation stays one interaction across acceptance and a slow follow-up
   assert.equal(state.closed,1);assert.equal(button.disabled,false);
 });
 
-test('an accepted create closes successfully even when refreshing the view fails',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('an accepted create closes successfully even when refreshing the view fails',async()=>{
   const failure=new Error('Read unavailable'),refreshFailures=[];let writes=0;
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task'}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}},reloadBootstrap:async()=>{throw failure;},recovery:{refreshFailed:error=>refreshFailures.push(error)}});
   state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask({preventDefault(){},target:{fields:{epicId:'e1',title:'Saved task'}}});await settle();
+  state.app.saveTask(submit(form(inputs({epicId:'e1',title:'Saved task'}))));await settle();
   assert.equal(writes,1);assert.equal(state.closed,1);
   assert.deepEqual(state.toasts,[['Task created']]);assert.deepEqual(refreshFailures,[failure]);
 });
@@ -288,12 +308,12 @@ test('only the latest project selection may apply a completed bootstrap',async()
   assert.deepEqual(selected,['p2']);
 });
 
-test('a delayed task read cannot leave a newer Profile route',async(t)=>{
-  useGlobals(t,{location:{hash:'#/task/ONE-1'}});
+test('a delayed task read cannot leave a newer Profile route',async()=>{
+  location.hash='#/task/ONE-1';
   const taskRead=deferred(),sessions=deferred(),apps=deferred();
   const context={view:'task',taskId:'ONE-1',projectId:'p1',board:{}};
   const state=fixture(context,{reads:{task:()=>taskRead.promise},api:{sessions:()=>sessions.promise,connectedApps:()=>apps.promise}});
-  const old=state.bridge.loadCurrentRoute();context.view='profile';context.taskId=null;globalThis.location.hash='#/profile';
+  const old=state.bridge.loadCurrentRoute();context.view='profile';context.taskId=null;location.hash='#/profile';
   const next=state.bridge.loadCurrentRoute();taskRead.resolve({stale:false,task:{id:'ONE-1'}});await old;
   assert.deepEqual(state.opened,[]);
   sessions.resolve({sessions:[]});apps.resolve({apps:[]});await next;assert.deepEqual(state.opened,[]);
@@ -315,44 +335,27 @@ test('choosing a Done order saves it and reads the Board again with the same fil
   assert.equal(reads.at(-1)[2],'manual');
 });
 
-test('a failed obsolete task read cannot put the new Profile page into an error state',async(t)=>{
-  useGlobals(t,{location:{hash:'#/task/ONE-1'}});
+test('a failed obsolete task read cannot put the new Profile page into an error state',async()=>{
   for(const status of [403,404,500]){
-    globalThis.location.hash='#/task/ONE-1';
+    location.hash='#/task/ONE-1';
     const taskRead=deferred(),sessions=deferred(),apps=deferred();
     const context={view:'task',taskId:'ONE-1',projectId:'p1',board:{}};
     const state=fixture(context,{reads:{task:()=>taskRead.promise},api:{sessions:()=>sessions.promise,connectedApps:()=>apps.promise}});
-    const old=state.bridge.loadCurrentRoute();context.view='profile';context.taskId=null;globalThis.location.hash='#/profile';
+    const old=state.bridge.loadCurrentRoute();context.view='profile';context.taskId=null;location.hash='#/profile';
     const next=state.bridge.loadCurrentRoute();taskRead.reject(Object.assign(new Error('Old route failed'),{status}));
     assert.deepEqual(await old,{stale:true});assert.deepEqual(state.opened,[]);
     sessions.resolve({sessions:[]});apps.resolve({apps:[]});await next;
   }
 });
 
-/** A Pool's capture field and notes, found by their ids. */
+/** The Pool's capture field and its open notes, as the page draws them. */
 function poolCapture(){
-  const input={value:'',isConnected:true,hidden:false},notes={value:'',isConnected:true,closest:()=>({classList:{contains:()=>true}})};
-  return {input,notes,document:{getElementById:id=>({poolAdd:input,poolNewDesc:notes})[id]??null,activeElement:null}};
+  document.body.innerHTML='<div class="pool-capture is-expanded"><input id="poolAdd"><textarea id="poolNewDesc"></textarea></div>';
+  return {input:document.getElementById('poolAdd'),notes:document.getElementById('poolNewDesc')};
 }
 
-test('an item sent from the Pool leaves the field at once, and the next one is sent on its own',async(t)=>{
-  const capture=poolCapture();useGlobals(t,{document:capture.document});
-  const read=deferred(),commands=[];
-  const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);return {entities:[],events:[]};}},reads:{pool:()=>read.promise}});
-  const event={key:'Enter',target:capture.input,preventDefault(){}};
-  capture.input.value='First idea';capture.notes.value='Its notes';state.app.poolKey(event);
-  assert.deepEqual([capture.input.value,capture.notes.value],['',''],'the item left the field');
-  capture.input.value='Next idea';state.app.poolKey(event);
-  assert.equal(capture.input.value,'');
-  await settle();
-  assert.deepEqual(commands.map(([title])=>title),['First idea','Next idea']);
-  assert.notEqual(commands[0][1],commands[1][1],'two items, two keys');
-  read.resolve({stale:false});await settle();
-  assert.equal(capture.input.value,'');assert.deepEqual(state.paints,[]);
-});
-
-test('Enter on the empty Pool field says nothing while the item that left it is on its way',async(t)=>{
-  const capture=poolCapture();useGlobals(t,{document:capture.document});
+test('Enter on the empty Pool field says nothing while the item that left it is on its way',async()=>{
+  const capture=poolCapture();
   const sent=deferred();
   const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:()=>sent.promise}});
   const event={key:'Enter',target:capture.input,preventDefault(){}};
@@ -363,8 +366,8 @@ test('Enter on the empty Pool field says nothing while the item that left it is 
   assert.deepEqual(state.toasts.at(-1),['Give the Pool item a title.','error']);
 });
 
-test('a Pool item that can\'t be added comes back once the field is free, and is added once',async(t)=>{
-  const capture=poolCapture();useGlobals(t,{document:capture.document});
+test('a Pool item that can\'t be added comes back once the field is free, and is added once',async()=>{
+  const capture=poolCapture();
   const commands=[];let fail=true;
   const state=fixture({view:'board',projectId:'p1',poolTab:'mine',board:{}},{gateway:{execute:async(_operation,payload,options)=>{commands.push([payload.title,options.interactionKey]);if(fail&&payload.title==='First idea')throw new ApiError('Unable to reach oneloop',{code:'network_error',uncertain:true});return {entities:[],events:[]};}}});
   const event={key:'Enter',target:capture.input,preventDefault(){}};
@@ -379,8 +382,8 @@ test('a Pool item that can\'t be added comes back once the field is free, and is
   assert.equal(capture.input.value,'');
 });
 
-test('a task in another project loads its parent context before opening and counts that project',async(t)=>{
-  useGlobals(t,{location:{hash:'#/task/TWO-1'}});
+test('a task in another project loads its parent context before opening and counts that project',async()=>{
+  location.hash='#/task/TWO-1';
   const context={view:'notfound',taskId:'TWO-1',projectId:'p1',board:{}},roadmaps=[],counted=[];
   const task={id:'TWO-1',internalId:'t2',projectId:'p2',epicId:'e2'};
   let state;
@@ -396,38 +399,39 @@ test('a task in another project loads its parent context before opening and coun
 test('profile password success is announced only after completion',async()=>{
   for(const ok of [true,false,undefined]){
     const state=fixture({view:'profile',projectId:'p1'},{auth:{changePassword:async()=>ok}});
-    state.app.changePassword({preventDefault(){},target:{}});await new Promise(resolve=>setTimeout(resolve,0));
+    state.app.changePassword(submit(form('')));await tick();
     assert.deepEqual(state.toasts,ok?[['Password changed. Other sessions and app access revoked']]:[]);
   }
 });
 
-test('epic completion describes singular and plural open tasks and retains production dismissal',async(t)=>{
-  useGlobals(t,{document:{querySelector:()=>({isConnected:true})}});
+test('epic completion describes singular and plural open tasks and closes the drawer',async()=>{
   for(const count of [1,2]){
+  document.body.innerHTML='<div class="peek"></div>';
   let dialog;
   const state=fixture({view:'roadmap',projectId:'p1'},{app:{confirm:value=>{dialog=value;}},gateway:{execute:async()=>({entities:[],events:[]})}});
   state.data.epics.push({id:'e1',projectId:'p1',revision:1});
   state.data.tasks.push(...Array.from({length:count},()=>({epicId:'e1',state:'planning'})));
   state.app.closeEpic('e1');assert.equal(dialog.text,count===1?'1 open task stays where it is.':'2 open tasks stay where they are.');
-  dialog.confirm();await new Promise(resolve=>setTimeout(resolve,0));assert.equal(state.closed,1);
+  dialog.confirm();await tick();assert.equal(state.closed,1);
   }
 });
 
-test('admin revision conflict reloads through the affected page and retries with its fresh revision',async(t)=>{
-  const fields={name:{value:'Admin edit'},admin:{checked:false},active:{checked:true}},errors=[],revisions=[];
-  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)[1]];}};
-  useGlobals(t,{FormData:class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}}});
+/** The Edit user dialog, with its name typed. */
+const userDialog=name=>form(`<input name="name" value="${name}"><input type="checkbox" name="admin"><input type="checkbox" name="active" checked>`,{dialog:true});
+
+test('admin revision conflict reloads through the affected page and retries with its fresh revision',async()=>{
+  const errors=[],revisions=[],dialog=userDialog('Admin edit'),name=dialog.querySelector('[name="name"]');
   const context={view:'users',modal:{type:'user',id:'u2'}};
   const state=fixture(context,{recovery:{isRevisionConflict:error=>error.code==='revision_conflict'},app:{fieldError:(_form,_name,message)=>errors.push(message)},api:{
     users:async({afterUsername})=>afterUsername?{users:[{id:'u2',username:'zeta',displayName:'Self-service name',isAdmin:false,isActive:true,revision:4}],nextCursor:null}:{users:[{id:'u1',username:'admin',displayName:'Owner',isAdmin:true,isActive:true,revision:1}],nextCursor:'admin'},
     updateUser:async(_id,input)=>{revisions.push(input.expectedRevision);if(revisions.length===1)throw Object.assign(new Error('changed'),{code:'revision_conflict'});return {displayName:input.displayName,isAdmin:false,isActive:true,revision:5};},
   }});
   state.data.users.push({id:'u1',admin:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
-  state.app.saveUser({target:form,preventDefault(){}},'u2');
-  await new Promise(resolve=>setTimeout(resolve,0));
-  assert.equal(fields.name.value,'Self-service name');assert.match(errors[0],/Review the latest/);
+  state.app.saveUser(submit(dialog),'u2');
+  await tick();
+  assert.equal(name.value,'Self-service name');assert.match(errors[0],/Review the latest/);
   assert.equal(state.data.users.find(user=>user.id==='u2').revision,4);
-  fields.name.value='Reviewed edit';state.app.saveUser({target:form,preventDefault(){}},'u2');await new Promise(resolve=>setTimeout(resolve,0));
+  name.value='Reviewed edit';state.app.saveUser(submit(dialog),'u2');await tick();
   assert.deepEqual(revisions,[1,4]);assert.equal(state.closed,1);
 });
 
@@ -452,27 +456,23 @@ test('a Users refresh reloads every page already shown',async()=>{
   assert.deepEqual(cursors,[undefined],'opening Users again starts from the first page');
 });
 
-test('Save in Edit user finds the account after a refresh replaced its row',async(t)=>{
-  const fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],errors=[];
-  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
-  useGlobals(t,{FormData:class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}}});
+test('Save in Edit user finds the account after a refresh replaced its row',async()=>{
+  const saved=[],errors=[],dialog=userDialog('Renamed');
   const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{fieldError:(_form,name,message)=>errors.push([name,message])},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {displayName:input.displayName,isAdmin:false,isActive:true,revision:2};}}});
   state.data.users.push({id:'u1',admin:true,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
-  state.app.saveUser({target:form,preventDefault(){}},'u2');
+  state.app.saveUser(submit(dialog),'u2');
   state.data.users.splice(1,1,{id:'u2',name:'Old name',admin:false,active:true,revision:1});
   await settle();
   assert.deepEqual(saved,[['u2','Renamed']]);assert.equal(state.closed,1);assert.equal(state.data.users[1].name,'Renamed');
-  state.app.saveUser({target:form,preventDefault(){}},'gone');
+  state.app.saveUser(submit(dialog),'gone');
   assert.deepEqual(errors,[['name','This user is no longer listed. Reload Users and try again.']]);
 });
 
-test('Save in Edit user after the admin role is gone says so and leaves Users, instead of doing nothing',async(t)=>{
-  const fields={name:{value:'Renamed'},admin:{checked:false},active:{checked:true}},saved=[],navigated=[];
-  const form={isConnected:true,querySelector(selector){return fields[selector.match(/name="(.*?)"/)?.[1]];}};
-  useGlobals(t,{FormData:class{get(name){return fields[name]?.value;}has(name){return !!fields[name]?.checked;}}});
+test('Save in Edit user after the admin role is gone says so and leaves Users, instead of doing nothing',async()=>{
+  const saved=[],navigated=[],dialog=userDialog('Renamed');
   const state=fixture({view:'users',modal:{type:'user',id:'u2'}},{app:{nav:(view)=>navigated.push(view)},api:{updateUser:async(id,input)=>{saved.push([id,input.displayName]);return {};}}});
   state.data.users.push({id:'u1',admin:false,active:true},{id:'u2',name:'Old name',admin:false,active:true,revision:1});
-  state.app.saveUser({target:form,preventDefault(){}},'u2');await settle();
+  state.app.saveUser(submit(dialog),'u2');await settle();
   assert.deepEqual(saved,[],'nothing is sent');
   assert.equal(state.closed,1);assert.deepEqual(navigated,['board']);
   assert.deepEqual(state.toasts,[['You no longer have admin access.','info']]);
@@ -578,8 +578,8 @@ test('text kept when edit rights ended saves from its revision after they come b
   assert.equal(state.requests[0].command.expectedRevision,1);
 });
 
-/** A dialog's form: its `fields`, and the `controls` it finds by selector. */
-const dialogForm=(fields,controls={})=>({fields,isConnected:true,closest:selector=>selector==='.modal'?{}:null,querySelector:selector=>controls[selector]??null});
+/** An open dialog's form with text inputs filled after `values`. */
+const dialogForm=values=>form(inputs(values),{dialog:true});
 const epicDialog=()=>dialogForm({trackId:'r1',title:'Epic',desc:'My description',start:'2026-01-01',end:''});
 function epicPage(recovery,gateway,app={}){
   const state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery,gateway,app});
@@ -587,13 +587,12 @@ function epicPage(recovery,gateway,app={}){
   return state;
 }
 
-test('Use latest in a dialog that saves several fields draws it again from the saved values',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('Use latest in a dialog that saves several fields draws it again from the saved values',async()=>{
   const redrawn=[],finished=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision:key=>finished.push(key),handleCommandFailure:async()=>{},
     resolveConflict:async({target})=>{assert.equal(target.element,undefined,'no one field can show the saved values');target.acceptLatest({});return {handled:true,saved:false,choice:'latest'};}};
   const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
-  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await settle();await settle();
+  state.app.saveEpic(submit(epicDialog()),'e1');await settle();await settle();
   assert.deepEqual(redrawn,[true]);assert.deepEqual(finished,['epic:e1'],'the dialog now shows the latest revision');
 });
 
@@ -603,88 +602,82 @@ const keepMine=()=>({isRevisionConflict:error=>error.code==='revision_conflict',
 /** A gateway whose first save meets someone else's change. */
 const conflictOnce=(sent)=>({execute:async(_operation,payload,options)=>{sent.push(payload);if(sent.length===1)throw changedElsewhere();return {entities:[],events:[]};}});
 
-test('Keep my changes in Edit epic saves only the fields the person changed, so a teammate\'s new dates stay',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('Keep my changes in Edit epic saves only the fields the person changed, so a teammate\'s new dates stay',async()=>{
   const sent=[],state=epicPage(keepMine(),conflictOnce(sent));
   state.app.openModal('epic','e1');
   // A teammate moves the epic while the dialog is open; it still shows the old dates.
   Object.assign(state.data.epics[0],{start:'2026-02-01',end:'2026-03-01',revision:2});
-  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Renamed epic',desc:'',start:'2026-01-01',end:''})},'e1');await settle();await settle();
+  state.app.saveEpic(submit(dialogForm({trackId:'r1',title:'Renamed epic',desc:'',start:'2026-01-01',end:''})),'e1');await settle();await settle();
   assert.deepEqual(sent,[{epicId:'e1',title:'Renamed epic'},{epicId:'e1',title:'Renamed epic'}]);
 });
 
-test('Keep my changes in Edit milestone saves only the fields the person changed, so a teammate\'s new date stays',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('Keep my changes in Edit milestone saves only the fields the person changed, so a teammate\'s new date stays',async()=>{
   const sent=[],state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery:keepMine(),gateway:conflictOnce(sent)});
   state.data.milestones.push({id:'m1',projectId:'p1',name:'Launch',desc:'Ship it',date:'2026-11-10',revision:1});
   state.app.openModal('milestone','m1');
   Object.assign(state.data.milestones[0],{date:'2026-12-24',revision:2});
-  state.app.saveMilestone({preventDefault(){},target:dialogForm({name:'Public launch',desc:'Ship it',date:'2026-11-10'})},'m1');await settle();await settle();
+  state.app.saveMilestone(submit(dialogForm({name:'Public launch',desc:'Ship it',date:'2026-11-10'})),'m1');await settle();await settle();
   assert.deepEqual(sent,[{milestoneId:'m1',title:'Public launch'},{milestoneId:'m1',title:'Public launch'}]);
 });
 
-test('a Pool promotion sends the item\'s title and description only when the person changed them',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a Pool promotion sends the item\'s title and description only when the person changed them',async()=>{
   const sent=[],state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1',title:'Idea',desc:'Notes'}},{recovery:keepMine(),gateway:conflictOnce(sent)});
   state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'Notes',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'}),querySelectorAll:()=>[]}});await settle();await settle();
+  state.app.saveTask(submit(dialogForm({epicId:'e1',title:'Idea',desc:'My own notes',deadline:'2026-12-01'})));await settle();await settle();
   assert.deepEqual(sent.map(payload=>Object.keys(payload).sort()),[['assigneeIds','deadline','description','epicId','poolItemId'],['assigneeIds','deadline','description','epicId','poolItemId']]);
 });
 
-test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a conflict over a dialog\'s date draws the dialog again, since its picker can\'t show the saved date by itself',async()=>{
   let target;const redrawn=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
   const state=epicPage(recovery,{execute:async()=>{throw changedElsewhere();}},{redrawDialog:()=>redrawn.push(true)});
   state.app.openModal('epic','e1');
-  state.app.saveEpic({preventDefault(){},target:dialogForm({trackId:'r1',title:'Epic',desc:'',start:'2026-01-05',end:''},{'[name="start"]':{type:'hidden',value:'2026-01-05'}})},'e1');await settle();await settle();
+  // Its date picker keeps the date in a hidden input.
+  state.app.saveEpic(submit(form(inputs({trackId:'r1',title:'Epic',desc:'',end:''})+'<input type="hidden" name="start" value="2026-01-05">',{dialog:true})),'e1');await settle();await settle();
   assert.equal(target.element,undefined,'no field shows the saved date by itself');
   assert.equal(target.latestValue({start:'2026-02-01'}),'2026-02-01','the prompt still names the saved date');
   target.acceptLatest();
   assert.deepEqual(redrawn,[true]);
 });
 
-test('a conflict over a milestone\'s name shows the saved name',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a conflict over a milestone\'s name shows the saved name',async()=>{
   let target;
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'milestone:m1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
   const state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
   const milestone={id:'m1',projectId:'p1',name:'Launch',desc:'',date:'2026-11-10',revision:1};state.data.milestones.push(milestone);
   state.app.openModal('milestone','m1');
-  state.app.saveMilestone({preventDefault(){},target:dialogForm({name:'Public launch',desc:'',date:'2026-11-10'})},'m1');await settle();await settle();
+  state.app.saveMilestone(submit(dialogForm({name:'Public launch',desc:'',date:'2026-11-10'})),'m1');await settle();await settle();
   assert.equal(target.latestValue({...milestone,name:'Beta launch'}),'Beta launch');
 });
 
-test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',async()=>{
   const remembered=new Map([['epic:e1',1]]),sent=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
     resolveConflict:async()=>{state.data.epics[0].revision=2;return {handled:true,saved:false};}};
   const state=epicPage(recovery,{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}});
-  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await settle();await settle();
-  state.app.saveEpic({preventDefault(){},target:epicDialog()},'e1');await settle();await settle();
+  const dialog=epicDialog();
+  state.app.saveEpic(submit(dialog),'e1');await settle();await settle();
+  state.app.saveEpic(submit(dialog),'e1');await settle();await settle();
   assert.deepEqual(sent,[1,1],'the dialog still shows the typed values, so it meets the other change again');
 });
 
-test('a Pool promotion whose conflict prompt closed without a choice saves again from the revision it was opened at',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a Pool promotion whose conflict prompt closed without a choice saves again from the revision it was opened at',async()=>{
   const remembered=new Map([['pool:i1',1]]),sent=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'pool:i1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},
     resolveConflict:async()=>{state.data.pool[0].revision=2;return {handled:true,saved:false};}};
   const state=fixture({view:'board',projectId:'p1',board:{},modal:{type:'task',poolId:'i1'}},{recovery,gateway:{execute:async(_operation,_payload,options)=>{sent.push(options.expectedRevision);throw changedElsewhere();}}});
   state.data.pool.push({id:'i1',projectId:'p1',scope:'project',title:'Idea',desc:'',revision:1});state.data.epics.push({id:'e1',projectId:'p1',state:'planning'});
-  const promote=()=>state.app.saveTask({preventDefault(){},target:{...dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),querySelectorAll:()=>[]}});
+  const dialog=dialogForm({epicId:'e1',title:'Idea',desc:'My notes',deadline:''}),promote=()=>state.app.saveTask(submit(dialog));
   promote();await settle();await settle();promote();await settle();await settle();
   assert.deepEqual(sent,[1,1],'the dialog still shows the typed text, so it meets the change to the item again');
 });
 
-test('a block reason conflict shows the saved reason in the reason field',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
-  const control={value:'My reason'};let target;
+test('a block reason conflict shows the saved reason in the reason field',async()=>{
+  const dialog=form('<textarea name="reason">My reason</textarea>',{dialog:true}),control=dialog.querySelector('textarea');let target;
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
   const block={id:'b1',reason:'Their reason',revision:2};state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block});
-  state.app.saveBlock({preventDefault(){},target:dialogForm({reason:'My reason'},{'[name="reason"]':control})},'ONE-1','block');await settle();await settle();
+  state.app.saveBlock(submit(dialog),'ONE-1','block');await settle();await settle();
   assert.equal(target.element(),control);assert.equal(target.latestValue(block),'Their reason');assert.equal(target.acceptLatest,undefined);
 });
 
@@ -710,23 +703,25 @@ test('several fields edited offline save in order without conflicting with each 
   assert.equal(state.requests[1].command.payload.description,'Offline description');assert.equal(state.requests[1].command.expectedRevision,2);
 });
 
-test('a block saved from the task page repaints before its counts read finishes',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a block saved from the task page repaints before its counts read finishes',async()=>{
   const counted=deferred();
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[],events:[{}]})},reads:{counts:()=>counted.promise},app:{refreshAfterDialog(){state.paints.push('after-dialog');}}});
   const item={id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block:{id:'b1',reason:'Waiting',revision:1}};state.data.tasks.push(item);
-  state.app.saveBlock({preventDefault(){},target:{fields:{reason:''},isConnected:true,closest:()=>null}},'ONE-1','unblock');await settle();
+  state.app.saveBlock(submit(form(inputs({reason:''}))),'ONE-1','unblock');await settle();
   assert.deepEqual(state.paints,['after-dialog'],'the page shows the change while counts load');
   counted.resolve({stale:false});await settle();assert.deepEqual(state.paints,['after-dialog']);
 });
 
-test('a new project opens after a re-render of its dialog but not after the dialog closed',async(t)=>{
-  useGlobals(t,{FormData:FieldsFormData});
+test('a new project opens after a re-render of its dialog but not after the dialog closed',async()=>{
   for(const closed of [false,true]){
-    const selected=[],navigated=[],background=[],modal={dataset:{openGeneration:'7'}},rerendered={dataset:{openGeneration:'7'}};
-    const form={fields:{name:'Atlas',key:'ATL'},isConnected:false,closest:()=>modal,ownerDocument:{querySelector:selector=>selector==='.modal'&&!closed?rerendered:null}};
+    document.body.replaceChildren();
+    const selected=[],navigated=[],background=[],dialog=dialogForm({name:'Atlas',key:'ATL'}),modal=dialog.closest('.modal');modal.dataset.openGeneration='7';
     const state=fixture({view:'roadmap',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[{entityType:'project',id:'p9'}],events:[]})},app:{selectProject:id=>selected.push(id),nav:view=>navigated.push(view),refreshBackground:()=>background.push(true)}});
-    state.app.saveProjectNew({preventDefault(){},target:form});await settle();await settle();
+    state.app.saveProjectNew(submit(dialog));
+    // While it saves, the dialog draws again, with its open generation, or closes.
+    modal.remove();
+    if(!closed)document.body.insertAdjacentHTML('beforeend','<div class="modal" data-open-generation="7"></div>');
+    await settle();await settle();
     assert.deepEqual([selected,navigated,background.length],closed?[[],[],1]:[['p9'],['roadmap'],0]);
   }
 });

@@ -5,14 +5,14 @@ import { actionErrorFeedback, formFieldName, retryDelayMs, retryMessage } from '
 /** Apply completion effects only while the submitting editor is still open. */
 export function completeForm(form, complete) {
   if (!form) return false;
-  const editor = form.closest?.('.modal,.peek');
+  const editor = form.closest('.modal,.peek');
   if (!editor) {
     if (form.isConnected === false) return false;
   } else {
     const current = form.ownerDocument.querySelector('.modal') ?? form.ownerDocument.querySelector('.peek');
     // A re-render replaces the editor's nodes but keeps its open generation.
-    const generation = editor.dataset?.openGeneration;
-    if (current !== editor && !(generation && current?.dataset?.openGeneration === generation)) return false;
+    const generation = editor.dataset.openGeneration;
+    if (current !== editor && !(generation && current?.dataset.openGeneration === generation)) return false;
   }
   complete();
   return true;
@@ -39,8 +39,8 @@ function holdFormRetry(form, error) {
   if (previous && previous.until >= until) return previous.until - Date.now();
   if (previous) { clearTimeout(previous.timer); clearTimeout(previous.ticker); }
   const buttons = previous?.buttons ?? new Set();
-  for (const button of form.querySelectorAll?.('button') ?? []) {
-    if (button.type === 'submit' || button.matches?.('.primary') || button.dataset?.save) {
+  for (const button of form.querySelectorAll('button')) {
+    if (button.type === 'submit' || button.matches('.primary') || button.dataset.save) {
       buttons.add(button);
       button.disabled = true;
     }
@@ -56,7 +56,7 @@ function holdFormRetry(form, error) {
     retryGates.delete(form);
     clearTimeout(current.ticker);
     for (const button of buttons) if (button.isConnected) button.disabled = false;
-    const notice = form.querySelector?.('.server-feedback');
+    const notice = form.querySelector('.server-feedback');
     if (notice?.isConnected) notice.textContent = 'You can try again now.';
   };
   retryGates.set(form, {until, buttons, error, timer:setTimeout(release, Math.min(delay, 2_147_000_000))});
@@ -89,12 +89,12 @@ export function presentFormError(form, error, app, {message} = {}) {
   const copy = message ?? feedback.message;
   const field = feedback.field && formFieldName(feedback.field);
   const waiting = holdFormRetry(form, error) > 0;
-  if (field && app?.fieldError && form.querySelector?.(`[name="${field}"]`)) {
-    form.querySelector?.('.server-feedback')?.remove();
+  if (field && app?.fieldError && form.querySelector(`[name="${field}"]`)) {
+    form.querySelector('.server-feedback')?.remove();
     app.fieldError(form, field, copy);
     return true;
   }
-  let notice = form.querySelector?.('.server-feedback');
+  let notice = form.querySelector('.server-feedback');
   if (!notice) {
     notice = document.createElement('p');
     notice.className = 'save-feedback server-feedback';

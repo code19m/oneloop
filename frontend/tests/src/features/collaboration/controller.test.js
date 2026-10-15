@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
 import {ApiError} from '../../../../src/data/api-client.js';
-import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
+import {createRequire} from 'node:module';
 import {installCollaborationController} from '../../../../src/features/collaboration/controller.js';
 import {settle} from '../../../support/helpers.cjs';
 
@@ -13,6 +13,15 @@ function useMockedClock(){mock.timers.enable({apis:['setTimeout']});mockedClock=
 test.afterEach(()=>{if(mockedClock)mock.timers.reset();mockedClock=false;});
 async function delay(milliseconds){for(let elapsed=0;elapsed<milliseconds;elapsed+=10){mock.timers.tick(10);await settle();}}
 const tick=()=>mockedClock?delay(1):new Promise((resolve)=>setTimeout(resolve,0));
+
+const {JSDOM,importModule}=createRequire(import.meta.url)('../../../support/dom.cjs');
+
+/** The real Recovery, on a jsdom page, for a fixture's data, transport and app. */
+function pageRecovery({data,transport,app},options={}){
+  const dom=new JSDOM('<!doctype html><body></body>',{url:'http://localhost/',runScripts:'outside-only',pretendToBeVisual:true});
+  const views={...app,refresh(){},commentDraft:()=>null,restoreCommentDraft(){},autoReloadChanged(){},noteTaskSaving(){},clearTaskSaving(){}};
+  return importModule(dom,'src/features/recovery/controller.js').createRecoveryController({data,api:transport.api,gateway:{invalidate(){},hasPending:()=>false},getApp:()=>views,getAuth:()=>null,reload:transport.reload,online:()=>true,...options});
+}
 
 function fixture(overrides={}){
   const data={
@@ -477,7 +486,7 @@ test('SSE open plus reconcile performs one reload after reconnect',async()=>{
   useMockedClock();
   let reloads=0;const sources=[],timers=[];
   const t=fixture({app:{context:()=>({view:'board',projectId:'p1'})},api:{me:async()=>({})},transport:{reload:async()=>{reloads++;return {stale:false};}},eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){}};sources.push(source);return source;},
-    recovery:({data,transport,app})=>createRecoveryController({data,api:transport.api,gateway:{},getApp:()=>app,getAuth:()=>null,reload:transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null})});
+    recovery:page=>pageRecovery(page,{setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){}})});
   const recovery=t.recovery;
   try{
     sources[0].listeners.error();await tick();timers.at(-1)();
@@ -491,7 +500,7 @@ test('SSE open plus reconcile performs one reload after reconnect',async()=>{
 function streamingPage(overrides={}){
   const sources=[],timers=[];let expires=0;
   const t=fixture({...overrides,eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};sources.push(source);return source;},
-    recovery:({data,transport,app})=>createRecoveryController({data,api:transport.api,gateway:{invalidate(){}},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),reload:transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null})});
+    recovery:page=>pageRecovery(page,{getAuth:()=>({expire(){expires++;}}),setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){}})});
   return {...t,sources,get expires(){return expires;},restore(){t.controller.dispose();t.recovery.dispose();}};
 }
 

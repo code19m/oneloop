@@ -15,7 +15,7 @@ export function routeScope(hash, app) {
   if(route.startsWith('task/')){
     try{return {taskId:decodeURIComponent(route.slice(5)),view:'task'};}catch{return {view:'metadata'};}
   }
-  const filtered=boardFiltered(app?.context?.().board);
+  const filtered=boardFiltered(app?.context().board);
   return {view:route==='board'&&!filtered?'board':route==='roadmap'||!route?'roadmap':'metadata'};
 }
 
@@ -30,7 +30,7 @@ export function createSignInLoad({ bootstrap, getApp, location = globalThis.loca
   /** @type {string|undefined} */ let shown;
   return Object.freeze({
     /** Remember the project on screen as a session ends. */
-    sessionEnded() { shown = getApp()?.context?.().projectId ?? undefined; },
+    sessionEnded() { shown = getApp()?.context().projectId ?? undefined; },
     async load() {
       const scope = routeScope(location.hash, getApp());
       try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : scope); }
@@ -53,7 +53,7 @@ export function createSignInLoad({ bootstrap, getApp, location = globalThis.loca
 export function createProjectionReload({ data, bootstrap, reads, getApp, getBridge, getRecovery, location = globalThis.location }) {
   let projectionGeneration=0;
   const projectionScope=()=>{
-    const context=getApp()?.context?.()??{};
+    const context=getApp()?.context()??{};
     return JSON.stringify([data.session?.id,data.session?.userId,location.hash,context.view,context.projectId,context.taskId]);
   };
 
@@ -63,16 +63,16 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       await bootstrap.idle();
       await reads.idle();
       // A change in a project that is no longer shown needs no refresh.
-      if(scope.projectId&&scope.projectId!==app?.context?.().projectId)return {stale:true};
+      if(scope.projectId&&scope.projectId!==app?.context().projectId)return {stale:true};
     }
     const generation=++projectionGeneration,requestedScope=projectionScope();
     const requestIsCurrent=()=>generation===projectionGeneration&&requestedScope===projectionScope();
     const complete=(result)=>{
-      if(requestIsCurrent()&&!result?.stale){recovery?.refreshSucceeded();app?.updateDocumentTitle?.();}
+      if(requestIsCurrent()&&!result?.stale){recovery?.refreshSucceeded();app?.updateDocumentTitle();}
       return result;
     };
     try{
-      const previous=app?.context?.(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
+      const previous=app?.context(),previousName=data.projects.find((item)=>item.id===previous?.projectId)?.name;
       if(scope.viewOnly&&app&&previous?.projectId&&data.projects.some((item)=>item.id===previous.projectId)){
         if(previous.view==='board')return complete(scope.hints?.every(hint=>['task','task_block'].includes(hint.entityType))?await reads.patchBoard(previous.projectId,previous.board,scope.hints):await reads.board(previous.projectId,previous.board,{background:!!scope.background}));
         if(previous.view==='roadmap'){
@@ -86,7 +86,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load({projectId:app?.context?.().projectId,...routeScope(location.hash,app),...scope}); }
+      try { loaded=await bootstrap.load({projectId:app?.context().projectId,...routeScope(location.hash,app),...scope}); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;

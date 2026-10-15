@@ -102,9 +102,9 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   let pendingScroll = /** @type {number|null} */ (null), deployKeyRequest = /** @type {Promise<void>|null} */ (null);
 
   const app = () => getApp?.();
-  const context = () => app()?.context?.() ?? {};
+  const context = () => app()?.context() ?? {};
   const isAdmin = () => !!runtime.data?.users?.find?.((/** @type {any} */ user) => user.id === runtime.data?.session?.userId)?.admin;
-  const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast?.(text, kind);
+  const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast(text, kind);
   const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => errorMessage(error, fallback) || fallback;
   const instant = (/** @type {number} */ seconds) => formatInstant(seconds * 1000, runtime.data?.timeZone || 'UTC', (message) => toast(message, 'info'));
   const dateOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 10) : '—';
@@ -150,11 +150,11 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       const key = viewOf(projectId)?.source?.deployKey;
       const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('form[data-knowledge-form] #knowledge-key'));
       if (input && key && !input.value) input.value = key;
-      app()?.refreshAfterDialog?.();
+      app()?.refreshAfterDialog();
       return;
     }
     if (entry) entry.unpainted = false;
-    app()?.refresh?.();
+    app()?.refresh();
   }
 
   /** While a sync runs, read again every few seconds: an unchanged branch sends no live hint. */
@@ -370,7 +370,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     clearTimer(searchTimer); searchController?.abort();
     S.finding = false; S.query = ''; S.results = null; S.searching = false;
     pendingScroll = S.searchScroll;
-    app()?.refresh?.();
+    app()?.refresh();
     if (!refocus) return;
     const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('[data-knowledge-search]'));
     S.suppressFocus = true; input?.focus({ preventScroll: true }); S.suppressFocus = false;
@@ -630,7 +630,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       payload = { projectId, url, branch, folder, ...(transport === 'https' && token ? { token } : {}) };
     } else {
       const action = transport === 'ssh' ? 'remove' : tokenAction === 'set' ? (token ? 'replace' : 'keep') : tokenAction;
-      if (url === source.url && branch === source.branch && folder.replace(/^\/+|\/+$/g, '') === source.folder && (action === 'keep' || (action === 'remove' && !source.hasToken))) { app()?.closeOverlays?.(); return; }
+      if (url === source.url && branch === source.branch && folder.replace(/^\/+|\/+$/g, '') === source.folder && (action === 'keep' || (action === 'remove' && !source.hasToken))) { app()?.closeOverlays(); return; }
       operation = 'knowledge.update';
       payload = { projectId, url, branch, folder, tokenAction: action, ...(action === 'replace' ? { token } : {}) };
       options = { expectedRevision: source.revision };
@@ -650,10 +650,10 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     }
     toast(source ? 'Knowledge base saved' : 'Repository connected');
     cache.delete(projectId);
-    if (!completeForm(form, () => app()?.closeOverlays?.())) { void load(projectId, { background: true }); return; }
+    if (!completeForm(form, () => app()?.closeOverlays())) { void load(projectId, { background: true }); return; }
     S.mode = 'tree'; S.path = ''; S.section = '';
     const target = routeHash(projectId);
-    if (windowObject.location.hash === target) { app()?.refresh?.(); void load(projectId); }
+    if (windowObject.location.hash === target) { app()?.refresh(); void load(projectId); }
     else windowObject.location.hash = target;
   }
 
@@ -661,12 +661,12 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const projectId = context().projectId, source = viewOf(projectId)?.source;
     if (!projectId || !source || !isAdmin()) return;
     const form = documentObject.querySelector('form[data-knowledge-form]');
-    app()?.confirm?.({
+    app()?.confirm({
       title: 'Disconnect repository?',
       text: 'Knowledge will be hidden in oneloop until a repository is connected again. The repository and its history stay untouched.',
       action: 'Disconnect',
       confirm: () => runtime.commands.execute('knowledge.disconnect', { projectId }, { expectedRevision: source.revision })
-        .then(() => { completeForm(form, () => app()?.closeOverlays?.()); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); repaint(projectId); })
+        .then(() => { completeForm(form, () => app()?.closeOverlays()); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); repaint(projectId); })
         .catch((/** @type {unknown} */ error) => toast(errorText(error), 'error')),
     });
   }
@@ -695,7 +695,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (control && !control.matches(':disabled')) {
       const action = control.getAttribute('data-knowledge-action'), form = /** @type {HTMLFormElement|null} */ (control.closest('form[data-knowledge-form]'));
       if (action === 'home') { windowObject.location.hash = routeHash(String(S.projectId)); return; }
-      if (action === 'reload') { const projectId = context().projectId; if (projectId) { cache.delete(projectId); app()?.refresh?.(); void load(projectId); } return; }
+      if (action === 'reload') { const projectId = context().projectId; if (projectId) { cache.delete(projectId); app()?.refresh(); void load(projectId); } return; }
       if (action === 'retry') return retry();
       if (action === 'full-view') return fullView(control.getAttribute('data-path') ?? '');
       if (action === 'copy-section') return void copy(windowObject.location.origin + windowObject.location.pathname + routeHash(String(S.projectId), S.mode, S.path, control.getAttribute('data-section') ?? ''), 'Link copied');

@@ -30,7 +30,7 @@ const text = (value, max) => {
   return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
 };
 
-/** @param {{app:import('../data/contracts.js').LegacyApp,data:import('../data/contracts.js').LegacyData,gateway:import('../data/contracts.js').CommandGateway,api:import('../data/contracts.js').ApiClient,auth:any,reads:any,recovery:any,reloadBootstrap:Function}} options */
+/** @param {{app:import('../data/contracts.js').LegacyApp,data:import('../data/contracts.js').LegacyData,gateway:import('../data/contracts.js').CommandGateway,api:import('../data/contracts.js').ApiClient,auth:any,reads:any,recovery:ReturnType<typeof import('../features/recovery/controller.js').createRecoveryController>,reloadBootstrap:Function}} options */
 export function installViewBridge({ app, data, gateway, auth, api, reads, recovery, reloadBootstrap }) {
   const task = (id) => data.tasks.find((item) => item.id === id || item.internalId === id);
   const epic = (id) => data.epics.find((item) => item.id === id);
@@ -82,8 +82,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.openModal=(type,id,...rest)=>{noteDialog(type,id);return openModal(type,id,...rest);};
 
   function fieldError(form,name,message){
-    if(form&&typeof form.querySelector==='function'&&form.querySelector(`[name="${name}"]`)){
-      app.fieldError?.(form,name,message);return false;
+    if(form?.querySelector(`[name="${name}"]`)){
+      app.fieldError(form,name,message);return false;
     }
     app.toast(message,'error');return false;
   }
@@ -95,7 +95,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function skipped(){return {entities:[],events:[],replayed:false,skipped:true};}
   function stale(result={}){return {...result,stale:true};}
   function ifCurrent(result,effect){return result?.stale?result:effect(result);}
-  function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery?.isSavingTask?.()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved?.(id);return result;}
+  function noteTaskSaved(result,id){const item=task(id);if(!result?.stale&&!result?.skipped&&!recovery.isSavingTask()&&!(item&&(taskBusy(item.internalId)||unsavedDraft(item.internalId))))app.noteTaskSaved(id);return result;}
   const sameAssignees=(left,right)=>left.length===right.length&&left.every((id)=>right.includes(id));
 
   function saveAssignees(item,assigneeIds){
@@ -166,8 +166,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   /** The control of a dialog's field, in the dialog as it is drawn now. */
   function dialogControl(form,field){
-    const live=form?.isConnected?form:globalThis.document?.querySelector?.('.modal form');
-    return live?.querySelector?.(`[name="${formFieldName(field)}"]`)??null;
+    const live=form?.isConnected?form:document.querySelector('.modal form');
+    return live?.querySelector(`[name="${formFieldName(field)}"]`)??null;
   }
 
   /** What a failed save says. */
@@ -184,8 +184,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const message = failureMessage(error);
     if(presentFormError(options.form,error,app,{message}))return;
     const field=feedback.field&&formFieldName(feedback.field);
-    if(field&&options.form&&typeof options.form.querySelector==='function'&&options.form.querySelector(`[name="${field}"]`)){
-      app.fieldError?.(options.form,field,message);return;
+    if(field&&options.form?.querySelector(`[name="${field}"]`)){
+      app.fieldError(options.form,field,message);return;
     }
     app.toast(message, 'error');
   }
@@ -205,8 +205,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   // when that dialog closes.
   function paintCommand(operation){
     if(context().view==='board'&&/^task\./.test(operation))app.refreshBoard();
-    else if(operation==='task.update'||operation==='task.move'){app.refreshTaskHeader?.();(app.refreshBackground??app.refresh)();}
-    else (app.refreshAfterDialog??app.refresh)();
+    else if(operation==='task.update'||operation==='task.move'){app.refreshTaskHeader();app.refreshBackground();}
+    else app.refreshAfterDialog();
   }
 
   // Saves of one record run one at a time, and each builds on the revision the
@@ -242,7 +242,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function unsaved(draft){if(draft&&sessionScope()!==draft.scope)draft.unsaved=true;}
   const taskBusy=(taskId)=>{const queue=records.get(`${sessionScope()}|task:${taskId}`);return !!queue&&(queue.active||queue.jobs.size>0);};
   const unsavedDraft=(taskId)=>[...drafts.values()].some(draft=>draft.taskId===taskId&&draft.unsaved&&drafts.get(draftKey(taskId,draft.field))===draft);
-  function paintDrafts(taskId){const item=task(taskId);if(item)app.refreshTaskDrafts?.(item.id);}
+  function paintDrafts(taskId){const item=task(taskId);if(item)app.refreshTaskDrafts(item.id);}
 
   function enqueue(record,operation,payload,entity,message,options){
     const scope=sessionScope(),key=`${scope}|${record}`;
@@ -251,7 +251,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const jobKey=options.coalesce?commandInteractionKey(operation,payload,entity):`job:${++jobSequence}`;
     const replaced=queue.jobs.get(jobKey);
     // The base is the revision the person saw when they made this change.
-    const base=options.expectedRevision??recovery?.expectedRevision?.(recovery?.revisionKey?.(entity),entity?.revision)??entity?.revision;
+    const base=options.expectedRevision??recovery.expectedRevision(recovery.revisionKey(entity),entity?.revision);
     const job={jobKey,operation,payload,entity,message,options,base,waiters:replaced?.waiters??[],carry:replaced?.carry??null};
     const done=new Promise((resolve,reject)=>job.waiters.push({resolve,reject}));
     queue.jobs.set(jobKey,job);
@@ -313,7 +313,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
    * @param {any} item @param {string} field @param {any} value @param {{base?:number}} [options]
    */
   function saveTaskField(item,field,value,{base}={}){
-    const form=globalThis.document?.querySelector?.('.task-page');
+    const form=document.querySelector('.task-page');
     // A field without a draft, such as the deadline or the status, is refused at
     // once when it can't be sent, so its caller keeps it unsaved. A title or
     // description goes on: its draft keeps a refused value and sends it later.
@@ -339,7 +339,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(next===(field==='title'?item.title:item.desc??'')&&!previous)draft=undefined;
       else{drafts.set(draft,{taskId:item.internalId,field,value:next,base,scope:sessionScope(),unsaved:false,retryOnline:false});if(previous?.unsaved)paintDrafts(item.internalId);}
     }else if(refusedAtOnce(form))return false;
-    return accepted(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>globalThis.document?.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
+    return accepted(execute('task.update',{taskId:item.internalId,[names[field]]:next},item,null,{form,coalesce:true,expectedRevision:base,draft,draftValue:next,conflictElement:()=>document.querySelector(field==='desc'?'#task-description':field==='title'?'.task-title-field textarea':`[name="${field}"]`)}).then((result)=>noteTaskSaved(result,item.id)));
   }
   function retryDrafts(){
     for(const draft of [...drafts.values()]){
@@ -347,13 +347,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(item&&draft.unsaved&&draft.retryOnline&&drafts.get(draftKey(draft.taskId,draft.field))===draft)saveTaskField(item,draft.field,draft.value,{base:draft.base});
     }
   }
-  recovery?.whenOnline?.(retryDrafts);
+  recovery.whenOnline(retryDrafts);
   // A draft lives in this tab only, so leaving oneloop before it saves loses it.
-  recovery?.trackUnsaved?.(()=>{pruneDrafts();return drafts.size>0;});
+  recovery.trackUnsaved(()=>{pruneDrafts();return drafts.size>0;});
 
   // Another page discards text typed into this one, so ask first. Drafts and
   // saves that are running carry on, so they don't count.
-  const losesInput=()=>!!recovery?.hasUnsavedInput?.({leaving:false});
+  const losesInput=()=>!!recovery.hasUnsavedInput({leaving:false});
   /** @param {()=>void} leave @param {()=>void} [stay] */
   const askToDiscard=(leave,stay)=>app.askToDiscard(leave,stay);
   /** Resolves whether the page may change. */
@@ -366,10 +366,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(options?.discard||!losesInput())return nav(view);
     askToDiscard(()=>nav(view));
   };
-  globalThis.document?.addEventListener?.('click',(event)=>{
-    const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element|null} */(event.target)?.closest?.('a[href^="#/"]'));
+  document.addEventListener('click',(event)=>{
+    const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element} */(event.target).closest('a[href^="#/"]'));
     // A link to the page that shows changes nothing, so it loses nothing.
-    if(!link||link.href===globalThis.location?.href||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
+    if(!link||link.href===location.href||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey||!losesInput())return;
     event.preventDefault();
     askToDiscard(()=>app.followAddress(link.getAttribute('href')));
   },true);
@@ -386,15 +386,15 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       /** @type {any} */(error).oneloopReported=true;
       throw error;
     }
-    if(recovery?.ensureOnline&&!recovery.ensureOnline()){
+    if(!recovery.ensureOnline()){
       const error=new ApiError('Reconnect before saving this change.',{code:'offline'});/** @type {any} */(error).oneloopReported=true;throw error;
     }
-    const scope=sessionScope(),revisionKey=recovery?.revisionKey?.(entity);
+    const scope=sessionScope(),revisionKey=recovery.revisionKey(entity);
     if(!options.create&&!options.skipNoChange&&commandIsUnchanged(operation,payload,options.compareEntity??entity)){
-      recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();
+      recovery.finishRevision(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();
     }
     const interactionKey=options.interactionKey ?? commandInteractionKey(operation,payload,entity);
-    const expectedRevision=options.create?undefined:(options.expectedRevision??recovery?.expectedRevision?.(revisionKey,entity?.revision)??entity?.revision);
+    const expectedRevision=options.create?undefined:(options.expectedRevision??recovery.expectedRevision(revisionKey,entity?.revision));
     let result;
     try {
       result = await gateway.execute(operation, payload, {
@@ -402,15 +402,15 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         interactionKey,
       });
     } catch (error) {
-      if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
-      if(isServerNoChange(error)){recovery?.finishRevision?.(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();}
-      if(recovery?.isRevisionConflict?.(error)&&!options.create){
+      if(sessionScope()!==scope){recovery.finishRevision(revisionKey);return stale();}
+      if(isServerNoChange(error)){recovery.finishRevision(revisionKey);if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());return skipped();}
+      if(recovery.isRevisionConflict(error)&&!options.create){
         // A dialog shows what the person typed until they choose. Use latest
         // shows the saved values in it: in the one field the save changes, or
         // by drawing the dialog again (a Pool promotion fills in the item's
         // text below). Until then, it stays on the revision it was opened at,
         // so saving it again still meets the other change.
-        const dialog=!options.coalesce&&!!options.form?.closest?.('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
+        const dialog=!options.coalesce&&!!options.form?.closest('.modal'),showsLatest=dialog&&operation!=='pool.promote',field=conflictField(payload);
         // A picker keeps its value in a hidden input, which can't show the
         // saved value by itself; the whole dialog is drawn again instead.
         const control=showsLatest&&field?dialogControl(options.form,field):null,inPlace=!!control&&control.type!=='hidden';
@@ -424,7 +424,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             target:{
               element:options.conflictElement??(inPlace?()=>dialogControl(options.form,field):undefined),
               latestValue:(item)=>conflictValue(operation,payload,item),
-              ...(showsLatest&&!inPlace?{acceptLatest:()=>{rebaseDialog();app.redrawDialog?.();}}:{}),
+              ...(showsLatest&&!inPlace?{acceptLatest:()=>{rebaseDialog();app.redrawDialog();}}:{}),
             },
             myValue:conflictValue(operation,payload,payload),
             // A task field keeps the person's other fields as they are now; only a
@@ -434,9 +434,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
           // Keep my changes saved the change on the latest revision, which the result names.
           if(resolved.saved)result={...resolved.result,retriedAt};
           else{
-            if(resolved.choice==='latest'||!dialog)recovery?.finishRevision?.(revisionKey);
+            if(resolved.choice==='latest'||!dialog)recovery.finishRevision(revisionKey);
             if(operation==='pool.promote'&&resolved.latest&&sessionScope()===scope&&context().modal?.poolId===payload.poolItemId){
-              const form=options.form?.isConnected?options.form:globalThis.document?.querySelector('.pool-editor form');
+              const form=options.form?.isConnected?options.form:document.querySelector('.pool-editor form');
               for(const [name,value] of [['title',resolved.latest.title],['desc',resolved.latest.desc??resolved.latest.description??'']]){
                 const input=form?.querySelector(`[name="${name}"]`);if(input){input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));}
               }
@@ -449,22 +449,22 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             throw error;
           }
         }catch(recoveryError){
-          if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale();}
+          if(sessionScope()!==scope){recovery.finishRevision(revisionKey);return stale();}
           if(recoveryError===error)throw recoveryError;
-          await recovery?.handleCommandFailure?.(recoveryError);report(recoveryError);if(recoveryError&&typeof recoveryError==='object')recoveryError.oneloopReported=true;throw recoveryError;
+          await recovery.handleCommandFailure(recoveryError);report(recoveryError);if(recoveryError&&typeof recoveryError==='object')recoveryError.oneloopReported=true;throw recoveryError;
         }
       }else{
-        await recovery?.handleCommandFailure?.(error);
+        await recovery.handleCommandFailure(error);
         if(options.handleError?.(error)!==true)report(error,options);
         if(error&&typeof error==='object')error.oneloopReported=true;throw error;
       }
     }
-    if(result?.stale||sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale(result);}
+    if(result?.stale||sessionScope()!==scope){recovery.finishRevision(revisionKey);return stale(result);}
     // A confirmed write stays successful even when its follow-up read fails.
     if(options.closeForm)completeForm(options.form,()=>app.closeOverlays());
     options.onAccepted?.(result);
     if (message) app.toast(message);
-    recovery?.finishRevision?.(revisionKey);
+    recovery.finishRevision(revisionKey);
     // The accepted change paints at once; reads that follow repaint their own parts.
     if(!options.reload&&options.paint!==false)paintCommand(operation);
     const refreshContext={...context()};
@@ -480,15 +480,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         if((await reads.counts(context().projectId))?.stale)return stale(result);
       }
       if(options.poolScope&&(await reads.pool(context().projectId,options.poolScope))?.stale)return stale(result);
-      if(sessionScope()!==scope){recovery?.finishRevision?.(revisionKey);return stale(result);}
+      if(sessionScope()!==scope){recovery.finishRevision(revisionKey);return stale(result);}
       if(options.reload&&options.paint!==false)paintCommand(operation);
       return result;
     } catch (error) {
       if(sessionScope()!==scope)return stale(result);
       const current=context();
       if(current.view===refreshContext.view&&current.projectId===refreshContext.projectId&&current.taskId===refreshContext.taskId){
-        if(recovery?.refreshFailed)recovery.refreshFailed(error);
-        else app.toast('Saved, but the view could not refresh. Try refreshing again.','error');
+        recovery.refreshFailed(error);
       }
       return {...result,refreshError:error};
     }
@@ -502,19 +501,19 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
    */
   function accepted(promise) { return promise.then((result) => !result?.stale, () => false); }
   /** Whether a save can't start now: a retry the server asked to wait for, or no connection, which `ensureOnline` says. */
-  const refusedAtOnce = (form) => isFormRetryPending(form) || (recovery?.ensureOnline ? !recovery.ensureOnline() : false);
-  function formValues(event) { event?.preventDefault?.(); return new FormData(event.target); }
+  const refusedAtOnce = (form) => isFormRetryPending(form) || !recovery.ensureOnline();
+  function formValues(event) { event.preventDefault(); return new FormData(event.target); }
 
   app.login = (event) => {
     const fields=formValues(event), form=event.target;
     return fire(auth.login({username:text(fields.get('username'),32).toLowerCase(),password:String(fields.get('password')||'')},form));
   };
   app.logout = () => app.confirm({title:'Sign out?',text:app.signOutText(),action:'Sign out',confirm:()=>fire(auth.logout().catch(report))});
-  app.setPassword = (event) => { event.preventDefault();if(recovery?.ensureOnline&&!recovery.ensureOnline())return false; return fire(auth.setTemporaryPassword(event.target).catch(error=>report(error,{form:event.target}))); };
-  app.changePassword = (event) => { event.preventDefault();if(recovery?.ensureOnline&&!recovery.ensureOnline())return false; return fire(auth.changePassword(event.target).then((/** @type {boolean|undefined} */ ok)=>{if(ok)app.toast('Password changed. Other sessions and app access revoked');}).catch(error=>report(error,{form:event.target}))); };
+  app.setPassword = (event) => { event.preventDefault();if(!recovery.ensureOnline())return false; return fire(auth.setTemporaryPassword(event.target).catch(error=>report(error,{form:event.target}))); };
+  app.changePassword = (event) => { event.preventDefault();if(!recovery.ensureOnline())return false; return fire(auth.changePassword(event.target).then((/** @type {boolean|undefined} */ ok)=>{if(ok)app.toast('Password changed. Other sessions and app access revoked');}).catch(error=>report(error,{form:event.target}))); };
   app.updMe = (value) => {
-    const displayName=text(value,80),form=globalThis.document?.querySelector?.('.settings');if(!displayName)return fieldError(form,'name','Enter your full name.');
-    const me=data.users.find((item)=>item.id===data.session?.userId);if(me?.name===displayName)return false;if(recovery?.ensureOnline&&!recovery.ensureOnline())return false;
+    const displayName=text(value,80),form=document.querySelector('.settings');if(!displayName)return fieldError(form,'name','Enter your full name.');
+    const me=data.users.find((item)=>item.id===data.session?.userId);if(me?.name===displayName)return false;if(!recovery.ensureOnline())return false;
     const scope=sessionScope(),generation=++profileNameGeneration;
     if(profileNameQueueScope!==scope){profileNameQueueScope=scope;profileNameQueue=Promise.resolve();}
     const request=profileNameQueue.catch(()=>{}).then(async()=>{
@@ -525,7 +524,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       if(context().view==='profile'){app.refresh();app.toast('Profile saved');}
       return response;
     });
-    profileNameQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
+    profileNameQueue=request;recovery.trackWrite(request);return fire(request.catch(reportFor(scope,{form},()=>generation===profileNameGeneration)));
   };
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
@@ -541,7 +540,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       me.avatar=response.avatarUrl;if(context().view==='profile'){app.refresh();app.toast('Avatar updated');}return response;
     });
     const reportAvatar=reportFor(scope,{},()=>generation===avatarGeneration);
-    avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch((error)=>{
+    avatarQueue=request;recovery.trackWrite(request);return fire(request.catch((error)=>{
       if(error?.status===413||error?.code==='request_too_large'){if(sessionScope()===scope&&generation===avatarGeneration)app.toast(tooLarge,'error');return;}
       reportAvatar(error);
     }).finally(()=>{input.value='';}));
@@ -556,7 +555,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         if(sessionScope()!==scope||generation!==avatarGeneration||!data.users.includes(me))return stale();
         me.avatar=null;if(context().view==='profile'){app.refresh();app.toast('Avatar removed');}return {};
       });
-      avatarQueue=request;recovery?.trackWrite?.(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
+      avatarQueue=request;recovery.trackWrite(request);return fire(request.catch(reportFor(scope,{},()=>generation===avatarGeneration)));
     }});
   };
   app.revokeSession = (id) => app.confirm({title:'Revoke session?',text:'This browser will need to sign in again.',action:'Revoke session',confirm:()=>fire(auth.revokeSession(id).then(()=>loadProfileAccess()).catch(report))});
@@ -565,7 +564,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   /** @param {any} error @param {string} scope @param {string} id @param {HTMLFormElement|null} form */
   async function recoverUser(error,scope,id,form=null) {
     if(sessionScope()!==scope)return;
-    if(!recovery?.isRevisionConflict?.(error))return report(error,{form});
+    if(!recovery.isRevisionConflict(error))return report(error,{form});
     const result=await loadUsers(false,id);
     if(result.stale||sessionScope()!==scope)return;
     if(result.error)return report(result.error,{form});
@@ -579,12 +578,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }else app.toast('This user changed. Review the latest values and try again.','error');
   }
   app.saveUser=(event,id)=>{
-    if(recovery?.ensureOnline&&!recovery.ensureOnline()){event?.preventDefault?.();return false;}
+    if(!recovery.ensureOnline()){event.preventDefault();return false;}
     const form=event.target,values=formValues(event),displayName=text(values.get('name'),80),scope=sessionScope();
     if(!displayName)return fieldError(form,'name','Give the user a name.');
     if(id){
       const item=data.users.find((entry)=>entry.id===id);if(!item)return fieldError(form,'name','This user is no longer listed. Reload Users and try again.');
-      const isAdmin=form.querySelector?.('[name="admin"]')?.disabled?item.admin:values.has('admin'),isActive=form.querySelector?.('[name="active"]')?.disabled?item.active:values.has('active');
+      const isAdmin=form.querySelector('[name="admin"]')?.disabled?item.admin:values.has('admin'),isActive=form.querySelector('[name="active"]')?.disabled?item.active:values.has('active');
       if(item.name===displayName&&item.admin===isAdmin&&item.active===isActive){app.closeOverlays();return false;}
       const sensitive=item.admin!==isAdmin||item.active!==isActive;
       const expectedRevision=item.revision;
@@ -596,7 +595,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         return api.updateUser(id,{displayName,isAdmin,isActive,expectedRevision}).then((user)=>{
         const latest=data.users.find(entry=>entry.id===id);
         if(sessionScope()!==scope||!latest)return;
-        Object.assign(latest,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers?.();app.toast('User saved');
+        Object.assign(latest,{name:user.displayName,admin:user.isAdmin,active:user.isActive,revision:user.revision});completeForm(form,()=>app.closeOverlays());app.refreshUsers();app.toast('User saved');
         });
       };
       const apply=()=>fire((sensitive?auth.withRecentAuth(save):save()).catch((/** @type {any} */ error)=>recoverUser(error,scope,id,form)));
@@ -619,7 +618,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         }else data.users.push(account);
       }
       else data.users.push(account);
-      app.refreshUsers?.();
+      app.refreshUsers();
       // The password is shown once, so a closed dialog must not lose it.
       if(!completeForm(form,()=>app.showTemporaryPassword(user.id,temporaryPassword))&&app.showTemporaryPassword(user.id,temporaryPassword,{wait:true})===false)app.toast('User created. Its temporary password appears when this dialog closes.');
     });
@@ -628,7 +627,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.resetPassword=(id)=>{const scope=sessionScope();return app.confirm({title:'Reset password?',text:'Existing sessions and connected app access will be revoked.',action:'Reset password',confirm:()=>fire(auth.withRecentAuth(()=>api.resetUserPassword(id)).then(({temporaryPassword})=>{if(sessionScope()===scope&&app.showTemporaryPassword(id,temporaryPassword,{wait:true})===false)app.toast('Password reset. The temporary password appears when this dialog closes.');}).catch((/** @type {any} */ error)=>recoverUser(error,scope,id)))});};
 
   app.updTask = (id, field, value) => {
-    if(app.isRendering?.())return false;
+    if(app.isRendering())return false;
     const item=task(id);if(!item)return false;
     return saveTaskField(item,field,value);
   };
@@ -639,12 +638,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   };
   app.saveTask = (event) => {
     event.preventDefault();
-    if(pendingTaskForms.has(event.target)||app.validateFormDates?.(event.target)===false)return false;
+    if(pendingTaskForms.has(event.target)||app.validateFormDates(event.target)===false)return false;
     const form=event.target,values=formValues(event),modal=context().modal,interactionKey=`task-form:${modal?.poolId||'new'}`;
-    const uncertainSource=modal?.poolId&&gateway.hasUncertain?.(interactionKey)&&promotionSource?.id===modal.poolId&&promotionSource?.scope===sessionScope()?promotionSource.entity:null;
+    const uncertainSource=modal?.poolId&&gateway.hasUncertain(interactionKey)&&promotionSource?.id===modal.poolId&&promotionSource?.scope===sessionScope()?promotionSource.entity:null;
     const source=uncertainSource||(modal?.poolId?poolItem(modal.poolId):null);
     if(modal?.poolId&&!source)return fieldError(form,'title','This Pool item is no longer available. Return to Pool to continue.');
-    if(source&&!uncertainSource)promotionSource={id:source.id,scope:sessionScope(),entity:{...source,revision:recovery?.expectedRevision?.(recovery?.revisionKey?.(source),source.revision)??source.revision}};
+    if(source&&!uncertainSource)promotionSource={id:source.id,scope:sessionScope(),entity:{...source,revision:recovery.expectedRevision(recovery.revisionKey(source),source.revision)}};
     const payload={projectId:context().projectId,epicId:String(values.get('epicId')||''),title:text(values.get('title'),140),description:text(values.get('desc'),4000),deadline:values.get('deadline')||null,assigneeIds:[...new Set(values.getAll('assignees').map(String))]};
     if(!payload.title)return fieldError(form,'title','Give the task a title.');
     const destination=data.epics.find((entry)=>entry.id===payload.epicId&&entry.projectId===payload.projectId);
@@ -659,7 +658,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const ownTitle=payload.title!==text(modal?.title,140),ownDescription=payload.description!==text(modal?.desc,4000);
     const body=source?{poolItemId:source.id,epicId:payload.epicId,...(ownTitle?{title:payload.title}:{}),...(ownDescription?{description:payload.description}:{}),deadline:payload.deadline,assigneeIds:payload.assigneeIds}:payload;
     pendingTaskForms.add(form);
-    const buttons=Array.from(form.querySelectorAll?.('button[type="submit"],input[type="submit"]')??[]);
+    const buttons=/** @type {HTMLButtonElement[]} */([...form.querySelectorAll('button[type="submit"],input[type="submit"]')]);
     const disabled=buttons.map(button=>button.disabled);
     buttons.forEach(button=>button.disabled=true);
     return fire(execute(operation,body,source,source?'Task planning':'Task created',{
@@ -678,13 +677,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const revision=result?.entities?.find((entity)=>entity?.id===item.internalId)?.revision;
     if(!Number.isSafeInteger(revision)){app.toast(`${item.id} deleted`,'success');return;}
     app.offerUndo(`${item.id} deleted`,(again)=>{
-      if(recovery?.connection==='offline'){again('Reconnect before making this change.');return;}
+      if(recovery.connection==='offline'){again('Reconnect before making this change.');return;}
       fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision,handleError:(error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
     });
   }
 
   app.saveEpic = (event,id) => {
-    event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;
+    event.preventDefault();if(app.validateFormDates(event.target)===false)return false;
     const form=event.target,values=formValues(event), item=id?epic(id):null;
     const base={trackId:String(values.get('trackId')||''),title:text(values.get('title'),120),description:text(values.get('desc'),2000),startDate:String(values.get('start')||''),endDate:values.get('end')||null};
     if(!base.title)return fieldError(form,'title','Give the epic a title.');
@@ -694,17 +693,17 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(base.endDate&&base.endDate<base.startDate)return fieldError(form,'end','End date cannot be before the start date.');
     return fire(execute(item?'epic.update':'epic.create',item?{epicId:item.id,...changedFields('epic',item.id,base)}:{projectId:context().projectId,...base},item,item?'Epic updated':'Epic created',{create:!item,form,closeForm:true}));
   };
-  app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
+  app.closeEpic=(id)=>{const item=epic(id);if(!item)return;const open=data.tasks.filter((entry)=>entry.epicId===id&&entry.state!=='done').length;const confirm=()=>fire(execute('epic.complete',{id:item.id},item,'Epic marked as done',{form:document.querySelector('.modal,.peek'),closeForm:true}));if(open)app.confirm({title:'Open tasks remain',text:`${open} open task${open===1?' stays where it is':'s stay where they are'}.`,action:'Mark as done',confirm});else confirm();};
   app.reopenEpic=(id)=>{const item=epic(id);if(item)return fire(execute('epic.reopen',{id:item.id},item,'Epic reopened'));};
-  app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be removed.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,'Epic deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
+  app.deleteEpic=(id)=>{const item=epic(id);if(!item)return;app.confirm({title:'Delete epic?',text:`“${item.title}” will be removed.`,action:'Delete epic',confirm:()=>fire(execute('epic.delete',{id:item.id},item,'Epic deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
   app.openPeek=(id)=>{if(!epic(id))return;openPeek(id);return fire(reads.epic(id).catch(report));};
   app.loadMoreEpicTasks=(id)=>fire(reads.moreEpicTasks(id).catch(report));
   app.loadMoreEpicActivity=(id)=>fire(reads.moreEpicActivity(id).catch(report));
 
   app.saveTrack=(event,id)=>{const form=event.target,values=formValues(event),item=id?track(id):null,name=text(values.get('name'),60);if(!name)return fieldError(form,'name','Give the track a name.');return fire(execute(item?'track.update':'track.create',item?{trackId:item.id,name}:{projectId:context().projectId,name,description:''},item,item?'Track renamed':'Track created',{create:!item,form,closeForm:true}));};
-  app.deleteTrack=(id)=>{const item=track(id);if(!item)return;app.confirm({title:'Delete track?',text:`“${item.name}” will be removed.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
-  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
-  app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:globalThis.document?.querySelector('.modal,.peek'),closeForm:true}))});};
+  app.deleteTrack=(id)=>{const item=track(id);if(!item)return;app.confirm({title:'Delete track?',text:`“${item.name}” will be removed.`,action:'Delete track',confirm:()=>fire(execute('track.delete',{id:item.id},item,'Track deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
+  app.saveMilestone=(event,id)=>{event.preventDefault();if(app.validateFormDates(event.target)===false)return false;const form=event.target,values=formValues(event),item=id?milestone(id):null,base={title:text(values.get('name'),60),description:text(values.get('desc'),500),milestoneDate:String(values.get('date')||'')};if(!base.title)return fieldError(form,'name','Give the milestone a name.');if(!validDate(base.milestoneDate))return fieldError(form,'date','Enter a valid date in YYYY-MM-DD format.');return fire(execute(item?'milestone.update':'milestone.create',item?{milestoneId:item.id,...changedFields('milestone',item.id,base)}:{projectId:context().projectId,...base},item,item?'Milestone updated':'Milestone created',{create:!item,form,closeForm:true}));};
+  app.deleteMilestone=(id)=>{const item=milestone(id);if(!item)return;app.confirm({title:'Delete milestone?',text:`“${item.name}” will be removed.`,action:'Delete',confirm:()=>fire(execute('milestone.delete',{id:item.id},item,'Milestone deleted',{form:document.querySelector('.modal,.peek'),closeForm:true}))});};
 
   app.saveBlock=(event,id,mode)=>{
     const form=event.target,values=formValues(event),item=task(id);if(!item)return false;const reason=text(values.get('reason'),500);
@@ -735,7 +734,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
     input.value='';if(notes)notes.value='';capturesSending++;
     // The next item starts as a title alone, as the first one did.
-    if(notes?.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
+    if(notes?.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription();
     return fire(execute('pool.create',{projectId,scope,title,description},null,'Pool item added',{
       create:true,paint:false,interactionKey:key,poolScope:scope,onAccepted:returnCaptures,
     }).catch((error)=>{
@@ -747,8 +746,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   function returnCaptures(){
     const userId=data.session?.userId;
     for(let index=unsentCaptures.length-1;index>=0;index--)if(unsentCaptures[index].userId!==userId)unsentCaptures.splice(index,1);
-    const input=/** @type {HTMLInputElement|null} */(globalThis.document?.getElementById?.('poolAdd'));
-    const notes=/** @type {HTMLTextAreaElement|null} */(globalThis.document?.getElementById?.('poolNewDesc'));
+    const input=/** @type {HTMLInputElement|null} */(document.getElementById('poolAdd'));
+    const notes=/** @type {HTMLTextAreaElement|null} */(document.getElementById('poolNewDesc'));
     if(!input||input.hidden||input.value||notes?.value)return;
     const scope=toWireScope(context().poolTab),index=unsentCaptures.findIndex(item=>item.projectId===context().projectId&&item.scope===scope);
     if(index<0)return;
@@ -756,24 +755,24 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     input.value=item.title;
     if(notes&&item.description){
       // Opening the notes moves focus there; it goes back to where it was.
-      const focused=/** @type {HTMLElement|null} */(globalThis.document.activeElement);
-      if(!notes.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
+      const focused=/** @type {HTMLElement|null} */(document.activeElement);
+      if(!notes.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription();
       notes.value=item.description;
-      if(focused?.isConnected)focused.focus?.({preventScroll:true});
+      if(focused?.isConnected)focused.focus({preventScroll:true});
     }
     returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
   }
-  recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>!data.session||item.userId===data.session.userId));
-  app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:toWireScope(item.scope),form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
-  app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:toWireScope(item.scope),paint:false,onAccepted:()=>app.refreshPool?.()}))});};
+  recovery.trackUnsaved(()=>unsentCaptures.some(item=>!data.session||item.userId===data.session.userId));
+  app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:toWireScope(item.scope),form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool({completeItemId:id}))}));};
+  app.delPool=(event,id)=>{event.stopPropagation();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:toWireScope(item.scope),paint:false,onAccepted:()=>app.refreshPool()}))});};
 
   app.saveProjectNew=(event)=>{
     const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
     // The new project opens only while its dialog is still the open one; a re-render keeps it open.
     const open=()=>completeForm(form,()=>{});
-    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){(app.refreshBackground??app.refresh)();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)nav('roadmap');})));
+    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){app.refreshBackground();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)nav('roadmap');})));
   };
-  app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest?.('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
+  app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));
   app.setMemberPermission=(userId,permission,enabled,input)=>{
     if(!['manage_roadmap','manage_board'].includes(permission))return false;
@@ -787,12 +786,12 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const latest=project.members.find(item=>item.userId===userId);if(!latest)return false;
       const current=new Set(latest.permissions);enabled?current.add(permission):current.delete(permission);
       // A change that fails shows the saved permission again.
-      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(error=>{report(error);if(sessionScope()===scope)app.refreshUsers?.();}));
+      return fire(execute('membership.update',{projectId:project.id,userId,manageRoadmap:current.has('manage_roadmap'),manageBoard:current.has('manage_board')},latest,'Access updated').catch(error=>{report(error);if(sessionScope()===scope)app.refreshUsers();}));
     };
     if(!enabled)return app.confirm({title:'Remove permission?',text:`${data.users.find(user=>user.id===userId)?.name||userId} will lose permission to manage ${permission==='manage_board'?'Board':'Roadmap'} in ${project.name}.`,action:'Remove permission',confirm:apply});
     return apply();
   };
-  function showMemberOpenWork(project,userId,count=null){const user=data.users.find((item)=>item.id===userId),who=user?.name||userId;app.showBlocked?.('Member has open work',count?`Reassign ${count} unfinished task${count===1?'':'s'} before removing ${who} from this project.`:`Reassign this member’s unfinished tasks before removing ${who} from this project.`);}
+  function showMemberOpenWork(project,userId,count=null){const user=data.users.find((item)=>item.id===userId),who=user?.name||userId;app.showBlocked('Member has open work',count?`Reassign ${count} unfinished task${count===1?'':'s'} before removing ${who} from this project.`:`Reassign this member’s unfinished tasks before removing ${who} from this project.`);}
   app.removeMember=(userId)=>{const project=data.projects.find((item)=>item.id===context().projectId),membership=project?.members.find((item)=>item.userId===userId);if(!membership)return;const assigned=data.tasks.filter((item)=>item.projectId===project.id&&item.state!=='done'&&(item.assignees||[]).includes(userId));if(assigned.length){showMemberOpenWork(project,userId,assigned.length);return false;}app.confirm({title:'Remove member?',text:'They will lose access to this project.',action:'Remove member',confirm:()=>fire(execute('membership.remove',{projectId:project.id,userId},membership,'Member removed',{handleError:(error)=>{if(!['member_has_open_tasks','precondition_failed'].includes(error?.code))return false;showMemberOpenWork(project,userId);return true;}}).catch(report))});};
   app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>nav('roadmap'))).catch(report))});};
 
@@ -803,7 +802,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   async function loadUsers(append=false,throughUser=/** @type {string|null} */(null),{keepDepth=false,background=false}={}){
     const generation=++usersGeneration,expectedSession=sessionScope();usersController?.abort();usersController=new AbortController();
     const depth=keepDepth&&data.adminUsers.loaded?usersDepth:1;
-    data.adminUsers.loading=true;data.adminUsers.error=null;app.refreshUsers?.({loadingOnly:true});
+    data.adminUsers.loading=true;data.adminUsers.error=null;app.refreshUsers({loadingOnly:true});
     let response,pages=1;
     try{
       response=await api.users({afterUsername:append?usersAfter:undefined,background,signal:usersController.signal});
@@ -813,9 +812,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
         response={...page,users:[...response.users,...page.users]};pages++;
       }
     }
-    catch(error){if(generation!==usersGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};data.adminUsers.loading=false;data.adminUsers.error='Could not load users.';app.refreshUsers?.();return {error};}
+    catch(error){if(generation!==usersGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};data.adminUsers.loading=false;data.adminUsers.error='Could not load users.';app.refreshUsers();return {error};}
     if(generation!==usersGeneration||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};
-    const mapped=response.users.map(mapUser);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
+    const mapped=response.users.map(mapUser);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers();return {stale:false};
   }
   app.retryUsers=()=>fire(loadUsers(false).catch(report));
   app.loadMoreUsers=()=>{if(usersAfter&&!data.adminUsers.loading)return fire(loadUsers(true).catch(report));};
@@ -824,14 +823,14 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   async function loadProfileAccess({background=false}={}){
     const generation=++profileGeneration,expectedSession=sessionScope();profileController?.abort();profileController=new AbortController();
     let sessionResponse,appResponse;
-    app.refreshProfileAccess?.({loading:true});
+    app.refreshProfileAccess({loading:true});
     try{[sessionResponse,appResponse]=await Promise.all([api.sessions({signal:profileController.signal,background}),api.connectedApps({signal:profileController.signal,background})]);}
-    catch(error){if(generation!==profileGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};app.refreshProfileAccess?.({error:'Could not load account access. Try again.'});return {error};}
+    catch(error){if(generation!==profileGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};app.refreshProfileAccess({error:'Could not load account access. Try again.'});return {error};}
     if(generation!==profileGeneration||expectedSession!==sessionScope()||context().view!=='profile')return {stale:true};
     const userId=data.session?.userId;
     data.browserSessions.splice(0,data.browserSessions.length,...sessionResponse.sessions.map((session)=>({id:session.id,userId,device:sessionDeviceLabel(session),browser:sessionBrowserLabel(session),ip:session.clientIp||null,createdAt:session.createdAt*1000,lastActiveAt:session.lastActivityAt*1000,current:session.current,revokedAt:null})));
     data.appGrants.splice(0,data.appGrants.length,...appResponse.apps.map((grant)=>({id:grant.id,userId,clientName:grant.clientName,protocol:'MCP',authorizedAt:grant.createdAt*1000,lastUsedAt:grant.lastUsedAt?grant.lastUsedAt*1000:null,expiresAt:grant.expiresAt*1000,revokedAt:null,access:(grant.projects||[]).map((projectId)=>({projectId,permissions:(grant.scopes||[]).map((scope)=>scope==='project_read'?'read':scope)}))})));
-    app.refreshProfileAccess?.();
+    app.refreshProfileAccess();
     return {stale:false};
   }
 
@@ -839,19 +838,19 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   async function loadCurrentRoute({reuseBootstrap=false,refresh=false,background=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
     if(!data.session)return;
-    const routeHash=globalThis.location?.hash;
-    const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===globalThis.location?.hash;
+    const routeHash=location.hash;
+    const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===location.hash;
     if(!['users','settings'].includes(current.view)){usersGeneration++;usersController?.abort();}
     if(current.view!=='profile'){profileGeneration++;profileController?.abort();}
     try{
-      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard?.(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
+      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
       else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
-          if(current.view!=='task'){recovery?.clearPageError?.();app.openTask(task(current.taskId).id);}
+          if(current.view!=='task'){recovery.clearPageError();app.openTask(task(current.taskId).id);}
           return {stale:false};
         }
-        if(!task(current.taskId)||task(current.taskId)?.detailsLoaded===false)recovery?.beginRouteLoad?.();
+        if(!task(current.taskId)||task(current.taskId)?.detailsLoaded===false)recovery.beginRouteLoad();
         const loaded=await reads.task(current.taskId);
         if(!stillCurrent())return {stale:true};
         if(!loaded?.stale&&loaded?.task){
@@ -860,7 +859,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
             const roadmap=await reads.roadmap(loaded.task.projectId);
             if(!stillCurrent()||roadmap?.stale)return {stale:true};
           }
-          recovery?.clearPageError?.();app.openTask(loaded.task.id);
+          recovery.clearPageError();app.openTask(loaded.task.id);
         }
       }
       else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh,background});
@@ -883,10 +882,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       const item=task(taskId),max={title:140,desc:4000}[field];if(!item||!max)return;
       const next=text(value,max);if(next===(field==='title'?item.title:item.desc??''))return;
       pruneDrafts();
-      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,scope:sessionScope(),unsaved:true,retryOnline:false});
+      drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery.expectedRevision(recovery.revisionKey(item),item.revision),scope:sessionScope(),unsaved:true,retryOnline:false});
     },
     /** Load the Roadmap again in the background after the instance's date changed. */
-    async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});},
+    async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery.refreshFailed(error);throw error;});},
     /** @param {string} taskId @param {string[]} assigneeIds */
     async setAssignees(taskId,assigneeIds){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds);},
     /**

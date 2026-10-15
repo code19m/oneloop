@@ -204,7 +204,8 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(); return { stale: false }; }])),
     ...readAnswers,
   };
-  const data = w.DATA, auth = { withRecentAuth: run => run() };
+  // The tests end sessions themselves, so expiry leaves the projection alone.
+  const data = w.DATA, auth = { withRecentAuth: run => run(), expire() {} };
   let runtime;
   const gateway = createCommandGateway({
     api, data,
