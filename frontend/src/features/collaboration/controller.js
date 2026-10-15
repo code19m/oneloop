@@ -12,7 +12,7 @@ import {mentionFromWire,mentionsToWire} from '../../data/wire.js';
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
 
 /** @param {any} comment */
-export function mapComment(comment) {
+function mapComment(comment) {
   const deleted = comment.deletedAt != null || comment.content == null;
   return {
     id: comment.id,
@@ -29,9 +29,6 @@ export function mapComment(comment) {
     mentions: (comment.mentions ?? []).map(mentionFromWire),
   };
 }
-
-export {mapActivity};
-
 
 function replace(array, items) { array.splice(0, array.length, ...items); }
 

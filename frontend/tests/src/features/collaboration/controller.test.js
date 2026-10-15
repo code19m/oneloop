@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
-import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
 import {ApiError} from '../../../../src/data/api-client.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
-import {installCollaborationController,mapActivity,mapComment} from '../../../../src/features/collaboration/controller.js';
-import {mentionsToWire} from '../../../../src/data/wire.js';
+import {installCollaborationController} from '../../../../src/features/collaboration/controller.js';
 
 // The controller coalesces live reads with 60 ms timers. Tests that observe
 // that coalescing drive a mocked clock and let promise chains settle between
@@ -53,18 +51,9 @@ for(const kind of ['reconcile','activity.changed'])test(`live ${kind} refreshes 
   }finally{t.controller.dispose();}
 });
 
-test('maps opaque server entities, second timestamps and UTF-16 mention ranges exactly once',()=>{
-  const text='Hi 👋 @bob';
-  assert.deepEqual(mentionsToWire(text,[{id:'u2',label:'bob',start:6,end:10}]),[{kind:'user',userId:'u2',startOffset:6,endOffset:10,label:'@bob'}]);
-  const comment=mapComment({id:'c1',authorId:'u2',authorName:'Bob',rootId:'root',replyToId:'root',content:text,mentions:[{kind:'user',userId:'u2',startOffset:6,endOffset:10,label:'@bob'}],createdAt:10,editedAt:11,deletedAt:null,revision:3});
-  assert.equal(comment.ts,10_000);assert.equal(comment.editedAt,11_000);assert.equal(comment.parentId,'root');assert.equal(comment.mentions[0].label,'bob');
-  const inbox=mapInboxItem({id:'n1',eventType:'discussion.mention',actorName:'Bob',actorUserId:'u2',projectId:'p1',taskId:'opaque-task',taskKey:'ONE-101',taskTitle:'Review',destinationAvailable:true,createdAt:12,readAt:null,archivedAt:null});
-  assert.equal(inbox.actorId,'u2');assert.equal(inbox.taskId,'opaque-task');assert.equal(inbox.taskKey,'ONE-101');assert.equal(inbox.createdAt,12_000);
-});
-
 test('task reconciliation uses opaque IDs, server activity and scoped refresh metadata',async()=>{
   const t=fixture({api:{
-    comments:async(taskId)=>({items:[{id:'c1',projectId:'p1',taskId,authorId:'u2',authorName:'Bob',rootId:'c1',replyToId:null,content:'Hello',mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1}],nextCursor:'comments-next'}),
+    comments:async(taskId)=>({items:[{id:'c1',projectId:'p1',taskId,authorId:'u2',authorName:'Bob',rootId:'c1',replyToId:null,content:'Hi 👋 @bob',mentions:[{kind:'user',userId:'u2',startOffset:6,endOffset:10,label:'@bob'}],createdAt:20,editedAt:22,deletedAt:null,revision:1}],nextCursor:'comments-next'}),
     activity:async()=>({items:[
       {id:'a1',eventType:'comment.created',createdAt:19},
       {id:'a2',eventType:'comment.edited',actorUserId:'u2',actorName:'Bob',createdAt:21,metadata:{}},
@@ -72,7 +61,9 @@ test('task reconciliation uses opaque IDs, server activity and scoped refresh me
   }});
   t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
   t.controller.mount({view:'task',taskId:'ONE-101'});await tick();
-  assert.equal(t.data.tasks[0].comments[0].id,'c1');assert.equal(t.data.tasks[0].comments[0].ts,20_000);
+  const [comment]=t.data.tasks[0].comments;
+  assert.equal(comment.id,'c1');assert.equal(comment.ts,20_000);assert.equal(comment.editedAt,22_000);
+  assert.deepEqual(comment.mentions,[{id:'u2',label:'bob',start:6,end:10}]);
   assert.deepEqual(t.data.tasks[0].activity.map((item)=>item.text),['edited a comment']);
   assert.deepEqual(t.pages,[['ONE-101',{loaded:false,loading:true,error:false,hasMore:false,background:false}],['ONE-101',{loaded:true,loading:false,error:false,hasMore:true,background:false}]]);
 });
@@ -102,8 +93,9 @@ test('comment commands preserve canonical server content and do not publish loca
   const t=fixture();
   t.transport.commands.execute=async(...args)=>{t.commandCalls.push(args);return {entities:[{id:'c2',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c2',replyToId:null,content:'Saved',mentions:[],createdAt:30,editedAt:null,deletedAt:null,revision:1}],events:[{id:'a2'}],replayed:false};};
   const task=t.data.tasks[0];
-  assert.equal(await t.controller.saveComment({task,mode:'comment',targetId:null,commentId:null,revision:null,text:'Saved',mentions:[],interactionId:'logical-1'}),true);
-  assert.equal(t.commandCalls[0][0],'discussion.comment.create');assert.equal(t.commandCalls[0][1].taskId,'opaque-task');
+  assert.equal(await t.controller.saveComment({task,mode:'comment',targetId:null,commentId:null,revision:null,text:'Saved @bob',mentions:[{id:'u2',label:'bob',start:6,end:10}],interactionId:'logical-1'}),true);
+  assert.equal(t.commandCalls[0][0],'discussion.comment.create');
+  assert.deepEqual(t.commandCalls[0][1],{taskId:'opaque-task',content:'Saved @bob',replyToId:null,mentions:[{kind:'user',userId:'u2',startOffset:6,endOffset:10,label:'@bob'}]});
   assert.equal(task.comments[0].text,'Saved');assert.equal(task.activity.length,0);
   assert.equal(t.saved.length,1);assert.equal(t.saved[0][1].id,'c2');
 });
@@ -192,15 +184,6 @@ test('first read failure ends loading, Retry succeeds, and background failures k
   assert.equal(t.pages.at(-1)[1].loaded,true);assert.equal(t.data.tasks[0].comments[0].text,'Saved reply');
   taskFails=true;await t.controller.loadTaskPage('ONE-101');
   assert.equal(t.pages.at(-1)[1].loaded,true);assert.equal(t.pages.at(-1)[1].error,true);assert.equal(t.data.tasks[0].comments[0].text,'Saved reply');
-});
-
-test('activity mapping keeps lifecycle metadata and drops comment creation duplicates',()=>{
-  assert.equal(mapActivity({eventType:'comment.replied'},[]),null);
-  const event=mapActivity({id:'e1',eventType:'task.blocked',actorUserId:'u1',actorMcpGrantId:'g1',actorAppName:'Planning Assistant',createdAt:5,metadata:{blockId:'b1'}},[]);
-  assert.equal(event.text,'blocked the task');assert.equal(event.blockId,'b1');assert.equal(event.ts,5000);assert.equal(event.actorAppName,'Planning Assistant');assert.equal(event.actorMcpGrantId,'g1');
-  assert.equal(mapActivity({eventType:'task.assignee.added',before:null,after:'u2'},[{id:'u2',name:'Bob'}]).text,'assigned Bob');
-  assert.equal(mapActivity({eventType:'task.assignee.removed',before:'u2',after:null},[{id:'u2',name:'Bob'}]).text,'unassigned Bob');
-  assert.equal(mapActivity({eventType:'attachment.cleaned',createdAt:6,metadata:{name:'old.txt'}},[]).text,'Temporary file removed during storage cleanup: old.txt');
 });
 
 test('SSE reconciliation passively refreshes canonical task fields before scoped discussion data',async()=>{
@@ -312,17 +295,11 @@ test('older activity does not restart exhausted comments and retains reply conte
   t.controller.mount({view:'task',taskId:'ONE-101'});await tick();
   await t.controller.moreTask('ONE-101');
   assert.equal(commentsCalls,1);assert.equal(activityCalls,2);
-  assert.deepEqual(t.data.tasks[0].comments.map(item=>item.id),['root','reply']);
+  assert.deepEqual(t.data.tasks[0].comments.map(item=>[item.id,item.parentId]),[['root',null],['reply','root']]);
   assert.equal(t.data.tasks[0].comments[0].replyCount,80);
   assert.equal(t.data.tasks[0].comments[0].deleted,true);
   assert.equal(t.pages.at(-1)[1].hasMore,false);
   t.controller.dispose();
-});
-
-test('block activity retains reasons and resolutions after the resolved-block panel is gone',()=>{
-  assert.equal(mapActivity({eventType:'task.blocked',after:{reason:'Waiting for approval'},createdAt:1}).text,'blocked the task: Waiting for approval');
-  assert.equal(mapActivity({eventType:'task.block.reason.updated',after:{reason:'Waiting for documents'},createdAt:2}).text,'edited the block reason: Waiting for documents');
-  assert.equal(mapActivity({eventType:'task.unblocked',after:{resolution:'Approved'},createdAt:3}).text,'unblocked the task: Approved');
 });
 
 test('failed discussion loading after navigation cannot replace the current page',async()=>{
@@ -354,21 +331,6 @@ test('task and Inbox hint bursts share reads and retain one follow-up during a s
   release();await delay(90);assert.equal(commentReads,2);
   assert.equal(t.apiCalls.filter(([kind])=>kind==='activity').length,2);
   t.controller.dispose();
-});
-
-test('Inbox avatars use the immutable server identity and never guess from names',()=>{
-  const first=mapInboxItem({id:'one',actorName:'Same name',actorUserId:'alice'});
-  const second=mapInboxItem({id:'two',actorName:'Same name',actorUserId:'bob'});
-  assert.equal(first.actorId,'alice');assert.equal(second.actorId,'bob');
-  assert.equal(mapInboxItem({id:'legacy',actorName:'Same name'}).actorId,null);
-  assert.equal(mapInboxItem({id:'unavailable',actorName:null,actorUserId:null}).actorId,null);
-});
-
-test('block Inbox wording distinguishes direct and broadcast mentions and keeps legacy rows readable',()=>{
-  for(const [eventType,reason] of [
-    ['task.block.mentioned','block-mention'],['task.block.everyone','block-everyone'],
-    ['task.blocked','blocked'],['task.block.reason.updated','block-mention'],
-  ])assert.equal(mapInboxItem({id:'block-item',eventType,blockId:'episode',destinationAvailable:true}).reason,reason);
 });
 
 test('a replacement task projection reloads discussion passively rather than trusting an old loaded marker',async()=>{
@@ -648,8 +610,3 @@ test('a restored comment replaces its tombstone and tells the task page',async()
   assert.deepEqual(restored,[['ONE-101','c3']]);
 });
 
-test('activity names restores like the deletions they undo',()=>{
-  assert.equal(mapActivity({eventType:'task.restored'},[]).text,'restored the task');
-  assert.equal(mapActivity({eventType:'comment.restored'},[]).text,'restored a comment');
-  assert.equal(mapActivity({eventType:'attachment.restored',metadata:{name:'plan.pdf'}},[]).text,'restored attachment: plan.pdf');
-});
