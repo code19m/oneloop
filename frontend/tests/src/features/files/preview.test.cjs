@@ -92,6 +92,17 @@ test('the file dialog shows the details it is given, and closes once its file ca
   assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting]) .file-dialog'), null, 'losing access closes it');
 });
 
+test('the file dialog closes when the session ends, whatever page opened it', () => {
+  // As Knowledge's Full view does: no task page, and a file that stays readable while the page shows.
+  const t = bootApp({ route: 'board' }), previews = t.module('src/features/files/preview.js');
+  const file = { id: 'guide', name: 'guide.png', size: 12, previewKind: 'image', state: 'available', url: 'blob:guide', contentUrl: 'blob:guide', downloadUrl: '/download/guide.png' };
+  previews.previewFile({ file, files: [file], details: '', canRead: () => true, session: () => t.D.session, open: () => {} });
+  assert.equal(t.d.getElementById('app').inert, true);
+  t.D.session = null; t.runtime.publish({ type: 'auth', session: null }); t.A.refresh();
+  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting])'), null, 'the previous person\'s file is gone');
+  assert.equal(t.d.getElementById('app').inert, false, 'the sign-in screen takes input');
+});
+
 test('inline image previews work outside the dialog and stop when disposed', async () => {
   const t = bootApp({ route: 'board' });
   const host = t.d.createElement('div'), tools = t.d.createElement('div');

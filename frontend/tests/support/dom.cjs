@@ -277,7 +277,7 @@ function bootApp({
   load(dom, 'data');
   const wiring = wire(dom, { api, reads, reloadBootstrap });
   importModule(dom, 'src/app/motion.js').installDisclosures(w.document);
-  importModule(dom, 'src/features/files/preview.js').installPreviews(w.document);
+  importModule(dom, 'src/features/files/preview.js').installPreviews(w.document, wiring.runtime);
   prepare?.(w.DATA, w);
   for (const name of libraries) load(dom, name);
   load(dom, 'app');

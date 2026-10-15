@@ -211,12 +211,16 @@ async function renderPDF(host,file,owner=preview,tools=host.closest('.file-dialo
 
 /**
  * Close the file dialog with Escape and on a new address, and keep Tab inside
- * it while it shows.
+ * it while it shows. When the session ends or another person signs in, close
+ * it and forget the cached file bytes, whatever page opened it.
  * @param {Document} doc
+ * @param {{data:{session?:{id?:string}|null},subscribe:(listener:(change:any)=>void)=>unknown}} transport
  */
-export function installPreviews(doc){
+export function installPreviews(doc,transport){
   doc.addEventListener('keydown',e=>{if(!preview)return;if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();if(preview.hideRetentionHelp?.())return;closePreview();}trapFocus(e,/** @type {HTMLElement[]} */ ([...doc.querySelectorAll('.file-dialog button:not(:disabled),.file-dialog a[href],.file-dialog input:not(:disabled),.file-dialog summary,.file-dialog [tabindex="0"]')]).filter(el=>!el.closest('[hidden]')&&el.getClientRects().length));},true);
   doc.defaultView.addEventListener('hashchange',closePreview);
+  let session=transport.data.session?.id;
+  transport.subscribe(change=>{if(change?.type==='auth'&&session!==transport.data.session?.id){session=transport.data.session?.id;resetPreviews();}});
 }
 
 /**

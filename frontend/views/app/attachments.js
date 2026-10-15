@@ -6,7 +6,7 @@ import { errorMessage, retryableFailure } from '../../src/app/action-feedback.js
 import { UIMotion } from '../../src/app/motion.js';
 import {
   byteSize as size, canPreview, closePreview, displayText, fileExtension as extension, fileIcons as icons, forgetPreview,
-  previewFile, resetPreviews, shownPreview,
+  previewFile, shownPreview,
 } from '../../src/features/files/preview.js';
 import { UIAction, esc, formatInstant, setHTML } from './format.js';
 import { App, D, canReadTask, epicById, hasPermission, recovery, runtime, taskById, trackById } from './model.js';
@@ -286,7 +286,7 @@ function followChanges(){
     if(change?.type==='sse'&&change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=taskById(change.taskId);if(changedTask)loadAttachments(changedTask.id,true,true);}
   });
 }
-function clearAccount(){resetPreviews();jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}
+function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}
 
 Object.assign(App, {
   reorderAttachment,openAttachment,previewAttachment,downloadAttachment:download,setAttachmentTemporary:setTemporary,

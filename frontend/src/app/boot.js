@@ -92,7 +92,7 @@ installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
 installTooltips(document);
 installDisclosures(document);
-installPreviews(document);
+installPreviews(document,runtimeHooks);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
@@ -115,4 +115,3 @@ try {
 } catch (error) {
   showStartupError(error);
 }
-
