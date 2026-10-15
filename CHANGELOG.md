@@ -47,7 +47,7 @@ All notable changes to oneloop are recorded here. The format follows
 - Links and other files that a Knowledge sync leaves out now count toward
   the folder's 5,000 files. Before, a folder of many such files could sync
   and fill the disk with them.
-- When a Knowledge folder is too large to sync, Settings now says to remove
+- When a Knowledge folder is too large to sync, oneloop now says to remove
   files or subfolders. Before, it said to remove large files, which doesn't
   help a folder with too many files or subfolders.
 - Knowledge search now says when some files are searched by name only,
