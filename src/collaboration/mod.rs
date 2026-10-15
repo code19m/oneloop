@@ -6,6 +6,7 @@
 //! recipient snapshot and outbox message.
 
 mod activity;
+pub(crate) mod mentions;
 mod models;
 mod notifications;
 mod runtime;

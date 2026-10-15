@@ -1,6 +1,6 @@
-//! Shared authorization and mention policy. Reload current identities and project access; private scopes never inherit administrator visibility.
-
-//! Shared current-actor and project policy for all product services.
+//! The one project access policy, shared by every service. Each check reads
+//! the current identity and access; private scopes never inherit
+//! administrator visibility. It also validates mentions.
 use crate::collaboration::{MentionKind, MentionToken};
 use crate::{
     AppError, AppResult,
@@ -16,6 +16,37 @@ pub(crate) enum Need {
     Roadmap,
     Discussion,
     Attachments { write: bool },
+}
+
+/// Where an MCP client may run a command. Every operation is classified
+/// exhaustively, so a new one stays out of MCP until someone places it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum McpRoute {
+    Tool(McpTool),
+    /// Undo for deletions, which belongs to the browser's delete flow.
+    Undo,
+    /// Administration, which never goes through MCP.
+    Administration,
+}
+
+/// The MCP tools that run commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum McpTool {
+    Work,
+    Discussion,
+    Destructive,
+}
+
+impl McpTool {
+    pub(crate) const ALL: [Self; 3] = [Self::Work, Self::Discussion, Self::Destructive];
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Work => "execute_work_command",
+            Self::Discussion => "execute_discussion_command",
+            Self::Destructive => "execute_destructive_command",
+        }
+    }
 }
 
 pub(crate) fn require_scope(
@@ -34,6 +65,15 @@ pub(crate) fn require_scope(
         Ok(())
     } else {
         Err(AppError::Forbidden)
+    }
+}
+
+/// Turns an access check into a yes or no. Other errors stay errors.
+pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -99,23 +139,17 @@ pub(crate) fn require_project(
     Ok(())
 }
 
+/// Checks mentions against the exact text they select and keeps those that
+/// count: a mention in code or a quote is plain text. A person mentioned
+/// before an edit (`retained`) stays valid after leaving the project.
 pub(crate) fn validate_mentions(
-    tx: &Transaction<'_>,
-    project_id: &str,
-    content: &str,
-    mentions: Vec<MentionToken>,
-) -> AppResult<Vec<MentionToken>> {
-    validate_mentions_retaining(tx, project_id, content, mentions, &[])
-}
-
-pub(crate) fn validate_mentions_retaining(
     tx: &Transaction<'_>,
     project_id: &str,
     content: &str,
     mut mentions: Vec<MentionToken>,
     retained: &[String],
 ) -> AppResult<Vec<MentionToken>> {
-    mentions.sort_by_key(|token| token.start_offset);
+    mentions.sort_by_key(|token| (token.start_offset, token.end_offset));
     let boundaries = utf16_boundaries(content);
     let mut previous_end = 0usize;
     let mut everyone_seen = false;
@@ -198,7 +232,7 @@ pub(crate) fn validate_mentions_retaining(
     }
     Ok(selected)
 }
-pub(crate) fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
+fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
     let mut result = HashMap::new();
     let mut utf16 = 0usize;
     result.insert(0, 0);
@@ -208,30 +242,6 @@ pub(crate) fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
         result.insert(utf16, byte + character.len_utf8());
     }
     result
-}
-
-const BROADCAST_COOLDOWN_SECONDS: i64 = 60;
-
-pub(crate) fn enforce_broadcast_cooldown(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    project_id: &str,
-    now: i64,
-) -> AppResult<()> {
-    let recent: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM notification_events
-         WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3
-           AND json_extract(payload_json,'$.broadcast')=1)",
-        params![project_id, actor.user_id, now - BROADCAST_COOLDOWN_SECONDS],
-        |row| row.get(0),
-    )?;
-    if recent {
-        return Err(AppError::rule(
-            crate::error::RuleKind::BroadcastCooldown,
-            "@everyone can be used once per minute in this project",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -267,8 +277,23 @@ mod tests {
                     }
                 })
                 .collect();
-            let selected = validate_mentions(&tx, "project", content, mentions).unwrap();
+            let selected = validate_mentions(&tx, "project", content, mentions, &[]).unwrap();
             assert_eq!(selected.len(), expected, "{content}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
+        #[test]
+        fn unicode_mention_offsets_land_only_on_codepoint_boundaries(value in ".{0,256}") {
+            let boundaries = utf16_boundaries(&value);
+            let mut units = 0;
+            for (offset, ch) in value.char_indices() {
+                proptest::prop_assert_eq!(boundaries.get(&units), Some(&offset));
+                if ch.len_utf16() == 2 { proptest::prop_assert!(!boundaries.contains_key(&(units + 1))); }
+                units += ch.len_utf16();
+            }
+            proptest::prop_assert_eq!(boundaries.get(&units), Some(&value.len()));
         }
     }
 }

@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 
 use crate::{
     AppError, AppState,
+    access::{McpRoute, McpTool},
     auth::{Actor, McpScope, ProjectPermission},
-    collaboration::{CollaborationCommand, CollaborationService, InboxFilter},
+    collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
         BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
         ProjectView, UserView,
@@ -318,23 +319,17 @@ pub(super) struct TransferTicket {
 impl OneloopMcp {
     fn tool_router() -> ToolRouter<Self> {
         let mut router = Self::generated_tool_router();
-        for (name, description) in [
-            ("execute_work_command", work_description()),
-            ("execute_destructive_command", destructive_description()),
-        ] {
-            router
+        for tool in McpTool::ALL {
+            let route = router
                 .map
-                .get_mut(name)
-                .expect("registered command tool")
-                .attr
-                .description = Some(description.into());
+                .get_mut(tool.name())
+                .expect("registered command tool");
+            route.attr.description = Some(command_description(tool).into());
+            std::sync::Arc::make_mut(&mut route.attr.input_schema)
+                .insert("oneOf".into(), Value::Array(command_variants(tool)));
         }
-        for (name, route) in &mut router.map {
+        for route in router.map.values_mut() {
             let schema = std::sync::Arc::make_mut(&mut route.attr.input_schema);
-            let variants = command_variants(name);
-            if !variants.is_empty() {
-                schema.insert("oneOf".into(), Value::Array(variants));
-            }
             strip_numeric_formats_map(schema);
             if let Some(output) = &mut route.attr.output_schema {
                 strip_numeric_formats_map(std::sync::Arc::make_mut(output));
@@ -530,7 +525,7 @@ impl OneloopMcp {
             return Ok(Json(serde_json::to_value(page).map_err(internal_error)?));
         }
         if input.cursor.is_some() {
-            return Err(ToolError::invalid_params("cursor requires a status", None));
+            return Err(ToolError::invalid_arguments("cursor requires a status"));
         }
         let mut pages = serde_json::Map::new();
         for status in [
@@ -665,25 +660,10 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<WorkCommandInput>,
     ) -> Result<Json<Value>, ToolError> {
-        let operation: DomainOperation =
-            serde_json::from_value(Value::String(input.operation.clone()))
-                .map_err(|_| ToolError::invalid_arguments("unsupported ordinary work operation"))?;
-        match operation.mcp_tool() {
-            Some("execute_work_command") => {}
-            Some(_) => {
-                return Err(ToolError::invalid_arguments(
-                    "deletion must use execute_destructive_command",
-                ));
-            }
-            None if operation == DomainOperation::RestoreTask => {
-                return Err(ToolError::invalid_arguments(UNDO_IS_BROWSER_ONLY));
-            }
-            None => {
-                return Err(ToolError::invalid_arguments(
-                    "administrative operations are not exposed through MCP",
-                ));
-            }
-        }
+        const UNSUPPORTED: &str = "unsupported ordinary work operation";
+        let operation = DomainOperation::parse(&input.operation)
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
+        require_route(McpTool::Work, operation.mcp_route(), UNSUPPORTED)?;
         let result = self
             .state
             .domain
@@ -703,7 +683,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "execute_discussion_command",
-        description = "Create or edit a comment/reply, or update Inbox items. Comment deletion is not available through this tool. Mention tokens must carry explicit member IDs and text offsets. Supported operations: discussion.comment.create/edit; inbox.markRead/markUnread/archive/restore/bulkMarkRead/bulkArchive. Bulk Inbox restoration is not available.",
+        description = "Create and edit comments, and update the Inbox.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -716,21 +696,10 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<WorkCommandInput>,
     ) -> Result<Json<Value>, ToolError> {
-        if !CollaborationService::supports(&input.operation) {
-            return Err(ToolError::invalid_params(
-                "unsupported discussion or Inbox operation",
-                None,
-            ));
-        }
-        if input.operation == "discussion.comment.delete" {
-            return Err(ToolError::invalid_params(
-                "deletion must use execute_destructive_command",
-                None,
-            ));
-        }
-        if input.operation == "discussion.comment.restore" {
-            return Err(ToolError::invalid_params(UNDO_IS_BROWSER_ONLY, None));
-        }
+        const UNSUPPORTED: &str = "unsupported discussion or Inbox operation";
+        let operation = CollaborationOperation::parse(&input.operation)
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
+        require_route(McpTool::Discussion, operation.mcp_route(), UNSUPPORTED)?;
         let actor = actor(&parts)?;
         let result = self
             .state
@@ -772,7 +741,9 @@ impl OneloopMcp {
             .await
             .map_err(tool_error)?;
 
-        if input.operation == "discussion.comment.delete" {
+        const UNSUPPORTED: &str = "unsupported destructive operation";
+        if let Some(operation) = CollaborationOperation::parse(&input.operation) {
+            require_route(McpTool::Destructive, operation.mcp_route(), UNSUPPORTED)?;
             let result = self
                 .state
                 .collaboration
@@ -790,14 +761,9 @@ impl OneloopMcp {
             return Ok(Json(serde_json::to_value(result).map_err(internal_error)?));
         }
 
-        let operation: DomainOperation = serde_json::from_value(Value::String(input.operation))
-            .map_err(|_| ToolError::invalid_params("unsupported destructive operation", None))?;
-        if operation.mcp_tool() != Some("execute_destructive_command") {
-            return Err(ToolError::invalid_params(
-                "unsupported destructive operation",
-                None,
-            ));
-        }
+        let operation = DomainOperation::parse(&input.operation)
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
+        require_route(McpTool::Destructive, operation.mcp_route(), UNSUPPORTED)?;
         let result = self
             .state
             .domain
@@ -1199,9 +1165,6 @@ impl ToolError {
     fn invalid_arguments(message: &'static str) -> Self {
         Self::Application(AppError::validation("arguments", message))
     }
-    fn invalid_params(message: &'static str, _: Option<Value>) -> Self {
-        Self::invalid_arguments(message)
-    }
     fn invalid_request(message: &'static str) -> Self {
         Self::Protocol(ErrorData::invalid_request(message, None))
     }
@@ -1270,91 +1233,97 @@ fn command_variant(operation: &str, payload: Value) -> Value {
     json!({"properties":{"operation":{"const":operation},"payload":payload},"required":["operation","payload"]})
 }
 
-fn command_variants(tool: &str) -> Vec<Value> {
+/// One schema variant per operation that `tool` runs.
+fn command_variants(tool: McpTool) -> Vec<Value> {
     use crate::collaboration::*;
     use crate::domain::*;
+    let route = McpRoute::Tool(tool);
     let mut variants = Vec::new();
-    if matches!(tool, "execute_work_command" | "execute_destructive_command") {
-        let operations = schemars::schema_for!(DomainOperation);
-        for value in operations.get("enum").unwrap().as_array().unwrap() {
-            let operation: DomainOperation =
-                serde_json::from_value(value.clone()).expect("operation");
-            if operation.mcp_tool() != Some(tool) {
-                continue;
+    for &operation in DomainOperation::ALL {
+        if operation.mcp_route() != route {
+            continue;
+        }
+        let payload = match operation {
+            DomainOperation::CreateTrack => payload_schema::<TrackCreate>(),
+            DomainOperation::UpdateTrack => payload_schema::<TrackUpdate>(),
+            DomainOperation::ReorderTrack => payload_schema::<TrackReorder>(),
+            DomainOperation::CreateEpic => payload_schema::<EpicCreate>(),
+            DomainOperation::UpdateEpic => payload_schema::<EpicUpdate>(),
+            DomainOperation::CreateMilestone => payload_schema::<MilestoneCreate>(),
+            DomainOperation::UpdateMilestone => payload_schema::<MilestoneUpdate>(),
+            DomainOperation::CreateTask => payload_schema::<TaskCreate>(),
+            DomainOperation::UpdateTask => payload_schema::<TaskUpdate>(),
+            DomainOperation::MoveTask => payload_schema::<TaskMove>(),
+            DomainOperation::BlockTask => payload_schema::<TaskBlock>(),
+            DomainOperation::UpdateBlockReason => payload_schema::<BlockReasonUpdate>(),
+            DomainOperation::UnblockTask | DomainOperation::UnblockAndCompleteTask => {
+                payload_schema::<TaskUnblock>()
             }
-            let payload = match operation {
-                DomainOperation::CreateTrack => payload_schema::<TrackCreate>(),
-                DomainOperation::UpdateTrack => payload_schema::<TrackUpdate>(),
-                DomainOperation::ReorderTrack => payload_schema::<TrackReorder>(),
-                DomainOperation::CreateEpic => payload_schema::<EpicCreate>(),
-                DomainOperation::UpdateEpic => payload_schema::<EpicUpdate>(),
-                DomainOperation::CreateMilestone => payload_schema::<MilestoneCreate>(),
-                DomainOperation::UpdateMilestone => payload_schema::<MilestoneUpdate>(),
-                DomainOperation::CreateTask => payload_schema::<TaskCreate>(),
-                DomainOperation::UpdateTask => payload_schema::<TaskUpdate>(),
-                DomainOperation::MoveTask => payload_schema::<TaskMove>(),
-                DomainOperation::BlockTask => payload_schema::<TaskBlock>(),
-                DomainOperation::UpdateBlockReason => payload_schema::<BlockReasonUpdate>(),
-                DomainOperation::UnblockTask | DomainOperation::UnblockAndCompleteTask => {
-                    payload_schema::<TaskUnblock>()
-                }
-                DomainOperation::CreatePoolItem => payload_schema::<PoolItemCreate>(),
-                DomainOperation::UpdatePoolItem => payload_schema::<PoolItemUpdate>(),
-                DomainOperation::PromotePoolItem => payload_schema::<PoolItemPromote>(),
-                DomainOperation::CompleteEpic
-                | DomainOperation::ReopenEpic
-                | DomainOperation::DeleteTrack
-                | DomainOperation::DeleteEpic
-                | DomainOperation::DeleteMilestone
-                | DomainOperation::DeleteTask
-                | DomainOperation::DeletePoolItem => payload_schema::<EntityId>(),
-                DomainOperation::CreateProject
-                | DomainOperation::UpdateProject
-                | DomainOperation::DeleteProject
-                | DomainOperation::AddMembership
-                | DomainOperation::UpdateMembership
-                | DomainOperation::RemoveMembership => {
-                    unreachable!("administration is excluded from MCP")
-                }
-                DomainOperation::RestoreTask => unreachable!("Undo is excluded from MCP"),
-            };
-            variants.push(command_variant(operation.as_str(), payload));
-        }
+            DomainOperation::CreatePoolItem => payload_schema::<PoolItemCreate>(),
+            DomainOperation::UpdatePoolItem => payload_schema::<PoolItemUpdate>(),
+            DomainOperation::PromotePoolItem => payload_schema::<PoolItemPromote>(),
+            DomainOperation::CompleteEpic
+            | DomainOperation::ReopenEpic
+            | DomainOperation::DeleteTrack
+            | DomainOperation::DeleteEpic
+            | DomainOperation::DeleteMilestone
+            | DomainOperation::DeleteTask
+            | DomainOperation::DeletePoolItem => payload_schema::<EntityId>(),
+            DomainOperation::CreateProject
+            | DomainOperation::UpdateProject
+            | DomainOperation::DeleteProject
+            | DomainOperation::AddMembership
+            | DomainOperation::UpdateMembership
+            | DomainOperation::RemoveMembership => {
+                unreachable!("administration is excluded from MCP")
+            }
+            DomainOperation::RestoreTask => unreachable!("Undo is excluded from MCP"),
+        };
+        variants.push(command_variant(operation.as_str(), payload));
     }
-    if tool == "execute_destructive_command" {
-        variants.push(command_variant(
-            "discussion.comment.delete",
-            payload_schema::<CommentDelete>(),
-        ));
-    }
-    if tool == "execute_discussion_command" {
-        variants.push(command_variant(
-            "discussion.comment.create",
-            payload_schema::<CommentCreate>(),
-        ));
-        variants.push(command_variant(
-            "discussion.comment.edit",
-            payload_schema::<CommentEdit>(),
-        ));
-        for operation in [
-            "inbox.markRead",
-            "inbox.markUnread",
-            "inbox.archive",
-            "inbox.restore",
-        ] {
-            variants.push(command_variant(
-                operation,
-                payload_schema::<InboxItemCommand>(),
-            ));
+    for &operation in CollaborationOperation::ALL {
+        if operation.mcp_route() != route {
+            continue;
         }
-        for operation in ["inbox.bulkMarkRead", "inbox.bulkArchive"] {
-            variants.push(command_variant(
-                operation,
-                payload_schema::<InboxBulkCommand>(),
-            ));
-        }
+        let payload = match operation {
+            CollaborationOperation::CreateComment => payload_schema::<CommentCreate>(),
+            CollaborationOperation::EditComment => payload_schema::<CommentEdit>(),
+            CollaborationOperation::DeleteComment => payload_schema::<CommentDelete>(),
+            CollaborationOperation::MarkRead
+            | CollaborationOperation::MarkUnread
+            | CollaborationOperation::Archive
+            | CollaborationOperation::RestoreArchived => payload_schema::<InboxItemCommand>(),
+            CollaborationOperation::BulkMarkRead | CollaborationOperation::BulkArchive => {
+                payload_schema::<InboxBulkCommand>()
+            }
+            CollaborationOperation::RestoreComment => unreachable!("Undo is excluded from MCP"),
+        };
+        variants.push(command_variant(operation.as_str(), payload));
     }
     variants
+}
+
+/// Refuses an operation that `tool` doesn't run, and names the right place
+/// for it when that helps the client.
+fn require_route(
+    tool: McpTool,
+    route: McpRoute,
+    unsupported: &'static str,
+) -> Result<(), ToolError> {
+    if route == McpRoute::Tool(tool) {
+        return Ok(());
+    }
+    let message = match (tool, route) {
+        (McpTool::Destructive, _) | (_, McpRoute::Tool(McpTool::Work | McpTool::Discussion)) => {
+            unsupported
+        }
+        (_, McpRoute::Tool(McpTool::Destructive)) => {
+            "deletion must use execute_destructive_command"
+        }
+        (_, McpRoute::Undo) => UNDO_IS_BROWSER_ONLY,
+        (_, McpRoute::Administration) => "administrative operations are not exposed through MCP",
+    };
+    Err(ToolError::invalid_arguments(message))
 }
 
 fn strip_numeric_formats_map(map: &mut serde_json::Map<String, Value>) {
@@ -1378,36 +1347,35 @@ fn strip_numeric_formats(value: &mut Value) {
     }
 }
 
-fn domain_operations(tool: &str) -> String {
-    let schema = schemars::schema_for!(DomainOperation);
-    schema
-        .get("enum")
-        .and_then(Value::as_array)
-        .expect("operation enum schema")
+fn command_description(tool: McpTool) -> String {
+    let (summary, note) = match tool {
+        McpTool::Work => (
+            "Create or update ordinary roadmap, task and Pool work through oneloop's shared command contract. Deletion and administration are excluded.",
+            "",
+        ),
+        McpTool::Discussion => (
+            "Create or edit a comment/reply, or update Inbox items. Comment deletion is not available through this tool. Mention tokens must carry explicit member IDs and text offsets.",
+            " Bulk Inbox restoration is not available.",
+        ),
+        McpTool::Destructive => (
+            "Permanently delete permitted work or the caller's own comment. Requires the destructive grant; clients should request per-action approval.",
+            "",
+        ),
+    };
+    let route = McpRoute::Tool(tool);
+    let operations = DomainOperation::ALL
         .iter()
-        .filter_map(|value| {
-            let operation: DomainOperation =
-                serde_json::from_value(value.clone()).expect("operation schema value");
-            (operation.mcp_tool() == Some(tool)).then_some(operation.as_str())
-        })
+        .filter(|operation| operation.mcp_route() == route)
+        .map(|operation| operation.as_str())
+        .chain(
+            CollaborationOperation::ALL
+                .iter()
+                .filter(|operation| operation.mcp_route() == route)
+                .map(|operation| operation.as_str()),
+        )
         .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn work_description() -> &'static str {
-    static DESCRIPTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DESCRIPTION.get_or_init(|| format!(
-        "Create or update ordinary roadmap, task and Pool work through oneloop's shared command contract. Deletion and administration are excluded. Supported operations: {}.",
-        domain_operations("execute_work_command")
-    ))
-}
-
-fn destructive_description() -> &'static str {
-    static DESCRIPTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DESCRIPTION.get_or_init(|| format!(
-        "Permanently delete permitted work or the caller's own comment. Requires the destructive grant; clients should request per-action approval. Supported operations: {}; discussion.comment.delete.",
-        domain_operations("execute_destructive_command")
-    ))
+        .join("; ");
+    format!("{summary} Supported operations: {operations}.{note}")
 }
 
 fn values(
@@ -1705,17 +1673,22 @@ mod error_tests {
                 assert_eq!(schema.get("type"), Some(&json!("object")));
             }
         }
-        let schema = schemars::schema_for!(DomainOperation);
-        for value in schema.get("enum").unwrap().as_array().unwrap() {
-            let operation: DomainOperation = serde_json::from_value(value.clone()).unwrap();
-            let name = value.as_str().unwrap();
-            assert_eq!(operation.as_str(), name);
-            for tool in ["execute_work_command", "execute_destructive_command"] {
-                let description = router.map[tool].attr.description.as_ref().unwrap();
+        let operations = DomainOperation::ALL
+            .iter()
+            .map(|operation| (operation.as_str(), operation.mcp_route()))
+            .chain(
+                CollaborationOperation::ALL
+                    .iter()
+                    .map(|operation| (operation.as_str(), operation.mcp_route())),
+            );
+        for (name, route) in operations {
+            for tool in McpTool::ALL {
+                let description = router.map[tool.name()].attr.description.as_ref().unwrap();
                 assert_eq!(
                     description.contains(name),
-                    operation.mcp_tool() == Some(tool),
-                    "{name} in {tool}"
+                    route == McpRoute::Tool(tool),
+                    "{name} in {}",
+                    tool.name()
                 );
             }
         }

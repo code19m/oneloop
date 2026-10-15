@@ -4,15 +4,11 @@ use super::*;
 pub(super) fn create_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
-    let name = text(&input.name, "name", NAME_MAX)?;
+    actor.require_admin()?;
+    let name = text::single_line(&input.name, "name", NAME_MAX)?;
     let prefix = normalize_prefix(&input.task_prefix)?;
     let reserved: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM project_prefixes WHERE prefix=?1)",
@@ -63,15 +59,11 @@ pub(super) fn create_project(
 pub(super) fn update_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
+    actor.require_admin()?;
     let before: (String, String, i64) = tx
         .query_row(
             "SELECT name,task_prefix,revision FROM projects WHERE id=?1 AND deleted_at IS NULL",
@@ -84,7 +76,7 @@ pub(super) fn update_project(
     let name = input
         .name
         .as_deref()
-        .map(|value| text(value, "name", NAME_MAX))
+        .map(|value| text::single_line(value, "name", NAME_MAX))
         .transpose()?
         .unwrap_or(before.0.clone());
     let prefix = input
@@ -154,12 +146,11 @@ pub(super) fn update_project(
 pub(super) fn delete_project(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: ProjectDelete,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_sensitive_admin(actor, stored, now)?;
+    require_sensitive_admin(actor, now)?;
     let (name, revision): (String, i64) = tx
         .query_row(
             "SELECT name,revision FROM projects WHERE id=?1 AND deleted_at IS NULL",
@@ -228,6 +219,11 @@ pub(super) fn delete_project(
         "DELETE FROM projects WHERE id=?1 AND revision=?2",
         params![input.project_id, expected],
     )?;
-    let entity = json!({"entityType":"project","id":input.project_id,"projectId":input.project_id,"deleted":true,"revision":revision+1});
+    let entity = deleted(
+        "project",
+        &input.project_id,
+        &input.project_id,
+        revision + 1,
+    );
     Ok(Mutation::one(entity, event, "project", &input.project_id))
 }

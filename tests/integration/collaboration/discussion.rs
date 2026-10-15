@@ -1009,7 +1009,7 @@ async fn bulk_inbox_uses_displayed_filter_and_actor_identity_is_immutable() {
         for task_id in ["task", "deleted-task"] {
             snapshot_notification_tx(tx,&actor, NotificationInput {
                 project_id:"p1",event_type:"task.assigned",task_id:Some(task_id),comment_id:None,
-                block_id:None,excerpt:None,payload:json!({})},vec!["bob".into()],now())?;
+                block_id:None,excerpt:None,broadcast: false},vec!["bob".into()],now())?;
         }
         Ok(())
     }).await.unwrap();

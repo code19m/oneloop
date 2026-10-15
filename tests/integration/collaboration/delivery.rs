@@ -118,7 +118,7 @@ async fn competing_workers_claim_an_outbox_message_once() {
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("concurrent"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             available,
@@ -308,7 +308,7 @@ async fn activity_hints_include_task_scope_and_revision_for_targeted_reconciliat
 }
 
 #[tokio::test]
-async fn worker_failures_release_the_lease_and_schedule_a_retry() {
+async fn worker_failures_schedule_a_retry() {
     let SeededProject {
         root: _root, db, ..
     } = seeded_project().await;
@@ -321,11 +321,11 @@ async fn worker_failures_release_the_lease_and_schedule_a_retry() {
     }).await.unwrap();
     let runtime = CollaborationRuntime::new(db.clone());
     assert!(runtime.worker().run_once().await.is_err());
-    let state:(i64,Option<i64>,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
-        "SELECT attempt_count,locked_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
+    let state:(i64,i64,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
+        "SELECT attempt_count,available_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
         |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
     assert_eq!(state.0, 1);
-    assert!(state.1.is_none());
+    assert!(state.1 > available);
     assert!(state.2.is_some());
     assert!(state.3.is_none());
 }
@@ -351,7 +351,7 @@ async fn inbox_state_changes_emit_one_private_hint_and_noops_stay_quiet() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("private"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 event_time,
@@ -483,7 +483,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("event"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 base + index,
@@ -546,7 +546,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("new"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             now(),
@@ -585,6 +585,97 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
 }
 
 #[tokio::test]
+async fn inbox_counts_and_page_come_from_one_snapshot() {
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+    type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+    // Holds the page query, after both counts, until the test has written.
+    fn trace(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event
+            && sql.contains("WITH page AS")
+            && let Some((entered, release)) = GATE.lock().unwrap().take()
+        {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    let SeededProject {
+        root,
+        db,
+        alice,
+        bob,
+    } = seeded_project().await;
+    let first = db
+        .transaction(move |tx| {
+            let mut ids = Vec::new();
+            for excerpt in ["first", "second"] {
+                ids.push(snapshot_notification_tx(
+                    tx,
+                    &alice,
+                    NotificationInput {
+                        project_id: "p1",
+                        event_type: "test",
+                        task_id: None,
+                        comment_id: None,
+                        block_id: None,
+                        excerpt: Some(excerpt),
+                        broadcast: false,
+                    },
+                    vec!["bob".into()],
+                    now(),
+                )?);
+            }
+            Ok(ids[0].clone().unwrap())
+        })
+        .await
+        .unwrap();
+    db.run(move |connection| {
+        connection.execute(
+            "UPDATE notification_recipients SET delivered_at=1 WHERE notification_id=?1",
+            [first],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let reader = oneloop::Db::open_with_pool_size(root.path(), 1).unwrap();
+    reader
+        .run(|connection| {
+            connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    *GATE.lock().unwrap() = Some((entered_tx, release_rx));
+    let read = tokio::spawn(async move {
+        CollaborationService::new(reader)
+            .inbox(&bob, InboxFilter::default(), None, None)
+            .await
+    });
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(10)).unwrap())
+        .await
+        .unwrap();
+    // The second notification is delivered while the Inbox is being read.
+    db.run(|connection| {
+        connection.execute(
+            "UPDATE notification_recipients SET delivered_at=1 WHERE delivered_at IS NULL",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    release_tx.send(()).unwrap();
+    let page = read.await.unwrap().unwrap();
+    assert_eq!(page.items.len() as u64, page.filtered_count);
+    assert_eq!(page.items.len() as u64, page.unread_count);
+}
+
+#[tokio::test]
 async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
     let SeededProject {
         root: _root,
@@ -605,7 +696,7 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
                     comment_id: None,
                     block_id: None,
                     excerpt: Some("event"),
-                    payload: json!({}),
+                    broadcast: false,
                 },
                 vec!["bob".into()],
                 event_time,
@@ -841,7 +932,7 @@ async fn activity_uses_a_fixed_window_and_projects_before_cursor_pagination() {
         })
         .await
         .unwrap();
-    let service = CollaborationService::new(db);
+    let service = CollaborationService::new(db.clone());
     let page = service
         .activity(&bob, "p1", Some("task"), None, Some(2))
         .await
@@ -863,8 +954,7 @@ async fn activity_uses_a_fixed_window_and_projects_before_cursor_pagination() {
     assert_eq!(older.items[0].before, Some(json!("a")));
     assert_eq!(older.items[0].after, Some(json!("c")));
     assert_eq!(older.items[0].created_at, base + 200);
-    let counts: (i64, i64) = service
-        .db()
+    let counts: (i64, i64) = db
         .run(|connection| {
             Ok((
                 connection
@@ -1328,7 +1418,7 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
                 comment_id: None,
                 block_id: None,
                 excerpt: Some("after the timeout"),
-                payload: json!({}),
+                broadcast: false,
             },
             vec!["bob".into()],
             now(),
@@ -1399,13 +1489,13 @@ async fn worker_survives_failed_archive_purge_and_delivers_new_notifications() {
     db.transaction(move |tx| {
         snapshot_notification_tx(tx,&actor,NotificationInput {
             project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("purge me"),payload:json!({})},vec!["bob".into()],now())?;
+            block_id:None,excerpt:Some("purge me"),broadcast: false},vec!["bob".into()],now())?;
         tx.execute("UPDATE notification_recipients SET archived_at=1,read_at=1,delivered_at=1",[])?;
         tx.execute_batch("CREATE TRIGGER fail_purge BEFORE UPDATE OF project_name_snapshot ON notification_recipients
             BEGIN SELECT RAISE(FAIL,'injected purge failure'); END;")?;
         snapshot_notification_tx(tx,&actor,NotificationInput {
             project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("new delivery"),payload:json!({})},vec!["bob".into()],now())?;
+            block_id:None,excerpt:Some("new delivery"),broadcast: false},vec!["bob".into()],now())?;
         Ok(())
     }).await.unwrap();
     let service = CollaborationService::new(db.clone());
@@ -1724,7 +1814,7 @@ async fn ineligible_recipients_skip_events_but_preserve_broadcast_receipts() {
                     comment_id: None,
                     block_id: None,
                     excerpt: None,
-                    payload: json!({"broadcast":broadcast}),
+                    broadcast,
                 },
                 vec!["bob".into()],
                 now(),

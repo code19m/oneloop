@@ -130,7 +130,7 @@ pub struct BlockView {
     pub created_by: String,
     pub created_at: i64,
     pub revision: i64,
-    pub mentions: Vec<super::MentionInput>,
+    pub mentions: Vec<crate::collaboration::MentionToken>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

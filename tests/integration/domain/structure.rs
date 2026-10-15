@@ -619,8 +619,18 @@ async fn assignee_activity_consolidates_both_membership_directions_without_rewri
 #[tokio::test]
 async fn membership_management_needs_admin_access_but_not_a_fresh_password() {
     let f = fixture().await;
-    let mut admin = f.admin.clone();
-    admin.authenticated_at = now() - 3600;
+    let admin = f.admin.clone();
+    // The service reads the sign-in time from the session, as for any request.
+    let signed_in = |at: i64| {
+        f.db.run(move |connection| {
+            connection.execute(
+                "UPDATE sessions SET authenticated_at=?1 WHERE id='s-admin'",
+                [at],
+            )?;
+            Ok(())
+        })
+    };
+    signed_in(now() - 3600).await.unwrap();
     let add = command(
         DomainOperation::AddMembership,
         json!({"projectId":"p2","userId":"u2","manageBoard":false,"manageRoadmap":false}),
@@ -670,7 +680,7 @@ async fn membership_management_needs_admin_access_but_not_a_fresh_password() {
             ..
         })
     ));
-    admin.authenticated_at = now() - 20 * 60;
+    signed_in(now() - 20 * 60).await.unwrap();
     f.service.execute(&admin, delete).await.unwrap();
 }
 
@@ -890,6 +900,56 @@ async fn structural_commands_enforce_permissions_revisions_replay_and_audit() {
                 Ok(stmt.query_map([],|r|r.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?)
             }).await.unwrap();
             assert_eq!(positions, (0..positions.len() as i64).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_retry_needs_the_access_of_its_first_run() {
+    use DomainOperation::*;
+    let cases = [
+        (
+            AddMembership,
+            json!({"projectId":"p2","userId":"u2"}),
+            "UPDATE users SET is_admin=1 WHERE id='u3'; UPDATE users SET is_admin=0 WHERE id='admin';",
+            Some("forbidden"),
+        ),
+        (
+            CreateTrack,
+            json!({"projectId":"p1","name":"Retried"}),
+            "UPDATE project_memberships SET manage_roadmap=0 WHERE project_id='p1';",
+            Some("forbidden"),
+        ),
+        (
+            CreateTask,
+            json!({"projectId":"p1","epicId":"e1","title":"Retried"}),
+            "UPDATE project_memberships SET manage_board=0 WHERE project_id='p1';",
+            Some("forbidden"),
+        ),
+        // A personal Pool item never needed the Board permission.
+        (
+            CreatePoolItem,
+            json!({"projectId":"p1","scope":"personal","title":"Retried"}),
+            "UPDATE project_memberships SET manage_board=0 WHERE project_id='p1';",
+            None,
+        ),
+    ];
+    for (operation, payload, revoke, expected) in cases {
+        let f = fixture().await;
+        let actor = if operation == AddMembership {
+            f.admin.clone()
+        } else {
+            f.manager.clone()
+        };
+        let request = command(operation, payload, "retried", None);
+        f.service.execute(&actor, request.clone()).await.unwrap();
+        f.db.run(move |connection| Ok(connection.execute_batch(revoke)?))
+            .await
+            .unwrap();
+        let retry = f.service.execute(&actor, request).await;
+        match expected {
+            Some(code) => assert_eq!(retry.unwrap_err().code(), code, "{operation:?}"),
+            None => assert!(retry.unwrap().replayed, "{operation:?}"),
         }
     }
 }

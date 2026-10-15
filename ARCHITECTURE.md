@@ -96,8 +96,11 @@ small hints over SSE, and clients then fetch what changed.
   ID metadata documents from public addresses only, `cors` answers clients
   that run in a web page, and `mod.rs` wires the transport and file transfer
   endpoints.
-- `idempotency.rs`: one retry ledger shared by browser and MCP writes.
-- `text.rs`: validation for display text such as titles and comments.
+- `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
+  `Envelope`, which runs each domain and discussion command once around it.
+- `input.rs`: reads command payloads into typed input, with errors that name
+  the field. `text.rs`: validation for display text such as titles and
+  comments.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
@@ -166,9 +169,10 @@ and an update here.
   a removed member or revoked grant loses access at once.
 - **An MCP grant only narrows access.** What a tool call may do is the
   intersection of the person's current permissions, the grant's projects and
-  its scopes. `DomainOperation::mcp_tool` classifies every operation
-  exhaustively, so a new operation stays out of MCP until someone decides where
-  it belongs. Administration never goes through MCP.
+  its scopes. `mcp_route` on `DomainOperation` and `CollaborationOperation`
+  classifies every operation exhaustively, so a new operation stays out of MCP
+  until someone decides where it belongs. Administration never goes through
+  MCP.
 - **Private data stays private, even from admins.** My Pool items and Inbox
   items are visible only to the person they belong to.
 - **Uploaded and synced HTML is never same-origin.** Previews of attachments

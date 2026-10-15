@@ -7,7 +7,7 @@ pub(super) fn create_comment(
     input: CommentCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    let content = canonical_comment(&input.content)?;
+    let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let project_id: String = tx
         .query_row(
             "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
@@ -16,8 +16,8 @@ pub(super) fn create_comment(
         )
         .optional()?
         .ok_or(AppError::NotFound { resource: "task" })?;
-    require_participation(tx, actor, &project_id)?;
-    let mentions = validate_mentions(tx, &project_id, &content, input.mentions)?;
+    require_project(tx, actor, &project_id, Need::Discussion, false)?;
+    let mentions = access::validate_mentions(tx, &project_id, &content, input.mentions, &[])?;
     let id = Uuid::now_v7().to_string();
     let (root_id, reply_author) = match input.reply_to_id.as_deref() {
         Some(reply_to_id) => {
@@ -51,21 +51,37 @@ pub(super) fn create_comment(
             now
         ],
     )?;
-    insert_mentions(tx, &id, &mentions)?;
-    notify_comment_recipients(
+    mentions::replace(tx, Mentioned::Comment(&id), &mentions)?;
+    let excerpt = truncate_excerpt(&content, 240);
+    let notified = mentions::notify(
         tx,
         actor,
-        CommentNotificationContext {
+        MentionNotice {
+            item: Mentioned::Comment(&id),
             project_id: &project_id,
             task_id: &input.task_id,
-            comment_id: &id,
-            content: &content,
+            excerpt: &excerpt,
             mentions: &mentions,
-            previous_mentions: &[],
-            reply_author: reply_author.as_deref(),
-            editing: false,
-            now,
+            previous: &[],
         },
+        now,
+    )?;
+    // The author of the comment replied to hears about it, once.
+    let reply_author = reply_author.filter(|author| !notified.contains(author));
+    snapshot_notification_tx(
+        tx,
+        actor,
+        NotificationInput {
+            project_id: &project_id,
+            event_type: "discussion.reply",
+            task_id: Some(&input.task_id),
+            comment_id: Some(&id),
+            block_id: None,
+            excerpt: Some(&excerpt),
+            broadcast: false,
+        },
+        reply_author,
+        now,
     )?;
     let event = record_activity_tx(
         tx,
@@ -105,27 +121,22 @@ pub(super) fn edit_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict(
             "deleted comments cannot be edited".into(),
         ));
     }
     ensure_revision(before.revision, expected_revision)?;
-    let content = canonical_comment(&input.content)?;
+    let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let retained: Vec<_> = before
         .mentions
         .iter()
         .filter_map(|token| token.user_id.clone())
         .collect();
-    let mentions = crate::access::validate_mentions_retaining(
-        tx,
-        &before.project_id,
-        &content,
-        input.mentions,
-        &retained,
-    )?;
+    let mentions =
+        access::validate_mentions(tx, &before.project_id, &content, input.mentions, &retained)?;
     let before_fingerprint = comment_fingerprint(
         before.content.as_deref().unwrap_or_default(),
         &before.mentions,
@@ -144,11 +155,7 @@ pub(super) fn edit_comment(
          WHERE id=?3 AND revision=?4 AND deleted_at IS NULL",
         params![content, now, input.comment_id, expected_revision],
     )?;
-    tx.execute(
-        "DELETE FROM comment_mentions WHERE comment_id=?1",
-        [&input.comment_id],
-    )?;
-    insert_mentions(tx, &input.comment_id, &mentions)?;
+    mentions::replace(tx, Mentioned::Comment(&input.comment_id), &mentions)?;
     invalidate_comment_inboxes_tx(tx, &input.comment_id, now)?;
     let excerpt = truncate_excerpt(&content, 240);
     tx.execute(
@@ -156,20 +163,18 @@ pub(super) fn edit_comment(
          WHERE notification_id IN (SELECT id FROM notification_events WHERE comment_id=?2)",
         params![excerpt, input.comment_id],
     )?;
-    notify_comment_recipients(
+    mentions::notify(
         tx,
         actor,
-        CommentNotificationContext {
+        MentionNotice {
+            item: Mentioned::Comment(&input.comment_id),
             project_id: &before.project_id,
             task_id: &before.task_id,
-            comment_id: &input.comment_id,
-            content: &content,
+            excerpt: &excerpt,
             mentions: &mentions,
-            previous_mentions: &before.mentions,
-            reply_author: None,
-            editing: true,
-            now,
+            previous: &before.mentions,
         },
+        now,
     )?;
     let event = record_activity_tx(
         tx,
@@ -205,9 +210,9 @@ pub(super) fn delete_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict("comment is already deleted".into()));
     }
@@ -263,9 +268,9 @@ pub(super) fn restore_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_participation(tx, actor, &before.project_id)?;
-    require_mcp_scope_connection(tx, actor, "destructive", Some(&before.project_id))?;
-    require_comment_owner_or_admin(tx, actor, &before.author_id)?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
+    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_comment_owner_or_admin(actor, &before.author_id)?;
     let Some(deleted_at) = before.deleted_at else {
         return Err(AppError::Conflict("the comment is not deleted".into()));
     };
@@ -337,16 +342,10 @@ pub(super) fn tombstone_comment_replays(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    let tombstone = serde_json::to_value(comment)
-        .map_err(|error| AppError::internal(format!("serialize deleted comment: {error}")))?;
     for (id, response) in rows {
-        let mut result: CollaborationCommandResult = serde_json::from_str(&response)
+        let mut result: CommandResult = serde_json::from_str(&response)
             .map_err(|error| AppError::internal(format!("read comment retry response: {error}")))?;
-        for entity in &mut result.entities {
-            if entity.get("id").and_then(Value::as_str) == Some(comment.id.as_str()) {
-                *entity = tombstone.clone();
-            }
-        }
+        replace_comment(&mut result, comment)?;
         tx.execute(
             "UPDATE idempotency_keys SET response_json=?1 WHERE id=?2",
             params![
@@ -360,123 +359,15 @@ pub(super) fn tombstone_comment_replays(
     Ok(())
 }
 
-pub(super) fn notify_comment_recipients(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    context: CommentNotificationContext<'_>,
-) -> AppResult<()> {
-    let mut previous: BTreeSet<String> = if context.editing {
-        let mut statement = tx.prepare(
-            "SELECT DISTINCT r.user_id FROM notification_recipients r
-             JOIN notification_events n ON n.id=r.notification_id WHERE n.comment_id=?1",
-        )?;
-        statement
-            .query_map([context.comment_id], |row| row.get(0))?
-            .collect::<Result<_, _>>()?
-    } else {
-        BTreeSet::new()
-    };
-    previous.extend(
-        context
-            .previous_mentions
-            .iter()
-            .filter_map(|token| token.user_id.clone()),
-    );
-    let mut direct: BTreeSet<String> = context
-        .mentions
-        .iter()
-        .filter(|token| token.kind == MentionKind::User)
-        .filter_map(|token| token.user_id.clone())
-        .filter(|id| !previous.contains(id))
-        .collect();
-    direct.remove(&actor.user_id);
-    let had_everyone = context
-        .previous_mentions
-        .iter()
-        .any(|token| token.kind == MentionKind::Everyone)
-        || (context.editing
-            && tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM notification_events
-         WHERE comment_id=?1 AND json_extract(payload_json,'$.broadcast')=1)",
-                [context.comment_id],
-                |row| row.get(0),
-            )?);
-    let has_everyone = context
-        .mentions
-        .iter()
-        .any(|token| token.kind == MentionKind::Everyone);
-    let mut everyone = BTreeSet::new();
-    if has_everyone && !had_everyone {
-        enforce_broadcast_cooldown(tx, actor, context.project_id, context.now)?;
-        let mut statement = tx.prepare(
-            "SELECT m.user_id FROM project_memberships m JOIN users u ON u.id=m.user_id
-             WHERE m.project_id=?1 AND u.is_active=1",
-        )?;
-        everyone = statement
-            .query_map([context.project_id], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
-        everyone.remove(&actor.user_id);
-        everyone.retain(|id| !direct.contains(id) && !previous.contains(id));
+/// Puts `comment` in place of the same comment among a result's entities.
+pub(super) fn replace_comment(result: &mut CommandResult, comment: &CommentView) -> AppResult<()> {
+    let value = serde_json::to_value(comment)
+        .map_err(|error| AppError::internal(format!("serialize comment: {error}")))?;
+    for entity in &mut result.entities {
+        if entity.get("id").and_then(Value::as_str) == Some(comment.id.as_str()) {
+            *entity = value.clone();
+        }
     }
-    let reply = context
-        .reply_author
-        .into_iter()
-        .filter(|&id| {
-            id != actor.user_id.as_str()
-                && !direct.contains(id)
-                && !everyone.contains(id)
-                && !previous.contains(id)
-        })
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let excerpt = truncate_excerpt(context.content, 240);
-    snapshot_notification_tx(
-        tx,
-        actor,
-        NotificationInput {
-            project_id: context.project_id,
-            event_type: "discussion.mention",
-            task_id: Some(context.task_id),
-            comment_id: Some(context.comment_id),
-            block_id: None,
-            excerpt: Some(&excerpt),
-            payload: json!({"broadcast": false}),
-        },
-        direct,
-        context.now,
-    )?;
-    if has_everyone && !had_everyone {
-        snapshot_notification_tx(
-            tx,
-            actor,
-            NotificationInput {
-                project_id: context.project_id,
-                event_type: "discussion.everyone",
-                task_id: Some(context.task_id),
-                comment_id: Some(context.comment_id),
-                block_id: None,
-                excerpt: Some(&excerpt),
-                payload: json!({"broadcast": true}),
-            },
-            everyone,
-            context.now,
-        )?;
-    }
-    snapshot_notification_tx(
-        tx,
-        actor,
-        NotificationInput {
-            project_id: context.project_id,
-            event_type: "discussion.reply",
-            task_id: Some(context.task_id),
-            comment_id: Some(context.comment_id),
-            block_id: None,
-            excerpt: Some(&excerpt),
-            payload: json!({"broadcast": false}),
-        },
-        reply,
-        context.now,
-    )?;
     Ok(())
 }
 

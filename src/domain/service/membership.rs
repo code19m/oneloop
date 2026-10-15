@@ -4,11 +4,10 @@ use super::*;
 pub(super) fn add_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipCreate,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     ensure_project_and_active_user(tx, &input.project_id, &input.user_id)?;
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
     // Raw membership history is permanent, including removals. Reuse its
@@ -41,14 +40,14 @@ pub(super) fn add_membership(
             error.into()
         }
     })?;
-    let entity = json!({
-    "entityType":"membership",
-    "projectId":input.project_id,
-    "userId":input.user_id,
-    "manageRoadmap":input.manage_roadmap,
-    "manageBoard":input.manage_board,
-    "revision":revision
-    });
+    let entity = Entity::Membership(MembershipView {
+        project_id: input.project_id.clone(),
+        user_id: input.user_id.clone(),
+        manage_roadmap: input.manage_roadmap,
+        manage_board: input.manage_board,
+        revision,
+    })
+    .value()?;
     let event = activity(
         tx,
         actor,
@@ -73,15 +72,14 @@ pub(super) fn add_membership(
 pub(super) fn update_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     let before: (bool, bool, i64) = tx
         .query_row(
-            SELECT_PROJECT_MEMBERSHIPS_SQL,
+            MEMBERSHIP_PERMISSIONS_SQL,
             params![input.project_id, input.user_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -108,14 +106,14 @@ pub(super) fn update_membership(
             expected
         ],
     )?;
-    let entity = json!({
-    "entityType":"membership",
-    "projectId":input.project_id,
-    "userId":input.user_id,
-    "manageRoadmap":input.manage_roadmap,
-    "manageBoard":input.manage_board,
-    "revision":revision
-    });
+    let entity = Entity::Membership(MembershipView {
+        project_id: input.project_id.clone(),
+        user_id: input.user_id.clone(),
+        manage_roadmap: input.manage_roadmap,
+        manage_board: input.manage_board,
+        revision,
+    })
+    .value()?;
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
     let event = activity(
         tx,
@@ -142,12 +140,11 @@ pub(super) fn update_membership(
 pub(super) fn remove_membership(
     tx: &Transaction<'_>,
     actor: &Actor,
-    stored: &StoredActor,
     input: MembershipDelete,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
-    require_admin(actor, stored)?;
+    actor.require_admin()?;
     let revision: i64 = tx
         .query_row(
             "SELECT revision FROM project_memberships WHERE project_id=?1 AND user_id=?2",
@@ -158,7 +155,7 @@ pub(super) fn remove_membership(
         .ok_or_else(|| not_found("membership"))?;
     ensure_revision(revision, expected)?;
     let unfinished: bool = tx.query_row(
-        SELECT_TASK_ASSIGNEES_SQL,
+        HAS_OPEN_ASSIGNMENTS_SQL,
         params![input.user_id, input.project_id],
         |row| row.get(0),
     )?;

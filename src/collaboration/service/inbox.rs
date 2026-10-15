@@ -18,7 +18,7 @@ pub(super) fn inbox_item_change(
         params![
             input.notification_id,
             actor.user_id,
-            inbox_grant_id(actor),
+            actor.mcp_grant_id(),
             now.saturating_sub(ARCHIVE_RETENTION_SECONDS)
         ],
         |row| row.get(0),
@@ -99,7 +99,7 @@ pub(super) fn inbox_bulk_change(
             filter.unread_only,
             project_ids,
             !filter.project_ids.is_empty(),
-            inbox_grant_id(actor),
+            actor.mcp_grant_id(),
             now
         ],
     )?;
@@ -110,7 +110,7 @@ pub(super) fn inbox_bulk_change(
     Ok(Mutation {
         entities: vec![entity],
         events: Vec::new(),
-        resource_type: Some("inbox".into()),
+        resource_type: "inbox",
         resource_id: None,
     })
 }
@@ -129,12 +129,6 @@ pub(crate) fn enqueue_inbox_change_tx(
     Ok(())
 }
 
-pub(super) fn inbox_grant_id(actor: &Actor) -> Option<&str> {
-    match &actor.source {
-        ActorSource::McpGrant { grant_id } => Some(grant_id),
-        ActorSource::BrowserSession { .. } => None,
-    }
-}
 #[derive(Clone, Copy)]
 pub(super) enum InboxChange {
     Read,

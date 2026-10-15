@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::{
+    access::{McpRoute, McpTool, Need},
+    collaboration::MentionToken,
+    idempotency::RevisionRule,
+};
+
 /// Patch fields distinguish omission (keep) from an explicit null (clear).
 fn nullable_patch<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -26,90 +32,156 @@ pub(crate) fn require_undo_window(item: &str, deleted_at: i64, now: i64) -> crat
     )))
 }
 
-/// Stable command vocabulary shared by HTTP and MCP adapters.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
-pub enum DomainOperation {
-    #[serde(rename = "project.create")]
-    CreateProject,
-    #[serde(rename = "project.update")]
-    UpdateProject,
-    #[serde(rename = "project.delete")]
-    DeleteProject,
-    #[serde(rename = "membership.add")]
-    AddMembership,
-    #[serde(rename = "membership.update")]
-    UpdateMembership,
-    #[serde(rename = "membership.remove")]
-    RemoveMembership,
-    #[serde(rename = "track.create")]
-    CreateTrack,
-    #[serde(rename = "track.update")]
-    UpdateTrack,
-    #[serde(rename = "track.reorder")]
-    ReorderTrack,
-    #[serde(rename = "track.delete")]
-    DeleteTrack,
-    #[serde(rename = "epic.create")]
-    CreateEpic,
-    #[serde(rename = "epic.update")]
-    UpdateEpic,
-    #[serde(rename = "epic.complete")]
-    CompleteEpic,
-    #[serde(rename = "epic.reopen")]
-    ReopenEpic,
-    #[serde(rename = "epic.delete")]
-    DeleteEpic,
-    #[serde(rename = "milestone.create")]
-    CreateMilestone,
-    #[serde(rename = "milestone.update")]
-    UpdateMilestone,
-    #[serde(rename = "milestone.delete")]
-    DeleteMilestone,
-    #[serde(rename = "task.create")]
-    CreateTask,
-    #[serde(rename = "task.update")]
-    UpdateTask,
-    #[serde(rename = "task.move")]
-    MoveTask,
-    #[serde(rename = "task.delete")]
-    DeleteTask,
-    #[serde(rename = "task.restore")]
-    RestoreTask,
-    #[serde(rename = "task.block")]
-    BlockTask,
-    #[serde(rename = "task.block.update")]
-    UpdateBlockReason,
-    #[serde(rename = "task.unblock")]
-    UnblockTask,
-    #[serde(rename = "task.unblock-and-complete")]
-    UnblockAndCompleteTask,
-    #[serde(rename = "pool.create")]
-    CreatePoolItem,
-    #[serde(rename = "pool.update")]
-    UpdatePoolItem,
-    #[serde(rename = "pool.delete")]
-    DeletePoolItem,
-    #[serde(rename = "pool.promote")]
-    PromotePoolItem,
+crate::idempotency::operations! {
+    /// Stable command vocabulary shared by HTTP and MCP adapters.
+    pub enum DomainOperation {
+        CreateProject = "project.create",
+        UpdateProject = "project.update",
+        DeleteProject = "project.delete",
+        AddMembership = "membership.add",
+        UpdateMembership = "membership.update",
+        RemoveMembership = "membership.remove",
+        CreateTrack = "track.create",
+        UpdateTrack = "track.update",
+        ReorderTrack = "track.reorder",
+        DeleteTrack = "track.delete",
+        CreateEpic = "epic.create",
+        UpdateEpic = "epic.update",
+        CompleteEpic = "epic.complete",
+        ReopenEpic = "epic.reopen",
+        DeleteEpic = "epic.delete",
+        CreateMilestone = "milestone.create",
+        UpdateMilestone = "milestone.update",
+        DeleteMilestone = "milestone.delete",
+        CreateTask = "task.create",
+        UpdateTask = "task.update",
+        MoveTask = "task.move",
+        DeleteTask = "task.delete",
+        RestoreTask = "task.restore",
+        BlockTask = "task.block",
+        UpdateBlockReason = "task.block.update",
+        UnblockTask = "task.unblock",
+        UnblockAndCompleteTask = "task.unblock-and-complete",
+        CreatePoolItem = "pool.create",
+        UpdatePoolItem = "pool.update",
+        DeletePoolItem = "pool.delete",
+        PromotePoolItem = "pool.promote",
+    }
+}
+
+/// What a domain operation needs from its caller. A retry checks it again
+/// before it returns the stored result.
+#[derive(Clone, Copy)]
+pub(crate) enum Access {
+    /// An administrator in the browser.
+    Admin,
+    /// An administrator in the browser who signed in recently.
+    SensitiveAdmin,
+    /// Access to the project, and an MCP client's destructive scope when
+    /// `destructive`.
+    Project { need: Need, destructive: bool },
 }
 
 impl DomainOperation {
-    /// Exhaustive classification keeps new operations out of MCP until reviewed.
-    pub fn mcp_tool(self) -> Option<&'static str> {
+    pub(crate) fn revision_rule(self) -> RevisionRule {
+        if self.creates() {
+            RevisionRule::Create
+        } else {
+            RevisionRule::Existing
+        }
+    }
+
+    /// Whether the operation makes a new record, which has no revision yet.
+    pub(crate) fn creates(self) -> bool {
+        match self {
+            Self::CreateProject
+            | Self::AddMembership
+            | Self::CreateTrack
+            | Self::CreateEpic
+            | Self::CreateMilestone
+            | Self::CreateTask
+            | Self::CreatePoolItem => true,
+            Self::UpdateProject
+            | Self::DeleteProject
+            | Self::UpdateMembership
+            | Self::RemoveMembership
+            | Self::UpdateTrack
+            | Self::ReorderTrack
+            | Self::DeleteTrack
+            | Self::UpdateEpic
+            | Self::CompleteEpic
+            | Self::ReopenEpic
+            | Self::DeleteEpic
+            | Self::UpdateMilestone
+            | Self::DeleteMilestone
+            | Self::UpdateTask
+            | Self::MoveTask
+            | Self::DeleteTask
+            | Self::RestoreTask
+            | Self::BlockTask
+            | Self::UpdateBlockReason
+            | Self::UnblockTask
+            | Self::UnblockAndCompleteTask
+            | Self::UpdatePoolItem
+            | Self::DeletePoolItem
+            | Self::PromotePoolItem => false,
+        }
+    }
+
+    /// The access each handler checks. A personal Pool item needs only read
+    /// access and the private Pool; its handlers and retries check that.
+    pub(crate) fn access(self) -> Access {
+        let project = |need, destructive| Access::Project { need, destructive };
+        match self {
+            Self::CreateProject
+            | Self::UpdateProject
+            | Self::AddMembership
+            | Self::UpdateMembership
+            | Self::RemoveMembership => Access::Admin,
+            Self::DeleteProject => Access::SensitiveAdmin,
+            Self::CreateTrack
+            | Self::UpdateTrack
+            | Self::ReorderTrack
+            | Self::CreateEpic
+            | Self::UpdateEpic
+            | Self::CompleteEpic
+            | Self::ReopenEpic
+            | Self::CreateMilestone
+            | Self::UpdateMilestone => project(Need::Roadmap, false),
+            Self::DeleteTrack | Self::DeleteEpic | Self::DeleteMilestone => {
+                project(Need::Roadmap, true)
+            }
+            Self::CreateTask
+            | Self::UpdateTask
+            | Self::MoveTask
+            | Self::BlockTask
+            | Self::UpdateBlockReason
+            | Self::UnblockTask
+            | Self::UnblockAndCompleteTask
+            | Self::CreatePoolItem
+            | Self::UpdatePoolItem
+            | Self::PromotePoolItem => project(Need::Board, false),
+            // Restoring is the Undo of a deletion, so it needs what deleting needs.
+            Self::DeleteTask | Self::RestoreTask | Self::DeletePoolItem => {
+                project(Need::Board, true)
+            }
+        }
+    }
+
+    pub(crate) fn mcp_route(self) -> McpRoute {
         match self {
             Self::CreateProject
             | Self::UpdateProject
             | Self::DeleteProject
             | Self::AddMembership
             | Self::UpdateMembership
-            | Self::RemoveMembership => None,
-            // Undo belongs to the browser's delete flow (see the MCP tools).
-            Self::RestoreTask => None,
+            | Self::RemoveMembership => McpRoute::Administration,
+            Self::RestoreTask => McpRoute::Undo,
             Self::DeleteTrack
             | Self::DeleteEpic
             | Self::DeleteMilestone
             | Self::DeleteTask
-            | Self::DeletePoolItem => Some("execute_destructive_command"),
+            | Self::DeletePoolItem => McpRoute::Tool(McpTool::Destructive),
             Self::CreateTrack
             | Self::UpdateTrack
             | Self::ReorderTrack
@@ -128,43 +200,7 @@ impl DomainOperation {
             | Self::UnblockAndCompleteTask
             | Self::CreatePoolItem
             | Self::UpdatePoolItem
-            | Self::PromotePoolItem => Some("execute_work_command"),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::CreateProject => "project.create",
-            Self::UpdateProject => "project.update",
-            Self::DeleteProject => "project.delete",
-            Self::AddMembership => "membership.add",
-            Self::UpdateMembership => "membership.update",
-            Self::RemoveMembership => "membership.remove",
-            Self::CreateTrack => "track.create",
-            Self::UpdateTrack => "track.update",
-            Self::ReorderTrack => "track.reorder",
-            Self::DeleteTrack => "track.delete",
-            Self::CreateEpic => "epic.create",
-            Self::UpdateEpic => "epic.update",
-            Self::CompleteEpic => "epic.complete",
-            Self::ReopenEpic => "epic.reopen",
-            Self::DeleteEpic => "epic.delete",
-            Self::CreateMilestone => "milestone.create",
-            Self::UpdateMilestone => "milestone.update",
-            Self::DeleteMilestone => "milestone.delete",
-            Self::CreateTask => "task.create",
-            Self::UpdateTask => "task.update",
-            Self::MoveTask => "task.move",
-            Self::DeleteTask => "task.delete",
-            Self::RestoreTask => "task.restore",
-            Self::BlockTask => "task.block",
-            Self::UpdateBlockReason => "task.block.update",
-            Self::UnblockTask => "task.unblock",
-            Self::UnblockAndCompleteTask => "task.unblock-and-complete",
-            Self::CreatePoolItem => "pool.create",
-            Self::UpdatePoolItem => "pool.update",
-            Self::DeletePoolItem => "pool.delete",
-            Self::PromotePoolItem => "pool.promote",
+            | Self::PromotePoolItem => McpRoute::Tool(McpTool::Work),
         }
     }
 }
@@ -180,13 +216,7 @@ pub struct CommandEnvelope {
     pub expected_revision: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommandResult {
-    pub entities: Vec<Value>,
-    pub events: Vec<DomainEvent>,
-    pub replayed: bool,
-}
+pub use crate::idempotency::CommandResult;
 
 pub type DomainEvent = crate::collaboration::ActivityEvent;
 
@@ -405,15 +435,13 @@ pub struct TaskMove {
     pub after_task_id: Option<String>,
 }
 
-pub use crate::collaboration::{MentionKind, MentionToken as MentionInput};
-
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskBlock {
     pub task_id: String,
     pub reason: String,
     #[serde(default)]
-    pub mentions: Vec<MentionInput>,
+    pub mentions: Vec<MentionToken>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -422,7 +450,7 @@ pub struct BlockReasonUpdate {
     pub block_id: String,
     pub reason: String,
     #[serde(default)]
-    pub mentions: Vec<MentionInput>,
+    pub mentions: Vec<MentionToken>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]

@@ -3,6 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::{
+    access::{McpRoute, McpTool},
+    idempotency::RevisionRule,
+};
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollaborationCommand {
@@ -14,12 +19,68 @@ pub struct CollaborationCommand {
     pub expected_revision: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollaborationCommandResult {
-    pub entities: Vec<Value>,
-    pub events: Vec<ActivityEvent>,
-    pub replayed: bool,
+crate::idempotency::operations! {
+    /// Discussion and Inbox commands.
+    pub(crate) enum CollaborationOperation {
+        CreateComment = "discussion.comment.create",
+        EditComment = "discussion.comment.edit",
+        DeleteComment = "discussion.comment.delete",
+        RestoreComment = "discussion.comment.restore",
+        MarkRead = "inbox.markRead",
+        MarkUnread = "inbox.markUnread",
+        Archive = "inbox.archive",
+        RestoreArchived = "inbox.restore",
+        BulkMarkRead = "inbox.bulkMarkRead",
+        BulkArchive = "inbox.bulkArchive",
+    }
+}
+
+impl CollaborationOperation {
+    pub(crate) fn revision_rule(self) -> RevisionRule {
+        match self {
+            Self::EditComment | Self::DeleteComment | Self::RestoreComment => {
+                RevisionRule::ExistingInput
+            }
+            Self::CreateComment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Archive
+            | Self::RestoreArchived
+            | Self::BulkMarkRead
+            | Self::BulkArchive => RevisionRule::Optional,
+        }
+    }
+
+    pub(crate) fn mcp_route(self) -> McpRoute {
+        match self {
+            Self::DeleteComment => McpRoute::Tool(McpTool::Destructive),
+            Self::RestoreComment => McpRoute::Undo,
+            Self::CreateComment
+            | Self::EditComment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Archive
+            | Self::RestoreArchived
+            | Self::BulkMarkRead
+            | Self::BulkArchive => McpRoute::Tool(McpTool::Discussion),
+        }
+    }
+
+    /// Inbox changes act on the caller's private Inbox.
+    pub(crate) fn is_inbox(self) -> bool {
+        match self {
+            Self::CreateComment
+            | Self::EditComment
+            | Self::DeleteComment
+            | Self::RestoreComment => false,
+            Self::MarkRead
+            | Self::MarkUnread
+            | Self::Archive
+            | Self::RestoreArchived
+            | Self::BulkMarkRead
+            | Self::BulkArchive => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]

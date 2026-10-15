@@ -6,30 +6,35 @@ mod inbox;
 pub(crate) use inbox::enqueue_inbox_change_tx;
 use inbox::*;
 
-use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
 use std::collections::BTreeSet;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    auth::{Actor, ActorSource},
+    access::{self, Need, require_project},
+    auth::{Actor, refresh_actor_connection},
+    clock::unix_now,
+    idempotency::{CommandResult, Envelope, Mutation},
+    input::parse_payload,
 };
 
 use super::{
-    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationCommandResult,
+    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationOperation,
     CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
-    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionKind,
-    MentionToken, NotificationInput, record_activity_tx, snapshot_notification_tx,
+    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken,
+    NotificationInput,
+    mentions::{self, MentionNotice, Mentioned},
+    record_activity_tx, snapshot_notification_tx,
 };
 
-use crate::access::enforce_broadcast_cooldown;
 pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+const COMMENT_MAX: usize = 2_000;
 const DEFAULT_PAGE_SIZE: usize = 50;
 /// Deleted comments whose text the Undo window no longer needs.
 const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
@@ -52,18 +57,6 @@ const INBOX_FILTER_SQL: &str = "
       AND (?7 IS NULL OR n.project_id IN
         (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))";
 
-struct CommentNotificationContext<'a> {
-    project_id: &'a str,
-    task_id: &'a str,
-    comment_id: &'a str,
-    content: &'a str,
-    mentions: &'a [MentionToken],
-    previous_mentions: &'a [MentionToken],
-    reply_author: Option<&'a str>,
-    editing: bool,
-    now: i64,
-}
-
 #[derive(Clone)]
 pub struct CollaborationService {
     db: Db,
@@ -74,17 +67,11 @@ impl CollaborationService {
         Self { db }
     }
 
-    pub fn db(&self) -> &Db {
-        &self.db
-    }
-
     /// Rechecks an SSE principal without extending browser idle expiry.
     pub async fn actor_is_current(&self, actor: &Actor) -> AppResult<bool> {
         let actor = actor.clone();
         self.db
-            .run(move |connection| {
-                authorization_decision(authorize_actor_connection(connection, &actor, unix_now()?))
-            })
+            .run(move |connection| access::allowed(refresh_actor_connection(connection, &actor)))
             .await
     }
 
@@ -99,18 +86,16 @@ impl CollaborationService {
         let project_id = project_id.map(str::to_owned);
         self.db
             .run(move |connection| {
-                if !authorization_decision(authorize_actor_connection(
-                    connection,
-                    &actor,
-                    unix_now()?,
-                ))? {
+                if !access::allowed(refresh_actor_connection(connection, &actor))? {
                     return Ok(false);
                 }
                 match project_id {
-                    Some(project_id) => authorization_decision(require_project_read_connection(
+                    Some(project_id) => access::allowed(require_project(
                         connection,
                         &actor,
                         &project_id,
+                        Need::Read,
+                        false,
                     )),
                     None => Ok(true),
                 }
@@ -119,100 +104,39 @@ impl CollaborationService {
     }
 
     pub fn supports(operation: &str) -> bool {
-        matches!(
-            operation,
-            "discussion.comment.create"
-                | "discussion.comment.edit"
-                | "discussion.comment.delete"
-                | "discussion.comment.restore"
-                | "inbox.markRead"
-                | "inbox.markUnread"
-                | "inbox.archive"
-                | "inbox.restore"
-                | "inbox.bulkMarkRead"
-                | "inbox.bulkArchive"
-        )
+        CollaborationOperation::parse(operation).is_some()
     }
 
     pub async fn execute(
         &self,
         actor: &Actor,
         command: CollaborationCommand,
-    ) -> AppResult<CollaborationCommandResult> {
+    ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        if !Self::supports(&command.operation) {
-            return Err(AppError::validation(
-                "operation",
-                "unsupported collaboration operation",
-            ));
-        }
-        validate_idempotency_key(&command.idempotency_key)?;
-        validate_revision_contract(&command)?;
-        let request_hash = request_hash(&command)?;
+        let operation = CollaborationOperation::parse(&command.operation).ok_or_else(|| {
+            AppError::validation("operation", "unsupported collaboration operation")
+        })?;
+        let envelope = Envelope::new(
+            operation.as_str(),
+            &command.payload,
+            &command.idempotency_key,
+            command.expected_revision,
+            operation.revision_rule(),
+        )?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                authorize_actor_connection(tx, &actor, now)?;
-                if let Some(mut result) = replay(tx, &actor, &command, &request_hash)? {
-                    authorize_replay(tx, &actor, &command)?;
-                    if matches!(
-                        command.operation.as_str(),
-                        "discussion.comment.create" | "discussion.comment.edit"
-                    ) && let Some(comment_id) = result
-                        .entities
-                        .first()
-                        .and_then(|entity| entity.get("id"))
-                        .and_then(Value::as_str)
-                    {
-                        let canonical = comment_view_tx(tx, comment_id)?;
-                        if canonical.deleted_at.is_some() {
-                            // Older databases may still hold a live-looking response from
-                            // before deletion began scrubbing cached receipts.
-                            tombstone_comment_replays(tx, &canonical)?;
-                            result =
-                                replay(tx, &actor, &command, &request_hash)?.ok_or_else(|| {
-                                    AppError::internal("comment retry receipt disappeared")
-                                })?;
-                        }
-                    }
-                    result.replayed = true;
-                    return Ok(result);
-                }
-                let idempotency_id = crate::idempotency::start(
+                envelope.run(
                     tx,
                     &actor,
-                    &Uuid::now_v7().to_string(),
-                    &command.idempotency_key,
-                    &command.operation,
-                    &request_hash,
                     now,
-                )?;
-                let mutation = dispatch(tx, &actor, &command, now)?;
-                let result = CollaborationCommandResult {
-                    entities: mutation.entities,
-                    events: mutation.events,
-                    replayed: false,
-                };
-                let response = serde_json::to_string(&result).map_err(|error| {
-                    AppError::internal(format!("serialize collaboration response: {error}"))
-                })?;
-                crate::idempotency::succeed(
-                    tx,
-                    &idempotency_id,
-                    crate::idempotency::Receipt {
-                        status: 200,
-                        response: &response,
-                        resource_type: mutation.resource_type.as_deref(),
-                        resource_id: mutation.resource_id.as_deref(),
-                        project_id: result
-                            .events
-                            .iter()
-                            .find_map(|event| event.project_id.as_deref()),
+                    |actor, replay| {
+                        authorize_replay(tx, actor, operation, &command.payload)?;
+                        show_deleted_comment(tx, operation, replay)
                     },
-                    now,
-                )?;
-                Ok(result)
+                    |actor| dispatch(tx, actor, operation, &command, now),
+                )
             })
             .await
     }
@@ -230,12 +154,12 @@ impl CollaborationService {
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
         self.db.snapshot(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
                 [&task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -266,12 +190,12 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
         self.db.snapshot(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
                 [&task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -292,14 +216,14 @@ impl CollaborationService {
         let actor = actor.clone();
         let task_id = task_id.to_owned();
         let block_id = block_id.to_owned();
-        self.db.run(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
+        self.db.snapshot(move |connection| {
+            let actor = refresh_actor_connection(connection, &actor)?;
             let project_id: String = connection.query_row(
                 "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
                  WHERE b.id=?1 AND b.task_id=?2 AND t.deleted_at IS NULL",
                 params![block_id, task_id], |row| row.get(0),
             ).optional()?.ok_or(AppError::NotFound { resource: "task block" })?;
-            require_project_read_connection(connection, &actor, &project_id)?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
             let columns = "id,project_id,entity_type,entity_id,task_id,actor_user_id,actor_name_snapshot,
                 event_type,field_key,before_json,after_json,metadata_json,entity_revision,latest_at";
             let mut statement = connection.prepare(&format!(
@@ -334,9 +258,9 @@ impl CollaborationService {
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
         self.db
-            .run(move |connection| {
-                authorize_actor_connection(connection, &actor, unix_now()?)?;
-                require_project_read_connection(connection, &actor, &project_id)?;
+            .snapshot(move |connection| {
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
                 let mut visible = activity_projection_stream(
                     connection,
                     &project_id,
@@ -386,9 +310,9 @@ impl CollaborationService {
         let actor = actor.clone();
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
-        self.db.run(move |connection| {
-            authorize_actor_connection(connection, &actor, unix_now()?)?;
-            require_mcp_scope_connection(connection, &actor, "inbox_private", None)?;
+        self.db.snapshot(move |connection| {
+            let actor = refresh_actor_connection(connection, &actor)?;
+            access::require_scope(connection, &actor, "inbox_private", None)?;
             validate_inbox_projects(connection, &actor, &filter.project_ids)?;
             let unread_count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM notification_recipients r
@@ -396,7 +320,7 @@ impl CollaborationService {
                  WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL AND r.read_at IS NULL AND r.archived_at IS NULL
                  AND (?2 IS NULL OR n.project_id IN
                    (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?2))",
-                params![actor.user_id, inbox_grant_id(&actor)], |row| row.get(0),
+                params![actor.user_id, actor.mcp_grant_id()], |row| row.get(0),
             )?;
             let cutoff = unix_now()?.saturating_sub(ARCHIVE_RETENTION_SECONDS);
             let project_ids = serde_json::to_string(&filter.project_ids)
@@ -407,7 +331,7 @@ impl CollaborationService {
                     JOIN notification_events n ON n.id=r.notification_id
                     {INBOX_FILTER_SQL}"),
                 params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), inbox_grant_id(&actor)],
+                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id()],
                 |row| row.get(0),
             )?;
             let mut statement = connection.prepare(&format!(
@@ -443,7 +367,7 @@ impl CollaborationService {
             let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
             let rows = statement.query_map(
                 params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), inbox_grant_id(&actor), cursor_time, cursor_id,
+                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id(), cursor_time, cursor_id,
                     (limit + 1) as i64],
                 inbox_row,
             )?;
@@ -503,139 +427,46 @@ impl CollaborationService {
     }
 }
 
-struct Mutation {
-    entities: Vec<Value>,
-    events: Vec<ActivityEvent>,
-    resource_type: Option<String>,
-    resource_id: Option<String>,
-}
-
-impl Mutation {
-    fn new(
-        entity: Value,
-        events: Vec<ActivityEvent>,
-        resource_type: &str,
-        resource_id: &str,
-    ) -> Self {
-        Self {
-            entities: vec![entity],
-            events,
-            resource_type: Some(resource_type.to_owned()),
-            resource_id: Some(resource_id.to_owned()),
-        }
-    }
-}
-
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
+    operation: CollaborationOperation,
     command: &CollaborationCommand,
     now: i64,
 ) -> AppResult<Mutation> {
-    if command.operation.starts_with("inbox.") {
-        require_mcp_scope_connection(tx, actor, "inbox_private", None)?;
+    use CollaborationOperation::*;
+    if operation.is_inbox() {
+        access::require_scope(tx, actor, "inbox_private", None)?;
     }
-    match command.operation.as_str() {
-        "discussion.comment.create" => {
-            create_comment(tx, actor, parse_payload(&command.payload)?, now)
+    let payload = &command.payload;
+    // The revision rule has required one for every operation that takes it.
+    let expected = command.expected_revision.unwrap_or_default();
+    match operation {
+        CreateComment => create_comment(tx, actor, parse_payload(payload)?, now),
+        EditComment => edit_comment(tx, actor, parse_payload(payload)?, expected, now),
+        DeleteComment => delete_comment(tx, actor, parse_payload(payload)?, expected, now),
+        RestoreComment => restore_comment(tx, actor, parse_payload(payload)?, expected, now),
+        MarkRead => inbox_item_change(tx, actor, parse_payload(payload)?, InboxChange::Read, now),
+        MarkUnread => {
+            inbox_item_change(tx, actor, parse_payload(payload)?, InboxChange::Unread, now)
         }
-        "discussion.comment.edit" => edit_comment(
+        Archive => inbox_item_change(
             tx,
             actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "discussion.comment.delete" => delete_comment(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "discussion.comment.restore" => restore_comment(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            required_revision(command)?,
-            now,
-        ),
-        "inbox.markRead" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            InboxChange::Read,
-            now,
-        ),
-        "inbox.markUnread" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
-            InboxChange::Unread,
-            now,
-        ),
-        "inbox.archive" => inbox_item_change(
-            tx,
-            actor,
-            parse_payload(&command.payload)?,
+            parse_payload(payload)?,
             InboxChange::Archive,
             now,
         ),
-        "inbox.restore" => inbox_item_change(
+        RestoreArchived => inbox_item_change(
             tx,
             actor,
-            parse_payload(&command.payload)?,
+            parse_payload(payload)?,
             InboxChange::Restore,
             now,
         ),
-        "inbox.bulkMarkRead" => {
-            inbox_bulk_change(tx, actor, parse_payload(&command.payload)?, false, now)
-        }
-        "inbox.bulkArchive" => {
-            inbox_bulk_change(tx, actor, parse_payload(&command.payload)?, true, now)
-        }
-        _ => Err(AppError::validation(
-            "operation",
-            "unsupported collaboration operation",
-        )),
+        BulkMarkRead => inbox_bulk_change(tx, actor, parse_payload(payload)?, false, now),
+        BulkArchive => inbox_bulk_change(tx, actor, parse_payload(payload)?, true, now),
     }
-}
-
-fn validate_mentions(
-    tx: &Transaction<'_>,
-    project_id: &str,
-    content: &str,
-    mut mentions: Vec<MentionToken>,
-) -> AppResult<Vec<MentionToken>> {
-    mentions.sort_by_key(|token| (token.start_offset, token.end_offset));
-    crate::access::validate_mentions(tx, project_id, content, mentions)
-}
-
-fn insert_mentions(
-    tx: &Transaction<'_>,
-    comment_id: &str,
-    mentions: &[MentionToken],
-) -> AppResult<()> {
-    for mention in mentions {
-        tx.execute(
-            "INSERT INTO comment_mentions
-             (id,comment_id,kind,user_id,start_offset,end_offset,label)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                Uuid::now_v7().to_string(),
-                comment_id,
-                match mention.kind {
-                    MentionKind::User => "user",
-                    MentionKind::Everyone => "everyone",
-                },
-                mention.user_id,
-                mention.start_offset as i64,
-                mention.end_offset as i64,
-                mention.label,
-            ],
-        )?;
-    }
-    Ok(())
 }
 
 fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentView> {
@@ -653,7 +484,7 @@ fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentV
         })?;
     // A deleted comment keeps its mentions only for a restore.
     if view.deleted_at.is_none() {
-        view.mentions = load_mentions_tx(tx, comment_id)?;
+        view.mentions = mentions::load(tx, Mentioned::Comment(comment_id))?;
     }
     Ok(view)
 }
@@ -693,7 +524,7 @@ fn comment_page_context(
         .chain(context.iter_mut())
         .filter(|item| item.deleted_at.is_none())
     {
-        item.mentions = load_mentions_connection(connection, &item.id)?;
+        item.mentions = mentions::load(connection, Mentioned::Comment(&item.id))?;
     }
     let mut reply_counts = std::collections::BTreeMap::new();
     for root in roots {
@@ -732,63 +563,11 @@ fn comment_row(row: &Row<'_>) -> rusqlite::Result<CommentView> {
     })
 }
 
-fn load_mentions_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<Vec<MentionToken>> {
-    let mut statement = tx.prepare(
-        "SELECT kind,user_id,start_offset,end_offset,label FROM comment_mentions
-         WHERE comment_id=?1 ORDER BY start_offset,id",
-    )?;
-    Ok(statement
-        .query_map([comment_id], mention_row)?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn load_mentions_connection(
-    connection: &rusqlite::Connection,
-    comment_id: &str,
-) -> AppResult<Vec<MentionToken>> {
-    let mut statement = connection.prepare(
-        "SELECT kind,user_id,start_offset,end_offset,label FROM comment_mentions
-         WHERE comment_id=?1 ORDER BY start_offset,id",
-    )?;
-    Ok(statement
-        .query_map([comment_id], mention_row)?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn mention_row(row: &Row<'_>) -> rusqlite::Result<MentionToken> {
-    let kind: String = row.get(0)?;
-    Ok(MentionToken {
-        kind: if kind == "user" {
-            MentionKind::User
-        } else {
-            MentionKind::Everyone
-        },
-        user_id: row.get(1)?,
-        start_offset: row.get::<_, i64>(2)? as usize,
-        end_offset: row.get::<_, i64>(3)? as usize,
-        label: row.get(4)?,
-    })
-}
-
 fn comment_fingerprint(content: &str, mentions: &[MentionToken]) -> AppResult<String> {
     let value = json!({"content":content,"mentions":mentions});
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| AppError::internal(format!("serialize comment fingerprint: {error}")))?;
     Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-fn canonical_comment(value: &str) -> AppResult<String> {
-    crate::text::validate(value, "content", crate::text::Lines::Multi, true)?;
-    // Selected mention offsets address this exact UTF-16 content. Trimming or
-    // rewriting line endings would shift a valid selection to another range.
-    let count = value.encode_utf16().count();
-    if value.trim().is_empty() || !(1..=2_000).contains(&count) {
-        return Err(AppError::validation(
-            "content",
-            "must contain 1–2000 characters",
-        ));
-    }
-    Ok(value.to_owned())
 }
 
 fn truncate_excerpt(value: &str, max: usize) -> String {
@@ -799,73 +578,13 @@ fn truncate_excerpt(value: &str, max: usize) -> String {
     result
 }
 
-fn require_participation(tx: &Transaction<'_>, actor: &Actor, project_id: &str) -> AppResult<()> {
-    crate::access::require_project(
-        tx,
-        actor,
-        project_id,
-        crate::access::Need::Discussion,
-        false,
-    )
-}
-
-fn require_comment_owner_or_admin(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    author_id: &str,
-) -> AppResult<()> {
+/// Connected apps manage comments only as their author: moderation is an
+/// account-administration power, which stays in the browser.
+fn require_comment_owner_or_admin(actor: &Actor, author_id: &str) -> AppResult<()> {
     if actor.user_id == author_id {
         return Ok(());
     }
-    // Connected apps may manage comments only as their author. Moderation is
-    // an account-administration power and remains browser-only.
-    if matches!(actor.source, ActorSource::McpGrant { .. }) {
-        return Err(AppError::Forbidden);
-    }
-    let is_admin: bool = tx
-        .query_row(
-            "SELECT is_admin FROM users WHERE id=?1 AND is_active=1",
-            [&actor.user_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if is_admin {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden)
-    }
-}
-
-fn authorize_actor_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    _now: i64,
-) -> AppResult<()> {
-    crate::auth::refresh_actor_connection(connection, actor).map(|_| ())
-}
-
-fn require_project_read_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    project_id: &str,
-) -> AppResult<()> {
-    crate::access::require_project(
-        connection,
-        actor,
-        project_id,
-        crate::access::Need::Read,
-        false,
-    )
-}
-
-fn require_mcp_scope_connection(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    scope: &str,
-    project_id: Option<&str>,
-) -> AppResult<()> {
-    crate::access::require_scope(connection, actor, scope, project_id)
+    actor.require_admin()
 }
 
 fn validate_inbox_projects(
@@ -874,7 +593,7 @@ fn validate_inbox_projects(
     project_ids: &BTreeSet<String>,
 ) -> AppResult<()> {
     for project_id in project_ids {
-        require_project_read_connection(connection, actor, project_id)?;
+        require_project(connection, actor, project_id, Need::Read, false)?;
     }
     Ok(())
 }
@@ -882,11 +601,13 @@ fn validate_inbox_projects(
 fn authorize_replay(
     tx: &Transaction<'_>,
     actor: &Actor,
-    command: &CollaborationCommand,
+    operation: CollaborationOperation,
+    payload: &Value,
 ) -> AppResult<()> {
-    match command.operation.as_str() {
-        "discussion.comment.create" => {
-            let input: CommentCreate = parse_payload(&command.payload)?;
+    use CollaborationOperation::*;
+    match operation {
+        CreateComment => {
+            let input: CommentCreate = parse_payload(payload)?;
             let project_id: String = tx
                 .query_row(
                     "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
@@ -895,11 +616,10 @@ fn authorize_replay(
                 )
                 .optional()?
                 .ok_or(AppError::NotFound { resource: "task" })?;
-            require_participation(tx, actor, &project_id)
+            require_project(tx, actor, &project_id, Need::Discussion, false)
         }
-        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore" => {
-            let comment_id = command
-                .payload
+        EditComment | DeleteComment | RestoreComment => {
+            let comment_id = payload
                 .get("commentId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::validation("payload", "commentId is required"))?;
@@ -913,17 +633,46 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound {
                     resource: "comment",
                 })?;
-            require_participation(tx, actor, &project_id)?;
-            if command.operation != "discussion.comment.edit" {
-                require_mcp_scope_connection(tx, actor, "destructive", Some(&project_id))?;
+            require_project(tx, actor, &project_id, Need::Discussion, false)?;
+            if operation != EditComment {
+                access::require_scope(tx, actor, "destructive", Some(&project_id))?;
             }
-            require_comment_owner_or_admin(tx, actor, &author_id)
+            require_comment_owner_or_admin(actor, &author_id)
         }
-        operation if operation.starts_with("inbox.") => {
-            require_mcp_scope_connection(tx, actor, "inbox_private", None)
+        MarkRead | MarkUnread | Archive | RestoreArchived | BulkMarkRead | BulkArchive => {
+            access::require_scope(tx, actor, "inbox_private", None)
         }
-        _ => Err(AppError::Forbidden),
     }
+}
+
+/// A retry of a comment's creation or edit shows the comment as it is now
+/// when it has been deleted since. Older databases may still hold a
+/// live-looking result from before deletion began updating stored results.
+fn show_deleted_comment(
+    tx: &Transaction<'_>,
+    operation: CollaborationOperation,
+    replay: &mut CommandResult,
+) -> AppResult<()> {
+    if !matches!(
+        operation,
+        CollaborationOperation::CreateComment | CollaborationOperation::EditComment
+    ) {
+        return Ok(());
+    }
+    let Some(comment_id) = replay
+        .entities
+        .first()
+        .and_then(|entity| entity.get("id"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let current = comment_view_tx(tx, comment_id)?;
+    if current.deleted_at.is_some() {
+        tombstone_comment_replays(tx, &current)?;
+        replace_comment(replay, &current)?;
+    }
+    Ok(())
 }
 
 fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
@@ -1093,60 +842,12 @@ fn activity_projection_stream(
     Ok(result)
 }
 
-fn parse_payload<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    crate::http::input::parse_payload(value)
-}
-
-fn required_revision(command: &CollaborationCommand) -> AppResult<i64> {
-    command
-        .expected_revision
-        .ok_or_else(|| AppError::validation("expectedRevision", "is required"))
-}
-
-fn validate_revision_contract(command: &CollaborationCommand) -> AppResult<()> {
-    let needs_revision = matches!(
-        command.operation.as_str(),
-        "discussion.comment.edit" | "discussion.comment.delete" | "discussion.comment.restore"
-    );
-    if needs_revision && command.expected_revision.is_none() {
-        return Err(AppError::validation("expectedRevision", "is required"));
-    }
-    if command.expected_revision.is_some_and(|value| value < 1) {
-        return Err(AppError::validation(
-            "expectedRevision",
-            "must be a positive integer",
-        ));
-    }
-    Ok(())
-}
-
 fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
     if actual == expected {
         Ok(())
     } else {
         Err(AppError::revision(expected, actual))
     }
-}
-
-fn request_hash(command: &CollaborationCommand) -> AppResult<String> {
-    crate::idempotency::request_hash(
-        &json!({"operation":command.operation,"payload":command.payload,"expectedRevision":command.expected_revision}),
-    )
-}
-
-fn replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    command: &CollaborationCommand,
-    hash: &str,
-) -> AppResult<Option<CollaborationCommandResult>> {
-    crate::idempotency::replay(
-        tx,
-        actor,
-        &command.idempotency_key,
-        &command.operation,
-        hash,
-    )
 }
 
 fn page_limit(limit: Option<usize>) -> usize {
@@ -1174,30 +875,4 @@ fn decode_cursor(value: &str) -> AppResult<Cursor> {
         .decode(value)
         .map_err(|_| AppError::validation("cursor", "is invalid"))?;
     serde_json::from_slice(&bytes).map_err(|_| AppError::validation("cursor", "is invalid"))
-}
-
-fn authorization_decision(result: AppResult<()>) -> AppResult<bool> {
-    match result {
-        Ok(()) => Ok(true),
-        Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(test)]
-mod generated_tests {
-    proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
-        #[test]
-        fn unicode_mention_offsets_land_only_on_codepoint_boundaries(value in ".{0,256}") {
-            let boundaries = crate::access::utf16_boundaries(&value);
-            let mut units = 0;
-            for (offset, ch) in value.char_indices() {
-                proptest::prop_assert_eq!(boundaries.get(&units), Some(&offset));
-                if ch.len_utf16() == 2 { proptest::prop_assert!(!boundaries.contains_key(&(units + 1))); }
-                units += ch.len_utf16();
-            }
-            proptest::prop_assert_eq!(boundaries.get(&units), Some(&value.len()));
-        }
-    }
 }

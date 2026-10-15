@@ -22,6 +22,51 @@ pub(crate) fn validate(value: &str, field: &str, lines: Lines, required: bool) -
     Ok(())
 }
 
+/// A required single line, trimmed, of at most `max` UTF-16 units.
+pub(crate) fn single_line(value: &str, field: &str, max: usize) -> AppResult<String> {
+    validate(value, field, Lines::Single, true)?;
+    let value = value.trim();
+    require_length(value, field, max)?;
+    Ok(value.to_owned())
+}
+
+/// Optional text of any number of lines, trimmed, of at most `max` UTF-16
+/// units. Blank text becomes empty.
+pub(crate) fn optional(value: &str, field: &str, max: usize) -> AppResult<String> {
+    validate(value, field, Lines::Multi, false)?;
+    let value = value.trim();
+    if value.encode_utf16().count() > max {
+        return Err(AppError::validation(
+            field,
+            format!("must contain at most {max} characters"),
+        ));
+    }
+    Ok(if is_blank(value) {
+        String::new()
+    } else {
+        value.to_owned()
+    })
+}
+
+/// Required text of any number of lines, of at most `max` UTF-16 units, kept
+/// exactly as typed: mention offsets address this text, so trimming it or
+/// rewriting line endings would move a selection to another range.
+pub(crate) fn exact(value: &str, field: &str, max: usize) -> AppResult<String> {
+    validate(value, field, Lines::Multi, true)?;
+    require_length(value, field, max)?;
+    Ok(value.to_owned())
+}
+
+fn require_length(value: &str, field: &str, max: usize) -> AppResult<()> {
+    if !(1..=max).contains(&value.encode_utf16().count()) {
+        return Err(AppError::validation(
+            field,
+            format!("must contain 1–{max} characters"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn is_blank(value: &str) -> bool {
     !value
         .chars()
