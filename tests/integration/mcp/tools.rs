@@ -1952,7 +1952,9 @@ async fn a_search_without_status_reads_every_column_at_one_moment() {
     type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
     static GATE: Mutex<Option<Gate>> = Mutex::new(None);
     static COLUMNS: AtomicUsize = AtomicUsize::new(0);
-    // Holds the second column's read until the test has moved the task.
+    // Holds the second column's read until the test has moved the task. The
+    // read is found by the text of the Board page statement; if that text
+    // changes, this test times out instead of passing.
     fn trace(event: TraceEvent<'_>) {
         if let TraceEvent::Stmt(_, sql) = event
             && sql.contains("ORDER BY t.position,t.id LIMIT")

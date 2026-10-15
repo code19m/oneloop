@@ -384,7 +384,9 @@ async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
     use rusqlite::trace::{TraceEvent, TraceEventCodes};
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CHECKS: AtomicUsize = AtomicUsize::new(0);
-    // Counts the project checks that hints get before a stream sends them.
+    // Counts the project checks that hints get before a stream sends them,
+    // found by the text of `require_project`'s statement. If that text
+    // changes, this test times out instead of passing.
     fn trace(event: TraceEvent<'_>) {
         if let TraceEvent::Stmt(_, sql) = event
             && sql.contains("FROM projects p JOIN users u")

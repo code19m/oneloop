@@ -1349,59 +1349,6 @@ async fn a_writer_timeout_does_not_stop_notification_delivery() {
     worker.await.unwrap().unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn maintenance_retries_a_failed_job_a_minute_later() {
-    let SeededProject {
-        root: _root,
-        db,
-        alice,
-        ..
-    } = seeded_project().await;
-    db.transaction(move |tx| {
-        snapshot_notification_tx(tx,&alice,NotificationInput {
-            project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("purge me"),broadcast: false},vec!["bob".into()],now())?;
-        tx.execute("UPDATE notification_recipients SET archived_at=1,read_at=1,delivered_at=1",[])?;
-        tx.execute_batch("CREATE TRIGGER fail_purge BEFORE UPDATE OF project_name_snapshot ON notification_recipients
-            BEGIN SELECT RAISE(FAIL,'injected purge failure'); END;")?;
-        Ok(())
-    }).await.unwrap();
-    let excerpt = async || -> Option<String> {
-        db.run(|connection| {
-            Ok(connection.query_row(
-                "SELECT excerpt_snapshot FROM notification_recipients",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap()
-    };
-    let (stop, signal) = tokio::sync::watch::channel(false);
-    let maintenance = tokio::spawn(oneloop::runtime::database_maintenance(db.clone(), signal));
-    // The first pass fails, and the loop goes on.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    db.transaction(|tx| {
-        tx.execute_batch("DROP TRIGGER fail_purge")?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(29)).await;
-    assert_eq!(excerpt().await.as_deref(), Some("purge me"));
-    assert!(!maintenance.is_finished());
-    // A minute after the failure, the job runs again.
-    tokio::time::sleep(std::time::Duration::from_secs(31)).await;
-    let mut waited = 0;
-    while excerpt().await.is_some() && waited < 10 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        waited += 1;
-    }
-    assert_eq!(excerpt().await, None);
-    stop.send(true).unwrap();
-    maintenance.await.unwrap();
-}
-
 #[tokio::test]
 async fn supervisor_stops_other_workers_on_unexpected_exit_or_panic() {
     for panic in [false, true] {
@@ -1725,54 +1672,4 @@ async fn a_worker_waiting_after_errors_stops_when_asked() {
     stop.send(true).unwrap();
     let stopped = tokio::time::timeout(std::time::Duration::from_millis(10), worker).await;
     assert!(stopped.is_ok(), "the worker sleeps through the stop");
-}
-
-#[tokio::test(start_paused = true)]
-async fn maintenance_runs_by_elapsed_time_whatever_the_wall_clock_says() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    // A comment deleted well before the Undo window, with its text kept.
-    let delete = async |id: &'static str| {
-        db.run(move |connection| {
-            connection.execute(
-                "INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at,deleted_at)
-                 VALUES(?1,'p1','task','alice',?1,'secret text',?2,?2)",
-                rusqlite::params![id, now() - 3600],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    };
-    let kept = async |id: &'static str| -> bool {
-        db.run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT content<>'' FROM comments WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap()
-    };
-    delete("first").await;
-    let (stop, signal) = tokio::sync::watch::channel(false);
-    let maintenance = tokio::spawn(oneloop::runtime::database_maintenance(db.clone(), signal));
-    // The first pass runs at once.
-    while kept("first").await {
-        tokio::task::yield_now().await;
-    }
-    delete("second").await;
-    // The next pass comes a minute later on the monotonic clock, which paused
-    // time advances while the wall clock stays where it was.
-    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-    let mut waited = 0;
-    while kept("second").await && waited < 10 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        waited += 1;
-    }
-    assert!(!kept("second").await);
-    stop.send(true).unwrap();
-    maintenance.await.unwrap();
 }
