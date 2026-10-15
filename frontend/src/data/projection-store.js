@@ -4,6 +4,13 @@ import {secondsToMilliseconds} from './time.js';
 import {refreshPageWindow} from './page-window.js';
 import {byStatus, toLegacyScope, toLegacyStatus} from './wire.js';
 
+/**
+ * Which session of which person `data` belongs to. Work started in one
+ * session never lands in another.
+ * @param {{session?:{id?:string|null,userId?:string}|null}} data
+ */
+export const sessionKey = (data) => `${data.session?.id ?? ''}:${data.session?.userId ?? ''}`;
+
 /** Create the one mutable root consumed by the compatibility client. */
 export function createLegacyData() {
   return {

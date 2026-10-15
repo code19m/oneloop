@@ -6,7 +6,7 @@ import { showStartupError } from './main.js';
 import { createApiClient, ApiError } from '../data/api-client.js';
 import { createBootstrapController } from '../data/bootstrap-controller.js';
 import { createCommandGateway } from '../data/command-gateway.js';
-import { createLegacyData } from '../data/projection-store.js';
+import { createLegacyData, sessionKey } from '../data/projection-store.js';
 import { createAuthController } from '../auth/auth-controller.js';
 import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
@@ -62,7 +62,7 @@ const bootstrap = createBootstrapController({ api, data, onReady: (projection) =
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
 }, onForeign:(userId)=>recovery?.ownsAnswer(userId) });
-const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.userId??''}:${data.session?.id??''}`,onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
+const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});

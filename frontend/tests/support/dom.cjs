@@ -14,7 +14,7 @@ const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
-const { createLegacyData } = require('../../src/data/projection-store.js');
+const { createLegacyData, sessionKey } = require('../../src/data/projection-store.js');
 const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
 const { setTrustedHTML } = require('../../src/app/trusted-types.js');
@@ -200,7 +200,7 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
   let runtime;
   const gateway = createCommandGateway({
     api, data,
-    getScope: () => `${data.session?.userId ?? ''}:${data.session?.id ?? ''}`,
+    getScope: () => sessionKey(data),
     onChange: result => runtime.publish({ type: 'command', result }),
     onPending: (key, pending) => w.Recovery?.interactionPending(key, pending),
   });

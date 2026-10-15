@@ -5,6 +5,7 @@
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters,
 } from '../../src/data/board-filters.js';
+import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import { MOTION, animateLayout, fadeContent, motionRects, reducedMotion } from './effects.js';
 import {
@@ -288,7 +289,7 @@ function moveOrigin(t) {
   const projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId;
   const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
   const projectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),index=projectTasks.indexOf(t);
-  return { task:t, revision:t.revision, projectId, sessionKey:`${D.session?.id||''}:${D.session?.userId||''}`,
+  return { task:t, revision:t.revision, projectId, sessionKey:sessionKey(D),
     previousTaskBefore:index>0?projectTasks[index-1]:null, previousTaskAfter:projectTasks[index+1]||null };
 }
 
@@ -341,8 +342,7 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
  * no longer stands as sent: another session, or a newer revision of the task.
  */
 function restoreTaskPosition(change) {
-  const sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
-  if (sessionKey!==change.sessionKey || !D.tasks.includes(change.task) || change.task.revision !== change.revision) return false;
+  if (sessionKey(D)!==change.sessionKey || !D.tasks.includes(change.task) || change.task.revision !== change.revision) return false;
   const currentIndex=D.tasks.indexOf(change.task);D.tasks.splice(currentIndex,1);
   if(change.previousTaskAfter&&D.tasks.includes(change.previousTaskAfter))D.tasks.splice(D.tasks.indexOf(change.previousTaskAfter),0,change.task);
   else if(change.previousTaskBefore&&D.tasks.includes(change.previousTaskBefore))D.tasks.splice(D.tasks.indexOf(change.previousTaskBefore)+1,0,change.task);

@@ -2,6 +2,7 @@
 /* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
    drawer, and moving tracks. */
 
+import { sessionKey } from '../../src/data/projection-store.js';
 import { MOTION, animateLayout, motionRects, reducedMotion } from './effects.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
@@ -907,9 +908,9 @@ Object.assign(App, {
     App.refresh();
     focusMovedTrack(id);
     animateLayout(before, '.lane');
-    const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
+    const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
     runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
-      const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
+      const sameSession=session===sessionKey(D);
       if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');App.refresh();animateLayout(rollbackBefore,'.lane');}}
       report(error);
     }).finally(()=>{if(pendingMove===pending)pendingMove=null;});

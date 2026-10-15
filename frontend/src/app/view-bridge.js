@@ -1,7 +1,7 @@
 // @ts-check
 
 import { ApiError } from '../data/api-client.js';
-import { clientField, mapUser, mergeAdminUsersPage } from '../data/projection-store.js';
+import { clientField, mapUser, mergeAdminUsersPage, sessionKey } from '../data/projection-store.js';
 import { boardFiltered } from '../data/board-filters.js';
 import { toWireScope, toWireStatus } from '../data/wire.js';
 import { saveDoneOrder } from '../data/done-order.js';
@@ -38,7 +38,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const milestone = (id) => data.milestones.find((item) => item.id === id);
   const poolItem = (id) => data.pool.find((item) => item.id === id);
   const context = () => app.context();
-  const sessionScope=()=>`${data.session?.id??''}:${data.session?.userId??''}`;
+  const sessionScope=()=>sessionKey(data);
   let usersAfter=null,usersDepth=1;
   const assigneeSaves=new Map();
   const pendingTaskForms = new WeakSet();
