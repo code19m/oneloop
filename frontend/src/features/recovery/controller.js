@@ -67,12 +67,12 @@ function hasTypedInput(doc, committed, skip = () => false, roots = doc.querySele
  * Capture open editor state, only in memory. With `changedOnly`, only the
  * controls the person changed, and nothing when they changed none; `skip`
  * leaves out controls that keep their own state.
- * @param {Document} [doc] @param {{changedOnly?:boolean,skip?:(element:Element)=>boolean}} [options]
+ * @param {Document} doc @param {{changedOnly?:boolean,skip?:(element:Element)=>boolean}} [options]
  */
-function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>false} = {}) {
+function captureOpenEditor(doc, {changedOnly=false, skip=()=>false} = {}) {
   const active=doc.activeElement;
   const candidates=[...doc.querySelectorAll(EDITOR_ROOT)];
-  const root=active?.closest?.(EDITOR_ROOT) ?? candidates.find((candidate)=>candidate.querySelector('form:focus-within')) ?? candidates.find((candidate)=>EDITOR_REVISIONS.has(candidate)) ?? null;
+  const root=active?.closest(EDITOR_ROOT) ?? candidates.find((candidate)=>candidate.querySelector('form:focus-within')) ?? candidates.find((candidate)=>EDITOR_REVISIONS.has(candidate)) ?? null;
   if (!root) return null;
   const controls=[];
   for (const element of root.querySelectorAll('input,textarea,select')) {
@@ -87,7 +87,7 @@ function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>false} =
   const selection=active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement
     ? {start:active.selectionStart,end:active.selectionEnd,direction:active.selectionDirection}
     : null;
-  return {rootClass:[...root.classList],controls,activeKey,selection,scrollTop:root.scrollTop,revisions:[...(EDITOR_REVISIONS.get(root)?.entries?.()??[])]};
+  return {rootClass:[...root.classList],controls,activeKey,selection,scrollTop:root.scrollTop,revisions:[...(EDITOR_REVISIONS.get(root)?.entries()??[])]};
 }
 
 /** The control a `controlKey` names in `root`. @param {Element} root @param {string} key */
@@ -103,9 +103,9 @@ const sameEditor = (doc, rootClass) => [...doc.querySelectorAll(EDITOR_ROOT)].fi
 /**
  * Put captured editor state back. With `notify`, a control whose value changes
  * reports an input event, so the page reacts as if the person typed it.
- * @param {ReturnType<typeof captureOpenEditor>} snapshot @param {Document} [doc] @param {{notify?:boolean}} [options]
+ * @param {ReturnType<typeof captureOpenEditor>} snapshot @param {Document} doc @param {{notify?:boolean}} [options]
  */
-function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
+function restoreOpenEditor(snapshot, doc, {notify=false} = {}) {
   if (!snapshot) return null;
   const root=sameEditor(doc,snapshot.rootClass);
   if (!root) return null;
@@ -133,17 +133,17 @@ function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
 /**
  * Finds a control again after a redraw replaced it: the control with its id
  * or name in the editor of the same kind.
- * @param {Element|null} element @returns {()=>Element|null}
+ * @param {Document} doc @param {Element|null} element @returns {()=>Element|null}
  */
-function relocator(element) {
-  const root=element?.closest?.(EDITOR_ROOT),key=root?controlKey(root,element):null;
+function relocator(doc, element) {
+  const root=element?.closest(EDITOR_ROOT),key=root?controlKey(root,element):null;
   if(!key)return ()=>null;
   const rootClass=[...root.classList];
-  return ()=>{const next=sameEditor(document,rootClass);return next?findControl(next,key):null;};
+  return ()=>{const next=sameEditor(doc,rootClass);return next?findControl(next,key):null;};
 }
 
-/** The place for a conflict prompt: beside its field, or else in the open form or page. @param {Element|null} field */
-const promptHost = (field) => field?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor,.collaboration-composer') ?? document.querySelector('.modal form') ?? document.querySelector('.pool-description-editor form') ?? document.querySelector('.task-page') ?? document.querySelector('.content');
+/** The place for a conflict prompt: beside its field, or else in the open form or page. @param {Document} doc @param {Element|null} field */
+const promptHost = (doc, field) => field?.closest('.field,.task-title-field,.tp-sec,.task-property,.pool-description-editor,.collaboration-composer') ?? doc.querySelector('.modal form') ?? doc.querySelector('.pool-description-editor form') ?? doc.querySelector('.task-page') ?? doc.querySelector('.content');
 
 /** Conflict prompts waiting for an answer. @type {Set<{check:()=>boolean,cancel:()=>void}>} */
 const openPrompts = new Set();
@@ -156,9 +156,10 @@ function keepConflictPrompts() { for (const prompt of [...openPrompts]) prompt.c
  * then moves beside the field `locate` finds, until the person answers. It
  * closes without an answer when the page changes, when the field is gone or
  * can no longer be edited, or when a newer prompt replaces it.
- * @param {{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean}} input
+ * @param {Document} document
+ * @param {{target:Element|null,locate:()=>Element|null,latestValue:unknown,myValue:unknown,isCurrent:()=>boolean,updateTarget:boolean}} input
  */
-export function presentDomConflict({target,locate=()=>null,latestValue,myValue,isCurrent=()=>true,updateTarget=true}) {
+function presentConflict(document,{target,locate,latestValue,myValue,isCurrent,updateTarget}) {
   return new Promise((resolve)=>{
     if(!isCurrent()){resolve('cancelled');return;}
     for(const prompt of [...openPrompts])prompt.cancel();
@@ -174,7 +175,7 @@ export function presentDomConflict({target,locate=()=>null,latestValue,myValue,i
     const latest=document.createElement('button');latest.type='button';latest.className='btn quiet';latest.textContent='Use latest';
     const mine=document.createElement('button');mine.type='button';mine.className='btn quiet';mine.textContent='Keep my changes';
     box.append(message,expand,latest,mine);
-    const parent=promptHost(target);
+    const parent=promptHost(document,target);
     parent?.append(box);
     if(!parent){resolve('cancelled');return;}
     let field=target,answered=false;
@@ -185,7 +186,7 @@ export function presentDomConflict({target,locate=()=>null,latestValue,myValue,i
       if(answered){finish('cancelled');return false;}
       const next=locate();
       if(!next?.isConnected||'disabled' in next&&next.disabled||'readOnly' in next&&next.readOnly){finish('cancelled');return false;}
-      field=next;promptHost(next)?.append(box);
+      field=next;promptHost(document,next)?.append(box);
       return true;
     };
     const prompt={check,cancel:()=>{box.remove();finish('cancelled');}};
@@ -194,7 +195,7 @@ export function presentDomConflict({target,locate=()=>null,latestValue,myValue,i
     openPrompts.add(prompt);
     observer.observe(document.body,{childList:true,subtree:true});
     document.addEventListener('input',check);
-    latest.addEventListener('click',()=>{if(!check())return;if(updateTarget&&latestValue!==undefined&&field&&'value' in field){field.value=latestValue==null?'':String(latestValue);field.dispatchEvent(new Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
+    latest.addEventListener('click',()=>{if(!check())return;if(updateTarget&&latestValue!==undefined&&field&&'value' in field){field.value=latestValue==null?'':String(latestValue);field.dispatchEvent(new document.defaultView.Event('input',{bubbles:true}));}box.remove();finish('latest');},{once:true});
     mine.addEventListener('click',()=>{if(!check())return;if(updateTarget&&myValue!==undefined&&field&&'value' in field)field.value=myValue==null?'':String(myValue);mine.disabled=true;latest.disabled=true;message.textContent='Saving your changes…';finish('mine');},{once:true});
   });
 }
@@ -203,22 +204,21 @@ export function presentDomConflict({target,locate=()=>null,latestValue,myValue,i
  * Production recovery state. It observes transport outcomes but never retries a
  * write. Reconciliation is read-only and preserves the currently open editor.
  */
-/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>any,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,presentConflict?:(input:{target:Element|null,locate?:()=>Element|null,latestValue:unknown,myValue:unknown,snapshot?:unknown,isCurrent?:()=>boolean,updateTarget?:boolean})=>Promise<string>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window|null,documentObject?:Document|null}} RecoveryOptions */
+/** @typedef {{data:any,api:any,gateway:any,getApp?:()=>import('../../data/contracts.js').LegacyApp|null,getAuth?:()=>any,reload?:(scope?:Record<string,unknown>)=>Promise<any>,checkBuild?:()=>unknown,setTimer?:Function,clearTimer?:Function,random?:()=>number,online?:()=>boolean,now?:()=>number,windowObject?:Window,documentObject?:Document}} RecoveryOptions */
 /** @param {RecoveryOptions} options */
 export function createRecoveryController({
   data, api, gateway, getApp = () => null, getAuth = () => null,
   reload = async (_scope={}) => ({}),
-  presentConflict = presentDomConflict,
   checkBuild = () => {},
   setTimer = globalThis.setTimeout.bind(globalThis),
   clearTimer = globalThis.clearTimeout.bind(globalThis),
   random = Math.random,
   online = () => globalThis.navigator?.onLine !== false,
   now = () => Date.now(),
-  windowObject = globalThis.window,
-  documentObject = globalThis.document,
+  windowObject = window,
+  documentObject = document,
 }) {
-  let hooks=null,pageError=null,pageReference=null,expired=false;
+  let pageError=null,pageReference=null,expired=false;
   // What the person was typing when their session ended, kept in memory for their next sign-in.
   /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any}|null} */
   let resume=null;
@@ -249,7 +249,7 @@ export function createRecoveryController({
   }
 
   function focusedEntity(target){
-    const context=getApp()?.context?.();if(!context)return null;
+    const context=getApp()?.context();if(!context)return null;
     const poolId=target?.closest?.('[data-pool-item]')?.dataset?.poolItem;
     if(poolId)return data.pool?.find((item)=>item.id===poolId)??null;
     const modal=context.modal;
@@ -273,13 +273,13 @@ export function createRecoveryController({
 
   function expectedRevision(entityOrKey,fallback){
     const key=typeof entityOrKey==='string'?entityOrKey:entityKey(entityOrKey);if(!key)return fallback??entityOrKey?.revision;
-    for(const root of documentObject?.querySelectorAll?.(EDITOR_ROOT)??[]){const revision=EDITOR_REVISIONS.get(root)?.get(key);if(Number.isSafeInteger(revision))return revision;}
+    for(const root of documentObject.querySelectorAll(EDITOR_ROOT)){const revision=EDITOR_REVISIONS.get(root)?.get(key);if(Number.isSafeInteger(revision))return revision;}
     return fallback??entityOrKey?.revision;
   }
 
   function finishRevision(entityOrKey){
     const key=typeof entityOrKey==='string'?entityOrKey:entityKey(entityOrKey);if(!key)return;
-    for(const root of documentObject?.querySelectorAll?.(EDITOR_ROOT)??[])EDITOR_REVISIONS.get(root)?.delete(key);
+    for(const root of documentObject.querySelectorAll(EDITOR_ROOT))EDITOR_REVISIONS.get(root)?.delete(key);
   }
 
   /** @param {any} target a field, or anything else an event targets */
@@ -296,11 +296,11 @@ export function createRecoveryController({
    */
   function hasUnsavedInput({leaving=true}={}){
     // The comment box keeps its text across redraws, so it answers for itself.
-    if(documentObject&&hasTypedInput(documentObject,committed,(element)=>element.id==='cmtIn'))return true;
+    if(hasTypedInput(documentObject,committed,(element)=>element.id==='cmtIn'))return true;
     // A comment being sent is on its way; it counts again if the send fails.
-    const comment=getApp()?.commentDraft?.();
+    const comment=getApp()?.commentDraft();
     if(comment&&!comment.sending)return true;
-    return leaving&&(!!resume||writes>0||!!gateway?.hasPending?.()||[...unsavedChecks].some((check)=>check()));
+    return leaving&&(!!resume||writes>0||gateway.hasPending()||[...unsavedChecks].some((check)=>check()));
   }
 
   function warnBeforeUnload(event){
@@ -310,7 +310,7 @@ export function createRecoveryController({
   }
 
   /** Browser storage, which privacy settings can turn off. @param {'localStorage'|'sessionStorage'} kind */
-  function storage(kind){try{return windowObject?.[kind]??null;}catch{return null;}}
+  function storage(kind){try{return windowObject[kind];}catch{return null;}}
   function autoReloadOn(){try{return storage('localStorage')?.getItem(AUTO_RELOAD)==='on';}catch{return false;}}
   /** @returns {string[]} */
   function reloadedFor(){try{const list=JSON.parse(storage('sessionStorage')?.getItem(RELOADED_FOR)??'[]');return Array.isArray(list)?list:[];}catch{return [];}}
@@ -332,7 +332,7 @@ export function createRecoveryController({
    */
   function scheduleHiddenCheck(){
     clearTimer(hiddenCheckTimer);hiddenCheckTimer=null;
-    const checking=()=>!disposed&&!updatedBuild&&autoReloadOn()&&documentObject?.visibilityState==='hidden';
+    const checking=()=>!disposed&&!updatedBuild&&autoReloadOn()&&documentObject.visibilityState==='hidden';
     if(!checking())return;
     hiddenCheckTimer=setTimer(()=>{
       hiddenCheckTimer=null;
@@ -343,12 +343,12 @@ export function createRecoveryController({
   /** Another tab of this browser changed Reload after updates, or cleared storage. @param {{key:string|null}} event */
   function storageChanged(event){
     if(event.key!==AUTO_RELOAD&&event.key!==null)return;
-    scheduleHiddenCheck();reloadWhenSafe();getApp()?.autoReloadChanged?.();
+    scheduleHiddenCheck();reloadWhenSafe();getApp()?.autoReloadChanged();
   }
 
   /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
   function visibilityChanged(){
-    if(documentObject?.visibilityState!=='hidden')noteActivity();
+    if(documentObject.visibilityState!=='hidden')noteActivity();
     scheduleHiddenCheck();reloadWhenSafe();
   }
 
@@ -357,7 +357,7 @@ export function createRecoveryController({
     if(disposed||!updatedBuild||autoReloaded||!autoReloadOn())return;
     const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
     if(reloadedFor().includes(version))return;
-    const away=documentObject?.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
+    const away=documentObject.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
     if(!away||hasUnsavedInput()){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
     autoReloaded=true;
     try{storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));}catch{}
@@ -372,9 +372,9 @@ export function createRecoveryController({
   const connection=()=>apiReachable?'live': 'offline';
   const visibleConnection=()=>!apiReachable?'offline':liveReachable?'live':'reconnecting';
   const renderPreservingEditor=()=>{
-    const snapshot=documentObject?(captureOpenEditor(documentObject)??[...pendingEditors.values()].at(-1)??null):null;
-    if(hooks?.refresh)hooks.refresh();else getApp()?.refresh?.();
-    if(snapshot&&documentObject)restoreOpenEditor(snapshot,documentObject);
+    const snapshot=captureOpenEditor(documentObject)??[...pendingEditors.values()].at(-1)??null;
+    getApp()?.refresh();
+    if(snapshot)restoreOpenEditor(snapshot,documentObject);
   };
   const setConnectivity=(nextApi,nextLive=liveReachable)=>{
     const previous=visibleConnection();
@@ -383,13 +383,13 @@ export function createRecoveryController({
     const restored=apiReachable&&previous==='offline';
     const next=visibleConnection();if(previous===next)return;
     updateNotice();
-    if(next==='live'&&previous==='offline')getApp()?.toast?.('Connection restored','info');
+    if(next==='live'&&previous==='offline')getApp()?.toast('Connection restored','info');
     if(restored)for(const listener of [...onlineListeners])queueMicrotask(listener);
   };
 
   function viewScope(){
-    const context=getApp()?.context?.()??{};
-    return JSON.stringify([data.session?.id,context.view,context.projectId,context.taskId]);
+    const context=getApp()?.context();
+    return JSON.stringify([data.session?.id,context?.view,context?.projectId,context?.taskId]);
   }
 
   function notice(){
@@ -404,7 +404,7 @@ export function createRecoveryController({
 
   let announcedNotice = '';
   function announceNotice(state) {
-    if (!documentObject?.body) return;
+    if (!documentObject.body) return;
     let region = documentObject.getElementById('connection-announcer');
     if (!region) {
       region = documentObject.createElement('div'); region.id = 'connection-announcer'; region.className = 'sr-only';
@@ -415,7 +415,7 @@ export function createRecoveryController({
     if (announcedNotice === text) return;
     announcedNotice = text; region.textContent = '';
     const target = region;
-    (windowObject?.requestAnimationFrame?.bind(windowObject) || (fn=>setTimer(fn,0)))(()=>{if(!disposed && announcedNotice===text)target.textContent=text;});
+    windowObject.requestAnimationFrame(()=>{if(!disposed && announcedNotice===text)target.textContent=text;});
   }
 
   function connectionHtml(){
@@ -425,7 +425,7 @@ export function createRecoveryController({
 
   function updateNotice(){
     const state=notice(); announceNotice(state);
-    const main=documentObject?.querySelector?.('#app .main');
+    const main=documentObject.querySelector('#app .main');
     if(!main)return;
     let element=main.querySelector('.connection-notice');
     if(!state){element?.remove();return;}
@@ -467,16 +467,16 @@ export function createRecoveryController({
   function interactionPending(key,pending){
     if(!pending){
       const state=pendingSaves.get(key);
-      if(state){clearTimer(state.timer);getApp()?.clearTaskSaving?.(state.token);pendingSaves.delete(key);}
+      if(state){clearTimer(state.timer);getApp()?.clearTaskSaving(state.token);pendingSaves.delete(key);}
       pendingEditors.delete(key);reloadWhenSafe();return;
     }
-    const snapshot=documentObject?captureOpenEditor(documentObject):null;
+    const snapshot=captureOpenEditor(documentObject);
     if(snapshot)pendingEditors.set(key,snapshot);
-    const context=getApp()?.context?.();
+    const context=getApp()?.context();
     if(context?.view!=='task'||!key.startsWith('task.'))return;
     const scope=viewScope(),token={},taskId=context.taskId;
     const timer=setTimer(()=>{
-      if(!disposed&&viewScope()===scope&&pendingSaves.get(key)?.token===token)getApp()?.noteTaskSaving?.(taskId,token);
+      if(!disposed&&viewScope()===scope&&pendingSaves.get(key)?.token===token)getApp()?.noteTaskSaving(taskId,token);
     },300);
     pendingSaves.set(key,{timer,token});
   }
@@ -494,7 +494,7 @@ export function createRecoveryController({
 
   async function probeAccess() {
     if(disposed||!data?.session||data.session.temporary||!apiReachable)return;
-    const context=getApp()?.context?.();if(!context)return;
+    const context=getApp()?.context();if(!context)return;
     try{
       if(context.view==='task'&&context.taskId){
         const task=data.tasks?.find((item)=>item.id===context.taskId||item.internalId===context.taskId);
@@ -554,9 +554,9 @@ export function createRecoveryController({
   function sessionExpired() {
     if(expired||!data?.session)return false;
     // The comment composer keeps its own draft, with its reply target and mentions.
-    const editor=documentObject?captureOpenEditor(documentObject,{changedOnly:true,skip:(element)=>element.id==='cmtIn'}):null,comment=getApp()?.commentDraft?.()??null;
-    resume=editor||comment?{userId:data.session.userId,hash:windowObject?.location?.hash??'',editor,comment}:null;
-    expired=true;sessionGeneration++;reconnectGeneration++;gateway?.invalidate?.();getAuth()?.expire?.();return true;
+    const editor=captureOpenEditor(documentObject,{changedOnly:true,skip:(element)=>element.id==='cmtIn'}),comment=getApp()?.commentDraft()??null;
+    resume=editor||comment?{userId:data.session.userId,hash:windowObject.location.hash,editor,comment}:null;
+    expired=true;sessionGeneration++;reconnectGeneration++;gateway.invalidate();getAuth()?.expire();return true;
   }
 
   /**
@@ -565,11 +565,11 @@ export function createRecoveryController({
    */
   function resumeEditing() {
     const next=resume;if(!next||!data?.session||data.session.temporary)return false;
-    if(data.session.userId!==next.userId||(windowObject?.location?.hash??'')!==next.hash){resume=null;return false;}
-    if(next.editor&&![...documentObject?.querySelectorAll?.(EDITOR_ROOT)??[]].some((candidate)=>next.editor.rootClass.every((name)=>candidate.classList.contains(name))))return false;
+    if(data.session.userId!==next.userId||windowObject.location.hash!==next.hash){resume=null;return false;}
+    if(next.editor&&![...documentObject.querySelectorAll(EDITOR_ROOT)].some((candidate)=>next.editor.rootClass.every((name)=>candidate.classList.contains(name))))return false;
     resume=null;
-    if(next.comment)getApp()?.restoreCommentDraft?.(next.comment);
-    if(next.editor&&documentObject)restoreOpenEditor(next.editor,documentObject,{notify:true});
+    if(next.comment)getApp()?.restoreCommentDraft(next.comment);
+    if(next.editor)restoreOpenEditor(next.editor,documentObject,{notify:true});
     return true;
   }
 
@@ -633,15 +633,15 @@ export function createRecoveryController({
     if(!isRevisionConflict(error))return {handled:false};
     const scope=viewScope(),current=()=>scope===viewScope()&&isCurrent();
     if(!current())return {handled:true,saved:false};
-    snapshot=snapshot??(documentObject?captureOpenEditor(documentObject):null);
+    snapshot=snapshot??captureOpenEditor(documentObject);
     await reloadLatest();
     if(!current())return {handled:true,saved:false};
-    const restored=snapshot&&documentObject?restoreOpenEditor(snapshot,documentObject):null;
+    const restored=snapshot?restoreOpenEditor(snapshot,documentObject):null;
     const entity=latestEntity();
     if(!entity){pageError='404';renderPreservingEditor();return {handled:true,saved:false};}
     const latestValue=target?.latestValue?.(entity);
     const field=target?.element?.()??restored;
-    const chosen=await presentConflict({target:field,locate:target?.element??relocator(field),latestValue,myValue:myValue??target?.myValue,snapshot,isCurrent:current,updateTarget:!target?.acceptLatest});
+    const chosen=await presentConflict(documentObject,{target:field,locate:target?.element??relocator(documentObject,field),latestValue,myValue:myValue??target?.myValue,isCurrent:current,updateTarget:!target?.acceptLatest});
     if(chosen==='cancelled'||!current())return {handled:true,saved:false};
     if(chosen!=='mine'){
       await reloadLatest();
@@ -651,12 +651,12 @@ export function createRecoveryController({
       return {handled:true,saved:false,latest,choice:'latest'};
     }
     try{const result=await retry(entity.revision);return {handled:true,saved:true,result,stale:!current()};}
-    catch(retryError){if(!current())return {handled:true,saved:false};documentObject?.querySelectorAll?.('.save-feedback[data-recovery-conflict]')?.forEach?.((element)=>element.remove());handleCommandFailure(retryError);throw retryError;}
+    catch(retryError){if(!current())return {handled:true,saved:false};documentObject.querySelectorAll('.save-feedback[data-recovery-conflict]').forEach((element)=>element.remove());handleCommandFailure(retryError);throw retryError;}
   }
 
   function errorHtml(code) {
     if(code==='loading'){
-      const context=getApp()?.context?.();
+      const context=getApp()?.context();
       const view=context?.view==='notfound'&&context.taskId?'task':context?.view;
       if(view==='board')return `<div class="loading-board" role="status" aria-label="Loading Board">${Array.from({length:4},()=>'<div class="loading-column"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div></div>').join('')}</div>`;
       if(view==='roadmap')return `<div class="loading-roadmap" role="status" aria-label="Loading Roadmap"><div class="skeleton skeleton-heading"></div>${Array.from({length:3},()=>'<div class="loading-roadmap-row"><div class="skeleton skeleton-heading"></div><div class="skeleton skeleton-card"></div></div>').join('')}</div>`;
@@ -679,13 +679,13 @@ export function createRecoveryController({
     resumeEditing,
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,
-    captureEditor:()=>documentObject?captureOpenEditor(documentObject):null,
+    captureEditor:()=>captureOpenEditor(documentObject),
     keepPrompts:keepConflictPrompts,
-    restoreEditor:(snapshot)=>snapshot&&documentObject?restoreOpenEditor(snapshot,documentObject):null,
+    restoreEditor:(snapshot)=>restoreOpenEditor(snapshot,documentObject),
     revisionKey:entityKey,expectedRevision,finishRevision,
     interactionPending,refreshFailed,refreshSucceeded,isSavingTask:()=>pendingSaves.size>0,
     sessionActive:(session)=>session?.revokedAt==null,
-    ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast?.('Reconnect before making this change.','error');return false;},
+    ensureOnline(){if(connection()!=='offline')return true;getApp()?.toast('Reconnect before making this change.','error');return false;},
     connectionHtml,
     activateNotice,
     /** Run `listener` each time saving works again after the connection was lost. */
@@ -694,7 +694,7 @@ export function createRecoveryController({
     /** A field that saves itself saved its value without losing focus, such as a date saved with Enter. @param {Element} element */
     markSaved(element){rememberCommitted(element);},
     /** Whether one editor, such as a dialog, holds text the person typed. @param {Element} root */
-    hasTypedInputIn(root){return !!documentObject&&hasTypedInput(documentObject,committed,()=>false,[root]);},
+    hasTypedInputIn(root){return hasTypedInput(documentObject,committed,()=>false,[root]);},
     /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
     trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
     /** Count a save or upload that is not a command until it settles. */
@@ -704,7 +704,7 @@ export function createRecoveryController({
     /** Whether this browser reloads by itself after an update. */
     get autoReload(){return autoReloadOn();},
     setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}scheduleHiddenCheck();reloadWhenSafe();},
-    reloadClient(){windowObject?.location.reload();},
+    reloadClient(){windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
     liveConnected(){liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
@@ -720,12 +720,12 @@ export function createRecoveryController({
     beginRouteLoad,
     clearPageError(){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;updateNotice();pageError=null;pageReference=null;},
     retryLoad(){beginRouteLoad();reconcile({background:false}).then((result)=>{cancelRouteLoading();if(!result?.error){pageError=null;renderPreservingEditor();}});},
-    retryRefresh:()=>reconcile({background:true}),
-    copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast?.('Error reference copied'),()=>getApp()?.toast?.('Could not copy reference','error'));},
-    blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
+    blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
+    /** Start following the page: focus, input, activity, visibility, storage and the connection. */
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('storage',storageChanged);scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);windowObject.removeEventListener('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }

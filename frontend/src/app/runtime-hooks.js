@@ -1,6 +1,10 @@
 // @ts-check
 
-/** Explicit boundary for discussion/files/live-update modules owned outside app composition. */
+/**
+ * The transport, `OneloopRuntime.transport`: the API, commands, the change
+ * feed and a projection reload, for the views and the collaboration and
+ * Knowledge controllers.
+ */
 export function createRuntimeHooks({ api, gateway, data, reload }) {
   const listeners = new Set();
   return Object.freeze({

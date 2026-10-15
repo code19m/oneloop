@@ -1,11 +1,13 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Layers above the page: popovers, menus, dialogs and their confirmations,
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 
 import { openDialog, placeNear, trapFocus } from '../../src/app/layers.js';
+import { UIMotion } from '../../src/app/motion.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import {
-  App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,
+  App, D, canReadProject, epicById, isAdmin, me, recovery, report, runtime, state, taskById,
+  trackById,
 } from './model.js';
 
 export function overlayKey(selector) {
@@ -64,7 +66,7 @@ export function askConfirmation({ title, text, action, match, confirm, cancel, l
   form.addEventListener('submit', event => {
     event.preventDefault();
     if (pendingConfirmation !== record || (match !== undefined && input.value !== match)) return;
-    if(!local && window.Recovery && !Recovery.ensureOnline())return;
+    if(!local && !recovery.ensureOnline())return;
     accept.disabled = true; close(true); confirm();
   });
   (input || dismiss).focus();
@@ -153,7 +155,7 @@ export function renderMenu() {
   const m = state.menu;
   if (!m) return '';
   const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${esc(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" ${UIAction('setTheme', theme)}><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
-  const autoReload = window.Recovery?.autoReload;
+  const autoReload = recovery.autoReload;
   // A choice for this browser, like the theme, so it keeps the menu open.
   const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" ${UIAction('toggleAutoReload')}><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
   const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow ${UIAction('menuAction', it.i)}><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
@@ -250,7 +252,7 @@ export function syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, old
 const waitingPasswords=[];
 // A temporary password is shown once. While it shows, or waits for another
 // dialog to close, a reload or leaving oneloop would lose it for good.
-window.Recovery?.trackUnsaved?.(()=>!!D.session&&(state.modal?.type==='temppw'||waitingPasswords.length>0));
+recovery.trackUnsaved(()=>!!D.session&&(state.modal?.type==='temppw'||waitingPasswords.length>0));
 
 export function showWaitingPassword(){
   while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
@@ -282,6 +284,12 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.dismissOverlays(); }
 });
 
+/**
+ * Open a menu of `items` at `x`, `y`, beside its trigger. A Roadmap tooltip
+ * never shows over a menu, so one Escape closes the menu.
+ */
+export function openMenu(items, x, y, options = {}) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); }
+
 Object.assign(App, {
   confirm: askConfirmation,
   askToDiscard,
@@ -307,7 +315,7 @@ Object.assign(App, {
   dismissOverlays() {
     const close = () => state.modal?.poolId ? App.returnToPool() : App.closeOverlays();
     const dialog = state.modal ? document.querySelector('#overlay-root .modal') : null;
-    if (dialog && window.Recovery?.hasTypedInputIn?.(dialog)) { askToDiscard(close, () => {}, 'Text you typed in this dialog will be lost.'); return; }
+    if (dialog && recovery.hasTypedInputIn(dialog)) { askToDiscard(close, () => {}, 'Text you typed in this dialog will be lost.'); return; }
     close();
   },
   openModal(type, id, epicId) {
@@ -318,11 +326,9 @@ Object.assign(App, {
     if (type === 'task' && !App.require('manage_board')) return;
     if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
     state.sideOpen = false;
-    state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') App._poolScroll = {}; App.refreshOverlays();
+    state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') state.poolScroll = {}; App.refreshOverlays();
     if(type==='pool')runtime().openPool().catch(report);
   },
-  // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
-  _openMenu(items, x, y, options = {}) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
   // The action starts from the menu's button, so a dialog it opens returns focus there.
   menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
   /** Draw the open dialog again from the saved values, dropping what was typed in it. */

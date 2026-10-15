@@ -161,7 +161,11 @@ test.describe('with an instance time zone ahead of the browser', () => {
     await openApp(page, instance, 'board');
     await expect(page.locator('.board .card')).toHaveCount(1);
     await expect(page.locator('[data-announce=polite]')).toContainText('Times and Today are shown in UTC');
-    expect(await page.evaluate(() => OneloopTime.instant('2026-09-27T09:59:00Z'))).toBe('2026-09-27 09:59:00');
+    const { created, tip } = await page.evaluate(() => {
+      const card = document.querySelector('.board .card');
+      return { created: DATA.tasks.find(task => task.id === card.dataset.task).created, tip: card.querySelector('.card-created').dataset.tip };
+    });
+    expect(tip).toBe(`Created ${new Date(created).toISOString().slice(0, 19).replace('T', ' ')}`);
   });
 
   test('Today follows server time when the device clock is days behind', { tag: '@smoke' }, async ({ page, instance }) => {

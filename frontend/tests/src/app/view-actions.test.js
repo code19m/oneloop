@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { ACTIONS, actionEvents, installViewActions } from '../../../src/app/view-actions.js';
 
-const { JSDOM, bootApp } = createRequire(import.meta.url)('../../support/dom.cjs');
+const { JSDOM, bootApp, tick } = createRequire(import.meta.url)('../../support/dom.cjs');
 
 /** A page with actions installed, whose App and Recovery record each call. */
 function page(html) {
@@ -121,7 +121,7 @@ test('a clicked button, and a role=button that opens a dialog, have focus when t
 test('a file input runs its change action once, also after a render removed it while its picker was open', async () => {
   const t = page('<div id="host"></div>');
   t.$('host').innerHTML = `<input id="file" type="file" data-action-change="updTask" data-args-change='[{"$":"element"}]'>`;
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await tick();
   const input = t.$('file');
   input.dispatchEvent(new t.w.Event('change', { bubbles: true }));
   t.$('host').replaceChildren();

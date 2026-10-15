@@ -1,7 +1,8 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Notifications and Undo. They live outside #app, so a render never restarts
    them or clears entered text. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { I, cleanStr, esc, setHTML } from './format.js';
 import { App, state } from './model.js';
 import { POP, pendingConfirmation } from './overlays.js';

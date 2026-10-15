@@ -86,7 +86,6 @@ test('a sensitive action asks for the password in a named dialog once the sign-i
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-// Exercise the rendered client, including its legacy bridge overrides.
 test('dialogs, drawer, menu and searchable selector keep keyboard focus', async ({ page, instance }) => {
   const { project, track } = instance.projects[0];
   for (let i = 0; i < 8; i++) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Keyboard choice ${i}`, startDate: '2026-09-24' });

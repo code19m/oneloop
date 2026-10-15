@@ -1,7 +1,7 @@
 // views/theme.js: the device's theme until someone picks Light or Dark.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../support/dom.cjs');
+const { JSDOM, bootApp, load } = require('../support/dom.cjs');
 
 /** A device setting the test can change, like a system switch to dark mode. */
 function device(dark) {
@@ -13,8 +13,11 @@ function device(dark) {
 /** Load theme.js alone on a device that starts dark or light. */
 function theme({ dark = false, stored = {} } = {}) {
   const system = device(dark);
-  const t = bootApp({ scripts: ['theme'], stored, setup: w => { w.matchMedia = query => query === '(prefers-color-scheme: dark)' ? system.query : { matches: false, addEventListener() {}, removeEventListener() {} }; } });
-  return { ...t, system, shown: () => t.d.documentElement.dataset.theme, color: () => t.d.querySelector('meta[name="theme-color"]').content };
+  const dom = new JSDOM('<meta name="theme-color">', { url: 'http://localhost/', runScripts: 'outside-only' }), w = dom.window, d = w.document;
+  for (const [key, value] of Object.entries(stored)) w.localStorage.setItem(key, value);
+  w.matchMedia = query => query === '(prefers-color-scheme: dark)' ? system.query : { matches: false, addEventListener() {}, removeEventListener() {} };
+  load(dom, 'theme');
+  return { w, d, system, shown: () => d.documentElement.dataset.theme, color: () => d.querySelector('meta[name="theme-color"]').content };
 }
 
 test('a first visit shows the device theme and follows it when it changes', () => {

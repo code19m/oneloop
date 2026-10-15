@@ -31,6 +31,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- Times such as "5m ago" on comments, activity and the Inbox now count from
+  the server's clock. Before, a computer clock that ran fast or slow made a
+  new comment read "5m ago", or stay "just now" too long.
 - `oneloop serve` no longer crashes when nothing reads its standard error and
   it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
   line like the others.
@@ -44,6 +47,9 @@ All notable changes to oneloop are recorded here. The format follows
 - Links and other files that a Knowledge sync leaves out now count toward
   the folder's 5,000 files. Before, a folder of many such files could sync
   and fill the disk with them.
+- When a Knowledge folder is too large to sync, oneloop now says to remove
+  files or subfolders. Before, it said to remove large files, which doesn't
+  help a folder with too many files or subfolders.
 - Knowledge search now says when some files are searched by name only,
   because their text doesn't fit in the search index. Before, a word in such
   a file gave "No results" without a reason. In MCP, `search_knowledge` and

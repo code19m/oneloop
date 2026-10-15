@@ -1,7 +1,8 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Form parts that several pages and dialogs share: description fields that
    grow with their text, and the New task form. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import { dateHtml, field, multiHtml, selectHtml } from './controls.js';
 import { I, UIAction, d, esc, setHTML } from './format.js';
 import { App, canRoadmap, epics, projectMembers, userById, userHandle } from './model.js';

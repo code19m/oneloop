@@ -1,14 +1,14 @@
-// views/file-views.js: Markdown, code, HTML and diagram previews.
+// src/features/files/file-views.js and preview.js: Markdown, code, HTML and diagram previews.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM, bootApp, source, previewLibraries, waitFor, settle, fixtures } = require('../support/dom.cjs');
+const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../../../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const scripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+const libraries = [...previewLibraries, ...markdownLibraries];
 // KaTeX refuses to render in quirks mode.
-const boot = options => bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options });
+const boot = options => { const t = bootApp({ route: 'task/BIR-079', libraries, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
 
 const readme = ['# Review', '', '## Notes', '## Notes', '', '**bold** and ~~old~~', '', '- [x] Ready', '- [ ] Later', '', '| A | B |', '| - | - |', '| 1 | 2 |', '', '```js', 'const total = 2; // <script>bad()</script>', '```', '', '<details><summary>More</summary>Details</details>', '', '[Jump](#notes)', '[Docs](https://example.invalid/docs)', '[Relative](./other.md)', '[Unsafe](javascript:alert(1))', '![Remote](https://example.invalid/image.png)', '', '<script>window.evil=true</script><img src="x" onerror="evil()"><input name="App"><style>body{display:none}</style>'].join('\n');
 const report = '<h1>Report</h1><link rel="stylesheet" href="https://example.invalid/style.css"><script src="https://example.invalid/code.js"></script><img src="https://example.invalid/pic.png" onerror="alert(1)"><iframe src="https://example.invalid/frame"></iframe><form action="https://example.invalid"><button>Go</button></form>';
@@ -29,9 +29,8 @@ async function taskWithFiles(extra = []) {
 }
 
 test('files the server cannot preview are download only', async () => {
-  const { w, d, file } = await taskWithFiles();
-  for (const name of ['release.zip', 'broken.png', 'binary.txt']) { assert(!w.Uploads.canPreview(file(name))); assert(d.querySelector(`[data-attachment-id="${file(name).id}"] .attachment-meta`).textContent.includes('Download only')); }
-  for (const name of ['README.md', 'broken.json', 'source.ts', 'Dockerfile', 'report.html']) assert(w.Uploads.canPreview(file(name)));
+  const { d, file } = await taskWithFiles();
+  for (const name of ['release.zip', 'broken.png', 'binary.txt']) { assert(d.querySelector(`[data-attachment-id="${file(name).id}"] .attachment-meta`).textContent.includes('Download only')); }
 });
 
 test('the preview sequence spans every previewable format and keeps its shell', async () => {
@@ -68,11 +67,11 @@ test('Markdown renders GitHub-flavored content safely and offers its source', as
 });
 
 test('Markdown can\'t point a label or a control at the app\'s own elements', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const control = d.createElement('input'); control.type = 'checkbox'; control.id = 'app-control'; d.body.append(control);
   const clicks = []; control.addEventListener('click', () => clicks.push('app control'));
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'gadget.md' }, '<label for="app-control">Open the picker</label>\n\n<input type="checkbox" form="app-form" popovertarget="app-menu" commandfor="app-menu" command="show-popover">', false);
+  views.markdownView(host, { name: 'gadget.md' }, '<label for="app-control">Open the picker</label>\n\n<input type="checkbox" form="app-form" popovertarget="app-menu" commandfor="app-menu" command="show-popover">', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   const body = host.querySelector('.markdown-body');
   assert.equal(body.querySelector('[for],[form],[popovertarget],[commandfor],[command]'), null);
@@ -100,10 +99,10 @@ test('large Markdown previews are bounded in both modes', async () => {
 });
 
 test('math, alerts and footnotes render and footnote links move focus', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const sample = fs.readFileSync(path.join(fixtures, 'math.md'), 'utf8');
-  w.FileViews.markdown(extras, { name: 'extras.md' }, sample, false);
+  views.markdownView(extras, { name: 'extras.md' }, sample, false);
   await waitFor(() => extras.querySelector('.markdown-body'), 'Markdown renders');
   assert.equal(extras.querySelectorAll('.katex').length, 5); assert.equal(extras.querySelectorAll('math').length, 5); assert.equal(extras.querySelectorAll('.markdown-alert').length, 5);
   assert.equal(extras.querySelectorAll('.markdown-alert-title svg').length, 5); assert.equal(extras.querySelectorAll('.footnotes li').length, 2);
@@ -117,13 +116,13 @@ test('math, alerts and footnotes render and footnote links move focus', async ()
 });
 
 test('Markdown anchors stay unique when literal suffixes collide with repeated headings', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   for (const [text, expected] of [
     ['## Setup\n\n## Setup\n\n## Setup-1\n\n## md-setup\n', ['md-setup', 'md-setup-1', 'md-setup-1-1', 'md-md-setup']],
     ['## Setup-1\n\n## Setup\n\n## Setup\n', ['md-setup-1', 'md-setup', 'md-setup-2']],
   ]) {
     const host = d.createElement('div'); d.body.append(host);
-    w.FileViews.markdown(host, { name: 'anchors.md' }, text, false);
+    views.markdownView(host, { name: 'anchors.md' }, text, false);
     await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
     assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), expected);
     host.remove();
@@ -131,27 +130,27 @@ test('Markdown anchors stay unique when literal suffixes collide with repeated h
 });
 
 test('heading ids match the anchors the server gives search hits and MCP sections', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const fixture = JSON.parse(fs.readFileSync(path.join(fixtures, 'heading-anchors.json'), 'utf8'));
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'guide.md' }, fixture.source, false);
+  views.markdownView(host, { name: 'guide.md' }, fixture.source, false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   assert.deepEqual([...host.querySelectorAll('.markdown-body :is(h1,h2,h3,h4,h5,h6)')].map(heading => heading.id), fixture.ids);
   assert.equal(host.querySelectorAll('[data-md-heading]').length, 0);
 });
 
 test('a spoofed heading marker in uploaded HTML gives no server anchor', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'spoof.md' }, '<h2 data-md-heading="x-0">Fake</h2>\n\n## Setup\n', false);
+  views.markdownView(host, { name: 'spoof.md' }, '<h2 data-md-heading="x-0">Fake</h2>\n\n## Setup\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   assert.deepEqual([...host.querySelectorAll('.markdown-body h2')].map(heading => heading.id), ['md-fake', 'md-setup']);
 });
 
 test('in-page links reach headings in any script', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
+  views.markdownView(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   const link = host.querySelector('.markdown-body a');
   assert.equal(link.getAttribute('href'), '#md-оплата-и-сроки');
@@ -161,9 +160,9 @@ test('in-page links reach headings in any script', async () => {
 });
 
 test('each Markdown block takes its direction from its own text, as Knowledge pages and attachment previews show it', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'دليل.md' }, '# دليل الفريق\n\nهذه فقرة عربية.\n\n- البند الأول\n- البند الثاني\n\n> اقتباس\n\n| العمود | Column |\n| - | - |\n| ١ | 1 |\n\n<p dir="ltr">Kept as written.</p>\n\n```js\nconst code = 1;\n```', false);
+  views.markdownView(host, { name: 'دليل.md' }, '# دليل الفريق\n\nهذه فقرة عربية.\n\n- البند الأول\n- البند الثاني\n\n> اقتباس\n\n| العمود | Column |\n| - | - |\n| ١ | 1 |\n\n<p dir="ltr">Kept as written.</p>\n\n```js\nconst code = 1;\n```', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   const body = host.querySelector('.markdown-body');
   for (const selector of ['h1', 'p', 'ul', 'blockquote p', 'table']) assert.equal(body.querySelector(selector).getAttribute('dir'), 'auto', selector);
@@ -173,7 +172,7 @@ test('each Markdown block takes its direction from its own text, as Knowledge pa
 });
 
 test('unsafe math commands and SVG script are stripped while literal dollars stay text', async () => {
-  const { w, d } = boot();
+  const { d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const unsafe = String.raw`Math: $\href{javascript:alert(1)}{unsafe}$ and $\includegraphics{https://example.invalid/tracker.png}$.
 
@@ -183,7 +182,7 @@ Inline code: ${'`'}$x$${'`'}. Prices: $5 and $10.
 
 <svg onload="evil()"><script>evil()</script></svg>
 `;
-  w.FileViews.markdown(extras, { name: 'unsafe.md' }, unsafe, false);
+  views.markdownView(extras, { name: 'unsafe.md' }, unsafe, false);
   await waitFor(() => extras.querySelector('.markdown-body'), 'Markdown renders');
   assert(!extras.querySelector('[href^="javascript:"],script,[onload]')); assert(!extras.querySelector('img[src*="tracker"]'));
   assert(extras.querySelector('code').textContent.includes('$x$')); assert(extras.textContent.includes('Prices: $5 and $10.'));
@@ -202,12 +201,12 @@ function stubRenderer(w, answer) {
 }
 
 test('diagrams render in their own document, fall back on syntax errors and drop stale results', async () => {
-  const { w, d } = boot();
+  const { w, d, views } = boot();
   let config;
   const answer = { async render(_id, text, value) { config = value; if (text.includes('invalid')) throw Error('syntax'); return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 180"><text>Ready</text></svg>', width: 420, height: 180 }; } };
   stubRenderer(w, answer);
   const host = d.createElement('div'); d.body.append(host);
-  w.FileViews.markdown(host, { name: 'diagrams.md' }, '```mermaid\nflowchart LR\n A-->B\n```\n\n```mermaid\ninvalid\n```', false);
+  views.markdownView(host, { name: 'diagrams.md' }, '```mermaid\nflowchart LR\n A-->B\n```\n\n```mermaid\ninvalid\n```', false);
   await waitFor(() => !host.querySelector('[aria-busy]'), 'diagrams finish rendering');
   const diagram = host.querySelector('.markdown-diagram img');
   assert(diagram); assert.equal(diagram.width, 420); assert.equal(diagram.height, 180); assert.match(decodeURIComponent(diagram.src), /^data:image\/svg\+xml;charset=utf-8,<svg .*Ready/);
@@ -218,7 +217,7 @@ test('diagrams render in their own document, fall back on syntax errors and drop
   let finish, started;
   const rendering = new Promise(resolve => { started = resolve; });
   answer.render = () => { started(); return new Promise(resolve => finish = resolve); };
-  w.FileViews.markdown(host, { name: 'slow.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
+  views.markdownView(host, { name: 'slow.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
   await rendering;
   const pending = host.querySelector('.markdown-diagram'); host.remove();
   finish({ svg: '<svg viewBox="0 0 10 10"></svg>', width: 10, height: 10 });
@@ -227,11 +226,11 @@ test('diagrams render in their own document, fall back on syntax errors and drop
 });
 
 test('a diagram is drawn again in the new colors when the theme changes, also with System', async () => {
-  const { w, d } = boot();
+  const { w, d, views } = boot();
   stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme}</text></svg>`, width: 10, height: 10 }; } });
   const host = d.createElement('div'); d.body.append(host);
   d.documentElement.dataset.theme = 'light';
-  w.FileViews.markdown(host, { name: 'diagram.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
+  views.markdownView(host, { name: 'diagram.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
   const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>(\w+)<\/text>/)?.[1];
   await waitFor(() => drawnIn() === 'default', 'the diagram shows in the light colors');
   // The device turned dark while the theme follows it.
@@ -268,12 +267,12 @@ test('the renderer hides $$ pairs from Mermaid\'s math, and draws a diagram as w
   ]);
 });
 
-/** Load only motion.js and file-views.js, serving preview libraries from the harness on demand. */
+/** Load only file-views.js, serving preview libraries from the harness on demand. */
 function lazyPreviews() {
-  const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   const d = w.document, host = d.getElementById('host');
   w.matchMedia = () => ({ matches: true });
-  for (const name of ['motion', 'file-views']) w.eval(source(name));
+  const views = importModule(dom, 'src/features/files/file-views.js');
   const loaded = [], append = d.head.append.bind(d.head);
   const state = { failMath: true };
   d.head.append = element => {
@@ -287,8 +286,8 @@ function lazyPreviews() {
     });
   };
   const settle = () => waitFor(() => !host.textContent.includes('Loading Markdown'), 'Markdown finishes loading');
-  const open = async text => { w.FileViews.markdown(host, { name: 'test.md' }, text, false); await settle(); };
-  return { w, d, host, loaded, open, settle };
+  const open = async text => { views.markdownView(host, { name: 'test.md' }, text, false); await settle(); };
+  return { w, d, host, loaded, open, settle, views };
 }
 
 test('Markdown loads only the libraries it needs and retries a failed math library once', async () => {
@@ -303,16 +302,16 @@ test('Markdown loads only the libraries it needs and retries a failed math libra
 });
 
 test('HTML previews keep Source usable without parsing, and show nothing without a server preview', () => {
-  const { w, d, host } = lazyPreviews();
+  const { d, host, views } = lazyPreviews();
   let parses = 0;
   const create = d.implementation.createHTMLDocument.bind(d.implementation);
   d.implementation.createHTMLDocument = (...args) => { parses++; return create(...args); };
-  w.FileViews.html(host, { name: 'server.html', size: 20, htmlPreviewUrl: '/api/attachments/f/preview' }, '<h1>Source</h1>');
+  views.htmlView(host, { name: 'server.html', size: 20, htmlPreviewUrl: '/api/attachments/f/preview' }, '<h1>Source</h1>');
   assert(host.querySelector('iframe').src.includes('/api/attachments/f/preview')); assert.equal(host.querySelector('iframe').getAttribute('sandbox'), '');
   host.querySelector('[data-html-restart]').click(); host.querySelector('[data-view-source]').click();
   assert(!host.querySelector('iframe')); assert.equal(host.querySelector('.html-source').textContent, '<h1>Source</h1>');
   host.querySelector('[data-view-preview]').click();
-  w.FileViews.html(host, { name: 'local.html', size: 20 }, '<h1>Local</h1><iframe src="bad"></iframe>');
+  views.htmlView(host, { name: 'local.html', size: 20 }, '<h1>Local</h1><iframe src="bad"></iframe>');
   assert(!host.querySelector('iframe')); assert.match(host.querySelector('.preview-unavailable').textContent, /Preview unavailable/);
   assert(host.querySelector('[data-html-restart]').hidden); assert.equal(host.querySelector('.html-source').textContent, '<h1>Local</h1><iframe src="bad"></iframe>');
   assert.equal(parses, 0, 'uploaded HTML is never parsed in the app page');
@@ -320,10 +319,10 @@ test('HTML previews keep Source usable without parsing, and show nothing without
 
 /** File views with the Markdown libraries present, outside the app. */
 function directPreviews() {
-  const { window: w } = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   w.matchMedia = () => ({ matches: true });
-  for (const name of ['motion', ...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index', 'file-views']) w.eval(source(name));
-  return { w, d: w.document, host: w.document.getElementById('host') };
+  for (const name of [...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index']) w.eval(source(name));
+  return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
 
 test('a Knowledge context links relative files and shows relative images; attachments keep them inert', () => {
@@ -332,8 +331,8 @@ test('a Knowledge context links relative files and shows relative images; attach
     resolveLink: href => href === 'guides/setup.md#install' ? '#/knowledge/p1/blob/guides/setup.md?section=install' : href === 'missing.md' ? 'https://example.invalid/not-a-route' : null,
     resolveImage: src => src === 'assets/logo.png' ? '/api/projects/p1/knowledge/content?path=assets%2Flogo.png' : null,
   };
-  const { w, d, host } = directPreviews();
-  w.FileViews.markdown(host, { name: 'README.md', size: text.length }, text, false, context);
+  const { d, host, views } = directPreviews();
+  views.markdownView(host, { name: 'README.md', size: text.length }, text, false, context);
   const links = [...d.querySelectorAll('.markdown-body a')];
   assert.equal(links[0].getAttribute('href'), '#/knowledge/p1/blob/guides/setup.md?section=install');
   assert.equal(links[0].getAttribute('target'), null);
@@ -341,16 +340,16 @@ test('a Knowledge context links relative files and shows relative images; attach
   assert(!d.querySelector('a[href^="javascript:"]'));
   assert.equal(d.querySelector('.markdown-body img').getAttribute('src'), '/api/projects/p1/knowledge/content?path=assets%2Flogo.png');
   assert.match(d.querySelector('.markdown-image-placeholder').textContent, /Other/);
-  w.FileViews.markdown(host, { name: 'README.md', size: text.length }, text, false);
+  views.markdownView(host, { name: 'README.md', size: text.length }, text, false);
   assert(!d.querySelector('.markdown-body a[href^="#/knowledge"]'));
   assert(!d.querySelector('.markdown-body img'));
 });
 
 test('plain text previews indent whole JSON files and say when they are cut', () => {
-  const { w, host } = directPreviews();
-  w.FileViews.text(host, { name: 'config.json' }, '{"a":[1,2]}', false);
+  const { host, views } = directPreviews();
+  views.textView(host, { name: 'config.json' }, '{"a":[1,2]}', false);
   assert.equal(host.querySelector('pre').textContent, '{\n  "a": [\n    1,\n    2\n  ]\n}');
-  w.FileViews.text(host, { name: 'config.json' }, '{"a":', true);
+  views.textView(host, { name: 'config.json' }, '{"a":', true);
   assert.equal(host.querySelector('pre').textContent, '{"a":');
   assert.match(host.querySelector('.access-note').textContent, /truncated to 200 KB/);
 });

@@ -9,17 +9,13 @@ const { afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
 const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
 const { createLegacyData, sessionKey } = require('../../src/data/projection-store.js');
-const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
-const { setTrustedHTML } = require('../../src/app/trusted-types.js');
 const { settle, waitFor, deferred, tick } = require('./helpers.cjs');
-const { UIAction, escapeHtml } = require('../../src/app/markup.js');
 const { installViewActions } = require('../../src/app/view-actions.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
@@ -37,8 +33,6 @@ class JSDOM extends jsdom.JSDOM {
     super(html, { ...options, virtualConsole });
     this.errors = errors;
     this.window.TestApiError = ApiError;
-    // The HTML helpers of the classic view scripts, as src/app/boot.js sets them.
-    Object.assign(this.window, { UIHTML: setTrustedHTML, UIEscape: escapeHtml, UIAction });
     open.add(this);
   }
 }
@@ -46,7 +40,7 @@ class JSDOM extends jsdom.JSDOM {
 // The src modules run in Node and reach the page through these globals, so
 // while a booted window is open they name that window's. A test may still
 // assign one; the harness puts every global back after the test.
-const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement', 'Collab', 'Recovery'];
+const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement'];
 const replacedGlobals = new Map();
 function useWindowGlobals(w) {
   for (const name of WINDOW_GLOBALS) {
@@ -69,7 +63,8 @@ function restoreGlobals() {
 afterEach(() => {
   restoreGlobals();
   const errors = [];
-  for (const dom of open) { errors.push(...dom.errors); dom.window.close(); }
+  // The collaboration controller runs Node's timers, which closing a window leaves running.
+  for (const dom of open) { dom.window.OneloopCollaboration?.dispose?.(); errors.push(...dom.errors); dom.window.close(); }
   open.clear();
   assert.deepEqual(errors, [], 'Unexpected errors in the view');
 });
@@ -109,45 +104,56 @@ const sharedModules = new Map([[path.join(frontend, 'src/data/api-client.js'), r
 
 /**
  * Import `file`, an ES module, and the modules it imports into the window of
- * `dom`, as a browser does. Each window gets its own instances.
+ * `dom`, as a browser does: each window has one instance of each module, at
+ * the URL the server gives it. `dom.stubs` (paths in frontend/ to exports),
+ * set before the first import, stand in for some modules. Returns the
+ * module's exports.
  */
 function importModule(dom, file) {
-  const context = dom.getInternalVMContext(), loaded = new Map();
+  file = path.resolve(frontend, file);
+  dom.modules ??= new Map();
+  const stubs = dom.stubs ?? {};
+  const context = dom.getInternalVMContext(), loaded = dom.modules;
+  const origin = dom.window.location.origin === 'null' ? 'http://localhost' : dom.window.location.origin;
+  const urlOf = file => new URL(path.relative(frontend, file).split(path.sep).join('/'), `${origin}/`).href;
+  const synthetic = (exports, identifier) => new vm.SyntheticModule(Object.keys(exports), function () { for (const name of Object.keys(exports)) this.setExport(name, exports[name]); }, { context, identifier });
   const link = file => {
     if (loaded.has(file)) return loaded.get(file);
-    const shared = sharedModules.get(file), identifier = pathToFileURL(file).href;
-    const module = shared
-      ? new vm.SyntheticModule(Object.keys(shared), function () { for (const name of Object.keys(shared)) this.setExport(name, shared[name]); }, { context, identifier })
-      : new vm.SourceTextModule(read(file), { context, identifier });
+    const stub = sharedModules.get(file) ?? stubs[path.relative(frontend, file)], identifier = urlOf(file);
+    const module = stub ? synthetic(stub, identifier) : new vm.SourceTextModule(read(file), {
+      context, identifier,
+      initializeImportMeta: meta => { meta.url = identifier; },
+      importModuleDynamically: async specifier => {
+        const imported = link(path.join(frontend, decodeURIComponent(new URL(specifier, identifier).pathname)));
+        if (imported.status === 'unlinked') imported.instantiate();
+        await imported.evaluate();
+        return imported;
+      },
+    });
     loaded.set(file, module);
-    if (shared) return module;
+    if (stub) return module;
     module.linkRequests(module.moduleRequests.map(({ specifier }) => link(path.resolve(path.dirname(file), specifier))));
     return module;
   };
   const module = link(file);
-  module.instantiate();
+  if (module.status === 'unlinked') module.instantiate();
   // A module without top-level await runs now; a failure leaves it errored.
   module.evaluate().catch(() => {});
   if (module.status === 'errored') throw module.error;
   return module.namespace;
 }
 
-/**
- * Run one script in the window of `dom`, by its `source` name, as the app
- * loads it. `recovery` is the production recovery controller, with the API,
- * gateway and auth that the harness wired.
- */
+/** Run one script in the window of `dom`, by its `source` name, as the app loads it. */
 function load(dom, name) {
-  const w = dom.window;
   if (viewModules.has(name)) return importModule(dom, path.join(frontend, `views/${name}.js`));
-  if (name !== 'recovery') return void w.eval(source(name));
-  const { createRecoveryController } = importModule(dom, path.join(frontend, 'src/features/recovery/controller.js'));
-  w.Recovery = createRecoveryController({ data: w.DATA, ...w.TestWiring, getApp: () => w.App, windowObject: w, documentObject: w.document, setTimer: w.setTimeout.bind(w), clearTimer: w.clearTimeout.bind(w) });
+  dom.window.eval(source(name));
 }
 
+/** The browser libraries that Markdown previews load on demand, already present. */
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
-/** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
+
+/** Knowledge, which view tests leave out: a page and sections with nothing in them. */
+const knowledgeStub = () => ({ route: (_route, projectId) => projectId, render: () => '', topbar: () => '<h1>Knowledge base</h1>', beforeRender() {}, mount() {}, settingsHtml: () => '', modalHtml: () => '', clear() {} });
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {
@@ -169,7 +175,8 @@ function fakeEventSource(url) {
  * new: they succeed at once and repaint what they show, as the read
  * controller does, and are recorded in `reads.calls`.
  */
-function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers = {}, reloadBootstrap = async () => ({ stale: false }) }) {
+function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap = async () => ({ stale: false }) }) {
+  const w = dom.window;
   const calls = [], commands = [], events = [];
   const held = method => (...args) => new Promise((resolve, reject) => {
     const call = { method, args, settled: false };
@@ -197,7 +204,8 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(); return { stale: false }; }])),
     ...readAnswers,
   };
-  const data = w.DATA, auth = { withRecentAuth: run => run(), ...authAnswers };
+  // The tests end sessions themselves, so expiry leaves the projection alone.
+  const data = w.DATA, auth = { withRecentAuth: run => run(), expire() {} };
   let runtime;
   const gateway = createCommandGateway({
     api, data,
@@ -206,18 +214,17 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
     onPending: (key, pending) => w.Recovery?.interactionPending(key, pending),
   });
   runtime = createRuntimeHooks({ api, gateway, data, reload: reloadBootstrap });
-  w.OneloopTransport = runtime;
-  w.OneloopErrorMessage = (error, fallback = 'The request could not be completed.') => { const feedback = actionErrorFeedback(error); return feedback.silent ? '' : feedback.message || fallback; };
-  w.OneloopRetryable = retryableFailure;
-  w.OneloopCollaboration = installCollaborationController({ transport: runtime, visibility: w.document, eventSourceFactory: url => { const source = fakeEventSource(url); events.push(source); return source; } });
-  w.TestWiring = { api, gateway, getAuth: () => auth, reload: reloadBootstrap };
-  w.ONELOOP_DEFER_BOOT_RENDER = true;
+  const { createRecoveryController } = importModule(dom, 'src/features/recovery/controller.js');
+  w.Recovery = createRecoveryController({ data, api, gateway, getApp: () => w.App, getAuth: () => auth, reload: reloadBootstrap, windowObject: w, documentObject: w.document, setTimer: w.setTimeout.bind(w), clearTimer: w.clearTimeout.bind(w) });
+  w.OneloopCollaboration = installCollaborationController({ transport: runtime, recovery: w.Recovery, visibility: w.document, eventSourceFactory: url => { const source = fakeEventSource(url); events.push(source); return source; } });
+  w.OneloopKnowledge = knowledgeStub();
   return {
-    calls, commands, events, api, reads, gateway, auth, runtime,
+    calls, commands, events, api, reads, gateway, runtime,
     /** Answer every waiting call of the API's `method` with `value`. */
     answer(method, value) { for (const call of calls) if (call.method === method && !call.settled) call.resolve(value); },
     /** Install the view bridge and the runtime, then draw the first page. */
     start() {
+      w.Recovery.start();
       const bridge = installViewBridge({ app: w.App, data, gateway, auth, api, reads, recovery: w.Recovery, reloadBootstrap });
       w.OneloopRuntime = Object.freeze({ ...bridge, transport: runtime, now: api.serverNow });
       w.App.refresh();
@@ -227,9 +234,10 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
 }
 
 /**
- * Boot the view layer on the sample projection, wired as the app wires it:
- * the transport, the collaboration controller, the view bridge and the
- * runtime, over a fake API (see `wire`).
+ * Boot the app on the sample projection, wired as src/app/boot.js wires it:
+ * the transport, the recovery and collaboration controllers, the view
+ * bridge and the runtime, over a fake API (see `wire`), with a stand-in for
+ * Knowledge.
  *
  * @param {object} [options]
  * @param {string} [options.route] hash route, such as `board` or `task/BIR-079`
@@ -237,24 +245,23 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {string} [options.html] initial document
  * @param {(query: string) => boolean} [options.media] matchMedia answers; reduced motion by default
  * @param {Record<string,string>} [options.stored] local storage entries set before boot
- * @param {string[]} [options.scripts] scripts to load, as `source` names
+ * @param {string[]} [options.libraries] preview libraries already on the page, as `source` names
  * @param {boolean} [options.actions] run `data-action` attributes, as the app does; jsdom runs no handlers by itself
  * @param {Record<string,Function>} [options.api] API methods that answer by themselves
  * @param {Record<string,unknown>} [options.reads] read controller methods to replace
- * @param {Record<string,unknown>} [options.auth] auth controller methods to replace
  * @param {(scope?: object) => Promise<unknown>} [options.reloadBootstrap] the bootstrap reload
  * @param {boolean} [options.layout] give every element the same 300 by 500 pixel box, as jsdom lays nothing out
+ * @param {Record<string,object>} [options.modules] exports that stand in for modules, by their path in frontend/
  * @param {(window: any) => void} [options.setup] runs before any script
- * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
- * @param {(window: any) => void} [options.collaboration] runs just before collaboration.js, to replace its controller
- * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
+ * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture and the controllers load, before the views
  */
 function bootApp({
   route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
-  media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
-  api, reads, auth, reloadBootstrap, layout = false, setup, prepare, collaboration, beforeScript,
+  media = query => query.includes('reduced-motion'), stored = {}, libraries = previewLibraries, actions = false,
+  api, reads, reloadBootstrap, layout = false, modules, setup, prepare,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
+  dom.stubs = modules;
   const w = dom.window;
   w.matchMedia = query => ({ matches: media(query), addEventListener() {}, removeEventListener() {} });
   w.TextDecoder = TextDecoder;
@@ -266,17 +273,16 @@ function bootApp({
   // Before any script, so actions run first on the document, as in the app.
   if (actions) installViewActions(w.document);
   setup?.(w);
-  let wiring = null;
-  for (const name of scripts) {
-    beforeScript?.(name, w);
-    if (name === 'collaboration') collaboration?.(w);
-    load(dom, name);
-    if (name !== 'data') continue;
-    wiring = wire(w, { api, reads, auth, reloadBootstrap });
-    prepare?.(w.DATA, w);
-  }
-  const bridge = wiring && w.App ? wiring.start() : null;
-  return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, ...wiring };
+  load(dom, 'theme');
+  load(dom, 'data');
+  const wiring = wire(dom, { api, reads, reloadBootstrap });
+  importModule(dom, 'src/app/motion.js').installDisclosures(w.document);
+  importModule(dom, 'src/features/files/preview.js').installPreviews(w.document, wiring.runtime);
+  prepare?.(w.DATA, w);
+  for (const name of libraries) load(dom, name);
+  load(dom, 'app');
+  const bridge = wiring.start();
+  return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, module: file => importModule(dom, file), ...wiring };
 }
 
 /**
@@ -294,4 +300,4 @@ function withRuntime(route, held) {
 /** The dataTransfer of a drag that carries `id` as `type`. */
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-module.exports = { JSDOM, jsdom, source, load, bootApp, withRuntime, transfer, appScripts, previewLibraries, waitFor, settle, deferred, tick, fixtures };
+module.exports = { JSDOM, source, load, importModule, bootApp, withRuntime, transfer, previewLibraries, waitFor, settle, deferred, tick, fixtures };

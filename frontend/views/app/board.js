@@ -1,20 +1,24 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The Board: task columns, their filters, and moving tasks with optimistic
    saves that roll back when the server refuses. */
 
+import { UIMotion } from '../../src/app/motion.js';
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters,
 } from '../../src/data/board-filters.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
+import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
 import {
-  I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort,
-  instanceDateKey, instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
+  I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort, instanceDateKey,
+  instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
-  App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, report, runtime,
-  state, taskById, tasks, trackById, tracks, userById, userHandle,
+  App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal,
+  projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
+import { openMenu } from './overlays.js';
+import { patchInPlace, placeRows } from './rows.js';
 import { announce } from './toasts.js';
 
 const COLS = [
@@ -114,30 +118,16 @@ function boardRowKey(row, column) {
   return `${column}:${row.classList.contains('empty-note') ? 'empty' : 'more'}`;
 }
 
-// Board rows have stable actions for their key. Preserve their DOM/listeners,
-// focus and images while updating changed presentation. Permission changes
-// replace a card so its drag handlers are installed/removed together.
-export function patchBoardRow(current, next) {
-  for (const attribute of [...current.attributes])
-    if (!attribute.name.startsWith('on') && !next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
-  for (const attribute of next.attributes)
-    if (!attribute.name.startsWith('on') && current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
-  const children = [...next.childNodes];
-  children.forEach((child, index) => {
-    const old = current.childNodes[index];
-    if (!old) { current.append(child); return; }
-    if (old.nodeType !== child.nodeType || old.nodeName !== child.nodeName) { old.replaceWith(child); return; }
-    if (child.nodeType === Node.ELEMENT_NODE) patchBoardRow(old, child);
-    else if (old.nodeValue !== child.nodeValue) old.nodeValue = child.nodeValue;
-  });
-  while (current.childNodes.length > children.length) current.lastChild.remove();
-  return current;
+/** Show the Board unfiltered, from the first page of each column, as for another project. */
+export function resetBoardFilters() {
+  state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false;
+  state.boardLimits = firstBoardPages();
 }
 
 function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
   if (!fromServer) cancelBoardSearch();
   App.updateDocumentTitle();
-  if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
+  if(reset) state.boardLimits = firstBoardPages();
   if(!fromServer){runtime().filterBoard(App.context().board).catch(report);return;}
   const board = document.querySelector('.board');
   if (!board || state.view !== 'board') return;
@@ -148,7 +138,7 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
   const previous = new Map([...board.querySelectorAll('.col-cards > *')].map((card) =>
     [boardRowKey(card,card.closest('.col').dataset.col), { card, rect: card.getBoundingClientRect(), opacity: getComputedStyle(card).opacity }]));
   clearFilterMotion();
-  const animate = motion && !UIMotion.reduced() && typeof board.animate === 'function' && !App._drag;
+  const animate = motion && !UIMotion.reduced() && typeof board.animate === 'function' && !drag.item;
   const template = document.createElement('template');
   setHTML(template,renderBoard());
   if (!board.querySelector('.col') || !template.content.querySelector('.col')) {
@@ -186,16 +176,12 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
         if (!layer.children.length) { layer.remove(); filterExitLayers.delete(layer); }
       });
     });
-    // Keep unchanged children connected; replaceChildren would detach focused
-    // controls and restart empty-state/Load more entrance animations.
-    let cursor=list.firstElementChild;
-    for (const row of desired) {
+    // A row keeps its element while its actions stay; a permission change
+    // replaces a card, so its drag handlers come and go together.
+    placeRows(list, desired.map((row) => {
       const old=previous.get(boardRowKey(row,column.dataset.col))?.card;
-      const child=old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchBoardRow(old,row) : row;
-      if (child===cursor) cursor=cursor.nextElementSibling;
-      else list.insertBefore(child,cursor);
-    }
-    while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}
+      return old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+    }));
     const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
     if(count.textContent!==nextCount)count.textContent=nextCount;
     const order=column.querySelector('.col-head .done-order'),pressed=next.querySelector('.col-head .done-order')?.getAttribute('aria-pressed');
@@ -247,8 +233,8 @@ export function boardTopbarHtml() {
     ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
     ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
     ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
-    <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+    <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${blockedCount()}</span></button>
+    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${poolTotal()}</span></button>
     ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
   </div>`;
 }
@@ -440,18 +426,18 @@ Object.assign(App, {
     ev.dataTransfer.effectAllowed = 'move';
     const card = ev.currentTarget;
     const r = card.getBoundingClientRect();
-    App._drag = { kind: 'task', id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
-    App._dragImage(ev, card);
+    drag.item = { kind: 'task', id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
+    setDragImage(ev, card);
     document.body.classList.add('is-dragging');
-    requestAnimationFrame(() => { if (App._drag?.id === id) card.classList.add('dragging'); });
+    requestAnimationFrame(() => { if (drag.item?.id === id) card.classList.add('dragging'); });
   },
   colOver(ev) {
-    if (!canBoard() || App._drag?.kind !== 'task') return;
+    if (!canBoard() || drag.item?.kind !== 'task') return;
     if (!ev.dataTransfer.types.includes('text/task')) return;
     ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
     const colEl = ev.currentTarget;
     const list = colEl.querySelector('.col-cards');
-    const ind = App._ind();
+    const ind = dropIndicator();
     // Don't oscillate when the pointer is inside the insertion gap itself.
     if (ind?.parentNode === list) {
       const r = ind.getBoundingClientRect();
@@ -464,37 +450,37 @@ Object.assign(App, {
       return ev.clientY < y + c.offsetHeight / 2;
     });
     const beforeId = next ? next.dataset.task : null;
-    if (App._dropColumn === colEl.dataset.col && App._dropBefore === beforeId && ind?.parentNode === list) return;
+    if (drag.column === colEl.dataset.col && drag.before === beforeId && ind?.parentNode === list) return;
     const before = UIMotion.positions('.card[data-task]');
     document.querySelectorAll('.col.drop').forEach((el) => { if (el !== colEl) el.classList.remove('drop'); });
     colEl.classList.add('drop');
-    App._dropColumn = colEl.dataset.col;
-    App._dropBefore = beforeId;
-    const marker = App._mkInd(false);
+    drag.column = colEl.dataset.col;
+    drag.before = beforeId;
+    const marker = makeDropIndicator(false);
     if (next) list.insertBefore(marker, next); else list.appendChild(marker);
-    UIMotion.layout(before, '.card[data-task]', App._drag.id);
+    UIMotion.layout(before, '.card[data-task]', drag.item.id);
   },
   colLeave(ev) {
     if (ev.currentTarget.contains(ev.relatedTarget)) return;
     ev.currentTarget.classList.remove('drop');
-    if (App._ind()?.parentNode === ev.currentTarget.querySelector('.col-cards')) {
+    if (dropIndicator()?.parentNode === ev.currentTarget.querySelector('.col-cards')) {
       const before = UIMotion.positions('.card[data-task]');
-      App._ind().remove(); App._dropColumn = null; App._dropBefore = null;
-      UIMotion.layout(before, '.card[data-task]', App._drag?.id);
+      dropIndicator().remove(); drag.column = null; drag.before = null;
+      UIMotion.layout(before, '.card[data-task]', drag.item?.id);
     }
   },
   dropTask(ev, col) {
-    if(window.Recovery?.blockDrag()){ev.preventDefault();App.dragEnd();return;}
+    if(recovery.blockDrag()){ev.preventDefault();App.dragEnd();return;}
     if (!App.require('manage_board')) return;
     if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/task') || App._drag?.kind !== 'task') return;
+    if (!ev.dataTransfer.types.includes('text/task') || drag.item?.kind !== 'task') return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/task');
-    const beforeId = App._dropBefore;
+    const beforeId = drag.before;
     const t = taskById(id);
     if (!t || id === beforeId) { App.dragEnd(); return; }
     if(t.block && col==='done'){App.dragEnd();App.openModal('completeBlocked',id);return;}
-    const before=UIMotion.positions('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
+    const before=UIMotion.positions('.card[data-task]'),from={left:ev.clientX-drag.item.offsetX,top:ev.clientY-drag.item.offsetY};
     const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
     const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
     App.dragEnd(false);if(!change)return;
@@ -503,7 +489,7 @@ Object.assign(App, {
     UIMotion.layout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
-  clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).catch(report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
@@ -514,7 +500,7 @@ Object.assign(App, {
     const ordered=!(task.state==='done'&&doneNewest());
     if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
     if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
-    App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
+    openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
   },
   /** Move a task just before or after another one in its column. */
   moveTaskOrder(id,anchor,before){

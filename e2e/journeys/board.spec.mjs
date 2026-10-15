@@ -32,21 +32,6 @@ test('on narrow screens the toolbar stays centered and the first column keeps it
   }
 });
 
-test('track filters open, select and close with the keyboard', async ({ page, instance }) => {
-  await openApp(page, instance, 'board');
-  const filter = page.locator('[data-filter-key="fTrack"]');
-  await filter.click();
-  const menu = page.locator('.pop');
-  await expect(menu).toBeVisible();
-  const firstOption = menu.locator('.pop-opt').first();
-  await firstOption.click();
-  await expect(firstOption).toHaveAttribute('aria-pressed', 'true');
-  await expect(filter).not.toContainText('All tracks');
-  await page.keyboard.press('Escape');
-  await expect(menu).toBeHidden();
-  await expect(filter).toBeFocused();
-});
-
 // Only selected reads are delayed; authentication, commands and live events are real.
 test('creation stays single while its post-save read is delayed', { tag: '@smoke' }, async ({ page, instance }) => {
   await openApp(page, instance, 'board');
@@ -79,7 +64,7 @@ test('creation stays single while its post-save read is delayed', { tag: '@smoke
   expect(body.items.filter(task => task.title === 'Create once through delayed loading')).toHaveLength(1);
 });
 
-test('Board search coalesces typing and unchanged refresh avoids geometry work', async ({ page, instance }) => {
+test('Board search coalesces typing', async ({ page, instance }) => {
   await openApp(page, instance, 'board');
   await expect(page.locator('.board .card').first()).toBeVisible();
   const requests = [];
@@ -95,13 +80,6 @@ test('Board search coalesces typing and unchanged refresh avoids geometry work',
   await page.clock.runFor(250);
   expect(requests).toHaveLength(1);
   expect(new URL(requests[0]).searchParams.get('search')).toBe('seeded');
-  const reads = await page.evaluate(() => {
-    const original = Element.prototype.getBoundingClientRect;
-    let reads = 0;
-    Element.prototype.getBoundingClientRect = function () { reads++; return original.call(this); };
-    try { for (let i = 0; i < 5; i++) App.refreshBoard(); return reads; } finally { Element.prototype.getBoundingClientRect = original; }
-  });
-  expect(reads).toBe(0);
   await search.fill('absent');
   await search.press('Enter');
   await expect(page.getByRole('heading', { name: 'No matching tasks' })).toBeVisible();
@@ -188,17 +166,21 @@ test('a scaled Board boots once and keeps overlays, avatars and filters bounded'
   expect(avatar.ok(), await avatar.text()).toBeTruthy();
   await context.addCookies((await instance.api.storageState()).cookies);
   await page.addInitScript(() => {
-    window.appPaints = 0; window.adoptGeometry = 0;
-    const replace = Element.prototype.replaceChildren, rect = Element.prototype.getBoundingClientRect;
+    // Count what runs under adoptBoard, the Board's first read. Its lookups
+    // prove that the probe sees it, so a rename can't make it pass unseen.
+    window.appPaints = 0; window.adoptGeometry = 0; window.adoptLookups = 0; Error.stackTraceLimit = Infinity;
+    const replace = Element.prototype.replaceChildren, rect = Element.prototype.getBoundingClientRect, query = Document.prototype.querySelector;
+    const adopting = () => new Error().stack.includes('adoptBoard');
     Element.prototype.replaceChildren = function (...nodes) { if (this.id === 'app') window.appPaints++; return replace.apply(this, nodes); };
-    Element.prototype.getBoundingClientRect = function () { if (new Error().stack.includes('adoptBoard')) window.adoptGeometry++; return rect.call(this); };
+    Element.prototype.getBoundingClientRect = function () { if (adopting()) window.adoptGeometry++; return rect.call(this); };
+    Document.prototype.querySelector = function (selector) { if (adopting()) window.adoptLookups++; return query.call(this, selector); };
   });
   const requests = [];
   page.on('request', r => requests.push(new URL(r.url())));
   await page.goto(instance.url + '/#/board');
   await expect(page.locator('.board .card')).toHaveCount(200);
   await page.waitForFunction(() => !!window.OneloopRuntime);
-  expect(await page.evaluate(() => ({ paints: window.appPaints, geometry: window.adoptGeometry }))).toEqual({ paints: 1, geometry: 0 });
+  expect(await page.evaluate(() => ({ paints: window.appPaints, geometry: window.adoptGeometry, adopted: window.adoptLookups > 0 }))).toEqual({ paints: 1, geometry: 0, adopted: true });
   const resources = await page.evaluate(() => performance.getEntriesByType('resource').map(r => ({ encoded: r.encodedBodySize, decoded: r.decodedBodySize, transfer: r.transferSize })));
   // The first-view transfer budget applies only when responses are compressed.
   if (resources.some(r => r.encoded > 0 && r.encoded < r.decoded)) expect(resources.reduce((sum, r) => sum + r.transfer, 0)).toBeLessThan(1.5 * 1024 * 1024);

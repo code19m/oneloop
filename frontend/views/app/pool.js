@@ -1,13 +1,14 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The Pool dialog: personal and team items, their descriptions, and creating
    a task from an item. */
 
-import { patchBoardRow } from './board.js';
+import { UIMotion } from '../../src/app/motion.js';
 import { optionalMark } from './controls.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
-import { App, D, canBoard, me, poolItems, report, runtime, state } from './model.js';
+import { App, D, canBoard, me, poolItems, poolTotal, report, runtime, state } from './model.js';
 import { closePop, stampOverlays } from './overlays.js';
+import { patchInPlace, placeRows } from './rows.js';
 
 function poolRowHtml(p) {
   const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
@@ -39,10 +40,7 @@ function updatePool({ completeItemId } = {}) {
   const items = poolItems(state.poolTab);
   const ids = new Set(items.map((item) => item.id));
   list.querySelectorAll('[data-pool-item]').forEach((row) => { if (!ids.has(row.dataset.poolItem)) { if (!tabChanged) UIMotion.exit(row); row.remove(); } });
-  list.querySelector('.empty-note')?.remove();
-  list.querySelector('.pool-read-status')?.remove();
-  let cursor = list.firstElementChild;
-  items.forEach((item) => {
+  placeRows(list, items.map((item) => {
     let row = list.querySelector(`[data-pool-item="${esc(item.id)}"]`);
     if (row) {
       const editor=row.querySelector('.pool-description-editor');
@@ -52,7 +50,7 @@ function updatePool({ completeItemId } = {}) {
       const actions=element=>[...element.querySelectorAll('.act > button')].map(button=>button.className).join('|');
       const sameActions=row.className===fresh.className&&actions(row)===actions(fresh);
       row.className=fresh.className;
-      if(sameActions)patchBoardRow(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
+      if(sameActions)patchInPlace(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
       else row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
       if(item.id===completeItemId){editor?.remove();if(editedHere)row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});}
       else if(editor){
@@ -61,12 +59,10 @@ function updatePool({ completeItemId } = {}) {
       }
     }
     if (!row) { const template = document.createElement('template'); setHTML(template,poolRowHtml(item)); row = template.content.firstElementChild; }
-    if (row !== cursor) list.insertBefore(row, cursor);
-    cursor = row.nextElementSibling;
-  });
+    return row;
+  }));
   if (!items.length) setHTML(list,poolReadNotice(true));
   else if(D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.error){const note=document.createElement('template');setHTML(note,poolReadNotice());list.append(note.content);}
-  list.querySelector('.pool-load-more')?.remove();
   const more=document.createElement('template');setHTML(more,poolLoadMoreHtml());list.append(more.content);
   view.querySelectorAll('[data-pool-tab]').forEach((button) => {
     const selected = button.dataset.poolTab === state.poolTab;
@@ -78,8 +74,8 @@ function updatePool({ completeItemId } = {}) {
   input.hidden = state.poolTab === 'project' && !canBoard();
   view.querySelector('.pool-capture').hidden=input.hidden;
   if(tabChanged){input.value='';resetPoolCapture();view.querySelectorAll('.pool-description-editor').forEach(el=>el.remove());view.querySelectorAll('.pool-note-toggle').forEach(el=>el.setAttribute('aria-expanded','false'));}
-  const mineTotal=D.poolPageInfo?.[`${state.projectId}:mine`]?.total,teamTotal=D.poolPageInfo?.[`${state.projectId}:project`]?.total;
-  document.querySelectorAll('[data-pool-count]').forEach((el) => { el.textContent = Number.isFinite(mineTotal)&&Number.isFinite(teamTotal)?mineTotal+teamTotal:poolItems().length; });
+  const total=poolTotal();
+  document.querySelectorAll('[data-pool-count]').forEach((el) => { el.textContent = total; });
   list.dataset.poolScope = state.poolTab;
   if (!tabChanged) list.scrollTop = listScroll;
   if (tabChanged) UIMotion.fade(list);
@@ -121,7 +117,7 @@ Object.assign(App, {
     const item = poolItems(state.poolTab).find((x) => x.id === id);
     const view = document.querySelector('.pool-view');
     if (!item || !view) return;
-    (App._poolScroll ||= {})[state.poolTab] = view.querySelector('.pool-list').scrollTop;
+    state.poolScroll[state.poolTab] = view.querySelector('.pool-list').scrollTop;
     document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));resetPoolCapture();document.getElementById('poolAdd').value='';
     state.modal = { type: 'task', poolId: id, title: item.title, desc:item.desc||'' };
     stampOverlays();
@@ -143,17 +139,17 @@ Object.assign(App, {
     stampOverlays();
     view.hidden = false;
     updatePool();
-    view.querySelector('.pool-list').scrollTop = App._poolScroll?.[state.poolTab] || 0;
+    view.querySelector('.pool-list').scrollTop = state.poolScroll[state.poolTab] || 0;
     UIMotion.fade(view);
     view.querySelector('#poolAdd')?.focus();
   },
   setPoolTab(k) {
     if (!['mine', 'project'].includes(k) || k === state.poolTab) return;
     const list = document.querySelector('.pool-list');
-    (App._poolScroll ||= {})[state.poolTab] = list.scrollTop;
+    state.poolScroll[state.poolTab] = list.scrollTop;
     state.poolTab = k;
     updatePool();
-    list.scrollTop = App._poolScroll[k] || 0;
+    list.scrollTop = state.poolScroll[k] || 0;
     runtime().selectPool(k).catch(report);
   },
   loadMorePool(){runtime().loadMorePool(state.poolTab).catch(report);},

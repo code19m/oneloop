@@ -50,13 +50,13 @@ export const ACTIONS = Object.freeze([
   'retryInbox', 'retryPool', 'retryProfileAccess', 'retryStorageUsage', 'retryTaskActivity',
   'retryUsers', 'revokeAppAccess', 'revokeOtherSessions', 'revokeSession', 'roadmapTipKey',
   'saveBlock', 'saveEpic', 'saveMilestone', 'savePoolDescription', 'saveProjectNew', 'saveTask',
-  'saveTaskDraft', 'saveTrack', 'saveUser', 'setAttachmentTemporary', 'setAvatar',
+  'saveTaskDraft', 'saveTrack', 'saveUser', 'searchMembers', 'setAttachmentTemporary', 'setAvatar',
   'setBlockedFilter', 'setBoardQ', 'setMemberPermission', 'setNotificationRead', 'setPassword',
-  'setPoolTab', 'setRoadmapScale', 'setTheme', 'sizeDescription', 'sizeDescriptionEditors',
-  'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu', 'toggleAutoReload',
-  'toggleCommentText', 'toggleDescription', 'toggleDoneOrder', 'togglePoolDescription',
-  'toggleReplies', 'toggleSidebar', 'trackDragStart', 'trackDrop', 'trackMenu', 'trackReorderKey',
-  'updMe', 'updTask', 'updateProjectField', 'userMenu',
+  'setPoolTab', 'setRoadmapScale', 'setTheme', 'showMoreMembers', 'sizeDescription',
+  'sizeDescriptionEditors', 'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu',
+  'toggleAutoReload', 'toggleCommentText', 'toggleDescription', 'toggleDoneOrder',
+  'togglePoolDescription', 'toggleReplies', 'toggleSidebar', 'trackDragStart', 'trackDrop',
+  'trackMenu', 'trackReorderKey', 'updMe', 'updTask', 'updateProjectField', 'userMenu',
 ]);
 const ALLOWED = new Set(ACTIONS);
 

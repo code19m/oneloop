@@ -4,7 +4,6 @@ import {
   failureText, folderEntries, highlight, iconKind, originOf, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms, transportOf,
 } from '../../../../src/features/knowledge/model.js';
 
-const esc = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const files = [
   { path: 'README.md', size: 10, kind: 'markdown', updatedAt: 300 },
   { path: 'guides/onboarding.md', size: 10, kind: 'markdown', updatedAt: 500 },
@@ -57,8 +56,8 @@ test('links to the knowledge base root open its listing, not the current file', 
 
 test('search words are marked inside escaped text', () => {
   assert.deepEqual(searchTerms('  Short  short MONTHS '), ['short', 'months']);
-  assert.equal(highlight('<b>Short</b> months', ['short'], esc), '&lt;b&gt;<mark>Short</mark>&lt;/b&gt; months');
-  assert.equal(highlight('a.b', ['.'], esc), 'a<mark>.</mark>b');
+  assert.equal(highlight('<b>Short</b> months', ['short']), '&lt;b&gt;<mark>Short</mark>&lt;/b&gt; months');
+  assert.equal(highlight('a.b', ['.']), 'a<mark>.</mark>b');
 });
 
 test('file shapes, transports and failure reasons have plain names', () => {

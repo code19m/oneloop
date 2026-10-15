@@ -69,6 +69,9 @@ test('every page, theme, icon and preview type loads from the embedded assets', 
   }
   await page.evaluate(key => App.nav('task/' + key), instance.projects[0].task.taskKey);
   await expect(page.locator('#attIn')).toBeAttached();
+  // The server's file limits reach the client under the names it reads.
+  await expect(page.locator('.attachment-drop-limit')).toHaveText('Max file size: 25 MB');
+  expect(await page.evaluate(() => [DATA.limits.maxAvatarBytes, DATA.limits.maxAttachmentsPerTask])).toEqual([5 * 1024 * 1024, 25]);
   const files = [
     ['reader.md', 'text/markdown', Buffer.from('# Reader\n\n$x^2$\n\n```mermaid\nflowchart LR\n A-->B\n```'), '.markdown-body .katex'],
     ['document.pdf', 'application/pdf', pdf, '.pdf-surface canvas'],

@@ -6,7 +6,7 @@ and no bundler.
 ```text
 index.html  Application entry and SPA fallback
 src/        ES modules for app setup, auth, data and features
-views/      Older view layer: the app.js module and classic scripts
+views/      The view layer: the app.js shell and the feature modules in app/
 styles/     CSS and grain texture
 icons/      Favicons and app icons
 vendor/     Browser libraries, licenses and audit records
@@ -16,26 +16,34 @@ tests/      Unit tests mirroring src/ and views/; support/ has the jsdom harness
 
 ## Where new code goes
 
-Add application logic to `src/` as ES modules with JSDoc types; preserve the
-DOM contracts in `views/`. Whole-app browser journeys live in
-[`../e2e/journeys/`](../e2e/README.md).
+A new page or feature goes in `src/features/<name>/` with its markup, as
+Knowledge does. Change `views/` only for the pages it already draws. Other
+application logic goes in `src/` as ES modules with JSDoc types. Whole-app
+browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
 
 - **Views.** `views/app.js` is the shell: routing, the render pipeline and the
   pages that have no module of their own. Each feature in `views/app/` keeps
   its markup and its `App` handlers together: `board.js`, `roadmap.js`,
-  `pool.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and focus
-  return), `controls.js` (selects, date fields, input cleaning), `forms.js`,
-  `toasts.js` and `drag.js`. They share `model.js` (view state and data
+  `pool.js`, `task.js` (a task's page), `attachments.js`, `collaboration.js`
+  (comments and the Inbox), `account.js` (Profile, Users and Settings),
+  `storage.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and
+  focus return), `controls.js` (selects, date fields, input cleaning),
+  `forms.js`, `toasts.js`, `drag.js` and `rows.js` (redrawing a list in place,
+  so focus and a pressed button survive). They share `model.js` (view state and data
   lookups) and `format.js` (text, dates and icons), and animate with the one
-  motion engine, `UIMotion` from `views/motion.js`. A module reaches the render
+  motion engine, `UIMotion` from `src/app/motion.js`. A module reaches the render
   pipeline through `App`, such as `App.refresh()`, and never imports
-  `views/app.js`. TypeScript checks only `src/`, so each view module starts
-  with `// @ts-nocheck` and the views carry no JSDoc types.
-- **Actions.** To change an action that saves, start from
-  `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
-  `saveTask`, and wraps a few of the views' own, such as `nav`.
-  `views/collaboration.js` and `views/uploads.js` add the comment and
-  attachment actions.
+  `views/app.js`. The views are untyped. tsc reaches them through boot.js,
+  so each starts with `// @ts-nocheck`.
+- **Actions.** The view bridge, `src/app/view-bridge.js`, adds the
+  server-backed `App` methods, such as `saveTask`, and wraps a few of the
+  views' own, such as `nav`. To change an action that saves, start from its
+  feature's module in `src/app/bridge/`: `tasks.js`, `roadmap.js`, `pool.js`,
+  `projects.js`, `account.js` or `route.js` (page changes). They share
+  `commands.js`, which runs a command and resolves its conflicts, and
+  `saves.js`, which saves one record at a time and keeps a task field's draft.
+  `views/app/collaboration.js` and `views/app/attachments.js` add the comment
+  and attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
   `App` method that its click runs in `data-action`, or that another event runs
   in `data-action-<event>`, with JSON arguments in `data-args`. Write these
@@ -53,15 +61,11 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   counts until it saves.
 - **Tooltips.** Put a detail that only a hover would show, such as a full time
   or a name that may be cut off, in `data-tip` rather than `title`.
-  `src/app/tooltips.js` shows it on hover, keyboard focus and tap.
-  - Add `data-tip-overflow` to show it only while the text is cut off.
-  - Don't make an element focusable just for its tip, because a long list would
-    gain a Tab stop per row. Give the detail to screen readers through the
-    row's name or description instead, as the Board card does for a Blocked
-    reason.
-  - A tip inside a clickable row takes a tap only with `data-tip-tap`.
-  - `data-tip-keyboard` shows a tip on keyboard focus only, as a Board card's
-    title does for its Blocked reason.
+  [`src/app/tooltips.js`](src/app/tooltips.js) shows it and lists the other
+  `data-tip-*` attributes. Don't make an element focusable just for its tip,
+  because a long list would gain a Tab stop per row. Give screen readers the
+  detail through the row's name or description instead, as the Board card
+  does for a Blocked reason.
 
 The page's Content-Security-Policy enforces Trusted Types and refuses inline
 `<style>` elements:
@@ -79,10 +83,9 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads the classic scripts motion, file views, uploads and collaboration in
-order, then imports the `app.js` module. The view bridge installs
-server-backed actions before the first application render; preview libraries
-load on demand.
+sets up the data, the controllers and the document's listeners, then imports
+the `app.js` module. The view bridge installs server-backed actions before the
+first application render; preview libraries load on demand.
 
 The page's parts reach each other through these `window` properties only.
 New code imports a module instead of adding one.
@@ -91,15 +94,11 @@ New code imports a module instead of adding one.
 | --- | --- | --- |
 | `DATA` | `boot.js` | The projection that the views draw |
 | `App` | `views/app.js` | The view actions and refresh methods |
-| `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions and the server clock |
-| `OneloopTransport` | `boot.js` | The API, commands and live updates for the classic scripts |
+| `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions, the server clock, and the API, commands and live updates |
 | `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
-| `UIHTML`, `UIEscape`, `UIAction` | `boot.js` | The HTML helpers of the classic scripts |
-| `OneloopErrorMessage`, `OneloopRetryable` | `boot.js` | How a failure reads, and whether trying again can help |
-| `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
+| `ONELOOP_BUILD` | `boot.js` | The server's version |
 | `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
-| `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
-| `Theme`, `UIMotion`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, motion, file previews, attachments, comments and the Inbox |
+| `Theme` | `views/theme.js` | The color theme |
 
 ## Design
 

@@ -235,6 +235,16 @@ export function actionErrorFeedback(error) {
 }
 
 /**
+ * What a failed action says: its message, `fallback` when it has none, or ''
+ * for a failure that says nothing.
+ * @param {unknown} error @param {string} [fallback]
+ */
+export function errorMessage(error, fallback = 'The request could not be completed.') {
+  const feedback = actionErrorFeedback(error);
+  return feedback.silent ? '' : feedback.message || fallback;
+}
+
+/**
  * Whether the same action may work when tried again: there was no
  * connection, the server was busy, or its result isn't known.
  * @param {unknown} error

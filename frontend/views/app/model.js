@@ -1,14 +1,22 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The state of the views and the projection they read: the open page, data
    lookups and permissions. */
 
 export const D = window.DATA;
-export const collaboration=window.Collab;
+// What boot.js installs before the views load: Recovery (connection, conflict
+// and unsaved-input handling) and the collaboration and Knowledge controllers
+// from src/features/.
+export const recovery = window.Recovery;
+export const collaborationController = window.OneloopCollaboration;
+export const knowledge = window.OneloopKnowledge;
 /** The view bridge's server-backed functions, which boot.js installs once the views have loaded. */
 export const runtime = () => window.OneloopRuntime;
 /** Report a failed runtime call as a failed save is reported. */
 export const report = (error) => runtime().report(error);
 export const instanceNow = () => runtime()?.now?.() ?? Date.now();
+
+/** The Board's first page of each column, which a read from the server also starts at. */
+export const firstBoardPages = () => ({ planning: 50, progress: 50, review: 50, done: 50 });
 
 export const state = {
   sideOpen: false,
@@ -16,12 +24,14 @@ export const state = {
   taskId: null,
   rail: (() => { try { return localStorage.getItem('oneloop.sidebar') === 'rail'; } catch { return false; } })(),
   poolTab: 'mine',
-  projectId: 'p1',
+  // Where each Pool tab's list was scrolled, from when the Pool opened.
+  poolScroll: {},
+  projectId: null,
   pxPerDay: 8.5,
   rmScrollLeft: null, rmScrollTop: 0,
   boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
   peek: null, modal: null, menu: null,
-  boardLimits:{planning:50,progress:50,review:50,done:50}, usersLimit:50,
+  boardLimits: firstBoardPages(), usersLimit:50,
 };
 /**
  * The actions that markup and the view bridge call by name. Each part of the
@@ -40,7 +50,15 @@ export const milestones = () => D.milestones.filter((m) => m.projectId === state
 export const tasks = () => { const eids = new Set(epics().map((e) => e.id)); return D.tasks.filter((t) => eids.has(t.epicId)); };
 export const taskById = (id) => D.tasks.find((t) => t.id === id || t.internalId === id);
 export const poolItems = (scope) => D.pool.filter((p) => p.projectId === state.projectId && canReadProject(p.projectId) && (scope ? p.scope === scope : true) && (p.scope !== 'mine' || p.ownerId === (me() || {}).id));
-export const userById = (id) => collaboration?.userById ? collaboration.userById(id) : D.users.find((u) => u.id === id);
+// Each lookup by id would scan every user, so a map follows the projection's people.
+let usersSource = null, usersVersion = null, usersCount = -1, usersById = new Map();
+export const userById = (id) => {
+  if (usersSource !== D.users || usersVersion !== D.peopleVersion || usersCount !== D.users.length) {
+    usersSource = D.users; usersVersion = D.peopleVersion; usersCount = D.users.length;
+    usersById = new Map(D.users.map((user) => [user.id, user]));
+  }
+  return usersById.get(id);
+};
 export const userHandle = (user) => user?.username || user?.id || '';
 export const me = () => (D.session ? userById(D.session.userId) : null);
 export const isAdmin = () => !!(me() && me().admin);
@@ -48,8 +66,7 @@ export const visibleProjects = () => D.projects.filter(p=>canReadProject(p.id));
 const memberRecord = (userId, projectId) => {
   const p = D.projects.find((x) => x.id === (projectId || state.projectId));
   if (!p) return null;
-  const raw = (p.members || []).find((m) => (typeof m === 'string' ? m : m.userId) === userId);
-  return typeof raw === 'string' ? { userId: raw, permissions: [] } : raw || null;
+  return (p.members || []).find((m) => m.userId === userId) || null;
 };
 export const canReadProject = id => !!(me()?.active && D.projects.some(p=>p.id===id) && (me().admin||memberRecord(me().id,id)));
 export const canReadTask = task => {const id=trackById(epicById(task?.epicId)?.trackId)?.projectId;return !!id&&canReadProject(id);};
@@ -63,9 +80,16 @@ export const hasPermission = (permission, projectId) => {
 export const canRoadmap = () => hasPermission('manage_roadmap');
 export const canBoard = () => hasPermission('manage_board');
 export const projectMembers = () => ((project() || {}).members || [])
-  .map((m) => userById(typeof m === 'string' ? m : m.userId))
+  .map((m) => userById(m.userId))
   .filter((u) => u && u.active);
 export const activeAdmins = () => D.users.filter((u) => u.admin && u.active);
+/** The project's open blocked tasks, as the server counts them once it has. */
+export const blockedCount = () => D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter((t) => t.block && t.state !== 'done').length;
+/** Items in both of the project's Pools, as the server counts them once both are read. */
+export const poolTotal = () => {
+  const mine = D.poolPageInfo?.[`${state.projectId}:mine`]?.total, team = D.poolPageInfo?.[`${state.projectId}:project`]?.total;
+  return Number.isFinite(mine) && Number.isFinite(team) ? mine + team : poolItems().length;
+};
 export const counts = () => {
   const aggregate = D.projectTaskCounts?.[state.projectId];
   if (aggregate) return { open:aggregate.open, done:aggregate.done };

@@ -132,8 +132,8 @@ test('a completed epic action cannot dismiss a dialog opened above its still-mou
  assert.equal(t.d.querySelector('.modal [name="title"]'),input);assert.equal(input.value,'Next task draft');assert.equal(t.d.activeElement,input);
 });
 
-/** Boot with a fixed layout; `collaboration` runs just before collaboration.js, to replace its transport. */
-const boot = (route = 'task/BIR-079', collaboration) => bootApp({ route, media: () => true, layout: true, collaboration });
+/** Boot with a fixed layout; `prepare(window)` can replace the collaboration controller before the views load. */
+const boot = (route = 'task/BIR-079', prepare) => bootApp({ route, media: () => true, layout: true, prepare: (_D, w) => prepare?.(w) });
 
 test('document titles follow the view and the account menu keeps unsaved profile input', () => {
   const t=boot(),task=t.D.tasks.find(task=>task.id==='BIR-079');
@@ -165,7 +165,7 @@ test('Roadmap refreshes keep focus on the focused epic or milestone', () => {
 });
 
 test('the task feed shows load states, refreshes in place and ignores unmounted or stale callbacks', () => {
-  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
+  const t=boot('task/BIR-079',w=>{w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};}),task=t.D.tasks.find(item=>item.id==='BIR-079');
   assert(t.d.querySelector('.timeline').textContent.includes('Loading activity'));
   t.w.testFacade.taskPage(task.id,{loaded:false,loading:false,error:true,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('Could not load activity'));assert(t.d.querySelector('.timeline button')?.textContent.includes('Retry'));
   t.w.testFacade.taskPage(task.id,{loaded:true,loading:false,error:false,hasMore:false,background:false});assert(t.d.querySelector('.timeline').textContent.includes('No activity yet'));

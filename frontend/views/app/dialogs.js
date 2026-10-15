@@ -1,11 +1,12 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The body of each dialog that the views open. */
 
+import { blockReasonHtml } from './collaboration.js';
 import { dateHtml, dateValue, field, selectHtml } from './controls.js';
 import { UIAction, esc, iso, today } from './format.js';
 import { descriptionEditorHtml, taskModalHtml } from './forms.js';
 import {
-  D, activeAdmins, epicById, state, taskById, trackById, tracks, userById, userHandle,
+  D, activeAdmins, epicById, knowledge, state, taskById, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { poolViewHtml } from './pool.js';
 
@@ -19,7 +20,7 @@ export function renderModal() {
     body=`<h2>${blocking ? task.block ? 'Edit block reason' : 'Block task' : complete ? 'Unblock and complete task?' : 'Unblock task'}</h2>
       ${!blocking ? `<p class="sub">${esc(task.block?.reason || '')}</p>` : ''}
       <form novalidate data-block-action ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
-        ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
+        ${field(blocking?'Reason':'Resolution',blocking ? blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
         <div class="modal-actions"><button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
       </form>`;
   } else if (m.type === 'epic') {
@@ -84,7 +85,7 @@ export function renderModal() {
   } else if (m.type === 'pool') {
     body = poolViewHtml();
   } else if (m.type === 'knowledge') {
-    body = window.OneloopKnowledge?.modalHtml() || '';
+    body = knowledge.modalHtml();
   } else if (m.type === 'confirm') {
     body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
     <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button></div>`;

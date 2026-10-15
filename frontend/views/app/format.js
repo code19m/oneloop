@@ -1,9 +1,10 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Text, dates and icons for the views' markup. Dates and times show in the
    instance time zone. */
 
 import { UIAction, escapeHtml } from '../../src/app/markup.js';
 import { setTrustedHTML } from '../../src/app/trusted-types.js';
+import { formatInstant as formatInstantIn, formatShortInstant } from '../../src/data/time.js';
 import { App, D, instanceNow, userById } from './model.js';
 
 export { UIAction };
@@ -15,54 +16,20 @@ export const DAY = 86400000;
 export const d = (iso) => new Date(iso + 'T00:00:00Z');
 export const iso = (dt) => `${String(dt.getUTCFullYear()).padStart(4, '0')}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 export const instanceTimeZone = () => D.timeZone || 'UTC';
-const warnedTimeZones = new Set();
-let formatterZone;
-let instantFormatter, shortInstantFormatter;
-function timeFormatters() {
-  const zone = instanceTimeZone();
-  if (formatterZone !== zone) {
-    const build = timeZone => [
-      new Intl.DateTimeFormat('en-GB', {timeZone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'}),
-      new Intl.DateTimeFormat('en-US', {timeZone, month:'short', day:'numeric'}),
-    ];
-    let formatters;
-    try { formatters = build(zone); }
-    catch (error) {
-      if (!(error instanceof RangeError)) throw error;
-      formatters = build('UTC');
-      if (!warnedTimeZones.has(zone)) {
-        warnedTimeZones.add(zone);
-        setTimeout(()=>App.toast('Your browser does not support the instance time zone. Times and Today are shown in UTC. Update your browser to use the configured zone.','info'),0);
-      }
-    }
-    [instantFormatter, shortInstantFormatter] = formatters;
-    formatterZone = zone;
-  }
-}
-const instantParts = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-  timeFormatters();
-  return Object.fromEntries(instantFormatter.formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
-};
-export const formatInstant = (value) => {
-  const parts = instantParts(value);
-  // The instance time zone applies everywhere, so the label would only add noise.
-  return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}` : 'Unavailable';
-};
+const warnZone = message => App.toast(message, 'info');
+export const formatInstant = (value) => formatInstantIn(value, instanceTimeZone(), warnZone);
 export const instanceDateKey = (value=instanceNow()) => formatInstant(value).slice(0, 10);
 export const previousDate = value => { const date = d(value); date.setUTCDate(date.getUTCDate() - 1); return iso(date); };
-window.OneloopTime = { instant: formatInstant };
 const calendarFormatter = new Intl.DateTimeFormat('en-US', {timeZone:'UTC',month:'short',day:'numeric'});
 export const human = (dt) => calendarFormatter.format(dt);
 export const humanShort = dt => dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
 export const humanFull = (ds) => d(ds).toLocaleDateString('en-US', { timeZone:'UTC', month: 'short', day: 'numeric', year: 'numeric' });
-export const humanInstant = (value) => {timeFormatters();return shortInstantFormatter.format(new Date(value));};
+export const humanInstant = (value) => formatShortInstant(value, instanceTimeZone(), warnZone);
 export const instanceToday = () => d(instanceDateKey(instanceNow()));
 export const today = instanceToday();
 export const overdue = (t) => t.deadline && t.state !== 'done' && d(t.deadline) < today;
 export const ago = (ts) => {
-  const m = Math.round((Date.now() - ts) / 60000);
+  const m = Math.round((instanceNow() - ts) / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return m + 'm ago';
   if (m < 48 * 60) return Math.round(m / 60) + 'h ago';

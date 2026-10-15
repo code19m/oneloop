@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
-import { installKnowledgeController } from '../../../../src/features/knowledge/controller.js';
 import { settle } from '../../../support/helpers.cjs';
 
-const { JSDOM } = createRequire(import.meta.url)('../../../support/dom.cjs');
+const { JSDOM, importModule } = createRequire(import.meta.url)('../../../support/dom.cjs');
 
 const handbook = () => ({
   state: 'ready', syncing: false, folder: 'docs', checkedAt: 1_700_000_000, skippedFiles: 0,
@@ -16,10 +15,16 @@ const handbook = () => ({
   ],
 });
 
-/** A Knowledge page in jsdom with a scripted API, command runner and app shell. */
+/**
+ * A Knowledge page in jsdom with a scripted API, command runner and app
+ * shell. A recording stand-in draws text files; images, PDFs and the file
+ * dialog are real.
+ */
 function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 'knowledge' } = {}) {
-  const dom = new JSDOM('<main id="main"></main><div id="overlay"></div>', { url: 'http://localhost/#/knowledge', pretendToBeVisual: true });
+  const dom = new JSDOM('<div id="app"><main id="main"></main></div><div id="overlay"></div>', { url: 'http://localhost/#/knowledge', runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window, d = w.document;
+  w.TextDecoder = TextDecoder;
+  w.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
   const state = { context: { view: page, projectId: 'p1', modal: null }, toasts: [], fieldErrors: [], confirmations: [], closed: 0, requests: [], textRequests: [], commands: [], markdown: [], view };
   const listeners = new Set();
   const api = {
@@ -32,14 +37,15 @@ function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 
   const runtime = {
     api,
     data: { session: { userId: 'u1' }, users: [{ id: 'u1', admin }] },
-    commands: { async execute(operation, payload, options) { state.commands.push([operation, payload, options]); if (state.failCommand) throw state.failCommand; return { entities: [state.commandEntity ?? {}], events: [], replayed: false }; } },
+    commands: { async execute(operation, payload, options) { state.commands.push(structuredClone([operation, payload, options])); if (state.failCommand) throw state.failCommand; return { entities: [state.commandEntity ?? {}], events: [], replayed: false }; } },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
-  w.FileViews = {
-    markdown(host, file, text, _truncated, context) { state.markdown.push({ file, text, context }); host.innerHTML = '<article class="markdown-body"><h1 id="md-handbook">Handbook</h1><h2 id="md-setup">Setup</h2></article>'; },
-    text(host, _file, text) { host.textContent = text; },
-    html(host) { host.textContent = 'html'; },
-  };
+  dom.stubs = { 'src/features/files/file-views.js': {
+    markdownView(host, file, text, _truncated, context) { state.markdown.push({ file, text, context }); host.innerHTML = '<article class="markdown-body"><h1 id="md-handbook">Handbook</h1><h2 id="md-setup">Setup</h2></article>'; },
+    textView(host, _file, text) { host.textContent = text; },
+    htmlView(host) { host.textContent = 'html'; },
+  } };
+  const { installKnowledgeController } = importModule(dom, 'src/features/knowledge/controller.js');
   const app = {
     context: () => state.context,
     refresh: () => paint(),
@@ -60,7 +66,7 @@ function fixture({ view = handbook(), admin = true, page = 'knowledge', route = 
     main.innerHTML = state.context.view === 'knowledge' ? controller.render(state.context.projectId) : controller.settingsHtml(state.context.projectId);
     controller.mount();
   }
-  return { w, d, state, controller, listeners, paint, api, runtime, app };
+  return { dom, w, d, state, controller, listeners, paint, api, runtime, app };
 }
 
 async function painted(t) { t.paint(); await settle(); await settle(); }
@@ -184,6 +190,22 @@ test('file routes show one file, download-only formats and missing paths', async
   t.controller.route('knowledge/p1/blob/gone.md', 'p1');
   await painted(t);
   assert.match(t.d.querySelector('.knowledge-empty h2').textContent, /no longer here/);
+});
+
+test('full view opens a synced file in the file dialog with its path and date, until the page changes', async () => {
+  const t = fixture({ route: 'knowledge/p1/blob/guides/onboarding.md' });
+  await painted(t);
+  t.d.querySelector('[data-knowledge-action="full-view"]').click();
+  const dialog = t.d.querySelector('.knowledge-full-view .file-dialog');
+  const details = dialog.querySelector('.file-info dl').textContent;
+  assert.match(details, /Path.*docs\/guides\/onboarding\.md/s);
+  assert.match(details, /Updated.*2023-11-15/s);
+  assert.doesNotMatch(details, /Uploaded by|Retention/, 'a synced file has no uploader or retention choice');
+  assert.equal(dialog.querySelector('[data-file-download]').getAttribute('href'), '/api/projects/p1/knowledge/download?path=guides%2Fonboarding.md');
+  assert(dialog.querySelector('.file-navigation').hidden);
+  t.state.context.view = 'board';
+  importModule(t.dom, 'src/features/files/preview.js').checkPreviewAccess();
+  assert.equal(t.d.querySelector('.file-overlay:not([data-motion-exiting]) .file-dialog'), null);
 });
 
 test('search shows escaped names and sections, and Escape restores the page', async () => {

@@ -4,7 +4,6 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {UIAction,escapeHtml} from '../../src/app/markup.js';
 import {installViewActions} from '../../src/app/view-actions.js';
-import {installViewBridge} from '../../src/app/view-bridge.js';
 
 const {JSDOM,bootApp,settle}=createRequire(import.meta.url)('../support/dom.cjs');
 
@@ -23,12 +22,12 @@ test('HTML and action escaping keep hostile values whole without adding attribut
 test('templates encode URLs and data attributes',()=>{
   const frontend=new URL('../../',import.meta.url);
   // The templates that show user data; file-views.js only numbers its placeholders.
-  const files=['views/','src/'].flatMap(folder=>readdirSync(new URL(folder,frontend),{recursive:true}).filter(name=>name.endsWith('.js')).map(name=>folder+name)).filter(file=>file!=='views/file-views.js');
+  const files=['views/','src/'].flatMap(folder=>readdirSync(new URL(folder,frontend),{recursive:true}).filter(name=>name.endsWith('.js')).map(name=>folder+name)).filter(file=>file!=='src/features/files/file-views.js');
   assert.ok(files.includes('views/app/board.js'));
   for(const file of files){
     const source=readFileSync(new URL(file,frontend),'utf8');
     for(const [attribute] of source.matchAll(/\b(?:src|href|data-[\w-]+)="[^"\n]*"/g)){
-      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:UIEscape|escapeHtml|esc|escape|html)\(/,`${file}: unescaped attribute ${expression}`);
+      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:escapeHtml|esc|escape|html)\(/,`${file}: unescaped attribute ${expression}`);
     }
   }
 });
@@ -53,8 +52,6 @@ test('user text with markup stays text on every page, dialog, drawer, menu and t
     // An open task makes removing Robin show Member has open work.
     Object.assign(D.tasks.find(task=>task.id==='BIR-072'),{projectId:'p1'});
   }});
-  // The production actions, which add their own dialogs.
-  installViewBridge({app:t.A,data:t.D,api:{},reads:{cancel(){},async epic(){return {stale:false};}},gateway:{},auth:{},recovery:{},reloadBootstrap:async()=>({})});
   const planted=[];
   const visit=(label,show)=>{show();for(const element of t.d.querySelectorAll('.planted'))planted.push(`${label}: ${element.outerHTML}`);};
   const cancel=()=>t.d.querySelector('[data-confirm-cancel]')?.click();
@@ -72,7 +69,7 @@ test('user text with markup stays text on every page, dialog, drawer, menu and t
   visit('project menu',()=>{cancel();t.A.projectMenu({currentTarget:t.d.querySelector('.switcher-btn')});});
   visit('board',()=>{t.A.closeOverlays();t.A.nav('board');});
   visit('pool',()=>t.A.openModal('pool'));
-  visit('delete Pool item',()=>t.A.delPool(null,t.D.pool.find(item=>item.scope==='project').id));
+  visit('delete Pool item',()=>t.A.delPool(new t.w.Event('click'),t.D.pool.find(item=>item.scope==='project').id));
   visit('task page',()=>{cancel();t.A.closeOverlays();t.A.openTask('BIR-064');});
   visit('block dialog',()=>t.A.openModal('block','BIR-064'));
   visit('unblock dialog',()=>{t.A.closeOverlays();t.A.openModal('unblock','BIR-064');});

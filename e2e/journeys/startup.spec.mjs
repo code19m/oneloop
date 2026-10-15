@@ -124,7 +124,7 @@ test('a build change after reconnect offers reload without overwriting open inpu
   const field = page.locator('#task-description');
   await field.fill('Keep my open input');
   await page.route('**/healthz', route => route.fulfill({ json: { version: '99.0.0', revision: 'new-build' } }));
-  await page.evaluate(() => OneloopTransport.publish({ type: 'live-open' }));
+  await page.evaluate(() => OneloopRuntime.transport.publish({ type: 'live-open' }));
   await expect(page.locator('.connection-notice')).toContainText('oneloop was updated');
   await expect(field).toHaveValue('Keep my open input');
   await expect(field).toBeFocused();

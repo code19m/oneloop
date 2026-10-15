@@ -1,11 +1,11 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, settle, deferred, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, tick } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
- const t=boot(),projectId=t.A.context().projectId;
+ const t=bootApp({route:'board'}),projectId=t.A.context().projectId;
  t.D.tasks.splice(0);t.D.projectTaskCounts={};
  const task=(id,position,status='planning')=>({id,taskKey:`BIR-${id}`,projectId,epicId:t.D.epics[0].id,title:id,status,position,revision:1,assigneeIds:[]});
  const empty={items:[],total:0,nextCursor:null},counts={planning:4,inProgress:4,inReview:0,done:0,blocked:0};
@@ -28,7 +28,7 @@ test('live Board moves keep loaded cards in position and ID order across columns
 });
 
 test('Board search renders matching titles and keys with surrounding whitespace',()=>{
- const t=boot(),task=t.D.tasks.find(item=>item.id==='BIR-079');
+ const t=bootApp({route:'board'}),task=t.D.tasks.find(item=>item.id==='BIR-079');
  for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
   t.A.setBoardQ(padded);
   assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card=>card.dataset.task),['BIR-079'],padded);
@@ -36,7 +36,7 @@ test('Board search renders matching titles and keys with surrounding whitespace'
 });
 
 test('live Pool content patches visible titles, descriptions and labels without losing an active draft',()=>{
- const t=boot();t.A.openModal('pool');
+ const t=bootApp({route:'board'});t.A.openModal('pool');
  const rows=[...t.d.querySelectorAll('[data-pool-item]')].slice(0,2);assert.equal(rows.length,2);
  const editing=rows[1],item=t.D.pool.find(item=>item.id===editing.dataset.poolItem);
  t.A.editPoolDescription({currentTarget:editing.querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);
@@ -49,8 +49,6 @@ test('live Pool content patches visible titles, descriptions and labels without 
  t.A.cancelPoolDescription(item.id);assert.equal(editing.querySelector('.pool-description-preview').textContent,'Remote description');
 });
 
-/** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
 /** The Board with its saving runtime functions held until the test settles them. */
 const heldBoard = () => withRuntime('board', ['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard']);
 
@@ -141,7 +139,7 @@ test('accepting another Board page appends cards and leaves loaded cards and col
 });
 
 test('compact deadlines show the year when it differs and expose the complete date', () => {
- const t=boot('board',{prepare:(D,w)=>{
+ const t=bootApp({route:'board',prepare:(D,w)=>{
   const year=new w.Date().getFullYear();
   D.tasks.find(task=>task.id==='BIR-079').deadline=`${year-1}-09-26`;
  }});
@@ -151,12 +149,14 @@ test('compact deadlines show the year when it differs and expose the complete da
  assert(t.d.querySelector('[data-task="BIR-079"] .dl').textContent.includes(String(year+1)));
 });
 
-test('multi-select filters keep keyboard position through toggles and return focus on Escape', () => {
- const t=boot('board'),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+test('multi-select filters keep keyboard position through toggles, name the choice and return focus on Escape', () => {
+ const t=bootApp({route:'board'}),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+ assert.match(trigger.textContent,/All tracks/);
  t.A.popMulti({preventDefault(){},currentTarget:trigger},'fTrack');
  const key=value=>t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));
  key('ArrowDown');const value=t.d.activeElement.dataset.v;assert(value);
  key('Enter');assert.equal(t.d.activeElement.dataset.v,value);assert.equal(t.d.activeElement.getAttribute('aria-pressed'),'true');assert(t.d.querySelector('.pop'));
+ assert.doesNotMatch(trigger.textContent,/All tracks/,'the trigger names the chosen track');
  key(' ');assert.equal(t.d.activeElement.dataset.v,value);assert.equal(t.d.activeElement.getAttribute('aria-pressed'),'false');
  key('Escape');assert(!t.d.querySelector('.pop'));assert.equal(t.d.activeElement,trigger);
 });
@@ -173,7 +173,7 @@ test('Pool Load more reads the next page once per click, before and after the li
 });
 
 test('Pool does not keep unsent entries across tabs or reopening', () => {
- const t=boot();t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
+ const t=bootApp({route:'board'});t.A.openModal('pool');t.d.getElementById('poolAdd').value='Unsent My item';t.A.setPoolTab('project');assert.equal(t.d.getElementById('poolAdd').value,'');t.A.setPoolTab('mine');assert.equal(t.d.getElementById('poolAdd').value,'');t.d.getElementById('poolAdd').value='Unsent again';t.A.closeOverlays();t.A.openModal('pool');assert.equal(t.d.getElementById('poolAdd').value,'');
 });
 
 test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', async () => {
@@ -193,16 +193,21 @@ test('Pool descriptions are optional, cancel cleanly, move into promotion and re
  const locked=bootApp({route:'board'});locked.D.users.find(u=>u.id==='taylorwu').admin=false;locked.D.projects[0].members.find(m=>m.userId==='taylorwu').permissions=[];locked.A.openModal('pool');locked.A.setPoolTab('project');assert(locked.d.querySelector('.pool-capture').hidden);
 });
 
+/** Drop task `id` into `column`, above card `before` or at the end, as a finished drag does. */
+function dropCard(t, id, column, before = null) {
+  Object.assign(t.module('views/app/drag.js').drag, { item: { kind: 'task', id, offsetX: 0, offsetY: 0 }, before });
+  t.A.dropTask({ preventDefault() {}, clientX: 0, clientY: 0, dataTransfer: transfer('text/task', id) }, column);
+}
+
 test('a Board move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
   const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
+  dropCard(t,task.id,'progress');
   assert.equal(task.state,'progress');assert(t.d.querySelector(`[data-col="progress"] [data-task="${task.id}"]`));
   assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTask');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A.context().movePending);
   t.requests[0].resolve({});await tick();assert.equal(t.A.context().movePending,false);
 
-  const calls=t.calls.length;t.A._drag={kind:'task',id:task.id};t.A._dropBefore=task.id;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
+  const calls=t.calls.length;
+  dropCard(t,task.id,'progress',task.id);
   assert.equal(t.calls.length,calls);
   assert.notEqual(original,task.state);
 });
@@ -213,8 +218,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
   const before=done(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=before.at(-1);
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
+  dropCard(t,task.id,'done',before.at(-1));
   assert.deepEqual(done(),[task.id,...before]);
   assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['moveTask',['optimistic','status','taskId']]],'the server keeps the manual order');
   t.requests[0].resolve({});await tick();
@@ -223,8 +227,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   const labels=[...t.d.querySelectorAll('.menu button')].map(button=>button.textContent);
   assert(labels.includes('Move to Planning'));assert(!labels.includes('Move up')&&!labels.includes('Move down'));
   t.A.closeOverlays();
-  t.A._drag={kind:'task',id:before[0],offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',before[0])},'done');
+  dropCard(t,before[0],'done');
   assert.equal(t.calls.length,1,'reordering Done sends nothing');
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').dataset.action,'toggleDoneOrder');
   t.A.toggleDoneOrder();
@@ -236,8 +239,7 @@ test('the manual Done order keeps the drop position and reordering', () => {
   const toggle=t.d.querySelector('[data-col="done"] .done-order');
   assert.equal(toggle.getAttribute('aria-pressed'),'false');
   const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=done.at(-1);
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
+  dropCard(t,task.id,'done',done.at(-1));
   assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
   t.A.toggleDoneOrder();
   assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','completed']));
@@ -245,16 +247,14 @@ test('the manual Done order keeps the drop position and reordering', () => {
 
 test('a rejected Board move rolls back its card', async () => {
   const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'review');
+  dropCard(t,task.id,'review');
   assert.equal(task.state,'review');t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
   assert.equal(task.state,original);assert.equal(t.reports.length,1);
 });
 
 test('an uncertain Board move keeps its new column', async () => {
   const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
+  dropCard(t,task.id,'progress');
   t.requests[0].reject(Object.assign(new Error('Unknown outcome'),{uncertain:true}));await tick();await tick();
   assert.equal(task.state,'progress');
 });
@@ -263,8 +263,7 @@ test('a rejected move after switching projects restores only its own card and co
   const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.D.projectTaskCounts||={};t.D.projectTaskCounts.p1={planning:5,progress:1,review:1,done:1,blocked:0,open:7};
   t.D.projectTaskCounts.p2={planning:9,progress:8,review:7,done:6,blocked:5,open:24};
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
+  dropCard(t,task.id,'progress');
   const sentinel={id:'ONE-999',internalId:'p2-sentinel',projectId:'p2',epicId:'p2-epic',title:'Keep me',state:'planning',order:0,revision:1};t.D.tasks.push(sentinel);
   const p2Counts={...t.D.projectTaskCounts.p2};t.A.selectProject('p2');
   t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
@@ -285,8 +284,7 @@ test('a rejected reorder after switching projects restores only its own card', a
 
 test('a move rejected after the session changed does not roll back the new session', async () => {
   const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
-  t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
-  t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
+  dropCard(t,task.id,'progress');
   t.D.session={...t.D.session,id:'replacement-session'};
   t.requests[0].reject(Object.assign(new Error('Old session rejected'),{code:'validation_failed'}));await tick();await tick();
   assert.equal(task.state,'progress');
@@ -328,8 +326,7 @@ test('Move to a column that shows its end puts the card last and draws it', () =
 
 test('a card dropped below a long column follows its last shown card and stays drawn', () => {
   const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
-  t.A._drag = { kind: 'task', id: task.id, offsetX: 0, offsetY: 0 }; t.A._dropBefore = null;
-  t.A.dropTask({ preventDefault() {}, clientX: 0, clientY: 0, dataTransfer: transfer('text/task', task.id) }, 'done');
+  dropCard(t,task.id,'done');
   assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === shown.at(-1)).internalId);
   assert.deepEqual(t.doneCards(), [...shown, task.id]);
 });
@@ -341,7 +338,7 @@ test('the click that ends a card drag never opens the card, however late it come
   const pointer = (type, x) => card.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, pointerType: 'mouse', clientX: x, clientY: 10 }));
   const click = () => card.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
   pointer('pointerdown', 10); pointer('pointermove', 40);
-  assert.ok(t.A._drag, 'the drag started');
+  assert.ok(t.module('views/app/drag.js').drag.item, 'the drag started');
   pointer('pointerup', 40);
   // Firefox clicks only after the drop's redraw, which a busy page can take a second to finish.
   const now = t.w.Date.now; t.w.Date.now = () => now() + 1000;

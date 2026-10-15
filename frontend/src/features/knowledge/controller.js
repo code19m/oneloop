@@ -8,10 +8,13 @@
  * actions (`UIAction`).
  */
 
-import { actionErrorFeedback } from '../../app/action-feedback.js';
+import { actionErrorFeedback, errorMessage } from '../../app/action-feedback.js';
 import { completeForm } from '../../app/form-feedback.js';
 import { UIAction, escapeHtml as esc } from '../../app/markup.js';
 import { setTrustedHTML } from '../../app/trusted-types.js';
+import { formatInstant } from '../../data/time.js';
+import { htmlView, markdownView, textView } from '../files/file-views.js';
+import { byteSize, displayText, mountInlinePreview, previewFile } from '../files/preview.js';
 import {
   baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, highlight,
   iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
@@ -99,11 +102,11 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   let pendingScroll = /** @type {number|null} */ (null), deployKeyRequest = /** @type {Promise<void>|null} */ (null);
 
   const app = () => getApp?.();
-  const context = () => app()?.context?.() ?? {};
+  const context = () => app()?.context() ?? {};
   const isAdmin = () => !!runtime.data?.users?.find?.((/** @type {any} */ user) => user.id === runtime.data?.session?.userId)?.admin;
-  const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast?.(text, kind);
-  const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => view.OneloopErrorMessage?.(error, fallback) || fallback;
-  const instant = (/** @type {number} */ seconds) => view.OneloopTime?.instant?.(seconds * 1000) ?? new Date(seconds * 1000).toISOString().replace('T', ' ');
+  const toast = (/** @type {string} */ text, kind = 'success') => app()?.toast(text, kind);
+  const errorText = (/** @type {unknown} */ error, fallback = 'The request could not be completed.') => errorMessage(error, fallback) || fallback;
+  const instant = (/** @type {number} */ seconds) => formatInstant(seconds * 1000, runtime.data?.timeZone || 'UTC', (message) => toast(message, 'info'));
   const dateOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 10) : '—';
   const timeOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 16) : '';
   const viewOf = (/** @type {string|null} */ projectId) => projectId ? cache.get(projectId)?.data ?? null : null;
@@ -147,11 +150,11 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       const key = viewOf(projectId)?.source?.deployKey;
       const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('form[data-knowledge-form] #knowledge-key'));
       if (input && key && !input.value) input.value = key;
-      app()?.refreshAfterDialog?.();
+      app()?.refreshAfterDialog();
       return;
     }
     if (entry) entry.unpainted = false;
-    app()?.refresh?.();
+    app()?.refresh();
   }
 
   /** While a sync runs, read again every few seconds: an unchanged branch sends no live hint. */
@@ -285,13 +288,13 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   // ---------- search ----------
 
   const where = (/** @type {string} */ path, /** @type {KnowledgeView} */ data) => [data.folder, parentPath(path)].filter(Boolean).join('/');
-  const nameHit = (/** @type {string} */ projectId, /** @type {{path:string,folder:boolean}} */ item, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) => `<a class="knowledge-hit knowledge-hit--file" href="${esc(routeHash(projectId, item.folder ? 'tree' : 'blob', item.path))}" data-knowledge-hit>${fileMark(item.path, item.folder)}<span class="knowledge-hit-name">${highlight(baseName(item.path), words, esc)}</span><span class="knowledge-hit-where">${esc(where(item.path, data))}</span></a>`;
+  const nameHit = (/** @type {string} */ projectId, /** @type {{path:string,folder:boolean}} */ item, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) => `<a class="knowledge-hit knowledge-hit--file" href="${esc(routeHash(projectId, item.folder ? 'tree' : 'blob', item.path))}" data-knowledge-hit>${fileMark(item.path, item.folder)}<span class="knowledge-hit-name">${highlight(baseName(item.path), words)}</span><span class="knowledge-hit-where">${esc(where(item.path, data))}</span></a>`;
 
   function documentHits(/** @type {string} */ projectId, /** @type {any} */ doc, /** @type {number} */ limit, /** @type {string[]} */ words, /** @type {KnowledgeView} */ data) {
     const shown = doc.hits.slice(0, limit), rest = doc.total - shown.length;
     const sections = shown.map((/** @type {any} */ hit) => {
       const section = hit.section ?? '';
-      return `<a class="knowledge-hit knowledge-hit--text" href="${esc(routeHash(projectId, 'blob', doc.path, section))}" data-knowledge-hit><span class="knowledge-hit-heading">${highlight(hit.heading, words, esc)}</span><span class="knowledge-hit-snippet">${highlight(hit.snippet, words, esc)}</span></a>`;
+      return `<a class="knowledge-hit knowledge-hit--text" href="${esc(routeHash(projectId, 'blob', doc.path, section))}" data-knowledge-hit><span class="knowledge-hit-heading">${highlight(hit.heading, words)}</span><span class="knowledge-hit-snippet">${highlight(hit.snippet, words)}</span></a>`;
     }).join('');
     const more = rest > 0 ? (S.scope === 'all' && doc.hits.length > shown.length
       ? `<button type="button" class="knowledge-finder-more" data-knowledge-action="scope" data-scope="content">${rest} more in this file</button>`
@@ -367,7 +370,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     clearTimer(searchTimer); searchController?.abort();
     S.finding = false; S.query = ''; S.results = null; S.searching = false;
     pendingScroll = S.searchScroll;
-    app()?.refresh?.();
+    app()?.refresh();
     if (!refocus) return;
     const input = /** @type {HTMLInputElement|null} */ (documentObject.querySelector('[data-knowledge-search]'));
     S.suppressFocus = true; input?.focus({ preventScroll: true }); S.suppressFocus = false;
@@ -433,21 +436,20 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const tools = host.closest('.knowledge-preview')?.querySelector('.knowledge-preview-modes');
     const moveTools = () => { const found = host.querySelector('.html-preview-tools'); if (found && tools) tools.append(found); };
     const unavailable = (/** @type {string} */ text) => setTrustedHTML(host, `<p class="preview-unavailable">${text}</p>`);
-    const viewer = viewerFile(projectId, file), views = view.FileViews;
+    const viewer = viewerFile(projectId, file);
     if (file.kind === 'image' || file.kind === 'pdf') {
       host.classList.add('knowledge-media-body', 'file-preview-content'); host.setAttribute('data-inline-kind', file.kind);
-      const dispose = view.Uploads?.mountInlinePreview?.(host, viewer, tools);
-      if (typeof dispose === 'function') previews.set(host, dispose);
+      previews.set(host, mountInlinePreview(host, viewer, tools, () => runtime.data.session));
       return;
     }
-    if (!file.kind || !views) { unavailable('Preview is not available for this format. Download the original file.'); return; }
+    if (!file.kind) { unavailable('Preview is not available for this format. Download the original file.'); return; }
     setTrustedHTML(host, '<p class="access-note" role="status">Loading preview…</p>');
     textOf(projectId, file).then(({ text, truncated }) => {
       if (!host.isConnected) return;
       host.replaceChildren();
-      if (file.kind === 'markdown') { views.markdown(host, viewer, text, truncated, viewer.markdownContext); enhanceMarkdown(host); }
-      else if (file.kind === 'html') views.html(host, viewer, text);
-      else views.text(host, viewer, text, truncated);
+      if (file.kind === 'markdown') { markdownView(host, viewer, text, truncated, viewer.markdownContext); enhanceMarkdown(host); }
+      else if (file.kind === 'html') htmlView(host, viewer, text);
+      else textView(host, viewer, text, truncated);
       moveTools();
     }).catch(() => { if (host.isConnected) unavailable('Preview unavailable. Download the original file.'); });
   }
@@ -496,9 +498,12 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
 
   function fullView(/** @type {string} */ path) {
     const projectId = S.projectId, data = viewOf(projectId), file = data && projectId ? fileAt(data.files, path) : null;
-    if (!file?.kind || !projectId || !view.Uploads?.previewCollection) return;
+    const canRead = () => context().view === 'knowledge' && context().projectId === projectId;
+    if (!file?.kind || !projectId || !runtime.data.session || !canRead()) return;
     const viewer = viewerFile(projectId, file);
-    view.Uploads.previewCollection([viewer], viewer.id, () => context().view === 'knowledge' && context().projectId === projectId);
+    // A synced file has a path and a date, never an uploader or a retention choice.
+    const details = `<dt>File name</dt><dd>${esc(displayText(viewer.name))}</dd><dt>Path</dt><dd>${esc(displayText(viewer.path || viewer.name))}</dd><dt>Size</dt><dd>${byteSize(viewer.size)}</dd>${viewer.updatedAt ? `<dt>Updated</dt><dd>${instant(viewer.updatedAt)}</dd>` : ''}`;
+    previewFile({ file: viewer, files: [viewer], details, canRead, session: () => runtime.data.session, open: () => {} });
     documentObject.querySelector('.file-overlay:not([data-motion-exiting])')?.classList.add('knowledge-full-view');
   }
 
@@ -625,7 +630,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       payload = { projectId, url, branch, folder, ...(transport === 'https' && token ? { token } : {}) };
     } else {
       const action = transport === 'ssh' ? 'remove' : tokenAction === 'set' ? (token ? 'replace' : 'keep') : tokenAction;
-      if (url === source.url && branch === source.branch && folder.replace(/^\/+|\/+$/g, '') === source.folder && (action === 'keep' || (action === 'remove' && !source.hasToken))) { app()?.closeOverlays?.(); return; }
+      if (url === source.url && branch === source.branch && folder.replace(/^\/+|\/+$/g, '') === source.folder && (action === 'keep' || (action === 'remove' && !source.hasToken))) { app()?.closeOverlays(); return; }
       operation = 'knowledge.update';
       payload = { projectId, url, branch, folder, tokenAction: action, ...(action === 'replace' ? { token } : {}) };
       options = { expectedRevision: source.revision };
@@ -645,10 +650,10 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     }
     toast(source ? 'Knowledge base saved' : 'Repository connected');
     cache.delete(projectId);
-    if (!completeForm(form, () => app()?.closeOverlays?.())) { void load(projectId, { background: true }); return; }
+    if (!completeForm(form, () => app()?.closeOverlays())) { void load(projectId, { background: true }); return; }
     S.mode = 'tree'; S.path = ''; S.section = '';
     const target = routeHash(projectId);
-    if (windowObject.location.hash === target) { app()?.refresh?.(); void load(projectId); }
+    if (windowObject.location.hash === target) { app()?.refresh(); void load(projectId); }
     else windowObject.location.hash = target;
   }
 
@@ -656,12 +661,12 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const projectId = context().projectId, source = viewOf(projectId)?.source;
     if (!projectId || !source || !isAdmin()) return;
     const form = documentObject.querySelector('form[data-knowledge-form]');
-    app()?.confirm?.({
+    app()?.confirm({
       title: 'Disconnect repository?',
       text: 'Knowledge will be hidden in oneloop until a repository is connected again. The repository and its history stay untouched.',
       action: 'Disconnect',
       confirm: () => runtime.commands.execute('knowledge.disconnect', { projectId }, { expectedRevision: source.revision })
-        .then(() => { completeForm(form, () => app()?.closeOverlays?.()); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); repaint(projectId); })
+        .then(() => { completeForm(form, () => app()?.closeOverlays()); toast('Repository disconnected'); cache.delete(projectId); void load(projectId); repaint(projectId); })
         .catch((/** @type {unknown} */ error) => toast(errorText(error), 'error')),
     });
   }
@@ -690,7 +695,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (control && !control.matches(':disabled')) {
       const action = control.getAttribute('data-knowledge-action'), form = /** @type {HTMLFormElement|null} */ (control.closest('form[data-knowledge-form]'));
       if (action === 'home') { windowObject.location.hash = routeHash(String(S.projectId)); return; }
-      if (action === 'reload') { const projectId = context().projectId; if (projectId) { cache.delete(projectId); app()?.refresh?.(); void load(projectId); } return; }
+      if (action === 'reload') { const projectId = context().projectId; if (projectId) { cache.delete(projectId); app()?.refresh(); void load(projectId); } return; }
       if (action === 'retry') return retry();
       if (action === 'full-view') return fullView(control.getAttribute('data-path') ?? '');
       if (action === 'copy-section') return void copy(windowObject.location.origin + windowObject.location.pathname + routeHash(String(S.projectId), S.mode, S.path, control.getAttribute('data-section') ?? ''), 'Link copied');

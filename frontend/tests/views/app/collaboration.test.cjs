@@ -1,9 +1,8 @@
-// views/collaboration.js: comments, mentions, blocks and the discussion feed.
+// views/app/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle, waitFor, deferred } = require('../support/dom.cjs');
-const { createRecoveryController } = require('../../src/features/recovery/controller.js');
-const { ApiError } = require('../../src/data/api-client.js');
+const { bootApp, settle, waitFor, deferred } = require('../../support/dom.cjs');
+const { ApiError } = require('../../../src/data/api-client.js');
 
 // Comments and blocks share one membership check: a new mention needs an active member, a saved one is kept.
 // One case per outcome: an active member for blocks (new comment mentions are sent below), removed and
@@ -30,7 +29,7 @@ for(const [kind,state,retained] of [['comment','removed',false],['comment','inac
 });
 
 /** A task page with two comments, whose commands `execute` answers, by default never. */
-function productionComments(execute=()=>new Promise(()=>{})) {
+function commentPage(execute=()=>new Promise(()=>{})) {
  const comment={id:'comment-1',authorId:'taylorwu',rootId:'comment-1',content:'Original',mentions:[],createdAt:1700000000,revision:1};
  const comments=[comment,{...comment,id:'comment-2',rootId:'comment-2',content:'Other comment'}];
  const t=bootApp({route:'task/BIR-079',prepare:D=>{D.tasks.find(item=>item.id==='BIR-079').internalId='task-1';},api:{
@@ -45,85 +44,79 @@ const conflictButton=(t,label)=>[...t.d.querySelectorAll('[data-recovery-conflic
 
 test('Use latest accepts comment text, mentions and revision when Save changes had focus',async()=>{
  const requests=[];
- const t=productionComments(async(_operation,payload,options)=>{
+ const t=commentPage(async(_operation,payload,options)=>{
   requests.push({payload,revision:options.expectedRevision});
   if(options.expectedRevision!==t.comment.revision)throw conflict();
   Object.assign(t.comment,{content:payload.content,mentions:payload.mentions,revision:t.comment.revision+1});
   return {entities:[{...t.comment}],events:[]};
  });
  await settle();
- try{
-  t.A.editComment('BIR-079','comment-1');typeComment(t,'My draft');
-  const mentions=[{kind:'user',userId:'robin',startOffset:7,endOffset:13,label:'@robin'}];
-  Object.assign(t.comment,{content:'Remote @robin',mentions,revision:2});await t.controller.loadTaskPage('BIR-079');
-  t.d.querySelector('.comment-composer-actions button').focus();t.A.addComment('BIR-079');await settle();
-  const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
-  assert.equal(t.d.getElementById('cmtIn').value,'Remote @robin');
-  t.A.addComment('BIR-079');await settle();
-  assert.deepEqual(requests.map(request=>request.revision),[1,2]);
-  assert.equal(requests[1].payload.content,'Remote @robin');assert.deepEqual(Array.from(requests[1].payload.mentions),mentions);
-  assert.equal(t.comment.content,'Remote @robin');
- }finally{t.controller.dispose();}
+ t.A.editComment('BIR-079','comment-1');typeComment(t,'My draft');
+ const mentions=[{kind:'user',userId:'robin',startOffset:7,endOffset:13,label:'@robin'}];
+ Object.assign(t.comment,{content:'Remote @robin',mentions,revision:2});await t.controller.loadTaskPage('BIR-079');
+ t.d.querySelector('.comment-composer-actions button').focus();t.A.addComment('BIR-079');await settle();
+ const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+ assert.equal(t.d.getElementById('cmtIn').value,'Remote @robin');
+ t.A.addComment('BIR-079');await settle();
+ assert.deepEqual(requests.map(request=>request.revision),[1,2]);
+ assert.equal(requests[1].payload.content,'Remote @robin');assert.deepEqual(Array.from(requests[1].payload.mentions),mentions);
+ assert.equal(t.comment.content,'Remote @robin');
 });
 
 for(const phase of ['response','read','choice','latest-read','retry'])for(const newer of phase==='retry'?['editor','typing','session']:['editor','typing'])test(`comment conflict preserves newer ${newer} during ${phase}`,async()=>{
  const write=deferred(),read=deferred(),retry=deferred(),requests=[];let writes=0;
- const t=productionComments((_operation,payload,options)=>{requests.push({payload,options});return ++writes===1?write.promise:retry.promise;});
+ const t=commentPage((_operation,payload,options)=>{requests.push({payload,options});return ++writes===1?write.promise:retry.promise;});
  await settle();
- try{
-  t.A.editComment('BIR-079','comment-1');typeComment(t,'Submitted c1 draft').focus();t.A.addComment('BIR-079');
-  Object.assign(t.comment,{content:'Remote c1 edit',revision:2});
-  if(phase==='read')t.api.comments=()=>read.promise;
-  if(phase!=='response'){write.reject(conflict());await settle();}
-  if(phase==='latest-read'){
-   t.api.comments=()=>read.promise;
-   const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
-  }
-  if(phase==='retry'){const mine=conflictButton(t,'Keep my changes');assert(mine);mine.click();await settle();assert.equal(writes,2);}
-  if(newer!=='typing'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-2');}
-  if(newer==='session'){
-   t.D.session={...t.D.session,id:'next-session'};
-   Object.assign(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1'),{text:'Next session version',revision:10});
-  }
-  const text=newer!=='typing'?'Unsent c2 draft':'Newer c1 typing',input=typeComment(t,text);
-  input.focus();input.setSelectionRange(2,5);input.dispatchEvent(new t.w.Event('input',{bubbles:true}));
-  if(phase==='response')write.reject(conflict());
-  if(phase==='read'||phase==='latest-read')read.resolve({items:t.comments.map(item=>({...item})),nextCursor:null});
-  if(phase==='retry')retry.resolve({entities:[{...t.comment,content:'Submitted c1 draft',revision:3}],events:[]});
-  await settle();await settle();
-  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,text);
-  assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
-  assert.equal(t.d.querySelector('[data-recovery-conflict]'),null);
-  assert.equal(writes,phase==='retry'?2:1);
-  if(newer==='session')assert.equal(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1').text,'Next session version');
-  if(phase==='latest-read'){
-   t.A.addComment('BIR-079');assert.equal(requests.at(-1).options.expectedRevision,1,'the older acceptance cannot rebase newer typing');
-   retry.resolve({entities:[{...t.comment,content:text,revision:3}],events:[]});await settle();
-  }
- }finally{t.controller.dispose();}
+ t.A.editComment('BIR-079','comment-1');typeComment(t,'Submitted c1 draft').focus();t.A.addComment('BIR-079');
+ Object.assign(t.comment,{content:'Remote c1 edit',revision:2});
+ if(phase==='read')t.api.comments=()=>read.promise;
+ if(phase!=='response'){write.reject(conflict());await settle();}
+ if(phase==='latest-read'){
+  t.api.comments=()=>read.promise;
+  const latest=conflictButton(t,'Use latest');assert(latest);latest.click();await settle();
+ }
+ if(phase==='retry'){const mine=conflictButton(t,'Keep my changes');assert(mine);mine.click();await settle();assert.equal(writes,2);}
+ if(newer!=='typing'){t.A.cancelCommentMode('BIR-079');t.A.editComment('BIR-079','comment-2');}
+ if(newer==='session'){
+  t.D.session={...t.D.session,id:'next-session'};
+  Object.assign(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1'),{text:'Next session version',revision:10});
+ }
+ const text=newer!=='typing'?'Unsent c2 draft':'Newer c1 typing',input=typeComment(t,text);
+ input.focus();input.setSelectionRange(2,5);input.dispatchEvent(new t.w.Event('input',{bubbles:true}));
+ if(phase==='response')write.reject(conflict());
+ if(phase==='read'||phase==='latest-read')read.resolve({items:t.comments.map(item=>({...item})),nextCursor:null});
+ if(phase==='retry')retry.resolve({entities:[{...t.comment,content:'Submitted c1 draft',revision:3}],events:[]});
+ await settle();await settle();
+ assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,text);
+ assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
+ assert.equal(t.d.querySelector('[data-recovery-conflict]'),null);
+ assert.equal(writes,phase==='retry'?2:1);
+ if(newer==='session')assert.equal(t.D.tasks.find(task=>task.id==='BIR-079').comments.find(comment=>comment.id==='comment-1').text,'Next session version');
+ if(phase==='latest-read'){
+  t.A.addComment('BIR-079');assert.equal(requests.at(-1).options.expectedRevision,1,'the older acceptance cannot rebase newer typing');
+  retry.resolve({entities:[{...t.comment,content:text,revision:3}],events:[]});await settle();
+ }
 });
 
 test('an open comment edit conflicts against its original revision after a live refresh',async()=>{
- const requests=[],reviews=[];
- const t=productionComments(async(_operation,payload,options)=>{
+ const requests=[];
+ const t=commentPage(async(_operation,payload,options)=>{
   requests.push(options.expectedRevision);
   if(options.expectedRevision!==t.comment.revision)throw new ApiError('record changed; latest revision is 2',{status:409,code:'revision_conflict'});
   Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
  });
  await settle();
- globalThis.Recovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
- try{
-  t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
-  Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
-  t.A.addComment('BIR-079');await settle();
-  assert.deepEqual(requests,[1]);assert.deepEqual(reviews,['Remote edit']);
-  assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
- }finally{t.controller.dispose();}
+ t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');
+ Object.assign(t.comment,{content:'Remote edit',revision:2});await t.controller.loadTaskPage('BIR-079');
+ t.A.addComment('BIR-079');
+ await waitFor(()=>t.d.querySelector('[data-recovery-conflict]'),'the conflict prompt opens');
+ assert.deepEqual(requests,[1]);assert.match(t.d.querySelector('[data-recovery-conflict]').textContent,/Latest saved value: Remote edit/);
+ assert.equal(t.comment.content,'Remote edit');assert.equal(t.d.getElementById('cmtIn').value,'My local edit');
 });
 
 for(const next of ['typing','reply','edit','reopen'])test(`comment completion preserves a newer ${next} draft and focus`,async()=>{
  let release;
- const t=productionComments(()=>new Promise(resolve=>{release=resolve;}));
+ const t=commentPage(()=>new Promise(resolve=>{release=resolve;}));
  await settle();
  if(next==='reopen')t.A.editComment('BIR-079','comment-1');
  typeComment(t,'Submitted draft');t.A.addComment('BIR-079');
@@ -135,12 +128,11 @@ for(const next of ['typing','reply','edit','reopen'])test(`comment completion pr
  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,next==='reopen'?'Submitted draft':'New unsent draft');
  assert.equal(t.d.activeElement,input);assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,5);
  assert(t.D.tasks.find(item=>item.id==='BIR-079').comments.some(item=>item.id==='saved'));
- t.controller.dispose();
 });
 
 test('a comment edit typed after Save saves over that acknowledged save',async()=>{
  const requests=[];let release;
- const t=productionComments((_operation,payload,options)=>{
+ const t=commentPage((_operation,payload,options)=>{
   requests.push(options.expectedRevision);
   if(options.expectedRevision!==t.comment.revision)return Promise.reject(conflict());
   Object.assign(t.comment,{content:payload.content,revision:t.comment.revision+1});
@@ -148,14 +140,12 @@ test('a comment edit typed after Save saves over that acknowledged save',async()
   return requests.length===1?new Promise(resolve=>{release=()=>resolve(saved);}):Promise.resolve(saved);
  });
  await settle();
- try{
-  t.A.editComment('BIR-079','comment-1');typeComment(t,'First edit');t.A.addComment('BIR-079');
-  const input=typeComment(t,'First edit, continued');
-  release();await settle();await settle();
-  assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'First edit, continued');
-  t.A.addComment('BIR-079');await settle();await settle();
-  assert.deepEqual(requests,[1,2]);assert.equal(t.comment.content,'First edit, continued');
- }finally{t.controller.dispose();}
+ t.A.editComment('BIR-079','comment-1');typeComment(t,'First edit');t.A.addComment('BIR-079');
+ const input=typeComment(t,'First edit, continued');
+ release();await settle();await settle();
+ assert.equal(t.d.getElementById('cmtIn'),input);assert.equal(input.value,'First edit, continued');
+ t.A.addComment('BIR-079');await settle();await settle();
+ assert.deepEqual(requests,[1,2]);assert.equal(t.comment.content,'First edit, continued');
 });
 
 /** Boot a task page; `prepare` edits the projection before the views load. Activity reads find nothing new. */
@@ -189,7 +179,7 @@ function typeComment(t,text){const input=t.d.getElementById('cmtIn');input.value
 function mention(t,query,option='everyone'){const input=typeComment(t,query);const items=[...t.d.querySelectorAll('[data-mention-index]')];const chosen=items.find(b=>b.textContent.includes(option));assert(chosen,'Mention option exists');chosen.click();return input;}
 test('canonical task refresh preserves the open property picker', () => {
  let facade;
- const t=boot((_D,w)=>{w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {};}};});
+ const t=boot((_D,w)=>{w.OneloopCollaboration={bind(_app,value){facade=value;return {beforeRender(){},mount(){}};}};});
  const trigger=t.d.querySelector('[aria-label="Assignees"]');t.A.popMulti({currentTarget:trigger,preventDefault(){},stopPropagation(){}},'tpAssign');const option=t.d.querySelector('.pop-opt.multi');option.focus();facade.canonicalTask();assert(t.d.querySelector('.pop'),'canonical refresh keeps the open assignee picker');
 });
 
@@ -298,7 +288,7 @@ test('long comments use the description reader while retaining mention markup', 
 
 test('comment readers disconnect when task scope is left', () => {
  const observers=[],t=boot((D,w)=>{w.ResizeObserver=class{constructor(callback){this.callback=callback;this.targets=[];observers.push(this);}observe(target){this.targets.push(target);}disconnect(){this.disconnected=true;}};D.tasks.find(x=>x.id==='BIR-079').comments=[{id:'observer-comment',who:'taylorwu',ts:Date.now(),text:'A comment'}];}),commentObserver=observers.findLast(observer=>observer.targets.some(target=>target.classList?.contains('comment-reading')));
- assert(commentObserver);assert(!commentObserver.disconnected);t.w.Collab.beforeRender({userId:null,projectId:null,view:'auth',taskId:null});assert(commentObserver.disconnected);
+ assert(commentObserver);assert(!commentObserver.disconnected);t.module('views/app/collaboration.js').beforeCollaborationRender({userId:null,projectId:null,view:'auth',taskId:null});assert(commentObserver.disconnected);
 });
 
 test('same-timestamp activity, root comments and replies use stable IDs for chronological order', () => {
@@ -329,7 +319,7 @@ test('Enter submits block, edit, unblock and completion, picks mentions first, a
 });
 
 test('the feed checks posting permission once and indexes people once', () => {
-  const { w, D } = bootApp({ route: 'task/BIR-079', media: () => false });
+  const { A, D, d, commands, module } = bootApp({ route: 'task/BIR-079', media: () => false });
   const task = D.tasks.find(item => item.id === 'BIR-079');
   task.comments = Array.from({ length: 150 }, (_, i) => ({ id: `perf-${i}`, who: D.session.userId, ts: Date.now() + i, text: 'Long comment '.repeat(50), mentions: [] }));
   const actor = D.users.find(user => user.id === D.session.userId); actor.admin = false; actor.active = true;
@@ -339,19 +329,23 @@ test('the feed checks posting permission once and indexes people once', () => {
   const membership = project.members.find(member => member.userId === actor.id); assert.ok(membership);
   let permissionScans = 0; const some = project.members.some;
   project.members.some = function (...args) { permissionScans++; return some.apply(this, args); };
-  w.Collab.feedHtml(task, 150);
+  module('views/app/collaboration.js').feedHtml(task);
   assert.equal(permissionScans, 1, 'posting permission is checked once per feed');
   assert.ok(idReads < 3000, 'people are indexed once, not scanned for each member/comment');
-  project.members.splice(project.members.indexOf(membership), 1); assert.equal(w.Collab.canComment(task), false);
-  project.members.push(membership); assert.equal(w.Collab.canComment(task), true);
-  actor.active = false; assert.equal(w.Collab.canComment(task), false);
+  project.members.some = some;
+  // Only an active member may comment; anyone else gets nothing sent.
+  const feedback = () => { assert.equal(A.addComment(task.id), false); return d.querySelector('.comment-feedback').textContent; };
+  project.members.splice(project.members.indexOf(membership), 1); assert.match(feedback(), /must be an active project member/);
+  project.members.push(membership); assert.equal(feedback(), 'Write a comment first.');
+  actor.active = false; assert.match(feedback(), /must be an active project member/);
+  assert.equal(commands.length, 0);
 });
 
-/** The task page with production comments whose sends wait for the test. */
+/** A task page whose comment sends, through a stand-in controller, wait for the test. */
 function sendingComments(){
  const sends=[];let facade;
  const t=bootApp({route:'task/BIR-079',prepare(_D,w){
-  w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
+  w.OneloopCollaboration={bind(_app,value){facade=value;return {beforeRender(){},mount(){},saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
  }});
  const task=t.D.tasks.find(item=>item.id==='BIR-079');
  return {...t,task,sends,
@@ -424,24 +418,22 @@ test('Enter on the box its comment just left says nothing',async()=>{
 
 test('a deleted comment offers Undo, which brings its text back',async()=>{
  const requests=[];
- const t=productionComments(async(operation,payload,options)=>{
+ const t=commentPage(async(operation,payload,options)=>{
   requests.push([operation,payload.commentId,options.expectedRevision]);
   const deleted=operation==='discussion.comment.delete';
   Object.assign(t.comment,{content:deleted?null:'Original',deletedAt:deleted?1700000100:null,revision:options.expectedRevision+1});
   return {entities:[{...t.comment}],events:[]};
  });
  await settle();
- try{
-  t.A.deleteComment('BIR-079','comment-1');
-  assert.match(t.d.querySelector('#confirmation-description').textContent,/You can undo this right after/);
-  t.d.querySelector('[data-confirm-accept]').click();
-  await waitFor(()=>t.d.querySelector('#toast-region .toast-action'),'the deletion offers Undo');
-  assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').deleted,true);
-  t.d.querySelector('#toast-region .toast-action').click();
-  await waitFor(()=>t.d.querySelector('#toast-region').textContent.includes('Comment restored'),'the comment is restored');
-  assert.deepEqual(requests,[['discussion.comment.delete','comment-1',1],['discussion.comment.restore','comment-1',2]]);
-  assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').text,'Original');
- }finally{t.controller.dispose();}
+ t.A.deleteComment('BIR-079','comment-1');
+ assert.match(t.d.querySelector('#confirmation-description').textContent,/You can undo this right after/);
+ t.d.querySelector('[data-confirm-accept]').click();
+ await waitFor(()=>t.d.querySelector('#toast-region .toast-action'),'the deletion offers Undo');
+ assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').deleted,true);
+ t.d.querySelector('#toast-region .toast-action').click();
+ await waitFor(()=>t.d.querySelector('#toast-region').textContent.includes('Comment restored'),'the comment is restored');
+ assert.deepEqual(requests,[['discussion.comment.delete','comment-1',1],['discussion.comment.restore','comment-1',2]]);
+ assert.equal(t.D.tasks.find(item=>item.id==='BIR-079').comments.find(item=>item.id==='comment-1').text,'Original');
 });
 
 test('a tab whose live updates a newer tab took says so, and Resume takes them back', () => {

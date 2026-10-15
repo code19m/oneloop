@@ -3,9 +3,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
 
-/** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
-
 /** A task page whose toasts are recorded as notices. */
 function taskPage(options) {
   const t = bootApp({ route: 'task/BIR-079', ...options });
@@ -80,7 +77,7 @@ test('comment readers reset every height before measuring any of them', () => {
 });
 
 test('epic, milestone and task descriptions share bounded readers and editors that keep their scroll position', () => {
- const t=boot('roadmap',{prepare:D=>{D.epics[0].desc='<script>unsafe</script>\n'+('A long epic description.\n'.repeat(50));D.milestones[0].desc='A milestone goal.\n'.repeat(25);}});
+ const t=bootApp({route:'roadmap',prepare:D=>{D.epics[0].desc='<script>unsafe</script>\n'+('A long epic description.\n'.repeat(50));D.milestones[0].desc='A milestone goal.\n'.repeat(25);}});
  t.A.openPeek(t.D.epics[0].id);let reader=t.d.querySelector('.description-content');assert(reader.textContent.includes('<script>unsafe</script>'));assert(!reader.querySelector('script'));Object.defineProperty(reader,'scrollHeight',{value:1600});t.w.innerHeight=1000;t.A.sizeDescription();assert.equal(reader.style.height,'240px');assert(t.d.querySelector('.peek-description').classList.contains('is-collapsed'));
  t.A.toggleDescription(t.d.querySelector('.peek-description .description-toggle'));assert.equal(reader.style.height,'800px');assert.equal(reader.style.overflowY,'auto');assert(!t.d.querySelector('.peek-description').classList.contains('is-collapsed'));reader.scrollTop=130;t.A.sizeDescription();assert.equal(reader.scrollTop,130);
  for(const [kind,id] of [['epic',t.D.epics[0].id],['milestone',t.D.milestones[0].id],['task',null]]){t.A.closeOverlays();t.A.openModal(kind,id);const input=t.d.querySelector('[data-description-editor]');assert(input);assert(t.d.querySelector('.modal .optional-mark'));assert(!t.d.querySelector('.modal .description-toggle'));Object.defineProperty(input,'scrollHeight',{value:1600});t.A.sizeDescriptionEditors();assert.equal(input.style.height,'320px');assert.equal(input.style.overflowY,'auto');input.scrollTop=180;t.A.sizeDescriptionEditors();assert.equal(input.scrollTop,180);t.w.innerHeight=500;t.A.sizeDescriptionEditors();assert.equal(input.style.height,'200px');t.w.innerHeight=1000;}
@@ -88,11 +85,11 @@ test('epic, milestone and task descriptions share bounded readers and editors th
 });
 
 test('closing the task dialog discards its unsent input without a stored draft', () => {
-const {w,d,A}=boot();A.openModal('task');const form=d.querySelector('.modal form');form.querySelector('[name="title"]').value='Recover me';form.querySelector('[name="title"]').dispatchEvent(new w.Event('input',{bubbles:true}));A.closeOverlays();A.openModal('task');assert.equal(d.querySelector('.modal [name="title"]').value,'');assert.equal(w.localStorage.getItem('oneloop.drafts.v1'),null);
+const {w,d,A}=bootApp({route:'board'});A.openModal('task');const form=d.querySelector('.modal form');form.querySelector('[name="title"]').value='Recover me';form.querySelector('[name="title"]').dispatchEvent(new w.Event('input',{bubbles:true}));A.closeOverlays();A.openModal('task');assert.equal(d.querySelector('.modal [name="title"]').value,'');assert.equal(w.localStorage.getItem('oneloop.drafts.v1'),null);
 });
 
 test('opaque task IDs resolve to the task page', () => {
-const opaque=boot('task/opaque-example',{prepare:D=>D.tasks[0].internalId='opaque-example'});assert(opaque.d.querySelector('.topbar').textContent.includes('BIR-064'));
+const opaque=bootApp({route:'task/opaque-example',prepare:D=>D.tasks[0].internalId='opaque-example'});assert(opaque.d.querySelector('.topbar').textContent.includes('BIR-064'));
 });
 
 test('the activity feed loads older records a page at a time', async () => {
@@ -104,7 +101,7 @@ test('the activity feed loads older records a page at a time', async () => {
 });
 
 /** A task page whose commands the test answers; reading the task again brings someone else's `latest` change. */
-function productionTaskPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
+function conflictPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
   let task;
   const t = bootApp({
     route: 'task/BIR-079', media: () => true,
@@ -115,8 +112,8 @@ function productionTaskPage(latest = { title: 'Their title', deadline: '2026-11-
 }
 
 test('a title conflict keeps newer typing elsewhere and shows the title as typed beside the latest one', async () => {
-  const t = productionTaskPage(), title = t.d.querySelector('.tp-title');
-  // Inline handlers do not run in this harness, so blur calls the handler itself.
+  const t = conflictPage(), title = t.d.querySelector('.tp-title');
+  // This page runs no view actions, so the test calls the blur's handler itself.
   title.focus(); title.value = 'My title'; title.blur(); t.A.updTask(t.task.id, 'title', title.value);
   const description = t.d.getElementById('task-description');
   description.focus(); description.value = 'Typed after the title save started'; description.dispatchEvent(new t.w.Event('input', { bubbles: true }));
@@ -130,7 +127,7 @@ test('a title conflict keeps newer typing elsewhere and shows the title as typed
 });
 
 test('Use latest on a description shows the saved description, not the typed one', async () => {
-  const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
+  const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   description.focus(); description.value = 'My description'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
   t.commands[0].reject(new t.w.TestApiError('record changed; latest revision is 2', { status: 409, code: 'revision_conflict' }));
   await waitFor(() => t.d.querySelector('[data-recovery-conflict]'), 'the conflict prompt appears');
@@ -142,7 +139,7 @@ test('Use latest on a description shows the saved description, not the typed one
 });
 
 test('an unsaved description stays on the page through refreshes and offers Save', async () => {
-  const t = productionTaskPage();
+  const t = conflictPage();
   t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Unable to reach oneloop', { code: 'network_error' }), requestContext: t.w.Recovery.requestContext() });
   const description = t.d.getElementById('task-description');
   description.focus(); description.value = 'Written offline'; description.blur(); t.A.updTask(t.task.id, 'desc', description.value);
@@ -168,7 +165,7 @@ test('a saved status shows in the header, the Status icon and Block task while S
 });
 
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
-  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title'), task = t.D.tasks.find(x => x.id === 'BIR-079');
+  const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title');
   const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };
   title.focus(); title.value = 'Renamed with Enter';
   assert.equal(enter({ isComposing: true }).defaultPrevented, false); assert.equal(t.d.activeElement, title);
@@ -193,7 +190,7 @@ test('a pasted line break cleans the title without splitting an emoji at its len
 });
 
 test('text typed into a task field when edit rights end stays as Not saved, readable and saved again once rights return', () => {
-  const t = productionTaskPage();
+  const t = conflictPage();
   const actor = t.D.users.find(user => user.id === t.D.session.userId), membership = t.D.projects[0].members.find(member => member.userId === actor.id);
   const description = t.d.getElementById('task-description');
   description.focus(); description.value = 'Typed while access changed';
@@ -224,7 +221,7 @@ async function conflictOn(t, field, value) {
 }
 
 test('a live redraw keeps the conflict prompt beside the redrawn field until the person answers it', async () => {
-  const t = productionTaskPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
+  const t = conflictPage({ desc: 'Their description' }), description = t.d.getElementById('task-description');
   await conflictOn(t, description, 'My description');
   const prompt = t.d.querySelector('[data-recovery-conflict]'), keep = promptButton(t, 'Keep my changes');
   keep.focus();
@@ -240,7 +237,7 @@ test('a live redraw keeps the conflict prompt beside the redrawn field until the
 });
 
 test('after a redraw, Use latest shows the latest value in the redrawn field', async () => {
-  const t = productionTaskPage({ title: 'Their title' });
+  const t = conflictPage({ title: 'Their title' });
   await conflictOn(t, t.d.querySelector('.tp-title'), 'My title');
   t.A.refresh(); await settle();
   promptButton(t, 'Use latest').click();
@@ -250,7 +247,7 @@ test('after a redraw, Use latest shows the latest value in the redrawn field', a
 });
 
 test('leaving the task page still closes the prompt, and the change waits there as Not saved', async () => {
-  const t = productionTaskPage({ desc: 'Their description' });
+  const t = conflictPage({ desc: 'Their description' });
   await conflictOn(t, t.d.getElementById('task-description'), 'My description');
   t.A.nav('board'); await settle();
   assert.equal(t.d.querySelector('[data-recovery-conflict]'), null);
