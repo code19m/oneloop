@@ -24,8 +24,6 @@
     });
   };
   window.Theme = {
-    /** The theme on screen: light or dark. */
-    get current() { return resolved(); },
     /** What the person picked: light, dark or system. */
     get choice() { return choice; },
     set(value) {

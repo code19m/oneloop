@@ -720,7 +720,6 @@ export function createRecoveryController({
     beginRouteLoad,
     clearPageError(){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;updateNotice();pageError=null;pageReference=null;},
     retryLoad(){beginRouteLoad();reconcile({background:false}).then((result)=>{cancelRouteLoading();if(!result?.error){pageError=null;renderPreservingEditor();}});},
-    retryRefresh:()=>reconcile({background:true}),
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility, storage and the connection. */

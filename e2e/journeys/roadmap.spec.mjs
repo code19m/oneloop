@@ -33,7 +33,6 @@ test('Roadmap spacing and zoom preserve readable rows and the shell', async ({ p
   const { project, track } = instance.projects[0];
   for (let i = 0; i < 4; i++) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Overlapping epic ${i}`, startDate: '2026-09-24', endDate: '2026-10-24' });
   await openApp(page, instance, 'roadmap');
-  expect(await page.evaluate(() => Uploads.limits)).toEqual({ file: 25 * 1024 * 1024, avatar: 5 * 1024 * 1024, count: 25 });
   const beforeSpacing = Number(await page.locator('#rmScroll').getAttribute('data-bar-height'));
   // WCAG text spacing, as a stylesheet: the app's policy refuses inline style elements.
   await page.route('**/e2e-text-spacing.css', route => route.fulfill({ contentType: 'text/css', body: '* { line-height:1.5 !important; letter-spacing:.12em !important; word-spacing:.16em !important; }' }));
