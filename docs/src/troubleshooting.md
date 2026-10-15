@@ -94,7 +94,7 @@ own message. People keep reading the last synced files.
 | The repository host couldn't be reached. | Check DNS and firewalls from the server. Behind a proxy, see [Knowledge base connections](production.md#knowledge-base-connections). |
 | The server doesn't trust the host's HTTPS certificate. | For a private certificate authority, set `GIT_SSL_CAINFO` for the oneloop service; see [Knowledge base connections](production.md#knowledge-base-connections). |
 | The host's SSH key changed since the first sync. | Ask the host's admin whether the key really changed. If it did, delete the host's line from `keys/knowledge_known_hosts` in the data directory; the next sync trusts the new key. |
-| The folder is too large to sync. Choose a smaller folder or remove large files. | Choose a smaller folder, or move large files out of it. Files left out for their size still count toward a sync's disk use; see [Limits](reference.md#limits). |
+| The folder is too large to sync. Choose a smaller folder, or remove files or subfolders from it. | Choose a smaller folder, or remove files or subfolders from it. A folder is too large when it has too many files or subfolders, or too many bytes; links and files left out for their size count too. See the Folder and Sync disk use rows in [Limits](reference.md#limits). |
 | The sync took too long. | Check the connection to the host, then choose **Retry sync**. |
 | The server is low on disk space. | Free some disk space; see [Limits](reference.md#limits) for what a sync needs. |
 | The saved credentials can't be read. Enter them again. | `keys/knowledge.key` is missing or was replaced, for example when a database was copied without its `keys` folder. Replace the token, or disconnect and connect again for a new deploy key. |

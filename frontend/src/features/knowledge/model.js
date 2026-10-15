@@ -138,7 +138,7 @@ const FAILURES = Object.freeze({
   certificate_untrusted: 'The server doesn’t trust the host’s HTTPS certificate.',
   host_key_changed: 'The host’s SSH key changed since the first sync.',
   repository_moved: 'The repository moved to another address. Use its new URL.',
-  too_large: 'The folder is too large to sync. Choose a smaller folder or remove large files.',
+  too_large: 'The folder is too large to sync. Choose a smaller folder, or remove files or subfolders from it.',
   timeout: 'The sync took too long.',
   storage_full: 'The server is low on disk space.',
   credentials_unavailable: 'The saved credentials can’t be read. Enter them again.',
