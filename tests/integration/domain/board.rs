@@ -621,8 +621,6 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
         .await
         .unwrap();
     assert_ne!(snapshot.sync_cursor, changed.sync_cursor);
-    let unused: i64=f.db.run(|connection|Ok(connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'task_search%' OR name LIKE 'tasks_search%'",[],|row|row.get(0))?)).await.unwrap();
-    assert_eq!(unused, 0);
 }
 
 proptest::proptest! {

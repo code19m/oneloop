@@ -263,6 +263,18 @@ async fn a_failing_message_waits_for_a_retry_without_holding_back_the_others() {
     assert_eq!(sent, ["a-before", "c-after"]);
     // Nothing else is ready, so the next run finds nothing to do.
     assert!(!runtime.worker().run_once().await.unwrap());
+    // When the broken message is all there is to deliver, its failure is the
+    // run's result.
+    db.run(move |connection| {
+        connection.execute(
+            "UPDATE outbox_messages SET available_at=?1 WHERE id='b-broken'",
+            [available],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(runtime.worker().run_once().await.is_err());
 }
 
 #[tokio::test]
@@ -305,29 +317,6 @@ async fn activity_hints_include_task_scope_and_revision_for_targeted_reconciliat
     assert_eq!(hint.task_id.as_deref(), Some("task"));
     assert_eq!(hint.entity_id.as_deref(), Some("task"));
     assert_eq!(hint.entity_revision, Some(2));
-}
-
-#[tokio::test]
-async fn worker_failures_schedule_a_retry() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let available = now();
-    db.run(move|connection| {
-        connection.execute(
-            r#"INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
-             VALUES('bad','domain.activity','task','one','{"projectId":123}',?1,?1)"#,[available])?;
-        Ok(())
-    }).await.unwrap();
-    let runtime = CollaborationRuntime::new(db.clone());
-    assert!(runtime.worker().run_once().await.is_err());
-    let state:(i64,i64,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
-        "SELECT attempt_count,available_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
-        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
-    assert_eq!(state.0, 1);
-    assert!(state.1 > available);
-    assert!(state.2.is_some());
-    assert!(state.3.is_none());
 }
 
 #[tokio::test]
