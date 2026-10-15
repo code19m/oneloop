@@ -19,9 +19,19 @@ Add application logic to `src/` as ES modules with JSDoc types; preserve the
 DOM contracts in `views/`. Whole-app browser journeys live in
 [`../e2e/journeys/`](../e2e/README.md).
 
+- **Views.** `views/app.js` is the shell: routing, the render pipeline and the
+  pages that have no module of their own. Each feature in `views/app/` keeps
+  its markup and its `App` handlers together: `board.js`, `roadmap.js`,
+  `pool.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and focus
+  return), `controls.js` (selects, date fields, input cleaning), `forms.js`,
+  `toasts.js` and `drag.js`. They share `model.js` (view state and data
+  lookups), `format.js` (text, dates and icons) and `effects.js`. A module
+  reaches the render pipeline through `App`, such as `App.refresh()`, and never
+  imports `views/app.js`. TypeScript checks only `src/`, so each view module
+  starts with `// @ts-nocheck`.
 - **Actions.** To change an action that saves, start from
   `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
-  `saveTask`, and wraps a few of `views/app.js`, such as `nav`.
+  `saveTask`, and wraps a few of the views' own, such as `nav`.
   `views/collaboration.js` and `views/uploads.js` add the comment and
   attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
@@ -53,9 +63,9 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 The page's Content-Security-Policy enforces Trusted Types and refuses inline
 `<style>` elements:
 
-- Write HTML with `UIHTML` (`setHTML` in `views/app.js`), which goes through
-  the app's `oneloop` policy. A plain string passed to `innerHTML`, `srcdoc` or
-  `DOMParser` is refused.
+- Write HTML with `UIHTML` (`setHTML` in `views/app/format.js`), which goes
+  through the app's `oneloop` policy. A plain string passed to `innerHTML`,
+  `srcdoc` or `DOMParser` is refused.
 - Load scripts only from `src/`, `views/` and `vendor/`.
 - Style with the CSS files and `style` attributes, not `<style>` elements.
 
