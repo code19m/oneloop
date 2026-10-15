@@ -7,6 +7,7 @@
 import {
   MULTI, dateHtml, dateValue, field, multiHtml, optionalMark, resetFieldIds, selectHtml,
 } from './app/controls.js';
+import './app/drag.js';
 import {
   MOTION, animateLayout, exitVisual, exitVisuals, fadeContent, motionRects, reducedMotion,
   uiAnimate, uiAnimations,
@@ -1210,50 +1211,56 @@ function renderModal() {
 
 // ---------- shell ----------
 const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span><strong>${value}</strong></span>`;
+/** The Roadmap's page header: its counts, scale, Today and add buttons. */
+function roadmapTopbarHtml() {
+  return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
+  <div class="right">
+    ${roadmapScaleHtml()}
+    <button class="btn quiet" ${UIAction('goToday')}>Today</button>
+    ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
+    <button class="btn primary" ${UIAction('openModal', 'epic')}>${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
+  </div>`;
+}
+
+/** The Board's page header: search, filters, Pool and New task. */
+function boardTopbarHtml() {
+  const applyBoard = applyBoardFilters;
+  const epicOpts = (state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start));
+  const updateEpicFilter = () => {
+    const choices = (state.boardTracks.length ? epics().filter(epic => state.boardTracks.includes(epic.trackId)) : epics()).slice().sort((a,b)=>d(a.start)-d(b.start));
+    const allowed = new Set(choices.map(epic=>epic.id));
+    state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
+    const def = MULTI.fEpic;
+    if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.dataset.tip=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
+  };
+  const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
+    options, search: options.length > 6,
+    values: () => arr,
+    toggle: (v) => { const i = arr.indexOf(v); if (i === -1) arr.push(v); else arr.splice(i, 1); if(key==='fTrack')updateEpicFilter(); applyBoard(); },
+    clear: () => { arr.length = 0; if(key==='fTrack')updateEpicFilter(); applyBoard(); },
+    summary: () => arr.length === 0 ? all : arr.length === 1 ? ((MULTI[key]?.options || options).find((o) => o.v === arr[0]) || {}).l || all : `${arr.length} ${noun}`,
+  }, extra || {}));
+  const meId = me().id;
+  const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
+  return `<h1>Board</h1>
+  <div class="right board-filters">
+    <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
+    ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
+    ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
+    ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
+    <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
+    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+    ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
+  </div>`;
+}
+
 function renderTopbar() {
   if (state.view === 'knowledge') return window.OneloopKnowledge?.topbar() || '<h1>Knowledge base</h1>';
   if (state.view === 'notfound') return awaitingServerTask() ? '<h1>Task</h1>' : '<h1>Page not found</h1>';
   if (state.view === 'no-projects') return '<h1>Projects</h1>';
   if (state.view === 'forbidden') return '<h1>Access denied</h1>';
-  if (state.view === 'roadmap') {
-    return `<h1>Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
-    <div class="right">
-      ${roadmapScaleHtml()}
-      <button class="btn quiet" ${UIAction('goToday')}>Today</button>
-      ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
-      <button class="btn primary" ${UIAction('openModal', 'epic')}>${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
-    </div>`;
-  }
-  if (state.view === 'board') {
-    const applyBoard = applyBoardFilters;
-    const epicOpts = (state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start));
-    const updateEpicFilter = () => {
-      const choices = (state.boardTracks.length ? epics().filter(epic => state.boardTracks.includes(epic.trackId)) : epics()).slice().sort((a,b)=>d(a.start)-d(b.start));
-      const allowed = new Set(choices.map(epic=>epic.id));
-      state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
-      const def = MULTI.fEpic;
-      if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.dataset.tip=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
-    };
-    const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
-      options, search: options.length > 6,
-      values: () => arr,
-      toggle: (v) => { const i = arr.indexOf(v); if (i === -1) arr.push(v); else arr.splice(i, 1); if(key==='fTrack')updateEpicFilter(); applyBoard(); },
-      clear: () => { arr.length = 0; if(key==='fTrack')updateEpicFilter(); applyBoard(); },
-      summary: () => arr.length === 0 ? all : arr.length === 1 ? ((MULTI[key]?.options || options).find((o) => o.v === arr[0]) || {}).l || all : `${arr.length} ${noun}`,
-    }, extra || {}));
-    const meId = me().id;
-    const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
-    return `<h1>Board</h1>
-    <div class="right board-filters">
-      <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
-      ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
-      ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
-      ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
-      <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-      <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
-      ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
-    </div>`;
-  }
+  if (state.view === 'roadmap') return roadmapTopbarHtml();
+  if (state.view === 'board') return boardTopbarHtml();
   if (state.view === 'task') {
     const t = taskById(state.taskId);
     if (!t) return '<h1>Board</h1>';
@@ -2080,39 +2087,6 @@ Object.assign(App, {
 
   /** Enter saves a project field, then leaves it. */
   leaveProjectField(event, input) { event.preventDefault(); App.updateProjectField(input); input.blur(); },
-
-  // Drag destinations and mutations retain their existing behavior.
-  _ind() { return document.getElementById('dropInd'); },
-  _mkInd(absolute) {
-    let el = App._ind();
-    if (!el) { el = document.createElement('div'); el.id = 'dropInd'; el.className = 'drop-ind'; }
-    el.style.cssText = absolute ? 'position:absolute;left:0;right:0;margin:0;z-index:8' : '';
-    el.classList.toggle('track-ind', absolute);
-    return el;
-  },
-  dragEnd(animate = true) {
-    const before = animate ? motionRects('.card[data-task]') : null;
-    App._dropBefore = null; App._dropColumn = null; App._laneBefore = null;
-    App._drag = null;
-    App._dragPreview?.remove(); App._dragPreview = null;
-    const ind = App._ind(); if (ind) ind.remove();
-    document.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
-    document.querySelectorAll('.col.drop').forEach((el) => el.classList.remove('drop'));
-    document.body.classList.remove('is-dragging');
-    if (before) animateLayout(before, '.card[data-task]');
-  },
-  _dragImage(ev, source, compact = false) {
-    const image = source.cloneNode(true);
-    image.removeAttribute('data-task'); image.removeAttribute('data-track');
-    image.removeAttribute('data-reorderable'); image.setAttribute('aria-hidden', 'true'); image.inert = true;
-    image.classList.add('drag-preview');
-    const r = source.getBoundingClientRect();
-    image.style.cssText = `position:fixed;left:-10000px;top:0;width:${compact ? 240 : r.width}px;height:auto;`;
-    if (compact) image.querySelectorAll('.head-ctl').forEach((el) => el.remove());
-    document.body.appendChild(image);
-    App._dragPreview = image;
-    ev.dataTransfer.setDragImage(image, compact ? 24 : ev.clientX - r.left, compact ? 20 : ev.clientY - r.top);
-  },
   taskDragStart(ev, id) {
     clearFilterMotion();
     if (!App.require('manage_board')) { ev.preventDefault(); return; }
@@ -2347,98 +2321,6 @@ Object.assign(App, {
 });
 window.App = App;
 export { App };
-
-// Pointer gestures share the existing destination, optimistic-save and rollback
-// paths. Touch/pen start on grips so the rest of the Board remains scrollable.
-// The click that ends a drag is not a click on the card. Some browsers send
-// it only after the drop has redrawn the Board, however long that takes, so
-// a drag that started swallows the next click; the next press forgets it.
-let pointerDrag = null, suppressDragClick = false;
-function pointerEvent(event, currentTarget) {
-  const drag = pointerDrag;
-  return {target:drag.source,currentTarget,clientX:drag.x,clientY:drag.y,
-    dataTransfer:drag.transfer,preventDefault:()=>event?.preventDefault()};
-}
-function updatePointerTarget() {
-  const drag = pointerDrag; if (!drag?.started || !App._drag) return;
-  const hit = document.elementFromPoint(drag.x,drag.y);
-  const target = hit?.closest(drag.kind === 'task' ? '.col[data-col]' : '.lane[data-track]');
-  if (drag.target && drag.target !== target) {
-    drag.target.classList.remove('drop'); App._ind()?.remove(); App._dropBefore=null; App._laneBefore=null;
-  }
-  drag.target = target;
-  if (target) {
-    if (drag.kind === 'task') App.colOver(pointerEvent(null,target));
-    else App.laneOver(pointerEvent(null,target));
-  }
-  const preview=App._dragPreview;
-  if (preview) { preview.style.left=(drag.x-drag.offsetX)+'px'; preview.style.top=(drag.y-drag.offsetY)+'px'; }
-}
-function pointerScroll() {
-  const drag=pointerDrag;if(!drag?.started)return;
-  if(!drag.source.isConnected || !App._drag){finishPointerDrag(false);return;}
-  const speed=(value,min,max)=>value<min+40?-Math.min(18,(min+40-value)/3):value>max-40?Math.min(18,(value-max+40)/3):0;
-  const viewport=document.querySelector(drag.kind==='task'?'.board':'.rm-scroll');
-  if(viewport){const rect=viewport.getBoundingClientRect();viewport.scrollLeft+=speed(drag.x,rect.left,rect.right);if(drag.kind==='track')viewport.scrollTop+=speed(drag.y,rect.top,rect.bottom);}
-  const list=drag.target?.querySelector('.col-cards');
-  if(list){const rect=list.getBoundingClientRect();list.scrollTop+=speed(drag.y,rect.top,rect.bottom);}
-  updatePointerTarget();drag.frame=requestAnimationFrame(pointerScroll);
-}
-function finishPointerDrag(commit,event) {
-  const drag=pointerDrag;if(!drag)return;
-  cancelAnimationFrame(drag.frame);
-  if(drag.started){
-    suppressDragClick=true;
-    if(commit && drag.source.isConnected){
-      updatePointerTarget();
-      if(drag.target && App._drag){
-        if(drag.kind==='task')App.dropTask(pointerEvent(event,drag.target),drag.target.dataset.col);
-        else App.trackDrop(pointerEvent(event,drag.target),drag.target.dataset.track);
-      }
-    }
-    App.dragEnd(false);
-  }
-  pointerDrag=null;
-  if(drag.source.hasPointerCapture?.(drag.pointerId))drag.source.releasePointerCapture(drag.pointerId);
-}
-document.addEventListener('pointerdown',event=>{
-  suppressDragClick=false;
-  if(!event.isPrimary){if(pointerDrag)finishPointerDrag(false);return;}
-  if(event.button!==0 || pointerDrag || state.modal || state.peek || state.menu) return;
-  const grip=event.target.closest('.grip'),card=event.target.closest('.card[data-task]');
-  const kind=grip?'track':card?'task':null;
-  if(!kind || (kind==='track'?!canRoadmap():!canBoard()))return;
-  if(!grip && event.target.closest('button,a,input,textarea') && !event.target.closest('.card-move,.card-title-button'))return;
-  if(!grip && ['touch','pen'].includes(event.pointerType) && !event.target.closest('.card-move'))return;
-  const source=grip||card,rect=(grip?grip.closest('.lane').querySelector('.lane-head'):card).getBoundingClientRect();
-  const values=new Map();
-  pointerDrag={source,kind,id:grip?grip.closest('.lane').dataset.track:card.dataset.task,pointerId:event.pointerId,
-    x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,offsetX:grip?24:event.clientX-rect.left,offsetY:grip?20:event.clientY-rect.top,
-    transfer:{setData:(key,value)=>values.set(key,value),getData:key=>values.get(key),get types(){return [...values.keys()];},setDragImage(){}},started:false,target:null,frame:0};
-});
-document.addEventListener('pointermove',event=>{
-  const drag=pointerDrag;if(!drag || drag.pointerId!==event.pointerId)return;
-  if(!drag.source.isConnected){finishPointerDrag(false);return;}
-  drag.x=event.clientX;drag.y=event.clientY;
-  if(!drag.started){
-    if(Math.hypot(drag.x-drag.startX,drag.y-drag.startY)<6)return;
-    const synthetic=pointerEvent(event,drag.source);
-    if(drag.kind==='task')App.taskDragStart(synthetic,drag.id);else App.trackDragStart(synthetic,drag.id);
-    if(!App._drag){pointerDrag=null;return;}
-    drag.started=true;drag.source.setPointerCapture?.(drag.pointerId);
-    drag.frame=requestAnimationFrame(pointerScroll);
-  }
-  event.preventDefault();updatePointerTarget();
-},{passive:false});
-document.addEventListener('pointerup',event=>{if(pointerDrag?.pointerId===event.pointerId)finishPointerDrag(true,event);},true);
-document.addEventListener('pointercancel',event=>{if(pointerDrag?.pointerId===event.pointerId)finishPointerDrag(false);},true);
-document.addEventListener('lostpointercapture',event=>{if(pointerDrag?.pointerId===event.pointerId && event.target===pointerDrag.source && !pointerDrag.source.hasPointerCapture?.(event.pointerId))finishPointerDrag(false);},true);
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&pointerDrag){event.preventDefault();event.stopImmediatePropagation();finishPointerDrag(false);}},true);
-window.addEventListener('blur',()=>finishPointerDrag(false));
-document.addEventListener('click',event=>{if(event.detail>0 && suppressDragClick){suppressDragClick=false;event.preventDefault();event.stopImmediatePropagation();}},true);
-// Native HTML dragging would steal the pointer stream. Retain callable legacy
-// handlers only as a compatibility surface for the shared mutation model.
-document.addEventListener('dragstart',event=>{if(event.target.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);
 
 // ---------- global listeners ----------
 function resolveRoute() {
