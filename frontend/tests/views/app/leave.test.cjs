@@ -244,18 +244,21 @@ test('Back saves a field that saves itself before the page changes, and does not
   assert.deepEqual(t.commands.map(command => [command.operation, command.payload.description]), [['task.update', 'Typed before Back']]);
 });
 
-test('Back with typed text puts the address back and asks; Discard then goes without asking again', async () => {
+test('Back with typed text puts the address back and asks, also through a redraw; Discard then goes without asking again', async () => {
   const t = bootApp({ route: 'roadmap' });
   t.A.nav('board'); await settle();
   t.A.openTask('BIR-079'); await settle();
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   await back(t);
+  await waitFor(() => ask(t) && t.w.location.hash === '#/task/BIR-079', 'the address shows the page that still shows, and oneloop asks');
   assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
-  await waitFor(() => t.w.location.hash === '#/task/BIR-079', 'the address shows the page that still shows');
+  // A connection change or a live update redraws the page while it asks.
+  t.A.refresh();
+  assert(ask(t), 'a redraw keeps the question open');
   t.d.querySelector('[data-confirm-cancel]').click();
   assert.equal(t.A.context().view, 'task'); assert.equal(t.d.getElementById('cmtIn').value, 'Half a thought');
   await back(t);
-  assert(ask(t));
+  await waitFor(() => ask(t), 'Back asks again');
   t.d.querySelector('[data-confirm-accept]').click();
   await waitFor(() => t.A.context().view !== 'task', 'Discard leaves the task');
   assert.equal(ask(t), null, 'Discard asks once');

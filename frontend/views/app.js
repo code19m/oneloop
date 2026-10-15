@@ -799,8 +799,8 @@ function setLocalHash(hash) {
 }
 /** The address Discard let through, which routes without asking again. */
 let discardedFor = null;
-/** The address Cancel stepped back to, which changes nothing. */
-let returningTo = null;
+/** The step back to the page that shows: its address, and the question it then asks. */
+let returning = null;
 /** Go to an address that the person already chose to leave typed text for. */
 function followAddress(hash) { discardedFor = new URL(hash, location.href).href; location.hash = hash; }
 /**
@@ -824,15 +824,15 @@ function mayFollowAddress(event, typed) {
       window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL }));
     });
   } else {
-    // Back or Forward: step back now, so the entries keep their addresses.
-    returningTo = oldURL;
+    // Back or Forward: step back first, so the entries keep their addresses,
+    // and ask once the address shows the page again, as a redraw expects.
+    returning = { url:oldURL, ask:() => askToDiscard(() => { discardedFor = newURL; history.go(steps); }) };
     history.go(-steps);
-    askToDiscard(() => { discardedFor = newURL; history.go(steps); });
   }
   return false;
 }
 window.addEventListener('hashchange',(event)=>{
-  if(event.newURL===returningTo){returningTo=null;event.stopImmediatePropagation();return;}
+  if(event.newURL===returning?.url){const {ask}=returning;returning=null;event.stopImmediatePropagation();ask();return;}
   // Local navigation already painted its destination. Consume only that
   // exact history event, so external hashes and Back/Forward still route.
   const index=locallyRenderedHashes.indexOf(event.newURL);
