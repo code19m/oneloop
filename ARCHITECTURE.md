@@ -116,8 +116,8 @@ small hints over SSE, and clients then fetch what changed.
   planner statistics, empties deleted comments and clears old archived Inbox
   items, each job on its own timer.
 - `blocking.rs`: lanes that bound blocking work, such as file scans, image
-  decodes and Knowledge searches. `disk.rs`: admission of new bytes against
-  the free-space floor.
+  decodes and Knowledge searches, and one place per person in a lane's
+  queue. `disk.rs`: admission of new bytes against the free-space floor.
 - `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
   timezone, with rules from the server's zoneinfo when it is at least as new as
   the IANA database built into oneloop.
