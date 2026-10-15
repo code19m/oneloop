@@ -525,7 +525,7 @@ impl OneloopMcp {
             return Ok(Json(serde_json::to_value(page).map_err(internal_error)?));
         }
         if input.cursor.is_some() {
-            return Err(ToolError::invalid_params("cursor requires a status", None));
+            return Err(ToolError::invalid_arguments("cursor requires a status"));
         }
         let mut pages = serde_json::Map::new();
         for status in [
@@ -662,7 +662,7 @@ impl OneloopMcp {
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported ordinary work operation";
         let operation = DomainOperation::parse(&input.operation)
-            .ok_or_else(|| ToolError::invalid_params(UNSUPPORTED, None))?;
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
         require_route(McpTool::Work, operation.mcp_route(), UNSUPPORTED)?;
         let result = self
             .state
@@ -698,7 +698,7 @@ impl OneloopMcp {
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported discussion or Inbox operation";
         let operation = CollaborationOperation::parse(&input.operation)
-            .ok_or_else(|| ToolError::invalid_params(UNSUPPORTED, None))?;
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
         require_route(McpTool::Discussion, operation.mcp_route(), UNSUPPORTED)?;
         let actor = actor(&parts)?;
         let result = self
@@ -762,7 +762,7 @@ impl OneloopMcp {
         }
 
         let operation = DomainOperation::parse(&input.operation)
-            .ok_or_else(|| ToolError::invalid_params(UNSUPPORTED, None))?;
+            .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
         require_route(McpTool::Destructive, operation.mcp_route(), UNSUPPORTED)?;
         let result = self
             .state
@@ -1165,9 +1165,6 @@ impl ToolError {
     fn invalid_arguments(message: &'static str) -> Self {
         Self::Application(AppError::validation("arguments", message))
     }
-    fn invalid_params(message: &'static str, _: Option<Value>) -> Self {
-        Self::invalid_arguments(message)
-    }
     fn invalid_request(message: &'static str) -> Self {
         Self::Protocol(ErrorData::invalid_request(message, None))
     }
@@ -1326,7 +1323,7 @@ fn require_route(
         (_, McpRoute::Undo) => UNDO_IS_BROWSER_ONLY,
         (_, McpRoute::Administration) => "administrative operations are not exposed through MCP",
     };
-    Err(ToolError::invalid_params(message, None))
+    Err(ToolError::invalid_arguments(message))
 }
 
 fn strip_numeric_formats_map(map: &mut serde_json::Map<String, Value>) {
