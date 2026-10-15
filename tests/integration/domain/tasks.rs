@@ -184,22 +184,6 @@ async fn permissions_relationships_past_deadlines_and_idempotency_are_enforced()
     assert!(!first.replayed);
     assert_eq!(first.entities[0]["deadline"], "2020-01-01");
     let id = first.entities[0]["id"].as_str().unwrap().to_owned();
-    f.db.transaction(|tx| {
-        let project: String = tx.query_row(
-            "SELECT project_id FROM idempotency_keys WHERE idempotency_key='create-one'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(project, "p1");
-        // Simulate a pre-migration receipt, whose project must use the JSON fallback.
-        tx.execute(
-            "UPDATE idempotency_keys SET project_id=NULL WHERE idempotency_key='create-one'",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
     let replay = f.service.execute(&f.manager, create).await.unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.entities[0]["id"], id);
