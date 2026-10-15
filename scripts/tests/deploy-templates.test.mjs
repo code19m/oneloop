@@ -53,7 +53,8 @@ test('the launchd plist is well-formed XML', t => {
 // example compresses each one.
 test('the image build and the nginx example name every web client folder', () => {
   const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
-  const folders = JSON.parse(read('src/http/assets.rs').match(/const ASSET_DIRS: \[&str; \d+\] = (\[.*\]);/)[1]).sort();
+  const list = read('src/http/assets.rs').match(/const ASSET_DIRS: \[&str; \d+\] = \[([^\]]*)\]/)[1];
+  const folders = [...list.matchAll(/"(\w+)"/g)].map(match => match[1]).sort();
   const sent = [...read('.dockerignore').matchAll(/^!frontend\/(\w+)\/\*\*$/gm)].map(match => match[1]);
   assert.deepEqual(sent.sort(), folders, '.dockerignore');
   const compressed = read('deploy/nginx/oneloop.conf.example').match(/\(\?:([\w|]+)\)\//)[1].split('|');

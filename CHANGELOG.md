@@ -16,11 +16,11 @@ All notable changes to oneloop are recorded here. The format follows
   folders or left-out files, and many deep subfolders could make search use
   gigabytes of memory.
 - In MCP, the command tools now answer every edit and deletion without
-  `expectedRevision` with 412 `precondition_failed`, as the documentation
-  says. Before, `discussion.comment.edit` failed with 400 `validation_failed`,
-  and `execute_destructive_command` refused the call as invalid arguments.
+  `expectedRevision` with `precondition_failed`, as the documentation says.
+  Before, `discussion.comment.edit` failed with `validation_failed`, and
+  `execute_destructive_command` refused the call as invalid arguments.
   `discussion.comment.create` and the `inbox.*` operations now refuse an
-  `expectedRevision` with 400 `validation_failed`, as creating a task does.
+  `expectedRevision` with `validation_failed`, as creating a task does.
   Before, they ignored it.
 - In MCP, a `read_pool` `nextCursor` from an earlier version now fails with
   `validation_failed`, because Pool cursors have a new form. Start again from
