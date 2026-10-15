@@ -11,7 +11,7 @@ use axum::body::Body;
 use oneloop::{
     AppError, AppState, Db,
     auth::{Actor, ActorSource, token_hash},
-    collaboration::CollaborationService,
+    collaboration::{ActivityInput, CollaborationService, record_activity_tx},
     domain::{
         BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation,
         DomainService, DoneOrder,

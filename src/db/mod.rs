@@ -1,5 +1,14 @@
 //! Bounded SQLite execution with foreign keys, WAL snapshots and explicit migrations. Writes and their durable audit/outbox commit atomically.
 
+/// Tells the person running a command what maintenance found or did. Unlike
+/// `eprintln!`, it doesn't panic when nothing reads standard error.
+macro_rules! notice {
+    ($($message:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($message)*);
+    }};
+}
+
 mod backup;
 mod migration;
 
@@ -205,7 +214,7 @@ impl DataLayout {
         match file.try_lock_shared() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) => {
-                eprintln!(
+                notice!(
                     "waiting for exclusive maintenance (db migrate) to finish at {}",
                     self.root.display()
                 );
@@ -580,7 +589,7 @@ pub(crate) fn open_connection(path: &Path) -> AppResult<Connection> {
     Ok(connection)
 }
 
-pub(crate) fn configure_connection(connection: &Connection) -> AppResult<()> {
+fn configure_connection(connection: &Connection) -> AppResult<()> {
     connection.set_prepared_statement_cache_capacity(64);
     connection.create_scalar_function(
         "oneloop_lower",
@@ -735,7 +744,7 @@ fn warn_public_permissions(path: &Path) -> AppResult<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
-            eprintln!(
+            notice!(
                 "warning: {} has group/other permissions; keep instance data private to the service account",
                 path.display()
             );
@@ -805,6 +814,29 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
 }
 
 use rusqlite::OptionalExtension;
+
+/// Test support: a migrated database in a new temporary folder.
+#[cfg(test)]
+pub(crate) fn test_database() -> (tempfile::TempDir, Connection) {
+    let root = tempfile::tempdir_in("target").expect("temporary folder");
+    migrate(root.path(), None).expect("migrated test database");
+    let connection = open_connection(&root.path().join(DATABASE_FILE)).expect("test database");
+    (root, connection)
+}
+
+/// Test support: the plan SQLite chooses for `sql`, one step per line.
+#[cfg(test)]
+pub(crate) fn query_plan(connection: &Connection, sql: &str) -> String {
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("statement to explain");
+    let parameters = vec![rusqlite::types::Value::Null; statement.parameter_count()];
+    statement
+        .query_map(rusqlite::params_from_iter(parameters), |row| row.get(3))
+        .and_then(|steps| steps.collect::<Result<Vec<String>, _>>())
+        .expect("query plan")
+        .join("\n")
+}
 
 #[cfg(test)]
 mod tests;

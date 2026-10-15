@@ -11,8 +11,6 @@ mod service;
 mod types;
 
 pub use models::*;
-pub use reads::{
-    BoardQuery, BoardViewQuery, BootstrapQuery, PageQuery, PoolQuery, ProjectReadQuery,
-};
+pub use reads::{BoardQuery, BoardViewQuery, BootstrapQuery, PageQuery, PoolQuery};
 pub use service::DomainService;
 pub use types::*;

@@ -58,9 +58,6 @@ pub(crate) enum RevisionRule {
     /// It changes a record, so a revision is required. A missing one fails the
     /// precondition (412).
     Existing,
-    /// Like `Existing`, but a missing revision is invalid input (400), which
-    /// discussion commands have always answered.
-    ExistingInput,
     /// A revision is optional.
     Optional,
     /// It changes no record that has a revision, so a revision is refused.
@@ -73,9 +70,6 @@ impl RevisionRule {
             (Self::Existing, None) => Err(AppError::PreconditionFailed(
                 "expectedRevision is required for changes to existing records".into(),
             )),
-            (Self::ExistingInput, None) => {
-                Err(AppError::validation("expectedRevision", "is required"))
-            }
             (Self::Create, Some(_)) => Err(AppError::validation(
                 "expectedRevision",
                 "must be omitted when creating a new record",

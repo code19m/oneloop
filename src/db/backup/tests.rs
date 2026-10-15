@@ -125,37 +125,6 @@ fn pinned_original_survives_deletion_and_manifest_preflight_fails_early() {
     );
 }
 
-#[test]
-#[ignore = "manual 100,000-file filesystem scale regression"]
-fn validate_a_hundred_thousand_file_manifest_above_old_limit() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    let live = root.path().join("live");
-    migration::migrate(&live, None).unwrap();
-    let backup = root.path().join("backup");
-    create_backup(&live, &backup).unwrap();
-    let mut manifest = validate_backup(&backup).unwrap();
-    let empty = root.path().join("empty");
-    fs::write(&empty, []).unwrap();
-    let checksum = hex::encode(Sha256::digest([]));
-    for shard in 0..100 {
-        fs::create_dir_all(backup.join(format!("data/files/{shard:02}/ab"))).unwrap();
-        for leaf in 0..1000 {
-            let path = format!("data/files/{shard:02}/ab/{leaf:048x}");
-            fs::hard_link(&empty, backup.join(&path)).unwrap();
-            manifest.files.push(BackupFile {
-                path,
-                size_bytes: 0,
-                sha256: checksum.clone(),
-            });
-        }
-    }
-    manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
-    fs::remove_file(backup.join(MANIFEST_FILE)).unwrap();
-    write_manifest(&backup, &manifest).unwrap();
-    assert!(fs::metadata(backup.join(MANIFEST_FILE)).unwrap().len() > 16 * 1024 * 1024);
-    assert_eq!(validate_backup(&backup).unwrap().files.len(), 100_001);
-}
-
 /// The ID of a process that has exited, as an interrupted backup's would be.
 fn exited_pid() -> u32 {
     let mut child = std::process::Command::new("true").spawn().unwrap();

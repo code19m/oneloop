@@ -39,7 +39,7 @@ impl CollaborationOperation {
     pub(crate) fn revision_rule(self) -> RevisionRule {
         match self {
             Self::EditComment | Self::DeleteComment | Self::RestoreComment => {
-                RevisionRule::ExistingInput
+                RevisionRule::Existing
             }
             Self::CreateComment
             | Self::MarkRead

@@ -13,16 +13,12 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::{
-    sync::mpsc,
-    time::{Duration, MissedTickBehavior, interval},
-};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 
 use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
-    collaboration::{ActivityPage, CommentPage, InboxFilter, InboxPage},
+    collaboration::{ActivityPage, CommentPage, InboxFilter, InboxPage, LiveEvent},
 };
 
 pub(crate) fn router() -> Router<AppState> {
@@ -53,14 +49,12 @@ async fn comments(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
     ApiQuery(query): ApiQuery<PageQuery>,
-) -> AppResult<Json<serde_json::Value>> {
-    let service = state.collaboration.clone();
-    let page = service
+) -> AppResult<Json<CommentPage>> {
+    state
+        .collaboration
         .comments(&actor, &task_id, query.cursor.as_deref(), query.limit)
-        .await?;
-    Ok(Json(
-        serde_json::to_value(page).unwrap_or_else(|_| json!({"items":[]})),
-    ))
+        .await
+        .map(Json)
 }
 
 async fn comment_context(
@@ -68,13 +62,11 @@ async fn comment_context(
     State(state): State<AppState>,
     Path((task_id, comment_id)): Path<(String, String)>,
 ) -> AppResult<Json<CommentPage>> {
-    Ok(Json(
-        state
-            .collaboration
-            .clone()
-            .comment_context(&actor, &task_id, &comment_id)
-            .await?,
-    ))
+    state
+        .collaboration
+        .comment_context(&actor, &task_id, &comment_id)
+        .await
+        .map(Json)
 }
 
 async fn block_context(
@@ -82,13 +74,11 @@ async fn block_context(
     State(state): State<AppState>,
     Path((task_id, block_id)): Path<(String, String)>,
 ) -> AppResult<Json<ActivityPage>> {
-    Ok(Json(
-        state
-            .collaboration
-            .clone()
-            .block_context(&actor, &task_id, &block_id)
-            .await?,
-    ))
+    state
+        .collaboration
+        .block_context(&actor, &task_id, &block_id)
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -105,18 +95,17 @@ async fn activity(
     Path(project_id): Path<String>,
     ApiQuery(query): ApiQuery<ActivityQuery>,
 ) -> AppResult<Json<ActivityPage>> {
-    let service = state.collaboration.clone();
-    Ok(Json(
-        service
-            .activity(
-                &actor,
-                &project_id,
-                query.task_id.as_deref(),
-                query.cursor.as_deref(),
-                query.limit,
-            )
-            .await?,
-    ))
+    state
+        .collaboration
+        .activity(
+            &actor,
+            &project_id,
+            query.task_id.as_deref(),
+            query.cursor.as_deref(),
+            query.limit,
+        )
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -143,12 +132,11 @@ async fn inbox(
         unread_only: query.unread_only,
         archived: query.archived,
     };
-    let service = state.collaboration.clone();
-    Ok(Json(
-        service
-            .inbox(&actor, filter, query.cursor.as_deref(), query.limit)
-            .await?,
-    ))
+    state
+        .collaboration
+        .inbox(&actor, filter, query.cursor.as_deref(), query.limit)
+        .await
+        .map(Json)
 }
 
 #[derive(Default, Deserialize)]
@@ -187,123 +175,50 @@ async fn events(
     }) {
         return Err(AppError::validation("cursor", "invalid snapshot cursor"));
     }
-    let user_id = actor.user_id.clone();
-    let service = state.collaboration.clone();
-    let runtime = state.collaboration_runtime;
-    let mut updates = runtime.subscribe();
-    // Subscribe before checking the snapshot boundary. Later writes are then
-    // queued for this stream even if they commit before its first event is sent.
-    let matches_snapshot = if let Some(cursor) = query.cursor {
-        state.domain.sync_cursor(&actor).await? == cursor
-    } else {
-        false
-    };
-    // One person's streams can't take more than a few connections.
-    let stream = runtime.open_stream(&user_id);
-    let mut shutdown = runtime.shutdown_receiver();
-    let (sender, receiver) = mpsc::channel::<Result<Event, Infallible>>(64);
-    tokio::spawn(async move {
-        let pump = async {
-            let kind = if matches_snapshot {
-                "ready"
-            } else {
-                "reconcile"
-            };
-            // An event stream can't name its person in a header, so its first
-            // event says whose it is: a page showing someone else ends there.
-            let initial = Event::default()
-                .event(kind)
-                .data(json!({"kind":kind,"after":resume,"userId":user_id}).to_string());
-            if sender.send(Ok(initial)).await.is_err() {
-                return;
+    let events = state
+        .collaboration_runtime
+        .live_updates(&actor, query.cursor)
+        .await?;
+    let user_id = actor.user_id;
+    let events = events.map(move |event| {
+        Ok::<_, Infallible>(match event {
+            LiveEvent::Start { ready } => {
+                let kind = if ready { "ready" } else { "reconcile" };
+                // An event stream can't name its person in a header, so its
+                // first event says whose it is: a page showing someone else
+                // ends there.
+                let data = json!({"kind":kind,"after":resume,"userId":user_id});
+                Event::default().event(kind).data(data.to_string())
             }
-            let mut revalidate = interval(Duration::from_secs(30));
-            revalidate.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            revalidate.tick().await;
-            loop {
-                tokio::select! {
-                    _ = revalidate.tick() => {
-                        // Revalidation keeps authorization current. A successful check is
-                        // intentionally quiet: the initial/reconnect event and lag recovery
-                        // already trigger reconciliation, while a periodic event would make
-                        // every healthy browser reload its projections every 30 seconds.
-                        let _permit = runtime.authorization_permit().await;
-                        if !service.actor_is_current(&actor).await.unwrap_or(false) { break; }
-                    }
-                    message = updates.recv() => {
-                        match message {
-                            Ok(hint) => {
-                                if sender.is_closed() { break; }
-                                if !hint.recipient_ids.contains(&user_id) { continue; }
-                                let _permit = runtime.authorization_permit().await;
-                                if hint.kind == "access.changed" {
-                                    if !service.actor_is_current(&actor).await.unwrap_or(false) { break; }
-                                    drop(_permit);
-                                    let event = Event::default().event("reconcile").data("{\"kind\":\"reconcile\"}");
-                                    if sender.send(Ok(event)).await.is_err() { break; }
-                                    continue;
-                                }
-                                match service.actor_can_receive(&actor, hint.project_id.as_deref()).await {
-                                    Ok(true) => {},
-                                    Ok(false) => continue,
-                                    // Under temporary database pressure, reconnect and
-                                    // reconcile instead of silently losing this hint.
-                                    Err(_) => break,
-                                }
-                                drop(_permit);
-                                let data = json!({
-                                    "kind":hint.kind,
-                                    "projectId":hint.project_id,
-                                    "taskId":hint.task_id,
-                                    "entityType":hint.entity_type,
-                                    "entityId":hint.entity_id,
-                                    "entityRevision":hint.entity_revision,
-                                    "notificationId":hint.notification_id,
-                                });
-                                let event = Event::default().id(hint.id.clone()).event("hint").data(data.to_string());
-                                if sender.send(Ok(event)).await.is_err() { break; }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                let _permit = runtime.authorization_permit().await;
-                                if !service.actor_is_current(&actor).await.unwrap_or(false) { break; }
-                                drop(_permit);
-                                let event = Event::default().event("reconcile").data("{\"kind\":\"reconcile\"}");
-                                if sender.send(Ok(event)).await.is_err() { break; }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
+            LiveEvent::Reconcile => Event::default()
+                .event("reconcile")
+                .data(r#"{"kind":"reconcile"}"#),
+            LiveEvent::Hint(hint) => {
+                let data = json!({
+                    "kind":hint.kind,
+                    "projectId":hint.project_id,
+                    "taskId":hint.task_id,
+                    "entityType":hint.entity_type,
+                    "entityId":hint.entity_id,
+                    "entityRevision":hint.entity_revision,
+                    "notificationId":hint.notification_id,
+                });
+                Event::default()
+                    .id(hint.id.clone())
+                    .event("hint")
+                    .data(data.to_string())
             }
-        };
-        // Dropping a body cancels even an authorization wait or blocked send.
-        let replaced = tokio::select! {
-            biased;
-            _ = sender.closed() => false,
-            _ = async {
-                while !*shutdown.borrow_and_update() {
-                    if shutdown.changed().await.is_err() { break; }
-                }
-            } => false,
-            _ = stream.replaced() => true,
-            _ = pump => false,
-        };
-        drop(stream);
-        if replaced {
-            // The person opened too many newer streams. The tab waits until it
-            // is used again before it reconnects, so tabs don't take turns.
-            let event = Event::default()
+            LiveEvent::Replaced => Event::default()
                 .event("replaced")
-                .data("{\"kind\":\"replaced\"}");
-            let _ = sender.try_send(Ok(event));
-        }
+                .data(r#"{"kind":"replaced"}"#),
+        })
     });
     Ok((
         [
             ("x-accel-buffering", "no"),
             (header::CACHE_CONTROL.as_str(), "no-cache, no-transform"),
         ],
-        Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default()),
+        Sse::new(events).keep_alive(KeepAlive::default()),
     ))
 }
 

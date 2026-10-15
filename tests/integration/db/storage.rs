@@ -197,27 +197,3 @@ fn fresh_database_sidecars_locks_and_restores_are_private() {
         );
     }
 }
-
-#[tokio::test]
-#[ignore = "manual local disk commit-latency measurement"]
-async fn measure_fullfsync_commit_latency() {
-    let root = support::scratch_dir();
-    let db = initialize(&root);
-    db.run(|connection| {
-        for enabled in [false, true] {
-            connection.pragma_update(None, "fullfsync", enabled)?;
-            connection.pragma_update(None, "checkpoint_fullfsync", enabled)?;
-            let mut samples = vec![];
-            for i in 0..200 {
-                let start = std::time::Instant::now();
-                let tx = connection.transaction()?;
-                tx.execute("INSERT INTO app_metadata VALUES('sync-latency',?1,1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [i.to_string()])?;
-                tx.commit()?;
-                samples.push(start.elapsed().as_secs_f64() * 1000.0);
-            }
-            samples.sort_by(f64::total_cmp);
-            println!("fullfsync={enabled}: 200 commits, p50={:.3}ms p95={:.3}ms", samples[100], samples[190]);
-        }
-        Ok(())
-    }).await.unwrap();
-}

@@ -18,8 +18,8 @@ use crate::{
     auth::Actor,
     collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
-        BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
-        ProjectView, UserView,
+        BoardQuery, BoardViewQuery, CommandEnvelope, DomainOperation, DoneOrder, PageQuery,
+        PoolQuery,
     },
     files::{AttachmentPatch, AttachmentReorder},
 };
@@ -374,29 +374,18 @@ impl OneloopMcp {
     )]
     async fn identity(&self, Extension(parts): Extension<Parts>) -> Result<Json<Value>, ToolError> {
         let actor = actor(&parts)?;
-        let grant = actor
-            .mcp_grant_id()
-            .ok_or_else(|| tool_error(AppError::Unauthorized))?
-            .to_owned();
-        let user_id = actor.user_id.clone();
-        let projects = discover_projects(&self.state, &actor)
-            .await
-            .map_err(tool_error)?
-            .into_iter()
-            .map(|project| project.id)
-            .collect::<Vec<_>>();
-        let scopes = grant_scopes(&self.state, &grant)
-            .await
-            .map_err(tool_error)?;
-        let value = json!({
-        "user":{"id":user_id,
-        "username":actor.username,
-        "displayName":actor.display_name,
-        "isAdmin":actor.is_admin},
-        "projectIds":projects,
-        "scopes":scopes
-        });
-        Ok(Json(value))
+        let scopes = self.state.auth.grant_scopes(&actor).await?;
+        let projects = self.state.domain.projects(&actor).await?;
+        json(json!({
+            "user": {
+                "id": actor.user_id,
+                "username": actor.username,
+                "displayName": actor.display_name,
+                "isAdmin": actor.is_admin,
+            },
+            "projectIds": projects.into_iter().map(|project| project.id).collect::<Vec<_>>(),
+            "scopes": scopes,
+        }))
     }
 
     #[tool(
@@ -411,22 +400,17 @@ impl OneloopMcp {
     )]
     async fn projects(&self, Extension(parts): Extension<Parts>) -> Result<Json<Value>, ToolError> {
         let actor = actor(&parts)?;
-        let mut projects = discover_projects(&self.state, &actor)
-            .await
-            .map_err(tool_error)?;
-        let grant = actor
-            .mcp_grant_id()
-            .ok_or_else(|| tool_error(AppError::Unauthorized))?;
-        let scopes = grant_scopes(&self.state, grant).await.map_err(tool_error)?;
-        intersect_project_capabilities(&mut projects, &scopes);
-        Ok(Json(json!({
-        "projects":projects,
-        "scopes":scopes,
-        "currentUser":{"id":actor.user_id,
-        "username":actor.username,
-        "displayName":actor.display_name},
-        "timeZone":self.state.config.timezone.name()
-        })))
+        let scopes = self.state.auth.grant_scopes(&actor).await?;
+        json(json!({
+            "projects": self.state.domain.projects(&actor).await?,
+            "scopes": scopes,
+            "currentUser": {
+                "id": actor.user_id,
+                "username": actor.username,
+                "displayName": actor.display_name,
+            },
+            "timeZone": self.state.config.timezone.name(),
+        }))
     }
 
     #[tool(
@@ -444,38 +428,19 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<ProjectInput>,
     ) -> Result<Json<Value>, ToolError> {
-        let project_id = input.project_id;
         let actor = actor(&parts)?;
-        self.state
-            .auth
-            .require_project_read(&actor, &project_id)
-            .await
-            .map_err(tool_error)?;
-        let mut projects = discover_projects(&self.state, &actor)
-            .await
-            .map_err(tool_error)?;
-        let grant = actor
-            .mcp_grant_id()
-            .ok_or_else(|| tool_error(AppError::Unauthorized))?;
-        let scopes = grant_scopes(&self.state, grant).await.map_err(tool_error)?;
-        intersect_project_capabilities(&mut projects, &scopes);
-        let project = projects
-            .into_iter()
-            .find(|project| project.id == project_id)
-            .ok_or_else(|| {
-                tool_error(AppError::NotFound {
-                    resource: "project",
-                })
-            })?;
-        let (memberships, users) = project_members(&self.state, &actor, &project_id)
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(json!({
-            "project": project,
+        let scopes = self.state.auth.grant_scopes(&actor).await?;
+        let members = self
+            .state
+            .domain
+            .project_members(&actor, input.project_id)
+            .await?;
+        json(json!({
+            "project": members.project,
             "scopes": scopes,
-            "memberships": memberships,
-            "users": users,
-        })))
+            "memberships": members.memberships,
+            "users": members.users,
+        }))
     }
 
     #[tool(
@@ -517,34 +482,40 @@ impl OneloopMcp {
         Parameters(input): Parameters<SearchTasksInput>,
     ) -> Result<Json<Value>, ToolError> {
         let actor = actor(&parts)?;
-        let svc = &self.state.domain;
+        let domain = &self.state.domain;
         if let Some(status) = input.status {
-            let page = svc
-                .board_page(&actor, board_query(&input, status))
-                .await
-                .map_err(tool_error)?;
-            return Ok(Json(serde_json::to_value(page).map_err(internal_error)?));
+            return json(
+                domain
+                    .board_page(&actor, board_query(input, status))
+                    .await?,
+            );
         }
         if input.cursor.is_some() {
             return Err(ToolError::invalid_arguments("cursor requires a status"));
         }
-        let mut pages = serde_json::Map::new();
-        for status in [
-            crate::domain::TaskStatus::Planning,
-            crate::domain::TaskStatus::InProgress,
-            crate::domain::TaskStatus::InReview,
-            crate::domain::TaskStatus::Done,
-        ] {
-            let page = svc
-                .board_page(&actor, board_query(&input, status))
-                .await
-                .map_err(tool_error)?;
-            pages.insert(
-                status.as_str().into(),
-                serde_json::to_value(page).map_err(internal_error)?,
-            );
-        }
-        Ok(Json(Value::Object(pages)))
+        // One read, so a task that moves meanwhile is in exactly one column.
+        let board = domain
+            .board_view(
+                &actor,
+                BoardViewQuery {
+                    project_id: input.project_id,
+                    limit: input.limit,
+                    search: input.search,
+                    track_ids: input.track_ids,
+                    epic_ids: input.epic_ids,
+                    assignee_ids: input.assignee_ids,
+                    no_assignee: input.no_assignee,
+                    blocked: input.blocked,
+                    done_order: DoneOrder::Manual,
+                },
+            )
+            .await?;
+        json(json!({
+            "planning": board.planning,
+            "in_progress": board.in_progress,
+            "in_review": board.in_review,
+            "done": board.done,
+        }))
     }
 
     #[tool(
@@ -573,7 +544,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_epic",
-        description = "Read one epic's tasks and consolidated epic activity. Tasks and activity use independent cursors; each page is limited to at most 50 items.",
+        description = "Read one epic's tasks and consolidated epic activity. Tasks and activity use independent cursors; a task page holds at most 50 items and an activity page at most 100.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -597,14 +568,14 @@ impl OneloopMcp {
                 },
             )
             .await?;
-        let activity = service
+        let activity = self
+            .state
+            .collaboration
             .epic_activity(
                 &actor,
-                input.epic_id.clone(),
-                PageQuery {
-                    cursor: input.activity_cursor,
-                    limit: input.limit,
-                },
+                &input.epic_id,
+                input.activity_cursor.as_deref(),
+                input.limit,
             )
             .await?;
         Ok(Json(json!({
@@ -1125,19 +1096,19 @@ fn actor(parts: &Parts) -> Result<Actor, ToolError> {
         .cloned()
         .ok_or_else(|| ToolError::invalid_request("authenticated actor is missing"))
 }
-fn board_query(input: &SearchTasksInput, status: crate::domain::TaskStatus) -> BoardQuery {
+fn board_query(input: SearchTasksInput, status: crate::domain::TaskStatus) -> BoardQuery {
     BoardQuery {
-        project_id: input.project_id.clone(),
+        project_id: input.project_id,
         status,
-        cursor: input.cursor.clone(),
+        cursor: input.cursor,
         limit: input.limit,
-        search: input.search.clone(),
-        track_ids: input.track_ids.clone(),
-        epic_ids: input.epic_ids.clone(),
-        assignee_ids: input.assignee_ids.clone(),
+        search: input.search,
+        track_ids: input.track_ids,
+        epic_ids: input.epic_ids,
+        assignee_ids: input.assignee_ids,
         no_assignee: input.no_assignee,
         blocked: input.blocked,
-        done_order: crate::domain::DoneOrder::Manual,
+        done_order: DoneOrder::Manual,
     }
 }
 
@@ -1197,13 +1168,6 @@ impl rmcp::handler::server::tool::IntoCallToolResult for ToolError {
             }
         }
     }
-}
-
-fn tool_error(error: AppError) -> ToolError {
-    ToolError::Application(error)
-}
-fn internal_error(error: impl std::fmt::Display) -> ToolError {
-    tool_error(AppError::internal(error.to_string()))
 }
 
 // Inline payload schemas keep each operation self-contained and derive field names,
@@ -1364,138 +1328,6 @@ fn command_description(tool: McpTool) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!("{summary} Supported operations: {operations}.{note}")
-}
-
-fn values(
-    connection: &rusqlite::Connection,
-    table: &str,
-    column: &str,
-    grant: &str,
-) -> crate::AppResult<Vec<String>> {
-    let sql = format!("SELECT {column} FROM {table} WHERE grant_id=?1 ORDER BY {column}");
-    let mut s = connection.prepare(&sql)?;
-    Ok(s.query_map([grant], |r| r.get(0))?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-async fn grant_scopes(state: &AppState, grant: &str) -> crate::AppResult<Vec<String>> {
-    let grant = grant.to_owned();
-    state
-        .db
-        .run(move |connection| values(connection, "mcp_grant_scopes", "scope", &grant))
-        .await
-}
-
-fn intersect_project_capabilities(projects: &mut [crate::domain::ProjectView], scopes: &[String]) {
-    let board = scopes.iter().any(|scope| scope == "board_manage");
-    let roadmap = scopes.iter().any(|scope| scope == "roadmap_manage");
-    for project in projects {
-        project.manage_board &= board;
-        project.manage_roadmap &= roadmap;
-    }
-}
-
-async fn discover_projects(state: &AppState, actor: &Actor) -> crate::AppResult<Vec<ProjectView>> {
-    let grant = actor.mcp_grant_id().ok_or(AppError::Unauthorized)?;
-    let selected = {
-        let grant = grant.to_owned();
-        state
-            .db
-            .run(move |connection| values(connection, "mcp_grant_projects", "project_id", &grant))
-            .await?
-    };
-    let auth = &state.auth;
-    for project_id in &selected {
-        auth.require_project_read(actor, project_id).await?;
-    }
-    let actor = actor.clone();
-    let mut projects = state
-        .db
-        .run(move |connection| {
-            let mut projects = Vec::with_capacity(selected.len());
-            for project_id in selected {
-                let project = connection.query_row(
-                    "SELECT p.id,p.name,p.task_prefix,p.revision,
-                            CASE WHEN ?3=1 THEN 1 ELSE m.manage_roadmap END,
-                            CASE WHEN ?3=1 THEN 1 ELSE m.manage_board END
-                     FROM projects p
-                     LEFT JOIN project_memberships m ON m.project_id=p.id AND m.user_id=?2
-                     WHERE p.id=?1 AND p.deleted_at IS NULL",
-                    rusqlite::params![project_id, actor.user_id, actor.is_admin],
-                    |row| {
-                        Ok(ProjectView {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            task_prefix: row.get(2)?,
-                            revision: row.get(3)?,
-                            manage_roadmap: row.get(4)?,
-                            manage_board: row.get(5)?,
-                        })
-                    },
-                )?;
-                projects.push(project);
-            }
-            Ok(projects)
-        })
-        .await?;
-    projects.sort_by(|left, right| {
-        left.name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(projects)
-}
-
-async fn project_members(
-    state: &AppState,
-    actor: &Actor,
-    project_id: &str,
-) -> crate::AppResult<(Vec<MembershipView>, Vec<UserView>)> {
-    let project_id = project_id.to_owned();
-    let actor_id = actor.user_id.clone();
-    state
-        .db
-        .run(move |connection| {
-            let memberships = {
-                let mut statement = connection.prepare("SELECT project_id,user_id,manage_roadmap,manage_board,revision
-                     FROM project_memberships WHERE project_id=?1 ORDER BY user_id")?;
-                statement
-                    .query_map([&project_id], |row| {
-                        Ok(MembershipView {
-                            project_id: row.get(0)?,
-                            user_id: row.get(1)?,
-                            manage_roadmap: row.get(2)?,
-                            manage_board: row.get(3)?,
-                            revision: row.get(4)?,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            let users = {
-                let mut statement = connection.prepare("SELECT DISTINCT u.id,u.username,u.display_name,u.is_admin,u.is_active,u.avatar_blob_id,u.revision
-                     FROM users u LEFT JOIN project_memberships m ON m.user_id=u.id
-                     WHERE m.project_id=?1 OR u.id=?2
-                     ORDER BY u.is_active DESC,lower(u.display_name),u.id")?;
-                statement
-                    .query_map(rusqlite::params![project_id, actor_id], |row| {
-                        let id: String = row.get(0)?;
-                        let avatar: Option<String> = row.get(5)?;
-                        Ok(UserView {
-                            avatar_url: avatar.map(|blob| format!("/api/users/{id}/avatar?v={blob}")),
-                            id,
-                            username: row.get(1)?,
-                            name: row.get(2)?,
-                            is_admin: row.get(3)?,
-                            is_active: row.get(4)?,
-                            revision: row.get(6)?,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            Ok((memberships, users))
-        })
-        .await
 }
 
 fn object_output_schema() -> std::sync::Arc<serde_json::Map<String, Value>> {

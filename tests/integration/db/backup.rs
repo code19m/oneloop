@@ -380,4 +380,18 @@ fn backup_and_restore_report_partial_copies_without_removing_them() {
     assert!(String::from_utf8_lossy(&output.stderr).contains(".oneloop-restore-old"));
     assert_eq!(fs::read(partial.join("private-copy")).unwrap(), b"private");
     assert!(old_restore.exists());
+    // When nothing reads standard error, the report is lost, not the backup.
+    #[cfg(unix)]
+    {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_oneloop"))
+            .env("ONELOOP_DATA_DIR", &live)
+            .args(["backup", "create"])
+            .arg(root.path().join("unread"))
+            .stderr(writer)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
 }

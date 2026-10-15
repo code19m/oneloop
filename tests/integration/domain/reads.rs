@@ -54,7 +54,7 @@ async fn bootstrap_and_task_reads_enforce_membership_and_accept_readable_keys() 
 }
 
 #[tokio::test]
-async fn bootstrap_waits_for_delivery_and_redacts_deleted_task_context() {
+async fn notifications_wait_for_delivery_and_lose_deleted_task_context() {
     let f = fixture().await;
     let result = f.service.execute(&f.manager, command(
         DomainOperation::CreateTask,
@@ -64,22 +64,19 @@ async fn bootstrap_waits_for_delivery_and_redacts_deleted_task_context() {
     let task_id = result.entities[0]["id"].as_str().unwrap().to_owned();
     let query = || BootstrapQuery {
         project_id: Some("p1".into()),
-        task_id: None,
-        view: None,
-        done_order: Default::default(),
+        ..Default::default()
     };
+    let inbox = CollaborationService::new(f.db.clone());
+    let read_inbox = || inbox.inbox(&f.member, Default::default(), None, None);
     let pending = f.service.bootstrap(&f.member, query()).await.unwrap();
     assert_eq!(pending.inbox_unread_count, 0);
-    assert!(pending.notifications.is_empty());
+    assert!(read_inbox().await.unwrap().items.is_empty());
     let worker = oneloop::collaboration::CollaborationRuntime::new(f.db.clone()).worker();
     while worker.run_once().await.unwrap() {}
     let delivered = f.service.bootstrap(&f.member, query()).await.unwrap();
-    assert_ne!(
-        pending.sync_cursor,
-        f.service.sync_cursor(&f.member).await.unwrap()
-    );
+    assert_ne!(pending.sync_cursor, delivered.sync_cursor);
     assert_eq!(delivered.inbox_unread_count, 1);
-    assert_eq!(delivered.notifications[0]["destinationAvailable"], true);
+    assert!(read_inbox().await.unwrap().items[0].destination_available);
     f.service
         .execute(
             &f.manager,
@@ -92,20 +89,18 @@ async fn bootstrap_waits_for_delivery_and_redacts_deleted_task_context() {
         )
         .await
         .unwrap();
-    let removed = f.service.bootstrap(&f.member, query()).await.unwrap();
-    assert_eq!(removed.notifications[0]["destinationAvailable"], false);
-    for field in [
-        "projectName",
-        "taskKey",
-        "taskTitle",
-        "actorName",
-        "excerpt",
-    ] {
-        assert!(
-            removed.notifications[0][field].is_null(),
-            "{field} must be redacted"
-        );
-    }
+    let removed = read_inbox().await.unwrap().items.remove(0);
+    assert!(!removed.destination_available);
+    assert_eq!(
+        [
+            removed.project_name,
+            removed.task_key,
+            removed.task_title,
+            removed.actor_name,
+            removed.excerpt,
+        ],
+        [None, None, None, None, None]
+    );
 }
 
 #[tokio::test]
@@ -128,7 +123,13 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
         let service = DomainService::new(f.db.clone(), zone);
         service.roadmap(&f.manager, "p1".into()).await.unwrap();
         service
-            .bootstrap(&f.manager, BootstrapQuery::default())
+            .bootstrap(
+                &f.manager,
+                BootstrapQuery {
+                    view: Some("roadmap".into()),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
     }
@@ -193,7 +194,7 @@ async fn epic_task_counts_come_only_with_the_roadmap() {
             .await
             .unwrap();
         let epic = epic(&serde_json::to_value(bootstrap).unwrap()["epics"]);
-        let counted = matches!(view, None | Some("roadmap"));
+        let counted = view == Some("roadmap");
         for field in [
             "taskTotal",
             "taskDone",
@@ -354,98 +355,5 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
     ] {
         let [a, b] = errors;
         assert_eq!(response(a).await, response(b).await);
-    }
-}
-
-#[tokio::test]
-async fn maintenance_queries_use_bounded_indexes() {
-    let f = fixture().await;
-    f.db.run(|c| {
-        for (sql,index) in [
-            ("SELECT EXISTS(SELECT 1 FROM notification_events WHERE project_id='p1' AND actor_user_id='u1' AND created_at>1 AND json_extract(payload_json,'$.broadcast')=1)","notification_broadcast_lookup_idx"),
-            ("UPDATE notification_recipients SET excerpt_snapshot=NULL WHERE archived_at IS NOT NULL AND archived_at<=1 AND excerpt_snapshot IS NOT NULL","notification_archived_idx"),
-            ("SELECT created_at,COUNT(*) FROM activity_events WHERE event_type='attachment.cleaned' GROUP BY created_at ORDER BY created_at DESC LIMIT 20","activity_cleanup_time_idx"),
-        ] {
-            let mut s=c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-            let plan=s.query_map([],|r|r.get::<_,String>(3))?.collect::<Result<Vec<_>,_>>()?.join("\n");
-            assert!(plan.contains(index),"expected {index}: {plan}");
-            assert!(!plan.contains("USE TEMP B-TREE"),"{plan}");
-        }
-        Ok(())
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn legacy_bootstrap_batches_notification_availability_and_redacts_lost_access() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static READS: AtomicUsize = AtomicUsize::new(0);
-    let f = fixture().await;
-    seed_ordering_column(&f, 1).await;
-    f.db.transaction(|tx| {
-        for i in 0..50 {
-            let id=format!("legacy-{i}");
-            tx.execute("INSERT INTO notification_events(id,project_id,actor_user_id,event_type,task_id,created_at) VALUES(?1,'p1','u1','task.assigned','order-1',1)",[&id])?;
-            tx.execute("INSERT INTO notification_recipients(notification_id,user_id,project_name_snapshot,task_key_snapshot,task_title_snapshot,actor_name_snapshot,excerpt_snapshot,delivered_at) VALUES(?1,'u2','Project One','ONE-1','Private title','Manager','Private excerpt',1)",[&id])?;
-        }Ok(())
-    }).await.unwrap();
-    f.db.run(|c| {
-        c.trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(|_| {
-                READS.fetch_add(1, Ordering::Relaxed);
-            }),
-        );
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let page = f
-        .service
-        .bootstrap(&f.member, Default::default())
-        .await
-        .unwrap();
-    f.db.run(|c| {
-        c.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert_eq!(page.notifications.len(), 50);
-    assert!(
-        page.notifications
-            .iter()
-            .all(|n| n["destinationAvailable"] == true)
-    );
-    assert!(
-        READS.load(Ordering::Relaxed) < 75,
-        "availability must not query per notification"
-    );
-    f.db.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM project_memberships WHERE project_id='p1' AND user_id='u2'",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let page = f
-        .service
-        .bootstrap(&f.member, Default::default())
-        .await
-        .unwrap();
-    assert_eq!(page.notifications.len(), 50);
-    for notification in page.notifications {
-        assert_eq!(notification["destinationAvailable"], false);
-        for field in [
-            "projectId",
-            "projectName",
-            "taskId",
-            "taskTitle",
-            "actorName",
-            "excerpt",
-        ] {
-            assert!(notification[field].is_null(), "{field}");
-        }
     }
 }

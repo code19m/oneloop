@@ -532,7 +532,8 @@ async fn malformed_requests_have_field_errors_after_origin_and_authentication() 
             400,
             Some("payload"),
         ),
-        // Each command family keeps its answer to a missing or misplaced revision.
+        // A change to an existing record without its revision fails the
+        // precondition, whatever the command family.
         (
             "/api/commands",
             "POST",
@@ -566,8 +567,8 @@ async fn malformed_requests_have_field_errors_after_origin_and_authentication() 
             "http://127.0.0.1:8080",
             true,
             r#"{"operation":"discussion.comment.edit","payload":{},"idempotencyKey":"x"}"#,
-            400,
-            Some("expectedRevision"),
+            412,
+            None,
         ),
         (
             "/api/commands",

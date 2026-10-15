@@ -139,9 +139,10 @@ async fn receivers(runtime: &CollaborationRuntime, expected: usize) {
 async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shutdown() {
     let (_root, db, alice, app, runtime) = app().await;
     let cursor = DomainService::new(db.clone(), crate::support::utc())
-        .sync_cursor(&alice)
+        .bootstrap(&alice, Default::default())
         .await
-        .unwrap();
+        .unwrap()
+        .sync_cursor;
     let response = events(&app, &format!("/api/events?cursor={cursor}")).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["content-type"], "text/event-stream");
@@ -224,6 +225,21 @@ async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
         timeout(Duration::from_millis(100), body.frame())
             .await
             .is_err()
+    );
+    // Once Alice is a member again, her next hint arrives.
+    db.transaction(|tx| {
+        tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1','alice',1,1)", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    hint(&db, &alice).await;
+    runtime.worker().run_once().await.unwrap();
+    let delivered = frame(&mut body).await;
+    assert!(delivered.contains("event: hint"), "{delivered}");
+    assert!(
+        delivered.contains(r#""kind":"activity.changed""#),
+        "{delivered}"
     );
     drop(body);
     receivers(&runtime, 0).await;
@@ -361,6 +377,82 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
     for body in &mut bodies {
         assert!(frame(body).await.contains("event: hint"));
     }
+}
+
+#[tokio::test]
+async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CHECKS: AtomicUsize = AtomicUsize::new(0);
+    // Counts the project checks that hints get before a stream sends them,
+    // found by the text of `require_project`'s statement. If that text
+    // changes, this test times out instead of passing.
+    fn trace(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event
+            && sql.contains("FROM projects p JOIN users u")
+        {
+            CHECKS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let (root, db, alice, _, _) = app().await;
+    let traced = Db::open_with_pool_size(root.path(), 1).unwrap();
+    traced
+        .run(|connection| {
+            connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let config = support::config(root.path(), "https://tasks.example.test", &[]);
+    let application = oneloop::application(AppState::new(config, traced));
+    let (app, runtime) = (application.router, application.collaboration);
+    let mut oldest = events(&app, "/api/events").await.into_body();
+    frame(&mut oldest).await;
+    // More hints than the stream's queue holds, and nobody reads them.
+    let actor = alice.clone();
+    db.transaction(move |tx| {
+        for index in 0..80 {
+            record_activity_tx(
+                tx,
+                &actor,
+                ActivityInput {
+                    project_id: Some("p1"),
+                    entity_type: "task",
+                    entity_id: "task",
+                    task_id: Some("task"),
+                    event_type: "task.updated",
+                    field_key: Some("title"),
+                    before: Some(json!(index)),
+                    after: Some(json!(index + 1)),
+                    metadata: json!({}),
+                    entity_revision: Some(index + 2),
+                },
+                now(),
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    while runtime.worker().run_once().await.unwrap() {}
+    support::eventually("the stream's queue is full", async || {
+        (CHECKS.load(Ordering::SeqCst) >= 63).then_some(())
+    })
+    .await;
+    let mut newer = Vec::new();
+    for _ in 0..16 {
+        let mut body = events(&app, "/api/events").await.into_body();
+        frame(&mut body).await;
+        newer.push(body);
+    }
+    let mut last = String::new();
+    while let Some(next) = timeout(Duration::from_secs(5), oldest.frame())
+        .await
+        .unwrap()
+    {
+        last = String::from_utf8(next.unwrap().into_data().unwrap().to_vec()).unwrap();
+    }
+    assert!(last.contains("event: replaced"), "{last}");
 }
 
 #[tokio::test]

@@ -19,7 +19,6 @@ use validation::*;
 
 use std::collections::{BTreeSet, HashSet};
 
-use chrono::NaiveDate;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};

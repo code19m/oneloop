@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use oneloop::{
     auth::ActorSource,
     collaboration::{
@@ -263,6 +261,18 @@ async fn a_failing_message_waits_for_a_retry_without_holding_back_the_others() {
     assert_eq!(sent, ["a-before", "c-after"]);
     // Nothing else is ready, so the next run finds nothing to do.
     assert!(!runtime.worker().run_once().await.unwrap());
+    // When the broken message is all there is to deliver, its failure is the
+    // run's result.
+    db.run(move |connection| {
+        connection.execute(
+            "UPDATE outbox_messages SET available_at=?1 WHERE id='b-broken'",
+            [available],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(runtime.worker().run_once().await.is_err());
 }
 
 #[tokio::test]
@@ -305,29 +315,6 @@ async fn activity_hints_include_task_scope_and_revision_for_targeted_reconciliat
     assert_eq!(hint.task_id.as_deref(), Some("task"));
     assert_eq!(hint.entity_id.as_deref(), Some("task"));
     assert_eq!(hint.entity_revision, Some(2));
-}
-
-#[tokio::test]
-async fn worker_failures_schedule_a_retry() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let available = now();
-    db.run(move|connection| {
-        connection.execute(
-            r#"INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
-             VALUES('bad','domain.activity','task','one','{"projectId":123}',?1,?1)"#,[available])?;
-        Ok(())
-    }).await.unwrap();
-    let runtime = CollaborationRuntime::new(db.clone());
-    assert!(runtime.worker().run_once().await.is_err());
-    let state:(i64,i64,Option<String>,Option<i64>)=db.run(|connection|Ok(connection.query_row(
-        "SELECT attempt_count,available_at,last_error,delivered_at FROM outbox_messages WHERE id='bad'",[],
-        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
-    assert_eq!(state.0, 1);
-    assert!(state.1 > available);
-    assert!(state.2.is_some());
-    assert!(state.3.is_none());
 }
 
 #[tokio::test]
@@ -417,49 +404,6 @@ async fn inbox_state_changes_emit_one_private_hint_and_noops_stay_quiet() {
             assert!(left.notification_id.is_none());
         }
     }
-}
-
-/// Run with `cargo test --test integration large_inbox_service_latency -- --ignored --nocapture`.
-#[tokio::test]
-#[ignore = "manual 50,000-item Inbox latency measurement"]
-async fn large_inbox_service_latency() {
-    let SeededProject {
-        root: _root,
-        db,
-        bob,
-        ..
-    } = seeded_project().await;
-    let base = now();
-    db.transaction(move |tx| {
-        let mut events = tx.prepare_cached(
-            "INSERT INTO notification_events(id,project_id,actor_user_id,event_type,payload_json,created_at)
-             VALUES (?1,'p1','alice','test','{}',?2)",
-        )?;
-        let mut recipients = tx.prepare_cached(
-            "INSERT INTO notification_recipients(notification_id,user_id,project_name_snapshot,actor_name_snapshot,delivered_at)
-             VALUES (?1,'bob','Project','Alice',?2)",
-        )?;
-        for index in 0..50_000 {
-            let id = format!("event-{index:05}");
-            events.execute(rusqlite::params![id, base - index])?;
-            recipients.execute(rusqlite::params![id, base])?;
-        }
-        Ok(())
-    }).await.unwrap();
-    let service = CollaborationService::new(db);
-    let mut samples = Vec::new();
-    for _ in 0..5 {
-        let started = Instant::now();
-        let page = service
-            .inbox(&bob, InboxFilter::default(), None, None)
-            .await
-            .unwrap();
-        samples.push(started.elapsed().as_millis());
-        assert_eq!(page.items.len(), 50);
-        assert_eq!(page.filtered_count, 50_000);
-        assert!(page.next_cursor.is_some());
-    }
-    println!("50k Inbox items, first 50 actual service ms: {samples:?}");
 }
 
 #[tokio::test]
@@ -792,34 +736,18 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
             rusqlite::params![now() - 91 * 86_400, notification_id])?;
         Ok(())
     }).await.unwrap();
-    let expired = service
-        .inbox(
-            &bob,
-            InboxFilter {
-                archived: true,
-                ..InboxFilter::default()
-            },
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(expired.filtered_count, 0);
     for purge in [false, true] {
         if purge {
             assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
         }
-        let bootstrap = oneloop::domain::DomainService::new(db.clone(), crate::support::utc())
-            .bootstrap(&bob, Default::default())
-            .await
-            .unwrap();
-        assert_eq!(bootstrap.notifications.len(), 1, "purge={purge}");
-        assert!(
-            bootstrap
-                .notifications
-                .iter()
-                .all(|item| item["id"] != expired_id)
-        );
+        for (archived, shown) in [(false, 1), (true, 0)] {
+            let filter = InboxFilter {
+                archived,
+                ..InboxFilter::default()
+            };
+            let page = service.inbox(&bob, filter, None, None).await.unwrap();
+            assert_eq!(page.items.len(), shown, "purge={purge} archived={archived}");
+        }
         for operation in [
             "inbox.restore",
             "inbox.archive",
@@ -1231,62 +1159,6 @@ async fn runtime_shutdown_notifies_long_lived_streams_immediately() {
 }
 
 #[tokio::test]
-async fn activity_pages_use_bounded_project_and_task_feed_indexes() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let plans = db
-        .run(|connection| {
-            let mut result = Vec::new();
-            for sql in [
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND is_hidden=0 AND visibility='public'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND task_id='task' AND is_hidden=0 AND visibility='public'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND private_owner_user_id='alice'
-                   AND is_hidden=0 AND visibility='owner'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND task_id='task' AND private_owner_user_id='alice'
-                   AND is_hidden=0 AND visibility='owner'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-            ] {
-                let mut statement = connection.prepare(sql)?;
-                let lines = statement
-                    .query_map([], |row| row.get::<_, String>(3))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                result.push(lines.join(" "));
-            }
-            Ok(result)
-        })
-        .await
-        .unwrap();
-    assert!(
-        plans[0].contains("activity_projection_project_public_feed_idx"),
-        "{}",
-        plans[0]
-    );
-    assert!(
-        plans[1].contains("activity_projection_task_public_feed_idx"),
-        "{}",
-        plans[1]
-    );
-    assert!(
-        plans[2].contains("activity_projection_project_owner_feed_idx"),
-        "{}",
-        plans[2]
-    );
-    assert!(
-        plans[3].contains("activity_projection_task_owner_feed_idx"),
-        "{}",
-        plans[3]
-    );
-}
-
-#[tokio::test]
 async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() {
     let SeededProject {
         root: _root,
@@ -1400,7 +1272,7 @@ async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() 
 /// Paused Tokio time lets the five-second writer admission timeout elapse
 /// without waiting for it in real time.
 #[tokio::test(start_paused = true)]
-async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() {
+async fn a_writer_timeout_does_not_stop_notification_delivery() {
     let SeededProject {
         root: _root,
         db,
@@ -1427,7 +1299,7 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
     })
     .await
     .unwrap();
-    // Hold the single writer so the worker's first maintenance step times out.
+    // Hold the single writer so the worker's first delivery times out.
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let writer_db = db.clone();
@@ -1478,62 +1350,6 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
 }
 
 #[tokio::test]
-async fn worker_survives_failed_archive_purge_and_delivers_new_notifications() {
-    let SeededProject {
-        root: _root,
-        db,
-        alice,
-        bob,
-    } = seeded_project().await;
-    let actor = alice.clone();
-    db.transaction(move |tx| {
-        snapshot_notification_tx(tx,&actor,NotificationInput {
-            project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("purge me"),broadcast: false},vec!["bob".into()],now())?;
-        tx.execute("UPDATE notification_recipients SET archived_at=1,read_at=1,delivered_at=1",[])?;
-        tx.execute_batch("CREATE TRIGGER fail_purge BEFORE UPDATE OF project_name_snapshot ON notification_recipients
-            BEGIN SELECT RAISE(FAIL,'injected purge failure'); END;")?;
-        snapshot_notification_tx(tx,&actor,NotificationInput {
-            project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("new delivery"),broadcast: false},vec!["bob".into()],now())?;
-        Ok(())
-    }).await.unwrap();
-    let service = CollaborationService::new(db.clone());
-    assert!(service.purge_archived(now()).await.is_err());
-    let runtime = CollaborationRuntime::new(db.clone());
-    let (stop, stopped) = tokio::sync::watch::channel(false);
-    let worker = runtime.spawn_worker(stopped);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let inbox = service
-                .inbox(&bob, InboxFilter::default(), None, None)
-                .await
-                .unwrap();
-            if inbox
-                .items
-                .iter()
-                .any(|item| item.excerpt.as_deref() == Some("new delivery"))
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!worker.is_finished());
-    db.transaction(|tx| {
-        tx.execute_batch("DROP TRIGGER fail_purge")?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
-    stop.send(true).unwrap();
-    worker.await.unwrap().unwrap();
-}
-
-#[tokio::test]
 async fn supervisor_stops_other_workers_on_unexpected_exit_or_panic() {
     for panic in [false, true] {
         let SeededProject {
@@ -1553,10 +1369,10 @@ async fn supervisor_stops_other_workers_on_unexpected_exit_or_panic() {
                 }
             }
         };
-        let files = tokio::spawn(waiter(stopped.clone()));
+        let maintenance = tokio::spawn(waiter(stopped.clone()));
         let knowledge = tokio::spawn(waiter(stopped));
         assert!(
-            oneloop::runtime::supervise_workers(outbox, files, knowledge, stop, runtime)
+            oneloop::runtime::supervise_workers(outbox, maintenance, knowledge, stop, runtime)
                 .await
                 .is_err()
         );
@@ -1856,55 +1672,4 @@ async fn a_worker_waiting_after_errors_stops_when_asked() {
     stop.send(true).unwrap();
     let stopped = tokio::time::timeout(std::time::Duration::from_millis(10), worker).await;
     assert!(stopped.is_ok(), "the worker sleeps through the stop");
-}
-
-#[tokio::test(start_paused = true)]
-async fn maintenance_runs_by_elapsed_time_whatever_the_wall_clock_says() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    // A comment deleted well before the Undo window, with its text kept.
-    let delete = async |id: &'static str| {
-        db.run(move |connection| {
-            connection.execute(
-                "INSERT INTO comments(id,project_id,task_id,author_id,root_id,content,created_at,deleted_at)
-                 VALUES(?1,'p1','task','alice',?1,'secret text',?2,?2)",
-                rusqlite::params![id, now() - 3600],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    };
-    let kept = async |id: &'static str| -> bool {
-        db.run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT content<>'' FROM comments WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap()
-    };
-    delete("first").await;
-    let runtime = CollaborationRuntime::new(db.clone());
-    let (stop, signal) = tokio::sync::watch::channel(false);
-    let worker = runtime.spawn_worker(signal);
-    // The first pass runs at once.
-    while kept("first").await {
-        tokio::task::yield_now().await;
-    }
-    delete("second").await;
-    // The next pass comes a minute later on the monotonic clock, which paused
-    // time advances while the wall clock stays where it was.
-    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-    let mut waited = 0;
-    while kept("second").await && waited < 10 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        waited += 1;
-    }
-    assert!(!kept("second").await);
-    stop.send(true).unwrap();
-    worker.await.unwrap().unwrap();
 }

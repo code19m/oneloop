@@ -206,8 +206,8 @@ async fn epic_activity(
     ApiQuery(query): ApiQuery<PageQuery>,
 ) -> AppResult<Json<crate::collaboration::ActivityPage>> {
     state
-        .domain
-        .epic_activity(&actor, epic_id, query)
+        .collaboration
+        .epic_activity(&actor, &epic_id, query.cursor.as_deref(), query.limit)
         .await
         .map(Json)
 }

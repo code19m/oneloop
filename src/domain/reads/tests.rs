@@ -1,5 +1,5 @@
 use super::*;
-use jiff::civil::date;
+use jiff::{Timestamp, civil::date};
 
 #[test]
 fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
@@ -89,56 +89,6 @@ fn newest_done_pages_read_the_partial_index_in_order() {
         plan.contains("(completed_at,completion_order,id)<(?,?,?)"),
         "{plan}"
     );
-}
-
-#[test]
-#[ignore = "manual 100,000-task summary timing probe"]
-fn epic_summary_scale_probe() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
-    c.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
-        INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
-        WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<99)
-        INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) SELECT 'e'||x,'p','tr','Epic','2026-11-01',x,1,1 FROM n;
-        WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<99999)
-        INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) SELECT 't'||x,'p','e'||(x%100),x+1,'ONE-'||x,'Task','done',x,1,1,1793491200+x FROM n;").unwrap();
-    let mut old = c.prepare_cached("SELECT epic_id,status,completed_at,COUNT(*) FROM tasks WHERE project_id=?1 AND deleted_at IS NULL GROUP BY epic_id,status,completed_at").unwrap();
-    for round in 0..3 {
-        let begin = std::time::Instant::now();
-        let rows = old
-            .query_map(["p"], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let previous_ms = begin.elapsed().as_secs_f64() * 1000.0;
-        let begin = std::time::Instant::now();
-        let summaries = epics_on(
-            &c,
-            "p",
-            &TimeZone::built_in("UTC").unwrap(),
-            date(2026, 11, 2),
-        )
-        .unwrap();
-        let summary_ms = begin.elapsed().as_secs_f64() * 1000.0;
-        assert_eq!(rows.len(), 100_000);
-        assert_eq!(summaries.len(), 100);
-        assert!(
-            summaries
-                .iter()
-                .all(|epic| epic.summary.as_ref().unwrap().task_done == 1000)
-        );
-        eprintln!(
-            "round {round}: old grouped row decoding {previous_ms:.3}ms (100000 rows); complete epic summaries {summary_ms:.3}ms (100 rows)"
-        );
-    }
 }
 
 mod epic_date_tests {

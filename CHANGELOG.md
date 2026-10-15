@@ -15,12 +15,18 @@ All notable changes to oneloop are recorded here. The format follows
   gets 400.
 - An MCP download now names the file in its `Content-Disposition` header, as
   a browser download does.
+- Editing, deleting or restoring a comment without `expectedRevision` now
+  fails with `precondition_failed` (412), as changes to tasks and other
+  records do. It failed with `validation_failed` (400).
 
 ### Fixed
 
 - `oneloop serve` no longer crashes when nothing reads its standard error and
   it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
   line like the others.
+- `oneloop backup` and the other commands that open the data directory no
+  longer fail when nothing reads their standard error and they have a notice
+  to print, such as a copy left by an interrupted backup.
 - A Knowledge folder with more than 5,000 subfolders no longer syncs, and
   shows that it is too large. Before, a folder with many deep subfolders
   could make search use gigabytes of memory, and a sync could fill the disk
@@ -61,6 +67,14 @@ All notable changes to oneloop are recorded here. The format follows
   complete it, as the Board does. Before, the change failed with an error.
 - A block reason with several spaces in a row before a mention keeps the
   mention. Before, the mention was dropped and the person was not notified.
+- An epic's activity now comes in pages of up to 100 items, like all other
+  activity, as the limits in the documentation say. It stopped at 50.
+- In MCP, `search_tasks` without a status now reads all four columns at one
+  moment. Before, a task that moved while it was read could show up twice or
+  not at all.
+- When a person opens more than 16 tabs, the oldest tab is now always told
+  that it was closed, even when it was behind on updates. Before, such a tab
+  could reconnect at once and close another tab.
 
 ### Security
 

@@ -285,6 +285,19 @@ impl AuthService {
         }
     }
 
+    /// The scopes of an MCP actor's grant, sorted.
+    pub async fn grant_scopes(&self, actor: &Actor) -> AppResult<Vec<String>> {
+        let grant = actor
+            .mcp_grant_id()
+            .ok_or(AppError::Unauthorized)?
+            .to_owned();
+        self.db
+            .run(move |connection| {
+                values_for_grant(connection, "mcp_grant_scopes", "scope", &grant)
+            })
+            .await
+    }
+
     pub async fn require_mcp_scope(&self, actor: &Actor, scope: McpScope) -> AppResult<()> {
         let actor = actor.clone();
         self.db

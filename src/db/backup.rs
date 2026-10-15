@@ -1,4 +1,6 @@
-use crate::clock::unix_now as unix_timestamp;
+//! Creating and validating backups: a consistent copy of the database and of
+//! the files it references, with a manifest of their checksums.
+
 use std::{
     fs::{self, File},
     io::{BufWriter, Read, Write},
@@ -18,10 +20,18 @@ use walkdir::WalkDir;
 
 use crate::{
     build_info,
+    clock::unix_now,
     config::normalize_path,
-    db::{DataLayout, integrity_check, migration, open_connection},
+    db::{DataLayout, integrity_check, migration, open_connection, sync_directory},
     error::{AppError, AppResult},
 };
+
+mod owner;
+mod restore;
+
+use owner::*;
+pub use restore::restore_backup;
+use restore::*;
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024 * 1024;
 /// Inside the data directory: links to the files a running backup copies.
@@ -29,131 +39,6 @@ const PINS: &str = ".oneloop-backup-pins";
 
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
-/// Inside a backup's working folder: the record of the process that writes it.
-/// A restore keeps the same record in its restore marker.
-const OWNER_FILE: &str = ".oneloop-owner";
-const MAX_OWNER_BYTES: u64 = 64 * 1024;
-
-/// Who writes a backup's working folder or a restore's target. The writer
-/// holds an exclusive lock on the record until it publishes or removes its
-/// work, so a later command can tell an interrupted operation from a running
-/// one.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct WorkOwner {
-    kind: String,
-    host: String,
-    pid: u32,
-    data_dir: String,
-    started_at: i64,
-    /// Restores: the working folder inside the target.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    working: Option<String>,
-    /// Restores: the names that publication moves into the target.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    publishes: Vec<String>,
-}
-
-impl WorkOwner {
-    fn new(kind: &str, data_dir: &Path) -> AppResult<Self> {
-        Ok(Self {
-            kind: kind.to_owned(),
-            host: host_name(),
-            pid: std::process::id(),
-            data_dir: data_dir.display().to_string(),
-            started_at: unix_timestamp()?,
-            working: None,
-            publishes: Vec::new(),
-        })
-    }
-}
-
-/// An owner record, kept open and locked while this process works.
-struct OwnerLock(File);
-
-impl OwnerLock {
-    fn create(path: &Path, owner: &WorkOwner) -> AppResult<Self> {
-        let file = super::private_file_options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        // Waits only while a later command inspects the new, still empty record.
-        file.lock()?;
-        let lock = Self(file);
-        lock.write(owner)?;
-        Ok(lock)
-    }
-
-    fn write(&self, owner: &WorkOwner) -> AppResult<()> {
-        let bytes = serde_json::to_vec(owner)
-            .map_err(|error| AppError::internal(format!("serialize owner record: {error}")))?;
-        let mut file = &self.0;
-        file.set_len(0)?;
-        std::io::Seek::rewind(&mut file)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        Ok(())
-    }
-}
-
-/// The lock and record of an owner file whose writer is gone: it ran on this
-/// host, nothing holds its lock and its process no longer exists. None when
-/// the work may still be in use, or when that can't be proven.
-fn claim_abandoned(path: &Path) -> Option<(File, WorkOwner)> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .ok()?;
-    file.try_lock().ok()?;
-    let mut text = String::new();
-    (&file)
-        .take(MAX_OWNER_BYTES)
-        .read_to_string(&mut text)
-        .ok()?;
-    let owner: WorkOwner = serde_json::from_str(&text).ok()?;
-    // A lock alone can't prove much on filesystems that ignore locks, or for
-    // a process on another computer that shares the folder.
-    (owner.host == host_name() && !process_alive(owner.pid)).then_some((file, owner))
-}
-
-fn host_name() -> String {
-    #[cfg(unix)]
-    {
-        rustix::system::uname()
-            .nodename()
-            .to_string_lossy()
-            .into_owned()
-    }
-    #[cfg(not(unix))]
-    {
-        String::new()
-    }
-}
-
-/// Whether a process with this ID exists. A process of another account
-/// counts as running.
-fn process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        let Some(pid) = i32::try_from(pid)
-            .ok()
-            .and_then(rustix::process::Pid::from_raw)
-        else {
-            return true;
-        };
-        !matches!(
-            rustix::process::test_kill_process(pid),
-            Err(rustix::io::Errno::SRCH)
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupManifest {
     pub format_version: u32,
@@ -297,7 +182,7 @@ fn create_backup_inner(
             application_version: build_info::VERSION.to_owned(),
             application_revision: build_info::REVISION.to_owned(),
             schema_version: migration::inspect_schema_version(&snapshot)?,
-            created_at: unix_timestamp()?,
+            created_at: unix_now()?,
             files,
         };
         write_manifest(&partial, &manifest)?;
@@ -461,342 +346,6 @@ pub fn validate_backup(path: impl AsRef<Path>) -> AppResult<BackupManifest> {
     Ok(manifest)
 }
 
-pub fn restore_backup(
-    backup: impl AsRef<Path>,
-    data_dir: impl Into<PathBuf>,
-) -> AppResult<PathBuf> {
-    let backup = absolute_path(backup.as_ref())?;
-    let target = absolute_path(&data_dir.into())?;
-    if backup.starts_with(&target) || target.starts_with(&backup) {
-        return Err(AppError::PreconditionFailed(
-            "backup source cannot be inside the restore target".to_owned(),
-        ));
-    }
-    // Check the backup before removing anything, so that a wrong backup path
-    // leaves an interrupted restore as it is.
-    let manifest = validate_backup(&backup)?;
-    if let Some(parent) = target.parent().filter(|path| path.is_dir()) {
-        reclaim_partial_copies(parent);
-    }
-    if target.is_dir() {
-        reclaim_interrupted_restore(&target)?;
-        reclaim_partial_copies(&target);
-    }
-    ensure_restore_target(&target)?;
-    let parent = target.parent().ok_or_else(|| {
-        AppError::validation(
-            "data directory",
-            "restore target must have a parent directory",
-        )
-    })?;
-    super::create_private_directories(parent)?;
-    let canonical_backup = fs::canonicalize(&backup)?;
-    let canonical_target = fs::canonicalize(parent)?.join(
-        target
-            .file_name()
-            .ok_or_else(|| AppError::validation("data directory", "file name is required"))?,
-    );
-    if canonical_target.starts_with(&canonical_backup) {
-        return Err(AppError::PreconditionFailed(
-            "restore target cannot be inside the backup source".to_owned(),
-        ));
-    }
-    // Stage on the target filesystem without replacing an operator-owned
-    // directory or mount point. The durable marker prevents partial publication
-    // from being mistaken for an initialized instance after a crash.
-    super::create_private_directories(&target)?;
-    // Check again: creating directories can change where the path leads.
-    ensure_restore_target(&target)?;
-    let marker = target.join(super::RESTORE_MARKER);
-    let working = format!(".oneloop-restore-{}", Uuid::now_v7());
-    let mut owner = WorkOwner::new("restore", &target)?;
-    owner.working = Some(working.clone());
-    let marker_lock = OwnerLock::create(&marker, &owner).map_err(|error| {
-        AppError::PreconditionFailed(format!(
-            "restore target {} must be writable: {error}",
-            target.display()
-        ))
-    })?;
-    sync_directory(&target)?;
-    let partial = target.join(&working);
-    let mut publishing = false;
-    let result = (|| {
-        fs::create_dir(&partial)?;
-        secure_directory(&partial)?;
-        for entry in &manifest.files {
-            let source = backup.join(&entry.path);
-            let relative = Path::new(&entry.path).strip_prefix("data").map_err(|_| {
-                AppError::PreconditionFailed(format!(
-                    "backup entry is outside data/: {}",
-                    entry.path
-                ))
-            })?;
-            if relative
-                .components()
-                .next()
-                .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with(".oneloop-"))
-            {
-                return Err(AppError::PreconditionFailed(
-                    "backup entry uses a reserved restore path".to_owned(),
-                ));
-            }
-            copy_regular_file(&source, &partial.join(relative))?;
-        }
-        invalidate_restored_credentials(&partial.join("oneloop.sqlite3"))?;
-        DataLayout::new(&partial).ensure_runtime_directories()?;
-        sync_tree_directories(&partial)?;
-        // Record what publication adds to the target before it starts, so a
-        // later restore can remove exactly that after an interruption.
-        owner.publishes = fs::read_dir(&partial)?
-            .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
-            .collect::<std::io::Result<_>>()?;
-        marker_lock.write(&owner)?;
-        publishing = true;
-        for entry in fs::read_dir(&partial)? {
-            let entry = entry?;
-            let destination = target.join(entry.file_name());
-            if destination.try_exists()? {
-                return Err(AppError::PreconditionFailed(format!(
-                    "restore destination appeared during publication: {}",
-                    destination.display()
-                )));
-            }
-            fs::rename(entry.path(), destination)?;
-        }
-        fs::remove_dir(&partial)?;
-        sync_directory(&target)?;
-        fs::remove_file(&marker)?;
-        sync_directory(&target)?;
-        Ok(target.clone())
-    })();
-
-    if result.is_err() && !publishing {
-        // Only remove the marker once the unpublished staging tree is gone.
-        if !partial.exists() || fs::remove_dir_all(&partial).is_ok() {
-            let _ = fs::remove_file(&marker);
-            let _ = sync_directory(&target);
-        }
-    }
-    drop(marker_lock);
-    result
-}
-
-/// Removes working folders that interrupted backups left in `parent`, when
-/// their owner record proves the backup is gone (see `claim_abandoned`).
-/// Other working folders are only reported: another process may still be
-/// writing them, or they come from another computer or an older version.
-fn reclaim_partial_copies(parent: &Path) {
-    let Ok(entries) = fs::read_dir(parent) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !(name.starts_with(".oneloop-restore-")
-            || (name.starts_with('.') && name.contains(".partial-")))
-            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
-        {
-            continue;
-        }
-        let path = entry.path();
-        if let Some((lock, owner)) = claim_abandoned(&path.join(OWNER_FILE)) {
-            match remove_claimed(&path, lock) {
-                Ok(()) => {
-                    let _ = sync_directory(parent);
-                    eprintln!(
-                        "removed the copy of an interrupted backup of {}: {}",
-                        owner.data_dir,
-                        path.display()
-                    );
-                }
-                Err(error) => eprintln!(
-                    "warning: cannot remove the copy of an interrupted backup {}: {error}",
-                    path.display()
-                ),
-            }
-            continue;
-        }
-        let mut bytes = 0_u64;
-        let mut incomplete = false;
-        for item in WalkDir::new(&path).follow_links(false) {
-            match item {
-                Ok(item) if item.file_type().is_file() => match item.metadata() {
-                    Ok(metadata) => bytes = bytes.saturating_add(metadata.len()),
-                    Err(_) => incomplete = true,
-                },
-                Err(_) => incomplete = true,
-                _ => {}
-            }
-        }
-        eprintln!(
-            "possible interrupted backup/restore copy: {} ({} bytes{}); after confirming no backup or restore is running, remove this directory manually",
-            path.display(),
-            bytes,
-            if incomplete { ", size incomplete" } else { "" }
-        );
-    }
-}
-
-/// Removes a claimed working folder. Its owner record goes last, and only
-/// after its lock is closed: network filesystems keep a deleted file that is
-/// still open under another name, which would keep the folder in place. When
-/// something can't be removed, the record stays, so that a later command can
-/// claim the folder again and finish.
-fn remove_claimed(path: &Path, lock: File) -> std::io::Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        if entry.file_name() == OWNER_FILE {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
-        }
-    }
-    drop(lock);
-    fs::remove_file(path.join(OWNER_FILE))?;
-    fs::remove_dir(path)
-}
-
-/// Clears an interrupted restore from `target` when its marker proves the
-/// restore is gone, so that the restore can start again. It removes only the
-/// working folder and the names the marker lists as published, then the
-/// marker. Otherwise it changes nothing, and the target stays refused.
-fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
-    remove_set_aside_markers(target)?;
-    let marker = target.join(super::RESTORE_MARKER);
-    if !marker.try_exists()? {
-        return Ok(());
-    }
-    let refused = || {
-        AppError::PreconditionFailed(format!(
-            "incomplete restore at {}; another restore may still be running, or the interrupted one ran on another computer or with an older oneloop; when no restore is running, empty the directory, including hidden files, and restore again",
-            target.display()
-        ))
-    };
-    let Some((lock, owner)) = claim_abandoned(&marker) else {
-        return Err(refused());
-    };
-    let working = owner.working.as_deref().filter(|name| {
-        name.strip_prefix(".oneloop-restore-")
-            .is_some_and(|id| Uuid::parse_str(id).is_ok())
-    });
-    let published = owner
-        .publishes
-        .iter()
-        .all(|name| is_plain_name(name) && !name.starts_with(".oneloop-"));
-    if owner.kind != "restore"
-        || working.is_none()
-        || !published
-        || !names_claimed_file(&marker, &lock)?
-    {
-        return Err(refused());
-    }
-    for name in working
-        .into_iter()
-        .chain(owner.publishes.iter().map(String::as_str))
-    {
-        let path = target.join(name);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
-            Ok(_) => fs::remove_file(&path)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    if !remove_claimed_marker(&marker, lock)? {
-        return Err(refused());
-    }
-    sync_directory(target)?;
-    eprintln!(
-        "removed what an interrupted restore left in {}; restoring again",
-        target.display()
-    );
-    Ok(())
-}
-
-/// Whether `path` still names the file `claimed` has open. Another restore
-/// may have removed a claimed marker and written its own in its place.
-fn names_claimed_file(path: &Path, claimed: &File) -> std::io::Result<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let claimed = claimed.metadata()?;
-        match fs::symlink_metadata(path) {
-            Ok(current) => Ok(current.dev() == claimed.dev() && current.ino() == claimed.ino()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = claimed;
-        Ok(path.exists())
-    }
-}
-
-/// Closes a claimed restore marker and removes it (see `remove_claimed`),
-/// unless the path names another file by now.
-fn remove_claimed_marker(marker: &Path, lock: File) -> std::io::Result<bool> {
-    let Some(aside) = set_aside_claimed_marker(marker, &lock)? else {
-        return Ok(false);
-    };
-    drop(lock);
-    match fs::remove_file(aside) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-        _ => Ok(true),
-    }
-}
-
-/// Removes markers that a restore set aside and couldn't remove, because it
-/// ended in between (see `set_aside_claimed_marker`). Nothing holds them.
-fn remove_set_aside_markers(target: &Path) -> std::io::Result<()> {
-    let prefix = format!("{}.removed-", super::RESTORE_MARKER);
-    for entry in fs::read_dir(target)? {
-        let entry = entry?;
-        let set_aside = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.strip_prefix(&prefix))
-            .is_some_and(|id| Uuid::parse_str(id).is_ok());
-        if !set_aside || !entry.file_type()?.is_file() {
-            continue;
-        }
-        match fs::remove_file(entry.path()) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// Renames a claimed restore marker to a name of its own, unless the path
-/// names another file by now, and returns the new name. While the claimed
-/// file is open and locked, no other restore can claim or replace it, so the
-/// check holds for the rename. Once the lock is closed, the marker's path is
-/// already free: removing the renamed file can't take a marker that another
-/// restore writes meanwhile.
-fn set_aside_claimed_marker(marker: &Path, lock: &File) -> std::io::Result<Option<PathBuf>> {
-    if !names_claimed_file(marker, lock)? {
-        return Ok(None);
-    }
-    let aside = marker.with_file_name(format!(
-        "{}.removed-{}",
-        super::RESTORE_MARKER,
-        Uuid::now_v7()
-    ));
-    fs::rename(marker, &aside)?;
-    Ok(Some(aside))
-}
-
-/// A single file or folder name, with no path separators or dot segments.
-fn is_plain_name(name: &str) -> bool {
-    let mut components = Path::new(name).components();
-    matches!(components.next(), Some(Component::Normal(part)) if part == name)
-        && components.next().is_none()
-}
-
 fn snapshot_database(source: &Connection, destination: &Path) -> AppResult<()> {
     super::private_file_options()
         .write(true)
@@ -863,7 +412,7 @@ impl BackupPins {
 impl Drop for BackupPins {
     fn drop(&mut self) {
         if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!(
+            notice!(
                 "warning: cannot remove backup pins {}: {error}; the next backup will retry",
                 self.0.display()
             );
@@ -1078,86 +627,6 @@ fn write_manifest(root: &Path, manifest: &BackupManifest) -> AppResult<()> {
     Ok(())
 }
 
-fn invalidate_restored_credentials(database_path: &Path) -> AppResult<()> {
-    let mut connection = open_connection(database_path)?;
-    let now = unix_timestamp()?;
-    let transaction = connection.transaction()?;
-    transaction.execute(
-        "UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?1)",
-        [now],
-    )?;
-    transaction.execute(
-        "UPDATE mcp_grants SET revoked_at = COALESCE(revoked_at, ?1), revision = revision + 1",
-        [now],
-    )?;
-    transaction.execute(
-        "UPDATE mcp_tokens SET revoked_at = COALESCE(revoked_at, ?1)",
-        [now],
-    )?;
-    // A restored unused authorization code could otherwise mint a new grant
-    // after a credential was revoked in the source instance. Legacy schema-1 backups
-    // predate these short-lived authorization and transfer tables.
-    for table in [
-        "oauth_authorization_codes",
-        "oauth_authorization_requests",
-        "mcp_file_transfers",
-    ] {
-        let exists: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )?;
-        if exists {
-            transaction.execute(&format!("DELETE FROM {table}"), [])?;
-        }
-    }
-    transaction.execute("DELETE FROM file_leases", [])?;
-    transaction.execute(
-        "UPDATE idempotency_keys SET state='failed', updated_at=?1
-         WHERE operation='attachment.upload' AND state='running'",
-        [now],
-    )?;
-    transaction.execute(
-        "DELETE FROM upload_reservations WHERE committed_at IS NULL",
-        [],
-    )?;
-    transaction.execute(
-        "INSERT INTO app_metadata(key, value, updated_at) VALUES ('restored_at', ?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        params![now.to_string(), now],
-    )?;
-    transaction.commit()?;
-    connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-    connection.pragma_update(None, "journal_mode", "DELETE")?;
-    integrity_check(&connection)?;
-    Ok(())
-}
-
-fn ensure_restore_target(target: &Path) -> AppResult<()> {
-    DataLayout::new(target).ensure_restore_complete()?;
-    ensure_new_or_empty(target)
-}
-
-fn ensure_new_or_empty(path: &Path) -> AppResult<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(AppError::PreconditionFailed(format!(
-            "restore target is not an empty directory: {}",
-            path.display()
-        )));
-    }
-    if fs::read_dir(path)?.next().transpose()?.is_some() {
-        return Err(AppError::PreconditionFailed(format!(
-            "restore target is not empty: {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
 fn validate_relative_path(raw: &str) -> AppResult<()> {
     if raw.is_empty() || raw.contains('\\') {
         return Err(AppError::PreconditionFailed(format!(
@@ -1245,12 +714,6 @@ fn hash_file(path: &Path) -> AppResult<String> {
 }
 
 fn sync_file(path: &Path) -> AppResult<()> {
-    File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-fn sync_directory(path: &Path) -> AppResult<()> {
-    #[cfg(unix)]
     File::open(path)?.sync_all()?;
     Ok(())
 }

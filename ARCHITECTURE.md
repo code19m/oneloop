@@ -68,8 +68,8 @@ small hints over SSE, and clients then fetch what changed.
   a `CommandEnvelope` whose `DomainOperation` names the change. `reads` builds
   Board, Roadmap, task and Pool views with cursor paging.
 - `collaboration/`: comments, the consolidated activity feed, notifications
-  and the Inbox. `CollaborationRuntime` runs the outbox worker and the SSE fan
-  out.
+  and the Inbox. `CollaborationRuntime` runs the outbox worker and the
+  live-update streams.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
   recovery, with one submodule per job. `FileStore` owns the bytes on disk,
@@ -106,8 +106,11 @@ small hints over SSE, and clients then fetch what changed.
   comments.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
-- `runtime.rs`, `retention.rs`: background maintenance, pruning of expired
-  transient rows and worker supervision.
+- `runtime.rs`: background maintenance and the supervision of every worker.
+  File maintenance runs every minute; database maintenance prunes login
+  throttles and expired transient rows (with `retention.rs`), refreshes
+  planner statistics, empties deleted comments and clears old archived Inbox
+  items, each job on its own timer.
 - `blocking.rs`: lanes that bound blocking work, such as file scans, image
   decodes and Knowledge searches. `disk.rs`: admission of new bytes against
   the free-space floor.
@@ -232,10 +235,10 @@ its content for `UNDO_WINDOW_SECONDS` (5 minutes), when a restore operation can
 bring it back. A restore puts the item back at its old position, or at the end
 of its list when that position was taken, and unassigns people who left the
 project from an unfinished task. After the window, file maintenance removes the
-files with deletion jobs, and the collaboration worker empties deleted
-comments; until then the files count as pending deletion. A deleted task's own
-row and its comments stay in the database; only its files are removed.
-Restoring is a browser operation; MCP doesn't offer it.
+files with deletion jobs, and database maintenance empties deleted comments;
+until then the files count as pending deletion. A deleted task's own row and
+its comments stay in the database; only its files are removed. Restoring is a
+browser operation; MCP doesn't offer it.
 
 **IDs.** Records have UUIDv7 string IDs, created by the server. Tasks also get
 a readable key such as `WEB-042` from the project prefix and a per-project

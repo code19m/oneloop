@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +30,15 @@ pub struct ProjectView {
     pub revision: i64,
     pub manage_roadmap: bool,
     pub manage_board: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMembers {
+    pub project: ProjectView,
+    pub memberships: Vec<MembershipView>,
+    /// The members, and the reader even when not a member.
+    pub users: Vec<UserView>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -190,14 +198,10 @@ pub struct BootstrapView {
     pub epics: Vec<EpicView>,
     pub milestones: Vec<MilestoneView>,
     pub tasks: Vec<TaskView>,
-    pub pool: Vec<PoolItemView>,
-    pub notifications: Vec<Value>,
     pub inbox_unread_count: i64,
-    pub browser_sessions: Vec<Value>,
-    pub app_grants: Vec<Value>,
-    pub page_info: BootstrapPageInfo,
     pub selected_project_id: Option<String>,
-    pub view: Option<String>,
+    /// The initial view this bootstrap was built for.
+    pub view: String,
     /// The Done order of `board_pages`, present when the bootstrap has them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_order: Option<super::DoneOrder>,
@@ -208,14 +212,6 @@ pub struct BootstrapView {
     pub pool_counts: std::collections::BTreeMap<String, i64>,
     #[serde(default)]
     pub sync_cursor: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BootstrapPageInfo {
-    pub tasks_truncated: bool,
-    pub tasks_next_cursor: Option<String>,
-    pub notifications_truncated: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

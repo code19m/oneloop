@@ -120,6 +120,10 @@ pub fn snapshot_notification_tx(
 }
 
 const BROADCAST_COOLDOWN_SECONDS: i64 = 60;
+/// Whether the person broadcast in the project since `?3`.
+const RECENT_BROADCAST_SQL: &str = "SELECT EXISTS(SELECT 1 FROM notification_events
+    WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3
+      AND json_extract(payload_json,'$.broadcast')=1)";
 
 fn enforce_broadcast_cooldown(
     tx: &Transaction<'_>,
@@ -128,9 +132,7 @@ fn enforce_broadcast_cooldown(
     now: i64,
 ) -> AppResult<()> {
     let recent: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM notification_events
-         WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3
-           AND json_extract(payload_json,'$.broadcast')=1)",
+        RECENT_BROADCAST_SQL,
         params![project_id, actor.user_id, now - BROADCAST_COOLDOWN_SECONDS],
         |row| row.get(0),
     )?;
@@ -151,14 +153,11 @@ fn eligible_recipients(
     let mut eligible = Vec::with_capacity(requested.len());
     for user_id in requested {
         let allowed: bool = tx.query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM users u
-               WHERE u.id=?1 AND u.is_active=1 AND
-                 (u.is_admin=1 OR EXISTS(
-                    SELECT 1 FROM project_memberships m
-                    WHERE m.user_id=u.id AND m.project_id=?2
-                 ))
-             )",
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM users u WHERE u.id=?1 AND ",
+                crate::access::can_read_project!("u", "?2"),
+                ")"
+            ),
             params![user_id, project_id],
             |row| row.get(0),
         )?;
@@ -167,4 +166,17 @@ fn eligible_recipients(
         }
     }
     Ok(eligible)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{query_plan, test_database};
+
+    #[test]
+    fn the_broadcast_cooldown_reads_the_persons_recent_notifications() {
+        let (_root, connection) = test_database();
+        let plan = query_plan(&connection, RECENT_BROADCAST_SQL);
+        assert!(plan.contains("notification_broadcast_lookup_idx"), "{plan}");
+    }
 }

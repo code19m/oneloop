@@ -15,8 +15,8 @@ mod service;
 pub use activity::{ActivityInput, record_activity_tx, record_system_activity_tx};
 pub use models::*;
 pub use notifications::{NotificationInput, snapshot_notification_tx};
-pub use runtime::{CollaborationRuntime, OutboxWorker};
+pub use runtime::{CollaborationRuntime, LiveEvent, OutboxWorker};
 pub use service::CollaborationService;
 
-pub(crate) use runtime::enqueue_access_change_tx;
-pub(crate) use service::{ARCHIVE_RETENTION_SECONDS, enqueue_inbox_change_tx};
+pub(crate) use runtime::{enqueue_access_change_tx, sync_cursor};
+pub(crate) use service::enqueue_inbox_change_tx;
