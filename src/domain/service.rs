@@ -34,19 +34,19 @@ use crate::{
         mentions::{self, MentionNotice, Mentioned},
         record_activity_tx, snapshot_notification_tx,
     },
+    command::{Command, CommandResult, Mutation},
     error::{AppError, AppResult},
-    idempotency::{Envelope, Mutation},
     text,
     timezone::TimeZone,
 };
 
 use super::{
-    Access, BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation,
-    EntityId, EpicCreate, EpicSummary, EpicUpdate, EpicView, MembershipCreate, MembershipDelete,
-    MembershipUpdate, MembershipView, MilestoneCreate, MilestoneUpdate, MilestoneView,
-    PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate,
-    ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock,
-    TaskUpdate, TaskView, TrackCreate, TrackReorder, TrackUpdate, TrackView, require_undo_window,
+    Access, BlockReasonUpdate, DomainEvent, DomainOperation, EntityId, EpicCreate, EpicSummary,
+    EpicUpdate, EpicView, MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView,
+    MilestoneCreate, MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote,
+    PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate,
+    TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate,
+    TrackReorder, TrackUpdate, TrackView, require_undo_window,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;
@@ -79,17 +79,10 @@ impl DomainService {
     pub async fn execute(
         &self,
         actor: &Actor,
-        command: CommandEnvelope,
+        command: Command<DomainOperation>,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        let operation = command.operation;
-        let envelope = Envelope::new(
-            operation.as_str(),
-            &command.payload,
-            &command.idempotency_key,
-            command.expected_revision,
-            operation.revision_rule(),
-        )?;
+        let envelope = command.envelope()?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
@@ -98,7 +91,7 @@ impl DomainService {
                     tx,
                     &actor,
                     now,
-                    |actor, replay| authorize_replay(tx, actor, operation, replay, now),
+                    |actor, replay| authorize_replay(tx, actor, command.operation, replay, now),
                     |actor| dispatch(tx, actor, &command, now),
                 )
             })
@@ -109,7 +102,7 @@ impl DomainService {
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
-    command: &CommandEnvelope,
+    command: &Command<DomainOperation>,
     now: i64,
 ) -> AppResult<Mutation> {
     macro_rules! payload {
@@ -117,8 +110,7 @@ fn dispatch(
             crate::input::parse_payload::<$ty>(&command.payload)?
         };
     }
-    // The revision rule has required one for every operation that takes it.
-    let expected = command.expected_revision.unwrap_or_default();
+    let expected = command.revision();
     match command.operation {
         DomainOperation::CreateProject => create_project(tx, actor, payload!(ProjectCreate), now),
         DomainOperation::UpdateProject => {

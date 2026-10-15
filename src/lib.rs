@@ -9,6 +9,7 @@ mod blocking;
 pub mod cli;
 mod clock;
 pub mod collaboration;
+pub mod command;
 pub mod config;
 pub mod db;
 mod disk;

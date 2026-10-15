@@ -12,23 +12,12 @@ use crate::{
     auth::Actor,
     clock::unix_now,
     collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
-    idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
+    command::{Command, CommandResult, Mutation},
     knowledge::{
         secrets::{Purpose, generate_deploy_key},
         source::{self, GitUrl, Transport},
     },
 };
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct KnowledgeCommand {
-    pub operation: String,
-    #[serde(default)]
-    pub payload: Value,
-    pub idempotency_key: String,
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,25 +59,14 @@ struct ProjectOnly {
 }
 
 impl KnowledgeService {
-    pub fn supports(operation: &str) -> bool {
-        Operation::parse(operation).is_some()
-    }
-
     pub async fn execute(
         &self,
         actor: &Actor,
-        command: KnowledgeCommand,
+        command: Command<KnowledgeOperation>,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        let operation = Operation::parse(&command.operation)
-            .ok_or_else(|| AppError::validation("operation", "unsupported knowledge operation"))?;
-        let envelope = Envelope::new(
-            operation.as_str(),
-            &command.payload,
-            &command.idempotency_key,
-            command.expected_revision,
-            operation.revision_rule(),
-        )?;
+        let operation = command.operation;
+        let envelope = command.envelope()?;
         let actor = actor.clone();
         let inner = self.inner.clone();
         let (result, applied) = self
@@ -106,7 +84,7 @@ impl KnowledgeService {
                     |actor, _| actor.require_admin(),
                     |actor| {
                         actor.require_admin()?;
-                        let mutation = dispatch(tx, &inner, actor, operation, &command, now)?;
+                        let mutation = dispatch(tx, &inner, actor, &command, now)?;
                         applied = mutation.resource_id.clone();
                         Ok(mutation)
                     },
@@ -127,26 +105,19 @@ impl KnowledgeService {
     }
 }
 
-crate::idempotency::operations! {
-    enum Operation {
-        Connect = "knowledge.connect",
-        Update = "knowledge.update",
-        Disconnect = "knowledge.disconnect",
-        Sync = "knowledge.sync",
-        CreateDeployKey = "knowledge.deploy-key.create",
+crate::command::operations! {
+    /// Knowledge commands. Changes to a connected source name the revision
+    /// they were based on.
+    pub enum KnowledgeOperation {
+        Connect = "knowledge.connect" => Create,
+        Update = "knowledge.update" => Existing,
+        Disconnect = "knowledge.disconnect" => Existing,
+        Sync = "knowledge.sync" => None,
+        CreateDeployKey = "knowledge.deploy-key.create" => None,
     }
 }
 
-impl Operation {
-    /// Changes to a connected source name the revision they were based on.
-    fn revision_rule(self) -> RevisionRule {
-        match self {
-            Self::Connect => RevisionRule::Create,
-            Self::Update | Self::Disconnect => RevisionRule::Existing,
-            Self::Sync | Self::CreateDeployKey => RevisionRule::None,
-        }
-    }
-
+impl KnowledgeOperation {
     /// The source changes or goes, so a running sync works for the old one.
     fn replaces_source(self) -> bool {
         matches!(self, Self::Update | Self::Disconnect)
@@ -157,34 +128,25 @@ fn dispatch(
     tx: &Transaction<'_>,
     inner: &Inner,
     actor: &Actor,
-    operation: Operation,
-    command: &KnowledgeCommand,
+    command: &Command<KnowledgeOperation>,
     now: i64,
 ) -> AppResult<Mutation> {
-    match operation {
-        Operation::Connect => connect(tx, inner, actor, payload(command)?, now),
-        Operation::Update => update(
-            tx,
-            inner,
-            actor,
-            payload(command)?,
-            command.expected_revision.expect("checked revision"),
-            now,
-        ),
-        Operation::Disconnect => disconnect(
-            tx,
-            inner,
-            actor,
-            payload(command)?,
-            command.expected_revision.expect("checked revision"),
-            now,
-        ),
-        Operation::Sync => request_sync(tx, actor, payload(command)?, now),
-        Operation::CreateDeployKey => create_deploy_key(tx, inner, actor, payload(command)?, now),
+    match command.operation {
+        KnowledgeOperation::Connect => connect(tx, inner, actor, payload(command)?, now),
+        KnowledgeOperation::Update => {
+            update(tx, inner, actor, payload(command)?, command.revision(), now)
+        }
+        KnowledgeOperation::Disconnect => {
+            disconnect(tx, inner, actor, payload(command)?, command.revision(), now)
+        }
+        KnowledgeOperation::Sync => request_sync(tx, actor, payload(command)?, now),
+        KnowledgeOperation::CreateDeployKey => {
+            create_deploy_key(tx, inner, actor, payload(command)?, now)
+        }
     }
 }
 
-fn payload<T: DeserializeOwned>(command: &KnowledgeCommand) -> AppResult<T> {
+fn payload<T: DeserializeOwned>(command: &Command<KnowledgeOperation>) -> AppResult<T> {
     crate::input::parse_payload(&command.payload)
 }
 

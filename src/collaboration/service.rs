@@ -22,15 +22,14 @@ use crate::{
     access::{self, Need, require_project},
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
-    idempotency::{CommandResult, Envelope, Mutation},
+    command::{Command, CommandResult, Mutation},
     input::parse_payload,
 };
 
 use super::{
-    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationOperation,
-    CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
-    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken,
-    NotificationInput,
+    ActivityEvent, ActivityInput, ActivityPage, CollaborationOperation, CommentCreate,
+    CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView, InboxBulkCommand,
+    InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken, NotificationInput,
     mentions::{self, MentionNotice, Mentioned},
     record_activity_tx, snapshot_notification_tx,
 };
@@ -84,26 +83,13 @@ impl CollaborationService {
             .await
     }
 
-    pub fn supports(operation: &str) -> bool {
-        CollaborationOperation::parse(operation).is_some()
-    }
-
     pub async fn execute(
         &self,
         actor: &Actor,
-        command: CollaborationCommand,
+        command: Command<CollaborationOperation>,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        let operation = CollaborationOperation::parse(&command.operation).ok_or_else(|| {
-            AppError::validation("operation", "unsupported collaboration operation")
-        })?;
-        let envelope = Envelope::new(
-            operation.as_str(),
-            &command.payload,
-            &command.idempotency_key,
-            command.expected_revision,
-            operation.revision_rule(),
-        )?;
+        let envelope = command.envelope()?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
@@ -113,10 +99,10 @@ impl CollaborationService {
                     &actor,
                     now,
                     |actor, replay| {
-                        authorize_replay(tx, actor, operation, &command.payload)?;
-                        show_deleted_comment(tx, operation, replay)
+                        authorize_replay(tx, actor, command.operation, &command.payload)?;
+                        show_deleted_comment(tx, command.operation, replay)
                     },
-                    |actor| dispatch(tx, actor, operation, &command, now),
+                    |actor| dispatch(tx, actor, &command, now),
                 )
             })
             .await
@@ -126,18 +112,16 @@ impl CollaborationService {
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
-    operation: CollaborationOperation,
-    command: &CollaborationCommand,
+    command: &Command<CollaborationOperation>,
     now: i64,
 ) -> AppResult<Mutation> {
     use CollaborationOperation::*;
-    if operation.is_inbox() {
+    if command.operation.is_inbox() {
         access::require_scope(tx, actor, "inbox_private", None)?;
     }
     let payload = &command.payload;
-    // The revision rule has required one for every operation that takes it.
-    let expected = command.expected_revision.unwrap_or_default();
-    match operation {
+    let expected = command.revision();
+    match command.operation {
         CreateComment => create_comment(tx, actor, parse_payload(payload)?, now),
         EditComment => edit_comment(tx, actor, parse_payload(payload)?, expected, now),
         DeleteComment => delete_comment(tx, actor, parse_payload(payload)?, expected, now),

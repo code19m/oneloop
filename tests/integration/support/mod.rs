@@ -31,9 +31,10 @@ use oneloop::{
         Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user,
         password::PasswordPolicy,
     },
-    collaboration::{CollaborationCommand, CollaborationRuntime},
+    collaboration::{CollaborationOperation, CollaborationRuntime},
+    command::Command,
     db::{DataLayout, migrate},
-    domain::{CommandEnvelope, DomainOperation},
+    domain::DomainOperation,
     timezone::TimeZone,
 };
 use serde_json::Value;
@@ -265,8 +266,8 @@ pub fn command(
     payload: Value,
     key: &str,
     revision: Option<i64>,
-) -> CommandEnvelope {
-    CommandEnvelope {
+) -> Command<DomainOperation> {
+    Command {
         operation,
         payload,
         idempotency_key: key.into(),
@@ -281,9 +282,9 @@ pub fn collaboration_command(
     payload: Value,
     key: &str,
     revision: Option<i64>,
-) -> CollaborationCommand {
-    CollaborationCommand {
-        operation: operation.into(),
+) -> Command<CollaborationOperation> {
+    Command {
+        operation: CollaborationOperation::parse(operation).expect("a collaboration operation"),
         payload,
         idempotency_key: key.into(),
         expected_revision: revision,

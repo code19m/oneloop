@@ -65,7 +65,7 @@ small hints over SSE, and clients then fetch what changed.
   of any request, from either a browser session or an MCP grant.
 - `domain/`: projects, members, tracks, epics, milestones, tasks, blocking and
   the Pool. `DomainService::execute` is the single write entry point; it takes
-  a `CommandEnvelope` whose `DomainOperation` names the change. `reads` builds
+  a `Command` whose `DomainOperation` names the change. `reads` builds
   Board, Roadmap, task and Pool views with cursor paging.
 - `collaboration/`: comments, the consolidated activity feed, notifications
   and the Inbox. `CollaborationRuntime` runs the outbox worker and the
@@ -101,10 +101,14 @@ small hints over SSE, and clients then fetch what changed.
   ID metadata documents from public addresses only, `cors` answers clients
   that run in a web page, `transfer` issues and claims the one-use tickets
   that move file bytes, and `mod.rs` wires the transport.
-- `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
-  `Envelope`, which runs each command, and each reorder, deletion and restore
-  of an attachment, once around it. Uploads use the ledger directly, because
-  their bytes arrive between two transactions.
+- `command.rs`: `Command`, the one request shape of domain, comment, Inbox
+  and Knowledge writes. Each family declares its operations with
+  `operations!`, which gives every operation its wire name and its rule for
+  `expectedRevision`.
+- `idempotency.rs`: the retry ledger shared by browser and MCP writes. Its
+  `Envelope` runs a write once: every command, and each reorder, deletion and
+  restore of an attachment. Uploads use the ledger directly, because their
+  bytes arrive between two transactions.
 - `input.rs`: reads command payloads into typed input, with errors that name
   the field. `text.rs`: validation for display text such as titles and
   comments.

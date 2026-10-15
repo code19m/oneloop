@@ -16,11 +16,9 @@ use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
     auth::Actor,
-    collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
-    domain::{
-        BoardQuery, BoardViewQuery, CommandEnvelope, DomainOperation, DoneOrder, PageQuery,
-        PoolQuery,
-    },
+    collaboration::{CollaborationOperation, InboxFilter},
+    command::{Command, Operation},
+    domain::{BoardQuery, BoardViewQuery, DomainOperation, DoneOrder, PageQuery, PoolQuery},
     files::{AttachmentPatch, AttachmentReorder},
 };
 
@@ -166,6 +164,17 @@ pub(super) struct CommandInput {
     #[serde(default)]
     /// Current entity revision from a read; required for edits and deletions.
     pub expected_revision: Option<i64>,
+}
+
+impl CommandInput {
+    fn command<O>(self, operation: O) -> Command<O> {
+        Command {
+            operation,
+            payload: self.payload,
+            idempotency_key: self.idempotency_key,
+            expected_revision: self.expected_revision,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -599,15 +608,7 @@ impl OneloopMcp {
         let result = self
             .state
             .domain
-            .execute(
-                &actor(&parts)?,
-                CommandEnvelope {
-                    operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: input.expected_revision,
-                },
-            )
+            .execute(&actor(&parts)?, input.command(operation))
             .await?;
         json(result)
     }
@@ -635,15 +636,7 @@ impl OneloopMcp {
         let result = self
             .state
             .collaboration
-            .execute(
-                &actor(&parts)?,
-                CollaborationCommand {
-                    operation: input.operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: input.expected_revision,
-                },
-            )
+            .execute(&actor(&parts)?, input.command(operation))
             .await?;
         json(result)
     }
@@ -672,15 +665,7 @@ impl OneloopMcp {
             let result = self
                 .state
                 .collaboration
-                .execute(
-                    &actor,
-                    CollaborationCommand {
-                        operation: input.operation,
-                        payload: input.payload,
-                        idempotency_key: input.idempotency_key,
-                        expected_revision: input.expected_revision,
-                    },
-                )
+                .execute(&actor, input.command(operation))
                 .await?;
             return json(result);
         }
@@ -691,15 +676,7 @@ impl OneloopMcp {
         let result = self
             .state
             .domain
-            .execute(
-                &actor,
-                CommandEnvelope {
-                    operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: input.expected_revision,
-                },
-            )
+            .execute(&actor, input.command(operation))
             .await?;
         json(result)
     }
