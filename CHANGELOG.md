@@ -6,6 +6,12 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-rc.5] - 2026-10-16
+
+The fifth release candidate. It fixes many bugs in the web app, in MCP and in
+the commands, limits the size of Knowledge folders, and updates rustls for a
+security fix. Read the upgrade notes before you upgrade.
+
 ### Upgrade notes
 
 - A Knowledge folder now stops syncing, and shows that it is too large, when
@@ -108,6 +114,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 - Updated rustls to 0.23.46 (RUSTSEC-2026-0349). oneloop uses it when it
   fetches the metadata document of an AI assistant that connects.
+
+### Distribution
+
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.5`, for linux/amd64 and
+  linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.5 --locked`
 
 ## [0.1.0-rc.4] - 2026-10-07
 
@@ -564,7 +577,8 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.4...HEAD
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.5...HEAD
+[0.1.0-rc.5]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.4...v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.2...v0.1.0-rc.4
 [0.1.0-rc.2]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.1...v0.1.0-rc.2
 [0.1.0-rc.1]: https://github.com/code19m/oneloop/releases/tag/v0.1.0-rc.1
