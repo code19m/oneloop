@@ -61,6 +61,8 @@ All notable changes to oneloop are recorded here. The format follows
   complete it, as the Board does. Before, the change failed with an error.
 - A block reason with several spaces in a row before a mention keeps the
   mention. Before, the mention was dropped and the person was not notified.
+- An epic's activity now comes in pages of up to 100 items, like all other
+  activity, as the limits in the documentation say. It stopped at 50.
 
 ### Security
 

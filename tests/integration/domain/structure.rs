@@ -190,31 +190,21 @@ async fn epic_panel_reads_every_task_and_real_activity_in_bounded_pages() {
         .collect::<HashSet<_>>();
     assert_eq!(ids.len(), 61);
 
-    let activity = fixture
-        .service
-        .epic_activity(
-            &fixture.member,
-            "e1".into(),
-            oneloop::domain::PageQuery {
-                cursor: None,
-                limit: Some(1),
-            },
-        )
+    let discussion = CollaborationService::new(fixture.db.clone());
+    let activity = discussion
+        .epic_activity(&fixture.member, "e1", None, Some(1))
         .await
         .unwrap();
     assert_eq!(activity.items.len(), 1);
     assert!(activity.next_cursor.is_some());
     assert_eq!(activity.items[0].entity_type, "epic");
     assert_eq!(activity.items[0].entity_id, "e1");
-    let older = fixture
-        .service
+    let older = discussion
         .epic_activity(
             &fixture.member,
-            "e1".into(),
-            oneloop::domain::PageQuery {
-                cursor: activity.next_cursor,
-                limit: Some(1),
-            },
+            "e1",
+            activity.next_cursor.as_deref(),
+            Some(1),
         )
         .await
         .unwrap();
@@ -471,13 +461,8 @@ async fn epic_edits_consolidate_per_field_and_reverts_keep_other_changes() {
         )
         .await
         .unwrap();
-    let page = f
-        .service
-        .epic_activity(
-            &f.manager,
-            "e1".into(),
-            oneloop::domain::PageQuery::default(),
-        )
+    let page = CollaborationService::new(f.db.clone())
+        .epic_activity(&f.manager, "e1", None, None)
         .await
         .unwrap();
     assert_eq!(page.items.len(), 1);

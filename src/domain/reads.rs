@@ -13,7 +13,6 @@ use crate::{
     access::{Need, require_project},
     auth::{Actor, ActorSource, refresh_actor_connection},
     clock::unix_now,
-    collaboration::{ActivityEvent, ActivityPage},
     error::{AppError, AppResult},
     timezone::TimeZone,
 };
@@ -296,29 +295,6 @@ impl DomainService {
                 let project_id = epic_project(connection, &epic_id)?;
                 require_project(connection, &actor, &project_id, Need::Read, false)?;
                 epic_task_page_connection(
-                    connection,
-                    &epic_id,
-                    query.cursor.as_deref(),
-                    page_limit(query.limit),
-                )
-            })
-            .await
-    }
-
-    pub async fn epic_activity(
-        &self,
-        actor: &Actor,
-        epic_id: String,
-        query: PageQuery,
-    ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id = epic_project(connection, &epic_id)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                epic_activity_page_connection(
                     connection,
                     &epic_id,
                     query.cursor.as_deref(),
@@ -1233,92 +1209,11 @@ fn epic_task_page_connection(
     })
 }
 
-#[derive(Serialize, Deserialize)]
-struct ActivityCursor {
-    time: i64,
-    id: String,
-}
-
-fn epic_activity_page_connection(
-    connection: &rusqlite::Connection,
-    epic_id: &str,
-    cursor: Option<&str>,
-    limit: usize,
-) -> AppResult<ActivityPage> {
-    let cursor = cursor.map(decode_activity_cursor).transpose()?;
-    let (cursor_time, cursor_id) = cursor
-        .as_ref()
-        .map(|value| (value.time, value.id.as_str()))
-        .unwrap_or((i64::MAX, "\u{10ffff}"));
-    let mut statement = connection.prepare_cached(
-        "SELECT id,project_id,entity_type,entity_id,task_id,actor_user_id,
-                actor_name_snapshot,event_type,field_key,before_json,after_json,
-                metadata_json,entity_revision,latest_at
-         FROM activity_projection
-         WHERE entity_type='epic' AND entity_id=?1 AND visibility='public' AND is_hidden=0
-           AND (latest_at,id)<(?2,?3)
-         ORDER BY latest_at DESC,id DESC LIMIT ?4",
-    )?;
-    let rows = statement
-        .query_map(
-            params![epic_id, cursor_time, cursor_id, (limit + 1) as i64],
-            epic_activity_row,
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    let has_more = rows.len() > limit;
-    let mut items: Vec<_> = rows.into_iter().take(limit).collect();
-    let next_cursor = has_more.then(|| items.last()).flatten().map(|item| {
-        encode_cursor(&ActivityCursor {
-            time: item.created_at,
-            id: item.id.clone(),
-        })
-    });
-    Ok(ActivityPage {
-        items: std::mem::take(&mut items),
-        next_cursor,
-    })
-}
-
-fn epic_activity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityEvent> {
-    let parse =
-        |value: Option<String>| value.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-    let field: Option<String> = row.get(8)?;
-    let metadata = crate::legacy_values::payload(parse(row.get(11)?).unwrap_or_else(|| json!({})));
-    Ok(ActivityEvent {
-        id: row.get(0)?,
-        project_id: row.get(1)?,
-        entity_type: row.get(2)?,
-        entity_id: row.get(3)?,
-        task_id: row.get(4)?,
-        actor_user_id: row.get(5)?,
-        actor_name: row.get(6)?,
-        actor_mcp_grant_id: metadata
-            .get("actorMcpGrantId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        actor_app_name: metadata
-            .get("actorAppName")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        event_type: row.get(7)?,
-        field_key: row.get(8)?,
-        before: crate::legacy_values::activity(parse(row.get(9)?), field.as_deref()),
-        after: crate::legacy_values::activity(parse(row.get(10)?), field.as_deref()),
-        metadata,
-        entity_revision: row.get(12)?,
-        created_at: row.get(13)?,
-    })
-}
-
 fn encode_cursor<T: Serialize>(value: &T) -> String {
     URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).unwrap_or_default())
 }
 
 fn decode_epic_task_cursor(value: &str) -> AppResult<EpicTaskCursor> {
-    decode_cursor(value)
-}
-
-fn decode_activity_cursor(value: &str) -> AppResult<ActivityCursor> {
     decode_cursor(value)
 }
 

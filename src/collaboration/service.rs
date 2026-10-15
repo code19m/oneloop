@@ -1,5 +1,6 @@
 //! Discussion and private Inbox services. Mutations, audit and recipient snapshots commit together; reads enforce current access.
 
+mod activity;
 mod comments;
 use comments::*;
 mod inbox;
@@ -170,10 +171,7 @@ impl CollaborationService {
             let (cursor_time, cursor_id) = cursor.map(|value| (Some(value.time), value.id)).unwrap_or((None, String::new()));
             let rows = statement.query_map(params![task_id, cursor_time, cursor_id, (limit + 1) as i64], comment_row)?;
             let mut comments = rows.collect::<Result<Vec<_>, _>>()?;
-            let has_more = comments.len() > limit;
-            comments.truncate(limit);
-            let next_cursor = has_more.then(|| comments.last()).flatten()
-                .map(|item| encode_cursor(item.created_at, &item.id));
+            let next_cursor = next_cursor(&mut comments, limit, |item| (item.created_at, &item.id));
             comment_page_context(connection, comments, next_cursor)
         }).await
     }
@@ -204,99 +202,6 @@ impl CollaborationService {
             ).optional()?.ok_or(AppError::NotFound { resource: "comment" })?;
             comment_page_context(connection, vec![comment], None)
         }).await
-    }
-
-    pub async fn block_context(
-        &self,
-        actor: &Actor,
-        task_id: &str,
-        block_id: &str,
-    ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        let task_id = task_id.to_owned();
-        let block_id = block_id.to_owned();
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            let project_id: String = connection.query_row(
-                "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
-                 WHERE b.id=?1 AND b.task_id=?2 AND t.deleted_at IS NULL",
-                params![block_id, task_id], |row| row.get(0),
-            ).optional()?.ok_or(AppError::NotFound { resource: "task block" })?;
-            require_project(connection, &actor, &project_id, Need::Read, false)?;
-            let columns = "id,project_id,entity_type,entity_id,task_id,actor_user_id,actor_name_snapshot,
-                event_type,field_key,before_json,after_json,metadata_json,entity_revision,latest_at";
-            let mut statement = connection.prepare(&format!(
-                "SELECT {columns} FROM activity_projection WHERE entity_type='task_block'
-                 AND entity_id=?1 AND task_id=?2 AND visibility='public' AND is_hidden=0
-                 ORDER BY latest_at DESC,id DESC LIMIT 50"))?;
-            let mut items = statement.query_map(params![block_id, task_id], activity_row)?.collect::<Result<Vec<_>, _>>()?;
-            if !items.iter().any(|item| item.event_type == "task.blocked") {
-                let original = connection.query_row(&format!(
-                    "SELECT {columns} FROM activity_projection WHERE entity_type='task_block'
-                     AND entity_id=?1 AND task_id=?2 AND event_type='task.blocked'
-                     AND visibility='public' AND is_hidden=0 ORDER BY latest_at,id LIMIT 1"),
-                    params![block_id, task_id], activity_row).optional()?;
-                if let Some(original) = original { items.push(original); }
-            }
-            Ok(ActivityPage { items, next_cursor: None })
-        }).await
-    }
-
-    pub async fn activity(
-        &self,
-        actor: &Actor,
-        project_id: &str,
-        task_id: Option<&str>,
-        cursor: Option<&str>,
-        limit: Option<usize>,
-    ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        let project_id = project_id.to_owned();
-        let task_id = task_id.map(str::to_owned);
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                let mut visible = activity_projection_stream(
-                    connection,
-                    &project_id,
-                    task_id.as_deref(),
-                    None,
-                    cursor.as_ref(),
-                    limit + 1,
-                )?;
-                if crate::access::can_read_private_pool(connection, &actor)? {
-                    visible.extend(activity_projection_stream(
-                        connection,
-                        &project_id,
-                        task_id.as_deref(),
-                        Some(&actor.user_id),
-                        cursor.as_ref(),
-                        limit + 1,
-                    )?);
-                }
-                visible.sort_by(|left, right| {
-                    right
-                        .created_at
-                        .cmp(&left.created_at)
-                        .then_with(|| right.id.cmp(&left.id))
-                });
-                let has_more = visible.len() > limit;
-                visible.truncate(limit);
-                let next_cursor = has_more
-                    .then(|| visible.last())
-                    .flatten()
-                    .map(|item| encode_cursor(item.created_at, &item.id));
-                Ok(ActivityPage {
-                    items: visible,
-                    next_cursor,
-                })
-            })
-            .await
     }
 
     pub async fn inbox(
@@ -372,12 +277,7 @@ impl CollaborationService {
                 inbox_row,
             )?;
             let mut items = rows.collect::<Result<Vec<_>, _>>()?;
-            let has_more = items.len() > limit;
-            items.truncate(limit);
-            let next_cursor = has_more
-                .then(|| items.last())
-                .flatten()
-                .map(|item| encode_cursor(item.created_at, &item.id));
+            let next_cursor = next_cursor(&mut items, limit, |item| (item.created_at, &item.id));
             Ok(InboxPage {
                 items,
                 next_cursor,
@@ -716,138 +616,27 @@ fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
     })
 }
 
-fn activity_row(row: &Row<'_>) -> rusqlite::Result<ActivityEvent> {
-    fn parse(value: Option<String>) -> Option<Value> {
-        value.and_then(|value| serde_json::from_str(&value).ok())
-    }
-    let field: Option<String> = row.get(8)?;
-    let metadata = crate::legacy_values::payload(parse(row.get(11)?).unwrap_or_else(|| json!({})));
-    let event_type: String = row.get(7)?;
-    let private_comparison = event_type == "comment.edited";
-    Ok(ActivityEvent {
-        id: row.get(0)?,
-        project_id: row.get(1)?,
-        entity_type: row.get(2)?,
-        entity_id: row.get(3)?,
-        task_id: row.get(4)?,
-        actor_user_id: row.get(5)?,
-        actor_name: row.get(6)?,
-        actor_mcp_grant_id: metadata
-            .get("actorMcpGrantId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        actor_app_name: metadata
-            .get("actorAppName")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        event_type,
-        field_key: row.get(8)?,
-        before: if private_comparison {
-            None
-        } else {
-            crate::legacy_values::activity(parse(row.get(9)?), field.as_deref())
-        },
-        after: if private_comparison {
-            None
-        } else {
-            crate::legacy_values::activity(parse(row.get(10)?), field.as_deref())
-        },
-        metadata,
-        entity_revision: row.get(12)?,
-        created_at: row.get(13)?,
-    })
-}
-
-fn activity_projection_stream(
-    connection: &rusqlite::Connection,
-    project_id: &str,
-    task_id: Option<&str>,
-    private_owner_user_id: Option<&str>,
-    cursor: Option<&Cursor>,
-    limit: usize,
-) -> AppResult<Vec<ActivityEvent>> {
-    const COLUMNS: &str = "p.id,p.project_id,p.entity_type,p.entity_id,p.task_id,p.actor_user_id,
-         p.actor_name_snapshot,p.event_type,p.field_key,p.before_json,p.after_json,
-         p.metadata_json,p.entity_revision,p.latest_at";
-    let (cursor_time, cursor_id) = cursor
-        .map(|value| (value.time, value.id.as_str()))
-        .unwrap_or((i64::MAX, "\u{10ffff}"));
-    let result = match (task_id, private_owner_user_id) {
-        (Some(task_id), Some(owner_id)) => {
-            let sql = format!(
-                "SELECT {COLUMNS} FROM activity_projection p
-                WHERE p.project_id=?1 AND p.task_id=?2 AND p.is_hidden=0
-                  AND p.visibility='owner' AND p.private_owner_user_id=?3
-                  AND (p.latest_at,p.id)<(?4,?5)
-                ORDER BY p.latest_at DESC,p.id DESC LIMIT ?6"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(
-                params![
-                    project_id,
-                    task_id,
-                    owner_id,
-                    cursor_time,
-                    cursor_id,
-                    limit as i64
-                ],
-                activity_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        }
-        (Some(task_id), None) => {
-            let sql = format!(
-                "SELECT {COLUMNS} FROM activity_projection p
-                WHERE p.project_id=?1 AND p.task_id=?2 AND p.is_hidden=0 AND p.visibility='public'
-                  AND (p.latest_at,p.id)<(?3,?4)
-                ORDER BY p.latest_at DESC,p.id DESC LIMIT ?5"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(
-                params![project_id, task_id, cursor_time, cursor_id, limit as i64],
-                activity_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        }
-        (None, Some(owner_id)) => {
-            let sql = format!(
-                "SELECT {COLUMNS} FROM activity_projection p
-                WHERE p.project_id=?1 AND p.is_hidden=0
-                  AND p.visibility='owner' AND p.private_owner_user_id=?2
-                  AND (p.latest_at,p.id)<(?3,?4)
-                ORDER BY p.latest_at DESC,p.id DESC LIMIT ?5"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(
-                params![project_id, owner_id, cursor_time, cursor_id, limit as i64],
-                activity_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        }
-        (None, None) => {
-            let sql = format!(
-                "SELECT {COLUMNS} FROM activity_projection p
-                WHERE p.project_id=?1 AND p.is_hidden=0 AND p.visibility='public'
-                  AND (p.latest_at,p.id)<(?2,?3)
-                ORDER BY p.latest_at DESC,p.id DESC LIMIT ?4"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(
-                params![project_id, cursor_time, cursor_id, limit as i64],
-                activity_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        }
-    };
-    Ok(result)
-}
-
 fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
     if actual == expected {
         Ok(())
     } else {
         Err(AppError::revision(expected, actual))
     }
+}
+
+/// Cuts a page that was read with one item too many back to `limit` items,
+/// and returns the cursor of the next page when that extra item was there.
+fn next_cursor<T>(
+    items: &mut Vec<T>,
+    limit: usize,
+    key: impl Fn(&T) -> (i64, &String),
+) -> Option<String> {
+    let more = items.len() > limit;
+    items.truncate(limit);
+    items.last().filter(|_| more).map(|item| {
+        let (time, id) = key(item);
+        encode_cursor(time, id)
+    })
 }
 
 fn page_limit(limit: Option<usize>) -> usize {

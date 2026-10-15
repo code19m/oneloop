@@ -597,14 +597,14 @@ impl OneloopMcp {
                 },
             )
             .await?;
-        let activity = service
+        let activity = self
+            .state
+            .collaboration
             .epic_activity(
                 &actor,
-                input.epic_id.clone(),
-                PageQuery {
-                    cursor: input.activity_cursor,
-                    limit: input.limit,
-                },
+                &input.epic_id,
+                input.activity_cursor.as_deref(),
+                input.limit,
             )
             .await?;
         Ok(Json(json!({
