@@ -226,7 +226,7 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
     migrate(&data_dir, None)?;
     let db = Db::open(&data_dir)?;
     db.transaction(move |tx| {
-        let now = oneloop::auth::unix_now()?;
+        let now = oneloop::clock::unix_now()?;
         seed_project(tx, ("Outbox", "OUT"), members, writers + 2, now)?;
         tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES('epic','project','track','Epic','2026-01-01','active',0,?1,?1)",[now])?;
         for task in 0..=writers {
@@ -458,7 +458,7 @@ fn seed_project(
 
 async fn seed(db: &Db, tasks: usize, events: usize, clients: usize) -> oneloop::AppResult<()> {
     db.transaction(move |tx| {
-        let now = oneloop::auth::unix_now()?;
+        let now = oneloop::clock::unix_now()?;
         seed_project(tx, ("Benchmark", "BEN"), clients, tasks + 1, now)?;
         for epic in 0..100 {
             tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES(?1,'project','track',?2,'2026-01-01','active',?3,?4,?4)",params![format!("epic-{epic}"),format!("Epic {epic}"),epic,now])?;
@@ -651,7 +651,7 @@ async fn seed_files(db: &Db) -> Result<(), Box<dyn std::error::Error>> {
     let size = bytes.len() as i64;
     let hash = hex::encode(sha2::Sha256::digest(&bytes));
     db.transaction(move |tx| {
-        let now = oneloop::auth::unix_now()?;
+        let now = oneloop::clock::unix_now()?;
         tx.execute("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at) VALUES('workload-blob',?1,?2,?3,'image/png','available',?4)", params![key,hash,size,now])?;
         tx.execute("UPDATE users SET avatar_blob_id='workload-blob' WHERE id='user-0'", [])?;
         // A task outside the per-client write/delete set keeps this read fixture stable.

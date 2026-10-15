@@ -1,36 +1,39 @@
-//! Discussion and private Inbox services. Mutations, audit and recipient snapshots commit together; reads enforce current access.
+//! `CollaborationService`: the comment and Inbox commands with the checks a
+//! retry repeats. Its reads live in the submodules.
 
 mod activity;
 mod comments;
 mod inbox;
 
-use comments::*;
+use comments::{
+    create_comment, delete_comment, edit_comment, require_comment_owner_or_admin, restore_comment,
+    show_deleted_comment,
+};
+use inbox::{InboxChange, inbox_bulk_change, inbox_item_change};
+
 pub(crate) use inbox::enqueue_inbox_change_tx;
-use inbox::*;
 
 use std::collections::BTreeSet;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    access::{self, Need, require_project},
+    access::{self, McpScope, Need, require_project},
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
-    idempotency::{CommandResult, Envelope, Mutation},
+    command::{Command, CommandResult, Mutation, check_revision},
     input::parse_payload,
+    paging::{self, TimeCursor, next_cursor},
 };
 
 use super::{
-    ActivityEvent, ActivityInput, ActivityPage, CollaborationCommand, CollaborationOperation,
-    CommentCreate, CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView,
-    InboxBulkCommand, InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken,
-    NotificationInput,
+    ActivityEvent, ActivityInput, ActivityPage, CollaborationOperation, CommentCreate,
+    CommentDelete, CommentEdit, CommentPage, CommentRestore, CommentView, InboxBulkCommand,
+    InboxFilter, InboxItem, InboxItemCommand, InboxPage, MentionToken, NotificationInput,
     mentions::{self, MentionNotice, Mentioned},
     record_activity_tx, snapshot_notification_tx,
 };
@@ -84,26 +87,13 @@ impl CollaborationService {
             .await
     }
 
-    pub fn supports(operation: &str) -> bool {
-        CollaborationOperation::parse(operation).is_some()
-    }
-
     pub async fn execute(
         &self,
         actor: &Actor,
-        command: CollaborationCommand,
+        command: Command<CollaborationOperation>,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        let operation = CollaborationOperation::parse(&command.operation).ok_or_else(|| {
-            AppError::validation("operation", "unsupported collaboration operation")
-        })?;
-        let envelope = Envelope::new(
-            operation.as_str(),
-            &command.payload,
-            &command.idempotency_key,
-            command.expected_revision,
-            operation.revision_rule(),
-        )?;
+        let envelope = command.envelope()?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
@@ -113,10 +103,10 @@ impl CollaborationService {
                     &actor,
                     now,
                     |actor, replay| {
-                        authorize_replay(tx, actor, operation, &command.payload)?;
-                        show_deleted_comment(tx, operation, replay)
+                        authorize_replay(tx, actor, command.operation, &command.payload)?;
+                        show_deleted_comment(tx, command.operation, replay)
                     },
-                    |actor| dispatch(tx, actor, operation, &command, now),
+                    |actor| dispatch(tx, actor, &command, now),
                 )
             })
             .await
@@ -126,18 +116,16 @@ impl CollaborationService {
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
-    operation: CollaborationOperation,
-    command: &CollaborationCommand,
+    command: &Command<CollaborationOperation>,
     now: i64,
 ) -> AppResult<Mutation> {
     use CollaborationOperation::*;
-    if operation.is_inbox() {
-        access::require_scope(tx, actor, "inbox_private", None)?;
+    if command.operation.is_inbox() {
+        access::require_scope(tx, actor, McpScope::InboxPrivate, None)?;
     }
     let payload = &command.payload;
-    // The revision rule has required one for every operation that takes it.
-    let expected = command.expected_revision.unwrap_or_default();
-    match operation {
+    let expected = command.revision();
+    match command.operation {
         CreateComment => create_comment(tx, actor, parse_payload(payload)?, now),
         EditComment => edit_comment(tx, actor, parse_payload(payload)?, expected, now),
         DeleteComment => delete_comment(tx, actor, parse_payload(payload)?, expected, now),
@@ -175,15 +163,7 @@ fn authorize_replay(
     match operation {
         CreateComment => {
             let input: CommentCreate = parse_payload(payload)?;
-            let project_id: String = tx
-                .query_row(
-                    "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                    [&input.task_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(tx, actor, &project_id, Need::Discussion, false)
+            access::require_task(tx, actor, &input.task_id, Need::Discussion, false).map(drop)
         }
         EditComment | DeleteComment | RestoreComment => {
             let comment_id = payload
@@ -200,56 +180,12 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound {
                     resource: "comment",
                 })?;
-            require_project(tx, actor, &project_id, Need::Discussion, false)?;
-            if operation != EditComment {
-                access::require_scope(tx, actor, "destructive", Some(&project_id))?;
-            }
+            let destructive = operation != EditComment;
+            require_project(tx, actor, &project_id, Need::Discussion, destructive)?;
             require_comment_owner_or_admin(actor, &author_id)
         }
         MarkRead | MarkUnread | Archive | RestoreArchived | BulkMarkRead | BulkArchive => {
-            access::require_scope(tx, actor, "inbox_private", None)
+            access::require_scope(tx, actor, McpScope::InboxPrivate, None)
         }
     }
-}
-
-/// Cuts a page that was read with one item too many back to `limit` items,
-/// and returns the cursor of the next page when that extra item was there.
-fn next_cursor<T>(
-    items: &mut Vec<T>,
-    limit: usize,
-    key: impl Fn(&T) -> (i64, &String),
-) -> Option<String> {
-    let more = items.len() > limit;
-    items.truncate(limit);
-    items.last().filter(|_| more).map(|item| {
-        let (time, id) = key(item);
-        encode_cursor(time, id)
-    })
-}
-
-fn page_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
-}
-
-#[derive(Serialize, Deserialize)]
-struct Cursor {
-    time: i64,
-    id: String,
-}
-
-fn encode_cursor(time: i64, id: &str) -> String {
-    URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&Cursor {
-            time,
-            id: id.to_owned(),
-        })
-        .unwrap_or_default(),
-    )
-}
-
-fn decode_cursor(value: &str) -> AppResult<Cursor> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| AppError::validation("cursor", "is invalid"))?;
-    serde_json::from_slice(&bytes).map_err(|_| AppError::validation("cursor", "is invalid"))
 }

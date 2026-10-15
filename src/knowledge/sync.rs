@@ -572,8 +572,9 @@ mod tests {
     use crate::{
         Db,
         auth::{Actor, ActorSource},
+        command::Command,
         knowledge::{
-            KnowledgeCommand,
+            KnowledgeOperation,
             git::{
                 SnapshotFile,
                 tests::{commit_all, git},
@@ -820,9 +821,13 @@ mod tests {
         upload.abort().await.unwrap();
     }
 
-    fn command(operation: &str, payload: Value, revision: Option<i64>) -> KnowledgeCommand {
-        KnowledgeCommand {
-            operation: operation.to_owned(),
+    fn command(
+        operation: &str,
+        payload: Value,
+        revision: Option<i64>,
+    ) -> Command<KnowledgeOperation> {
+        Command {
+            operation: KnowledgeOperation::parse(operation).unwrap(),
             payload,
             idempotency_key: uuid::Uuid::now_v7().to_string(),
             expected_revision: revision,

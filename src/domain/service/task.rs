@@ -1,4 +1,6 @@
-//! Task mutations preserve required epic ownership, assignee eligibility and block completion guards.
+//! Creating, editing, moving, deleting and restoring tasks.
+use super::ordering::{task_append_position, task_insert_position};
+use super::validation::optional_date;
 use super::*;
 
 pub(super) fn create_task(
@@ -22,7 +24,9 @@ pub(super) fn create_task(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("project sequence"))?;
+        .ok_or(AppError::NotFound {
+            resource: "project sequence",
+        })?;
     tx.execute(
         "UPDATE project_sequences SET next_task_number=next_task_number+1 WHERE project_id=?1 AND \
                      next_task_number=?2",
@@ -49,7 +53,7 @@ pub(super) fn create_task(
     )?;
     set_assignees(tx, &id, &actor.user_id, &[], &assignees, now)?;
     let entity = task_entity(tx, &id)?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -93,7 +97,7 @@ pub(super) fn update_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let epic_id = input.epic_id.unwrap_or(before.epic_id.clone());
     if epic_id != before.epic_id {
         ensure_open_epic(tx, &epic_id, &before.project_id)?;
@@ -173,7 +177,7 @@ pub(super) fn update_task(
         ("deadline", json!(before.deadline), json!(deadline)),
     ] {
         if b != a {
-            events.push(activity(
+            events.push(record_activity_tx(
                 tx,
                 actor,
                 ActivityInput {
@@ -194,7 +198,7 @@ pub(super) fn update_task(
     }
     for user_id in old_set.difference(&new_set) {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -219,7 +223,7 @@ pub(super) fn update_task(
     let newly_assigned: Vec<_> = new_set.difference(&old_set).cloned().collect();
     for user_id in &newly_assigned {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -277,7 +281,7 @@ pub(super) fn move_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let status = input.status.as_str();
     if status == "done" {
         let blocked: bool = tx.query_row(
@@ -364,7 +368,7 @@ pub(super) fn move_task(
     };
     let revision = expected + 1;
     let entity = task_entity(tx, &input.task_id)?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -416,10 +420,10 @@ pub(super) fn delete_task(
 ) -> AppResult<Mutation> {
     let before = task_row(tx, &input.id)?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     tx.execute("UPDATE tasks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = deleted("task", &input.id, &before.project_id, expected + 1);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -456,12 +460,12 @@ pub(super) fn restore_task(
             |row| Ok((TaskRow::from_row(row)?, row.get::<_, Option<i64>>(9)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("task"))?;
+        .ok_or(AppError::NotFound { resource: "task" })?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
     let Some(deleted_at) = deleted_at else {
         return Err(AppError::Conflict("the task is not deleted".into()));
     };
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     require_undo_window("task", deleted_at, now)?;
     // A purge that already claimed its files would remove them from the
     // restored task, as after the clock stepped back.
@@ -526,7 +530,7 @@ pub(super) fn restore_task(
             params![input.id, user_id],
         )?;
     }
-    events.push(activity(
+    events.push(record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -545,7 +549,7 @@ pub(super) fn restore_task(
     )?);
     for user_id in departed {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {

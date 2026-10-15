@@ -1,3 +1,5 @@
+//! `CollaborationRuntime` delivers the outbox after each commit: it creates
+//! Inbox notifications and sends live-update hints to open streams.
 use crate::clock::unix_now;
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -62,7 +64,7 @@ impl CollaborationRuntime {
         }
     }
 
-    pub fn db(&self) -> &Db {
+    fn db(&self) -> &Db {
         &self.inner.db
     }
 

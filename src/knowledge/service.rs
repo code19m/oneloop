@@ -7,7 +7,7 @@ mod catalog;
 mod commands;
 mod mcp;
 
-pub use commands::KnowledgeCommand;
+pub use commands::KnowledgeOperation;
 
 use std::{
     collections::HashMap,

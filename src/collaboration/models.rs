@@ -1,56 +1,29 @@
+//! Comment and Inbox commands, and the views that comment, activity and Inbox
+//! reads return.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    access::{McpRoute, McpTool},
-    idempotency::RevisionRule,
-};
+use crate::access::{McpRoute, McpTool};
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CollaborationCommand {
-    pub operation: String,
-    #[serde(default)]
-    pub payload: Value,
-    pub idempotency_key: String,
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
-}
-
-crate::idempotency::operations! {
+crate::command::operations! {
     /// Discussion and Inbox commands.
-    pub(crate) enum CollaborationOperation {
-        CreateComment = "discussion.comment.create",
-        EditComment = "discussion.comment.edit",
-        DeleteComment = "discussion.comment.delete",
-        RestoreComment = "discussion.comment.restore",
-        MarkRead = "inbox.markRead",
-        MarkUnread = "inbox.markUnread",
-        Archive = "inbox.archive",
-        RestoreArchived = "inbox.restore",
-        BulkMarkRead = "inbox.bulkMarkRead",
-        BulkArchive = "inbox.bulkArchive",
+    pub enum CollaborationOperation {
+        CreateComment = "discussion.comment.create" => Create,
+        EditComment = "discussion.comment.edit" => Existing,
+        DeleteComment = "discussion.comment.delete" => Existing,
+        RestoreComment = "discussion.comment.restore" => Existing,
+        MarkRead = "inbox.markRead" => None,
+        MarkUnread = "inbox.markUnread" => None,
+        Archive = "inbox.archive" => None,
+        RestoreArchived = "inbox.restore" => None,
+        BulkMarkRead = "inbox.bulkMarkRead" => None,
+        BulkArchive = "inbox.bulkArchive" => None,
     }
 }
 
 impl CollaborationOperation {
-    pub(crate) fn revision_rule(self) -> RevisionRule {
-        match self {
-            Self::EditComment | Self::DeleteComment | Self::RestoreComment => {
-                RevisionRule::Existing
-            }
-            Self::CreateComment
-            | Self::MarkRead
-            | Self::MarkUnread
-            | Self::Archive
-            | Self::RestoreArchived
-            | Self::BulkMarkRead
-            | Self::BulkArchive => RevisionRule::Optional,
-        }
-    }
-
     pub(crate) fn mcp_route(self) -> McpRoute {
         match self {
             Self::DeleteComment => McpRoute::Tool(McpTool::Destructive),

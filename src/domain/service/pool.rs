@@ -1,4 +1,5 @@
-//! Private/team Pool commands preserve ownership and atomically promote into tasks.
+//! Pool items, personal and team, and their promotion to tasks.
+use super::task::create_task;
 use super::*;
 
 pub(super) fn create_pool_item(
@@ -38,7 +39,7 @@ pub(super) fn create_pool_item(
         revision: 1,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -66,7 +67,7 @@ pub(super) fn update_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = pool_item_for(tx, actor, &input.pool_item_id, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let title = input
         .title
         .as_deref()
@@ -98,7 +99,7 @@ pub(super) fn update_pool_item(
             expected
         ],
     )?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -142,8 +143,8 @@ pub(super) fn delete_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = pool_item_for(tx, actor, &input.id, true)?;
-    ensure_revision(before.revision, expected)?;
-    let event = activity(
+    check_revision(expected, before.revision)?;
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -177,7 +178,7 @@ pub(super) fn promote_pool_item(
     now: i64,
 ) -> AppResult<Mutation> {
     let item = pool_item_for(tx, actor, &input.pool_item_id, false)?;
-    ensure_revision(item.revision, expected)?;
+    check_revision(expected, item.revision)?;
     // Promotion creates shared project work, so personal ownership alone is insufficient.
     require_project(tx, actor, &item.project_id, Need::Board, false)?;
     let task = TaskCreate {
@@ -204,7 +205,7 @@ pub(super) fn promote_pool_item(
     if let Value::Object(values) = &mut metadata {
         values.insert("taskId".into(), json!(mutation.resource_id));
     }
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -261,10 +262,14 @@ fn pool_item_for(
             })
         })
         .optional()?
-        .ok_or_else(|| not_found("pool item"))?;
+        .ok_or(AppError::NotFound {
+            resource: "pool item",
+        })?;
     require_pool_scope(tx, actor, &item.project_id, item.scope, destructive)?;
     if item.scope == PoolScope::Personal && item.owner_user_id.as_deref() != Some(&actor.user_id) {
-        return Err(not_found("pool item"));
+        return Err(AppError::NotFound {
+            resource: "pool item",
+        });
     }
     Ok(item)
 }
@@ -279,11 +284,7 @@ pub(super) fn require_pool_scope(
     match scope {
         PoolScope::Team => require_project(tx, actor, project_id, Need::Board, destructive),
         PoolScope::Personal => {
-            require_project(tx, actor, project_id, Need::Read, destructive)?;
-            if !crate::access::can_read_private_pool(tx, actor)? {
-                return Err(AppError::Forbidden);
-            }
-            Ok(())
+            crate::access::require_private_pool(tx, actor, project_id, destructive)
         }
     }
 }

@@ -10,8 +10,9 @@ mod reads;
 mod service;
 mod types;
 
+pub use crate::paging::PageQuery;
 pub use models::*;
-pub use reads::{BoardQuery, BoardViewQuery, BootstrapQuery, PageQuery, PoolQuery};
+pub use reads::{BoardQuery, BoardViewQuery, BootstrapQuery, PoolQuery, TaskFilter};
 pub use service::DomainService;
 pub use types::*;
 

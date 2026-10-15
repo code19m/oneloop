@@ -1,4 +1,6 @@
-//! Roadmap writes require roadmap permission and retain revision and child-deletion guards.
+//! Tracks, epics and milestones.
+use super::ordering::{active_ids, compact_positions, resequence};
+use super::validation::{date, optional_date};
 use super::*;
 
 pub(super) fn create_track(
@@ -36,7 +38,7 @@ pub(super) fn create_track(
         revision: 1,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -71,9 +73,9 @@ pub(super) fn update_track(
             TrackRow::from_row,
         )
         .optional()?
-        .ok_or_else(|| not_found("track"))?;
+        .ok_or(AppError::NotFound { resource: "track" })?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let name = input
         .name
         .as_deref()
@@ -91,7 +93,7 @@ pub(super) fn update_track(
     }
     let revision = expected + 1;
     tx.execute("UPDATE tracks SET name=?1,description=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6",params![name,description,now,revision,input.track_id,expected])?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -134,14 +136,14 @@ pub(super) fn reorder_track(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("track"))?;
+        .ok_or(AppError::NotFound { resource: "track" })?;
     require_project(tx, actor, &project_id, Need::Roadmap, false)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let mut ids = active_ids(tx, "tracks", "project_id", &project_id, None)?;
     let old = ids
         .iter()
         .position(|id| id == &input.track_id)
-        .ok_or_else(|| not_found("track"))?;
+        .ok_or(AppError::NotFound { resource: "track" })?;
     if input.position >= ids.len() {
         return Err(AppError::validation(
             "position",
@@ -165,7 +167,7 @@ pub(super) fn reorder_track(
     "position":input.position,
     "revision":updated_revision
     });
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -199,9 +201,9 @@ pub(super) fn delete_track(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("track"))?;
+        .ok_or(AppError::NotFound { resource: "track" })?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let has_children: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM epics WHERE track_id=?1 AND deleted_at IS NULL)",
         [&input.id],
@@ -215,7 +217,7 @@ pub(super) fn delete_track(
     tx.execute("UPDATE tracks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     compact_positions(tx, "tracks", "project_id", &project_id, None, now)?;
     let entity = deleted("track", &input.id, &project_id, revision + 1);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -288,7 +290,7 @@ pub(super) fn create_epic(
         revision: 1,
     };
     let entity = Entity::Epic(epic.clone()).value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -334,9 +336,9 @@ pub(super) fn update_epic(
     let before = tx
         .query_row(EPIC_ROW_SQL, [&input.epic_id], EpicRow::from_row)
         .optional()?
-        .ok_or_else(|| not_found("epic"))?;
+        .ok_or(AppError::NotFound { resource: "epic" })?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let track_id = input.track_id.unwrap_or(before.track_id.clone());
     ensure_track_project(tx, &track_id, &before.project_id)?;
     let title = input
@@ -410,7 +412,7 @@ pub(super) fn update_epic(
         if old == new {
             continue;
         }
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -493,9 +495,9 @@ pub(super) fn set_epic_state(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("epic"))?;
+        .ok_or(AppError::NotFound { resource: "epic" })?;
     require_project(tx, actor, &project_id, Need::Roadmap, false)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     if before == state {
         return Err(AppError::validation(
             "state",
@@ -521,7 +523,7 @@ pub(super) fn set_epic_state(
     )?;
     let entity =
         json!({"entityType":"epic","id":id,"projectId":project_id,"state":state,"revision":next});
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -559,9 +561,9 @@ pub(super) fn delete_epic(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("epic"))?;
+        .ok_or(AppError::NotFound { resource: "epic" })?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     let tasks: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE epic_id=?1 AND deleted_at IS NULL)",
         [&input.id],
@@ -575,7 +577,7 @@ pub(super) fn delete_epic(
     tx.execute("UPDATE epics SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     compact_positions(tx, "epics", "track_id", &track_id, None, now)?;
     let entity = deleted("epic", &input.id, &project_id, revision + 1);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -628,7 +630,7 @@ pub(super) fn create_milestone(
         revision: 1,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -662,9 +664,11 @@ pub(super) fn update_milestone(
             MilestoneRow::from_row,
         )
         .optional()?
-        .ok_or_else(|| not_found("milestone"))?;
+        .ok_or(AppError::NotFound {
+            resource: "milestone",
+        })?;
     require_project(tx, actor, &before.project_id, Need::Roadmap, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let title = input
         .title
         .as_deref()
@@ -715,7 +719,7 @@ pub(super) fn update_milestone(
         revision,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -756,12 +760,14 @@ pub(super) fn delete_milestone(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("milestone"))?;
+        .ok_or(AppError::NotFound {
+            resource: "milestone",
+        })?;
     require_project(tx, actor, &project_id, Need::Roadmap, true)?;
-    ensure_revision(revision, expected)?;
+    check_revision(expected, revision)?;
     tx.execute("UPDATE milestones SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = deleted("milestone", &input.id, &project_id, revision + 1);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {

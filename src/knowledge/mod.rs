@@ -18,7 +18,7 @@ mod sync;
 pub use content::{Chunks, FileBody};
 pub use search::{DocumentHits, FileHit, Hit, Results as SearchResults};
 pub use service::{
-    FileMode, FileRead, KnowledgeCommand, KnowledgeFile, KnowledgeOverview, KnowledgeService,
+    FileMode, FileRead, KnowledgeFile, KnowledgeOperation, KnowledgeOverview, KnowledgeService,
     KnowledgeView, OverviewFile, ReadmeText, SourceView, TextFile,
 };
 

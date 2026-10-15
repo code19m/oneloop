@@ -1,3 +1,4 @@
+//! The one wall clock: Unix seconds, as every timestamp stores them.
 use crate::{AppError, AppResult};
 
 pub fn unix_now() -> AppResult<i64> {

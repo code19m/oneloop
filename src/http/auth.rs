@@ -1,3 +1,5 @@
+//! Account and session routes, and the middleware that turns a session
+//! cookie into the request's `Actor`.
 use super::input::{ApiJson, ApiQuery};
 use std::net::SocketAddr;
 
@@ -16,8 +18,9 @@ use crate::{
     AppError, AppResult, AppState,
     auth::{
         AccountSummary, AccountUpdate, Actor, ConnectedAppSummary, IssuedSession, LoginResult,
-        SessionMetadata, SessionSummary, unix_now,
+        SessionMetadata, SessionSummary,
     },
+    clock::unix_now,
 };
 
 use super::security::{
@@ -101,13 +104,7 @@ pub(crate) async fn require_actor(
         || ((path.starts_with("/api/attachments/")
             || (path.starts_with("/api/projects/") && path.contains("/knowledge/")))
             && matches!(destination, Some("image" | "iframe"))));
-    let meaningful = path != "/api/events"
-        && !passive_resource
-        && request
-            .headers()
-            .get("x-oneloop-background")
-            .and_then(|value| value.to_str().ok())
-            != Some("1");
+    let meaningful = path != "/api/events" && !passive_resource;
     let actor = authenticate_headers(&state, request.headers(), meaningful).await?;
     actor.require_ready()?;
     request.extensions_mut().insert(actor);

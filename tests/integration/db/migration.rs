@@ -255,7 +255,9 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
 
 #[tokio::test]
 async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first() {
-    use oneloop::domain::{BoardQuery, DomainOperation, DomainService, DoneOrder, TaskStatus};
+    use oneloop::domain::{
+        BoardQuery, DomainOperation, DomainService, DoneOrder, TaskFilter, TaskStatus,
+    };
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
@@ -283,13 +285,10 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
             status: TaskStatus::Done,
             cursor: None,
             limit: Some(50),
-            search: None,
-            track_ids: vec![],
-            epic_ids: vec![],
-            assignee_ids: vec![],
-            no_assignee: false,
-            blocked: false,
-            done_order: DoneOrder::Completed,
+            filter: TaskFilter {
+                done_order: DoneOrder::Completed,
+                ..Default::default()
+            },
         };
         let page = service.board_page(&owner, query).await.unwrap();
         page.items

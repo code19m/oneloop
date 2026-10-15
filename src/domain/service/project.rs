@@ -1,4 +1,4 @@
-//! Project administration and atomic deletion; historical prefixes remain reserved.
+//! Creating, renaming and deleting projects.
 use super::*;
 
 pub(super) fn create_project(
@@ -36,7 +36,7 @@ pub(super) fn create_project(
         [&id],
     )?;
     let entity = json!({"entityType":"project","id":id,"name":name,"taskPrefix":prefix,"revision":1,"projectId":id});
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -71,8 +71,10 @@ pub(super) fn update_project(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("project"))?;
-    ensure_revision(before.2, expected)?;
+        .ok_or(AppError::NotFound {
+            resource: "project",
+        })?;
+    check_revision(expected, before.2)?;
     let name = input
         .name
         .as_deref()
@@ -123,7 +125,7 @@ pub(super) fn update_project(
     "taskPrefix":prefix,
     "revision":revision
     });
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -158,8 +160,10 @@ pub(super) fn delete_project(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("project"))?;
-    ensure_revision(revision, expected)?;
+        .ok_or(AppError::NotFound {
+            resource: "project",
+        })?;
+    check_revision(expected, revision)?;
     if input.confirmed_name != name {
         return Err(AppError::validation(
             "confirmedName",
@@ -193,7 +197,7 @@ pub(super) fn delete_project(
     // also selected others; the cascade below would erase that selection.
     crate::auth::revoke_project_app_access(tx, &input.project_id, None, now)?;
     // Audit first: project foreign keys become NULL while immutable snapshots remain.
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {

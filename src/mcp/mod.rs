@@ -1,3 +1,5 @@
+//! The MCP routes: the stateless endpoint at `/mcp` with bearer-token
+//! authentication, the OAuth server and the file transfer routes.
 pub(crate) mod client_metadata;
 mod cors;
 mod oauth;

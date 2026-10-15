@@ -1,4 +1,6 @@
-//! Bounded SQLite execution with foreign keys, WAL snapshots and explicit migrations. Writes and their durable audit/outbox commit atomically.
+//! `Db` runs SQLite on a fixed pool of blocking workers behind one writer
+//! permit, with read snapshots, and `DataLayout` knows a data directory's
+//! paths and lock files.
 
 /// Tells the person running a command what maintenance found or did. Unlike
 /// `eprintln!`, it doesn't panic when nothing reads standard error.

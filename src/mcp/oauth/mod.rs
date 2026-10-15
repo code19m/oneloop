@@ -21,25 +21,14 @@ use url::Url;
 
 use super::{client_metadata, cors};
 use crate::{
-    AppError, AppResult, AppState, auth::token::hash as hash_token, clock::unix_now,
-    config::is_loopback, http::security::escape_html,
+    AppError, AppResult, AppState, access::McpScope, auth::token::hash as hash_token,
+    clock::unix_now, config::is_loopback, http::security::escape_html,
 };
 
 use authorize::{authorize, consent};
 use consent_page::{consent_script, consent_style};
 use register::register_client;
 use token::{revoke, token};
-
-pub(super) const SCOPES: &[&str] = &[
-    crate::auth::McpScope::ProjectRead.as_str(),
-    crate::auth::McpScope::Discussion.as_str(),
-    crate::auth::McpScope::BoardManage.as_str(),
-    crate::auth::McpScope::RoadmapManage.as_str(),
-    crate::auth::McpScope::InboxPrivate.as_str(),
-    crate::auth::McpScope::MyPoolPrivate.as_str(),
-    crate::auth::McpScope::Attachments.as_str(),
-    crate::auth::McpScope::Destructive.as_str(),
-];
 
 pub(super) fn router(state: &AppState) -> Router<AppState> {
     // These use no cookies, so any page may call them (see `cors`).
@@ -80,7 +69,7 @@ pub(super) fn router(state: &AppState) -> Router<AppState> {
 struct ProtectedResourceMetadata {
     resource: String,
     authorization_servers: Vec<String>,
-    scopes_supported: &'static [&'static str],
+    scopes_supported: [McpScope; McpScope::ALL.len()],
     bearer_methods_supported: [&'static str; 1],
 }
 
@@ -90,7 +79,7 @@ async fn protected_resource_metadata(
     Json(ProtectedResourceMetadata {
         resource: resource_url(&state),
         authorization_servers: vec![issuer(&state)],
-        scopes_supported: SCOPES,
+        scopes_supported: McpScope::ALL,
         bearer_methods_supported: ["header"],
     })
 }
@@ -106,7 +95,7 @@ struct AuthorizationServerMetadata {
     grant_types_supported: [&'static str; 2],
     token_endpoint_auth_methods_supported: [&'static str; 1],
     code_challenge_methods_supported: [&'static str; 1],
-    scopes_supported: &'static [&'static str],
+    scopes_supported: [McpScope; McpScope::ALL.len()],
     authorization_response_iss_parameter_supported: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     client_id_metadata_document_supported: bool,
@@ -126,7 +115,7 @@ async fn authorization_server_metadata(
         grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["none"],
         code_challenge_methods_supported: ["S256"],
-        scopes_supported: SCOPES,
+        scopes_supported: McpScope::ALL,
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: state.client_documents.enabled(),
     })

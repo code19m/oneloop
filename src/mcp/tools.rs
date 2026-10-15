@@ -1,3 +1,5 @@
+//! `OneloopMcp`: every MCP tool, its input schema and how its errors reach
+//! the client.
 use std::collections::BTreeSet;
 
 use axum::http::request::Parts;
@@ -16,10 +18,10 @@ use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
     auth::Actor,
-    collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
+    collaboration::{CollaborationOperation, InboxFilter},
+    command::{Command, Operation},
     domain::{
-        BoardQuery, BoardViewQuery, CommandEnvelope, DomainOperation, DoneOrder, PageQuery,
-        PoolQuery,
+        BoardQuery, BoardViewQuery, DomainOperation, DoneOrder, PageQuery, PoolQuery, TaskFilter,
     },
     files::{AttachmentPatch, AttachmentReorder},
 };
@@ -151,9 +153,11 @@ pub(super) struct PoolInput {
     pub limit: Option<usize>,
 }
 
+/// The arguments of every command tool. The revision is optional here, so
+/// each command's own revision rule decides, as it does for the browser.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WorkCommandInput {
+pub(super) struct CommandInput {
     /// Command name; its payload shape is selected by the operation schema.
     pub operation: String,
     #[serde(default)]
@@ -166,18 +170,15 @@ pub(super) struct WorkCommandInput {
     pub expected_revision: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DestructiveCommandInput {
-    /// Command name; its payload shape is selected by the operation schema.
-    pub operation: String,
-    #[serde(default)]
-    /// Operation-specific object; use the matching operation variant below.
-    pub payload: Value,
-    /// Unique key of 1–128 visible ASCII characters per logical write; reuse with identical input on retry.
-    pub idempotency_key: String,
-    /// Current entity revision from a read; required for edits and deletions.
-    pub expected_revision: i64,
+impl CommandInput {
+    fn command<O>(self, operation: O) -> Command<O> {
+        Command {
+            operation,
+            payload: self.payload,
+            idempotency_key: self.idempotency_key,
+            expected_revision: self.expected_revision,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -455,33 +456,35 @@ impl OneloopMcp {
     ) -> Result<Json<Value>, ToolError> {
         let actor = actor(&parts)?;
         let domain = &self.state.domain;
+        let filter = TaskFilter {
+            search: input.search,
+            track_ids: input.track_ids,
+            epic_ids: input.epic_ids,
+            assignee_ids: input.assignee_ids,
+            no_assignee: input.no_assignee,
+            blocked: input.blocked,
+            done_order: DoneOrder::Manual,
+        };
         if let Some(status) = input.status {
-            return json(
-                domain
-                    .board_page(&actor, board_query(input, status))
-                    .await?,
-            );
+            let query = BoardQuery {
+                project_id: input.project_id,
+                status,
+                cursor: input.cursor,
+                limit: input.limit,
+                filter,
+            };
+            return json(domain.board_page(&actor, query).await?);
         }
         if input.cursor.is_some() {
             return Err(ToolError::invalid_arguments("cursor requires a status"));
         }
         // One read, so a task that moves meanwhile is in exactly one column.
-        let board = domain
-            .board_view(
-                &actor,
-                BoardViewQuery {
-                    project_id: input.project_id,
-                    limit: input.limit,
-                    search: input.search,
-                    track_ids: input.track_ids,
-                    epic_ids: input.epic_ids,
-                    assignee_ids: input.assignee_ids,
-                    no_assignee: input.no_assignee,
-                    blocked: input.blocked,
-                    done_order: DoneOrder::Manual,
-                },
-            )
-            .await?;
+        let query = BoardViewQuery {
+            project_id: input.project_id,
+            limit: input.limit,
+            filter,
+        };
+        let board = domain.board_view(&actor, query).await?;
         json(json!({
             "planning": board.planning,
             "in_progress": board.in_progress,
@@ -602,7 +605,7 @@ impl OneloopMcp {
     async fn execute_work(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<WorkCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported ordinary work operation";
         let operation = DomainOperation::parse(&input.operation)
@@ -611,15 +614,7 @@ impl OneloopMcp {
         let result = self
             .state
             .domain
-            .execute(
-                &actor(&parts)?,
-                CommandEnvelope {
-                    operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: input.expected_revision,
-                },
-            )
+            .execute(&actor(&parts)?, input.command(operation))
             .await?;
         json(result)
     }
@@ -638,7 +633,7 @@ impl OneloopMcp {
     async fn execute_discussion(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<WorkCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported discussion or Inbox operation";
         let operation = CollaborationOperation::parse(&input.operation)
@@ -647,15 +642,7 @@ impl OneloopMcp {
         let result = self
             .state
             .collaboration
-            .execute(
-                &actor(&parts)?,
-                CollaborationCommand {
-                    operation: input.operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: input.expected_revision,
-                },
-            )
+            .execute(&actor(&parts)?, input.command(operation))
             .await?;
         json(result)
     }
@@ -674,7 +661,7 @@ impl OneloopMcp {
     async fn execute_destructive(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<DestructiveCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         // The services check the destructive scope for the project.
         const UNSUPPORTED: &str = "unsupported destructive operation";
@@ -684,15 +671,7 @@ impl OneloopMcp {
             let result = self
                 .state
                 .collaboration
-                .execute(
-                    &actor,
-                    CollaborationCommand {
-                        operation: input.operation,
-                        payload: input.payload,
-                        idempotency_key: input.idempotency_key,
-                        expected_revision: Some(input.expected_revision),
-                    },
-                )
+                .execute(&actor, input.command(operation))
                 .await?;
             return json(result);
         }
@@ -703,15 +682,7 @@ impl OneloopMcp {
         let result = self
             .state
             .domain
-            .execute(
-                &actor,
-                CommandEnvelope {
-                    operation,
-                    payload: input.payload,
-                    idempotency_key: input.idempotency_key,
-                    expected_revision: Some(input.expected_revision),
-                },
-            )
+            .execute(&actor, input.command(operation))
             .await?;
         json(result)
     }
@@ -1068,22 +1039,6 @@ fn actor(parts: &Parts) -> Result<Actor, ToolError> {
         .cloned()
         .ok_or_else(|| ToolError::invalid_request("authenticated actor is missing"))
 }
-fn board_query(input: SearchTasksInput, status: crate::domain::TaskStatus) -> BoardQuery {
-    BoardQuery {
-        project_id: input.project_id,
-        status,
-        cursor: input.cursor,
-        limit: input.limit,
-        search: input.search,
-        track_ids: input.track_ids,
-        epic_ids: input.epic_ids,
-        assignee_ids: input.assignee_ids,
-        no_assignee: input.no_assignee,
-        blocked: input.blocked,
-        done_order: DoneOrder::Manual,
-    }
-}
-
 #[derive(Debug)]
 enum ToolError {
     Protocol(ErrorData),

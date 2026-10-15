@@ -77,6 +77,14 @@ pub(crate) fn parse_json<T: DeserializeOwned>(bytes: &[u8]) -> AppResult<T> {
     Ok(result)
 }
 
+/// The IDs in a query value separated by commas, such as `trackIds=a,b`,
+/// read like a list in the settings.
+pub(crate) fn id_list(raw: Option<&str>) -> Vec<String> {
+    crate::config::comma_list(raw.unwrap_or_default())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Preserve raw payload until the envelope has been validated; serde then
 /// rejects duplicate envelope fields instead of silently keeping the last one.
 #[derive(Deserialize)]

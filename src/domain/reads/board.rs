@@ -2,6 +2,7 @@
 //! an epic's tasks, and the task views they all return.
 
 use super::*;
+use crate::paging;
 
 pub(super) fn board_page_connection(
     connection: &rusqlite::Connection,
@@ -18,10 +19,11 @@ pub(super) fn board_page_with_total(
     total: Option<i64>,
 ) -> AppResult<Page<TaskView>> {
     require_project(connection, actor, &q.project_id, Need::Read, false)?;
-    let limit = page_limit(q.limit);
+    let limit = paging::page_limit(q.limit, PAGE_SIZE, PAGE_SIZE);
     let generation = task_page_generation(connection, &q.project_id)?;
     // Only Done has a newest-first order; other columns ignore the choice.
-    let newest = q.status == TaskStatus::Done && q.done_order == DoneOrder::Completed;
+    let filter = &q.filter;
+    let newest = q.status == TaskStatus::Done && filter.done_order == DoneOrder::Completed;
     let scope = if newest {
         format!("board:{}:done:completed", q.project_id)
     } else {
@@ -30,7 +32,7 @@ pub(super) fn board_page_with_total(
     let start = match q.cursor.as_deref() {
         None => None,
         Some(raw) if newest => {
-            let cursor: CompletedCursor = decode_cursor(raw)?;
+            let cursor: CompletedCursor = paging::decode(raw)?;
             check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
             Some(PageStart::Completed {
                 at: cursor.completed_at,
@@ -39,7 +41,7 @@ pub(super) fn board_page_with_total(
             })
         }
         Some(raw) => {
-            let cursor: BoardCursor = decode_cursor(raw)?;
+            let cursor: BoardCursor = paging::decode(raw)?;
             check_task_cursor(cursor.generation, generation, &cursor.scope, &scope)?;
             Some(PageStart::Position(cursor.position, cursor.id))
         }
@@ -53,7 +55,7 @@ pub(super) fn board_page_with_total(
         "t.status=?2".to_owned(),
         "t.deleted_at IS NULL".to_owned(),
     ];
-    if let Some(search) = q
+    if let Some(search) = filter
         .search
         .as_deref()
         .map(str::trim)
@@ -65,17 +67,17 @@ pub(super) fn board_page_with_total(
             "(instr(lower(t.task_key),?{n})>0 OR instr(t.search_title,?{n})>0)"
         ));
     }
-    if !q.track_ids.is_empty() {
+    if !filter.track_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.track_ids)
+            serde_json::to_string(&filter.track_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
         conditions.push(format!("EXISTS(SELECT 1 FROM epics e WHERE e.id=t.epic_id AND e.track_id IN (SELECT value FROM json_each(?{})))",values.len()));
     }
-    if !q.epic_ids.is_empty() {
+    if !filter.epic_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.epic_ids)
+            serde_json::to_string(&filter.epic_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
@@ -85,28 +87,28 @@ pub(super) fn board_page_with_total(
         ));
     }
     let mut assigned = Vec::new();
-    if !q.assignee_ids.is_empty() {
+    if !filter.assignee_ids.is_empty() {
         values.push(
-            serde_json::to_string(&q.assignee_ids)
+            serde_json::to_string(&filter.assignee_ids)
                 .map_err(|error| AppError::internal(error.to_string()))?
                 .into(),
         );
         assigned.push(format!("EXISTS(SELECT 1 FROM task_assignees a WHERE a.task_id=t.id AND a.user_id IN (SELECT value FROM json_each(?{})))",values.len()));
     }
-    if q.no_assignee {
+    if filter.no_assignee {
         assigned.push("NOT EXISTS(SELECT 1 FROM task_assignees a WHERE a.task_id=t.id)".into());
     }
     if !assigned.is_empty() {
         conditions.push(format!("({})", assigned.join(" OR ")));
     }
-    if q.blocked {
+    if filter.blocked {
         conditions.push(
             "EXISTS(SELECT 1 FROM task_blocks b WHERE b.task_id=t.id AND b.resolved_at IS NULL)"
                 .into(),
         );
     }
     let predicate = conditions.join(" AND ");
-    let total = if total.is_none() && conditions.len() == 3 {
+    let total = if total.is_none() && filter.is_empty() {
         Some(connection.query_row(
             &format!("SELECT COUNT(*) FROM tasks t WHERE {predicate}"),
             rusqlite::params_from_iter(values.iter()),
@@ -224,7 +226,7 @@ pub(super) fn board_page_with_total(
     let next_cursor = if has_more {
         items.last().map(|t| {
             if newest {
-                encode_cursor(&CompletedCursor {
+                paging::encode(&CompletedCursor {
                     generation,
                     scope,
                     completed_at: t.completed_at,
@@ -232,7 +234,7 @@ pub(super) fn board_page_with_total(
                     id: t.id.clone(),
                 })
             } else {
-                encode_cursor(&BoardCursor {
+                paging::encode(&BoardCursor {
                     generation,
                     scope,
                     position: t.position,
@@ -490,12 +492,12 @@ struct EpicTaskCursor {
 
 pub(super) fn epic_task_page_connection(
     connection: &rusqlite::Connection,
+    project_id: &str,
     epic_id: &str,
     cursor: Option<&str>,
     limit: usize,
 ) -> AppResult<Page<TaskView>> {
-    let project_id = epic_project(connection, epic_id)?;
-    let generation = task_page_generation(connection, &project_id)?;
+    let generation = task_page_generation(connection, project_id)?;
     let cursor = cursor.map(decode_epic_task_cursor).transpose()?;
     if let Some(cursor) = &cursor {
         check_task_cursor(cursor.generation, generation, &cursor.scope, epic_id)?;
@@ -540,7 +542,7 @@ pub(super) fn epic_task_page_connection(
         .then(|| rows.last())
         .flatten()
         .map(|(id, rank, key)| {
-            encode_cursor(&EpicTaskCursor {
+            paging::encode(&EpicTaskCursor {
                 generation,
                 scope: epic_id.into(),
                 status_rank: *rank,
@@ -556,5 +558,37 @@ pub(super) fn epic_task_page_connection(
 }
 
 fn decode_epic_task_cursor(value: &str) -> AppResult<EpicTaskCursor> {
-    decode_cursor(value)
+    paging::decode(value)
+}
+
+pub(super) fn task_page_generation(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+) -> AppResult<i64> {
+    Ok(connection.query_row(
+        "SELECT generation FROM project_task_versions WHERE project_id=?1",
+        [project_id],
+        |r| r.get(0),
+    )?)
+}
+
+pub(super) fn check_task_cursor(
+    saved: i64,
+    current: i64,
+    saved_scope: &str,
+    scope: &str,
+) -> AppResult<()> {
+    if saved_scope != scope {
+        return Err(AppError::validation(
+            "cursor",
+            "cursor belongs to another collection",
+        ));
+    }
+    if saved != current {
+        return Err(AppError::rule(
+            crate::error::RuleKind::CursorStale,
+            "Tasks changed while paging; reload the collection from its first page",
+        ));
+    }
+    Ok(())
 }

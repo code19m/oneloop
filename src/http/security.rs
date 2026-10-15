@@ -1,3 +1,5 @@
+//! Host and origin checks, security headers, session cookies and client
+//! addresses behind trusted proxies.
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{
@@ -393,7 +395,7 @@ pub(crate) fn client_ip(
 fn warn_untrusted_forwarding() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_WARNING: AtomicU64 = AtomicU64::new(0);
-    let now = crate::auth::unix_now().unwrap_or(0) as u64;
+    let now = crate::clock::unix_now().unwrap_or(0) as u64;
     let last = LAST_WARNING.load(Ordering::Relaxed);
     if now.saturating_sub(last) >= 60
         && LAST_WARNING
@@ -403,17 +405,6 @@ fn warn_untrusted_forwarding() {
         tracing::warn!(
             "ignoring X-Forwarded-For from an untrusted peer; check ONELOOP_TRUSTED_PROXIES"
         );
-    }
-}
-
-/// Address aggregation is for abuse counters only, never session metadata.
-pub(crate) fn throttle_bucket(ip: IpAddr) -> String {
-    match ip.to_canonical() {
-        IpAddr::V4(ip) => ip.to_string(),
-        IpAddr::V6(ip) => format!(
-            "{}/64",
-            std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))
-        ),
     }
 }
 

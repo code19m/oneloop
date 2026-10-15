@@ -1,3 +1,5 @@
+//! `AppError`, the error of every layer, with its stable client code and
+//! HTTP status.
 use axum::{
     Json,
     http::StatusCode,

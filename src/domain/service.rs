@@ -1,21 +1,25 @@
 //! Domain commands: one handler per operation, run once inside the shared
 //! command envelope, and the row helpers the handlers share.
-mod project;
-use project::*;
-mod membership;
-use membership::*;
-mod roadmap;
-use roadmap::*;
-mod ordering;
-use ordering::*;
-mod task;
-use task::*;
 mod block;
-use block::*;
+mod membership;
+mod ordering;
 mod pool;
-use pool::*;
+mod project;
+mod roadmap;
+mod task;
 mod validation;
-use validation::*;
+
+use block::{block_task, unblock_task, update_block_reason};
+use membership::{add_membership, remove_membership, update_membership};
+use pool::{
+    create_pool_item, delete_pool_item, promote_pool_item, require_pool_scope, update_pool_item,
+};
+use project::{create_project, delete_project, update_project};
+use roadmap::{
+    complete_epic, create_epic, create_milestone, create_track, delete_epic, delete_milestone,
+    delete_track, reopen_epic, reorder_track, update_epic, update_milestone, update_track,
+};
+use task::{create_task, delete_task, move_task, restore_task, update_task};
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -26,27 +30,27 @@ use uuid::Uuid;
 
 use crate::{
     Db,
-    access::{Need, require_project, validate_mentions},
+    access::{Need, is_active_member, require_project},
     auth::Actor,
     clock::unix_now,
     collaboration::{
-        ActivityInput, NotificationInput,
+        ActivityEvent, ActivityInput, NotificationInput,
         mentions::{self, MentionNotice, Mentioned},
         record_activity_tx, snapshot_notification_tx,
     },
+    command::{Command, CommandResult, Mutation, check_revision},
     error::{AppError, AppResult},
-    idempotency::{Envelope, Mutation},
     text,
     timezone::TimeZone,
 };
 
 use super::{
-    Access, BlockReasonUpdate, CommandEnvelope, CommandResult, DomainEvent, DomainOperation,
-    EntityId, EpicCreate, EpicSummary, EpicUpdate, EpicView, MembershipCreate, MembershipDelete,
-    MembershipUpdate, MembershipView, MilestoneCreate, MilestoneUpdate, MilestoneView,
-    PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate,
-    ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock,
-    TaskUpdate, TaskView, TrackCreate, TrackReorder, TrackUpdate, TrackView, require_undo_window,
+    Access, BlockReasonUpdate, DomainOperation, EntityId, EpicCreate, EpicSummary, EpicUpdate,
+    EpicView, MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView,
+    MilestoneCreate, MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote,
+    PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate,
+    TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate,
+    TrackReorder, TrackUpdate, TrackView, require_undo_window,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;
@@ -79,17 +83,10 @@ impl DomainService {
     pub async fn execute(
         &self,
         actor: &Actor,
-        command: CommandEnvelope,
+        command: Command<DomainOperation>,
     ) -> AppResult<CommandResult> {
         actor.require_ready()?;
-        let operation = command.operation;
-        let envelope = Envelope::new(
-            operation.as_str(),
-            &command.payload,
-            &command.idempotency_key,
-            command.expected_revision,
-            operation.revision_rule(),
-        )?;
+        let envelope = command.envelope()?;
         let actor = actor.clone();
         self.db
             .transaction(move |tx| {
@@ -98,7 +95,7 @@ impl DomainService {
                     tx,
                     &actor,
                     now,
-                    |actor, replay| authorize_replay(tx, actor, operation, replay, now),
+                    |actor, replay| authorize_replay(tx, actor, command.operation, replay, now),
                     |actor| dispatch(tx, actor, &command, now),
                 )
             })
@@ -109,7 +106,7 @@ impl DomainService {
 fn dispatch(
     tx: &Transaction<'_>,
     actor: &Actor,
-    command: &CommandEnvelope,
+    command: &Command<DomainOperation>,
     now: i64,
 ) -> AppResult<Mutation> {
     macro_rules! payload {
@@ -117,8 +114,7 @@ fn dispatch(
             crate::input::parse_payload::<$ty>(&command.payload)?
         };
     }
-    // The revision rule has required one for every operation that takes it.
-    let expected = command.expected_revision.unwrap_or_default();
+    let expected = command.revision();
     match command.operation {
         DomainOperation::CreateProject => create_project(tx, actor, payload!(ProjectCreate), now),
         DomainOperation::UpdateProject => {
@@ -243,19 +239,6 @@ fn is_constraint(error: &rusqlite::Error) -> bool {
     matches!(error, rusqlite::Error::SqliteFailure(inner, _) if inner.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
-fn not_found(resource: &'static str) -> AppError {
-    AppError::NotFound { resource }
-}
-
-fn activity(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    input: ActivityInput<'_>,
-    now: i64,
-) -> AppResult<DomainEvent> {
-    record_activity_tx(tx, actor, input, now)
-}
-
 fn normalize_prefix(value: &str) -> AppResult<String> {
     let value = value.trim().to_ascii_uppercase();
     if !(2..=4).contains(&value.len())
@@ -282,7 +265,9 @@ fn ensure_project_and_active_user(
         |row| row.get(0),
     )?;
     if !project {
-        return Err(not_found("project"));
+        return Err(AppError::NotFound {
+            resource: "project",
+        });
     }
     let user: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND is_active=1)",
@@ -290,7 +275,9 @@ fn ensure_project_and_active_user(
         |row| row.get(0),
     )?;
     if !user {
-        return Err(not_found("active user"));
+        return Err(AppError::NotFound {
+            resource: "active user",
+        });
     }
     Ok(())
 }
@@ -332,7 +319,7 @@ fn task_row(tx: &Transaction<'_>, id: &str) -> AppResult<TaskRow> {
         TaskRow::from_row,
     )
     .optional()?
-    .ok_or_else(|| not_found("task"))
+    .ok_or(AppError::NotFound { resource: "task" })
 }
 
 /// A record a command returns, tagged with its `entityType`.
@@ -399,10 +386,7 @@ fn validate_assignees(
         if !unique.insert(id.clone()) {
             continue;
         }
-        let valid: bool = tx.query_row(IS_ACTIVE_MEMBER_SQL, params![id, project_id], |row| {
-            row.get(0)
-        })?;
-        if !valid {
+        if !is_active_member(tx, project_id, &id)? {
             return Err(AppError::validation(
                 "assigneeIds",
                 "every assignee must be an active project member",
@@ -443,7 +427,7 @@ fn set_assignees(
     Ok(())
 }
 
-fn activated_epic_entity(project_id: &str, event: &DomainEvent) -> Value {
+fn activated_epic_entity(project_id: &str, event: &ActivityEvent) -> Value {
     json!({"entityType":"epic", "id":event.entity_id, "projectId":project_id,
         "state":"active", "revision":event.entity_revision})
 }
@@ -454,7 +438,7 @@ fn activate_epic_for_work(
     project_id: &str,
     epic_id: &str,
     now: i64,
-) -> AppResult<Option<DomainEvent>> {
+) -> AppResult<Option<ActivityEvent>> {
     let revision: Option<i64> = tx
         .query_row(
             "SELECT revision FROM epics WHERE id=?1 AND state='planning' AND deleted_at IS NULL",
@@ -464,7 +448,7 @@ fn activate_epic_for_work(
         .optional()?;
     if let Some(revision) = revision {
         tx.execute("UPDATE epics SET state='active',updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,epic_id,revision])?;
-        return activity(
+        return record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -486,7 +470,6 @@ fn activate_epic_for_work(
     Ok(None)
 }
 
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
 const MEMBERSHIP_PERMISSIONS_SQL: &str = "SELECT manage_roadmap,manage_board,revision FROM project_memberships WHERE project_id=?1 \
                      AND user_id=?2";
 const HAS_OPEN_ASSIGNMENTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assignees a JOIN tasks t ON t.id=a.task_id WHERE \
@@ -509,8 +492,6 @@ const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at
                      COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,updated_at=?4,\
                      revision=revision+1 WHERE id=?5 AND revision=?6";
 
-const IS_ACTIVE_MEMBER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
-                     u.id=?1 AND u.is_active=1 AND m.project_id=?2)";
 const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
 const POOL_ITEM_SQL: &str = "SELECT project_id,scope,owner_user_id,title,description,created_at,revision \

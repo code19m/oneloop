@@ -1,3 +1,5 @@
+//! Records audit activity in the same transaction as the change it
+//! describes.
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use uuid::Uuid;

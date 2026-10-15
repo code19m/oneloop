@@ -22,6 +22,12 @@ All notable changes to oneloop are recorded here. The format follows
   such as `WEB-042`, in `taskId`, as `create_attachment_upload` does. The
   browser API's `GET /api/tasks/{id}/attachments` and
   `POST /api/tasks/{id}/attachments/reorder` accept one too.
+- In MCP, a `read_pool` `nextCursor` from an earlier version now fails with
+  `validation_failed`, because Pool cursors have a new form. Start again from
+  the first page.
+- In MCP, `discussion.comment.create` and the `inbox.*` operations now refuse
+  an `expectedRevision` with `validation_failed`, as creating a task does.
+  Before, they accepted it and ignored it.
 
 ### Fixed
 
@@ -73,6 +79,11 @@ All notable changes to oneloop are recorded here. The format follows
   mention. Before, the mention was dropped and the person was not notified.
 - An epic's activity now comes in pages of up to 100 items, like all other
   activity, as the limits in the documentation say. It stopped at 50.
+- The page where you connect an AI app lists projects in the same order as
+  the app, without regard to upper and lower case.
+- In MCP, `execute_destructive_command` without `expectedRevision` now fails
+  with `precondition_failed`, as edits do and as the documentation says.
+  Before, the call was refused as invalid arguments.
 - In MCP, `search_tasks` without a status now reads all four columns at one
   moment. Before, a task that moved while it was read could show up twice or
   not at all.

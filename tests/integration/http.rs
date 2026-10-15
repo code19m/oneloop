@@ -551,6 +551,25 @@ async fn malformed_requests_have_field_errors_after_origin_and_authentication() 
             412,
             None,
         ),
+        // Only a change to a record with a revision takes one.
+        (
+            "/api/commands",
+            "POST",
+            "http://127.0.0.1:8080",
+            true,
+            r#"{"operation":"discussion.comment.create","payload":{},"idempotencyKey":"x","expectedRevision":1}"#,
+            400,
+            Some("expectedRevision"),
+        ),
+        (
+            "/api/commands",
+            "POST",
+            "http://127.0.0.1:8080",
+            true,
+            r#"{"operation":"inbox.markRead","payload":{},"idempotencyKey":"x","expectedRevision":1}"#,
+            400,
+            Some("expectedRevision"),
+        ),
         (
             "/api/commands",
             "POST",

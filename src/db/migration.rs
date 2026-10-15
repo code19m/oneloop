@@ -1,3 +1,4 @@
+//! Applies numbered migrations in order and records each with a checksum.
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};

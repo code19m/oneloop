@@ -1298,6 +1298,32 @@ async fn stale_mcp_write_is_a_structured_conflict_with_current_revision() {
 }
 
 #[tokio::test]
+async fn a_deletion_without_its_revision_fails_the_precondition() {
+    let (_dir, _, app, session, _) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &[
+            "project_read",
+            "board_manage",
+            "roadmap_manage",
+            "destructive",
+        ],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "no-revision").await;
+    assert_tool_error(
+        &mcp.call(
+            "execute_destructive_command",
+            json!({"operation":"task.delete","payload":{"id":task},"idempotencyKey":"delete-without-revision"}),
+        )
+        .await,
+        "precondition_failed",
+    );
+}
+
+#[tokio::test]
 async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects() {
     use oneloop::collaboration::{CollaborationRuntime, CollaborationService};
     let (_dir, db, app, session, user) = fixture().await;

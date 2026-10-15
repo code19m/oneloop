@@ -32,7 +32,7 @@ AI client ─ /mcp ──▶ mcp::tools  ─┘            └─▶ FileStore (
 ```
 
 The services are `DomainService`, `CollaborationService`, `FileService`,
-`KnowledgeService` and `AuthService`. Every write is one SQLite transaction
+`KnowledgeService` and `AuthService`. Every command is one SQLite transaction
 that checks access, validates input, compares the expected revision, records
 the idempotency receipt, changes the data, appends audit activity and adds a
 message to the outbox. After it commits, `CollaborationRuntime` delivers the
@@ -59,17 +59,17 @@ small hints over SSE, and clients then fetch what changed.
   backups.
 - `access.rs`: the one project access policy. It combines account status,
   admin role, membership, the **Board** and **Roadmap** permissions, and an MCP
-  grant's projects and scopes. It also validates mentions.
+  grant's projects and scopes (`McpScope`).
 - `auth/`: `AuthService` for accounts, Argon2id password hashes, browser
   sessions, sign-in throttling and connected-app grants. `Actor` is the caller
   of any request, from either a browser session or an MCP grant.
 - `domain/`: projects, members, tracks, epics, milestones, tasks, blocking and
   the Pool. `DomainService::execute` is the single write entry point; it takes
-  a `CommandEnvelope` whose `DomainOperation` names the change. `reads` builds
+  a `Command` whose `DomainOperation` names the change. `reads` builds
   Board, Roadmap, task and Pool views with cursor paging.
-- `collaboration/`: comments, the consolidated activity feed, notifications
-  and the Inbox. `CollaborationRuntime` runs the outbox worker and the
-  live-update streams.
+- `collaboration/`: comments, mentions, the consolidated activity feed,
+  notifications and the Inbox. `CollaborationRuntime` runs the outbox worker
+  and the live-update streams.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
   recovery, with one submodule per job. `FileStore` owns the bytes on disk.
@@ -101,13 +101,18 @@ small hints over SSE, and clients then fetch what changed.
   ID metadata documents from public addresses only, `cors` answers clients
   that run in a web page, `transfer` issues and claims the one-use tickets
   that move file bytes, and `mod.rs` wires the transport.
-- `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
-  `Envelope`, which runs each command, and each reorder, deletion and restore
-  of an attachment, once around it. Uploads use the ledger directly, because
-  their bytes arrive between two transactions.
+- `command.rs`: `Command`, the one request shape of domain, comment, Inbox
+  and Knowledge writes. Each family declares its operations with
+  `operations!`, which gives every operation its wire name and its rule for
+  `expectedRevision`.
+- `idempotency.rs`: the retry ledger shared by browser and MCP writes. Its
+  `Envelope` runs a write once: every command, and each reorder, deletion and
+  restore of an attachment. Uploads use the ledger directly, because their
+  bytes arrive between two transactions.
 - `input.rs`: reads command payloads into typed input, with errors that name
   the field. `text.rs`: validation for display text such as titles and
-  comments.
+  comments. `paging.rs`: page sizes and the opaque cursors that continue a
+  page.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`: background maintenance and the supervision of every worker.
@@ -203,8 +208,11 @@ and an update here.
 - **The audit trail is append-only.** Activity and security events are only
   ever inserted. Deleting a project detaches its events but keeps them. When a
   stored value is renamed, readers map the old value; history is not rewritten.
-- **Every write is safe to retry and never overwrites blindly.** Writes carry
-  an idempotency key, and edits carry the revision they were based on.
+- **Writes are safe to retry and never overwrite blindly.** Commands and
+  attachment changes carry an idempotency key, and edits carry the revision
+  they were based on. Two kinds of writes take no key: an attachment's
+  **Temporary** setting, which a repeat can't change further, and account and
+  session changes, which only the browser makes.
 - **Secrets are stored only as hashes.** Passwords use Argon2id; session
   tokens, app tokens and transfer tickets are stored as SHA-256 hashes. No
   secret appears in logs or audit payloads. The one exception is a credential

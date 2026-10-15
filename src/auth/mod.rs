@@ -6,7 +6,6 @@ mod grants;
 mod session;
 mod throttle;
 
-pub use crate::clock::unix_now;
 use grants::REFRESH_IDLE_SECONDS;
 use grants::revoke_all_app_access;
 pub(crate) use grants::{
@@ -28,11 +27,14 @@ use uuid::Uuid;
 
 use crate::{
     blocking::{Lane, Turn},
+    clock::unix_now,
     db::Db,
     error::{AppError, AppResult},
 };
 
 use password::{PasswordPolicy, hash_password, verify_password};
+pub use throttle::prune_login_throttles;
+pub(crate) use throttle::throttle_bucket;
 use throttle::{ACCOUNT_RULE, ADDRESS_RULE, PAIR_RULE, PASSWORD_CONFIRMATION_RULE};
 
 const ACCOUNT_PAGE_SIZE: usize = 50;
@@ -181,33 +183,6 @@ pub(crate) fn refresh_actor_connection(
     }
     fresh.require_ready()?;
     Ok(fresh)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpScope {
-    ProjectRead,
-    BoardManage,
-    RoadmapManage,
-    Discussion,
-    InboxPrivate,
-    MyPoolPrivate,
-    Attachments,
-    Destructive,
-}
-
-impl McpScope {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ProjectRead => "project_read",
-            Self::BoardManage => "board_manage",
-            Self::RoadmapManage => "roadmap_manage",
-            Self::Discussion => "discussion",
-            Self::InboxPrivate => "inbox_private",
-            Self::MyPoolPrivate => "my_pool_private",
-            Self::Attachments => "attachments",
-            Self::Destructive => "destructive",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -486,7 +461,7 @@ pub fn security_event(
 fn login_address_bucket(client_ip: Option<&str>) -> Option<String> {
     client_ip
         .and_then(|ip| ip.parse().ok())
-        .map(crate::http::security::throttle_bucket)
+        .map(throttle_bucket)
 }
 
 fn login_throttle_key(username: &str, client_ip: Option<&str>) -> String {

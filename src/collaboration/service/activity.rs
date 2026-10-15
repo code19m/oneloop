@@ -14,51 +14,48 @@ impl CollaborationService {
         task_id: &str,
         block_id: &str,
     ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let task_id = task_id.to_owned();
         let block_id = block_id.to_owned();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id: String = connection
-                    .query_row(
-                        "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
+        access::read(&self.db, actor, move |connection, actor| {
+            let project_id: String = connection
+                .query_row(
+                    "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
                  WHERE b.id=?1 AND b.task_id=?2 AND t.deleted_at IS NULL",
-                        params![block_id, task_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound {
-                        resource: "task block",
-                    })?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                let mut statement = connection.prepare_cached(&format!(
-                    "SELECT {COLUMNS} FROM activity_projection WHERE entity_type='task_block'
+                    params![block_id, task_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AppError::NotFound {
+                    resource: "task block",
+                })?;
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            let mut statement = connection.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM activity_projection WHERE entity_type='task_block'
                  AND entity_id=?1 AND task_id=?2 AND visibility='public' AND is_hidden=0
                  ORDER BY latest_at DESC,id DESC LIMIT 50"
-                ))?;
-                let mut items = statement
-                    .query_map(params![block_id, task_id], activity_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                if !items.iter().any(|item| item.event_type == "task.blocked") {
-                    let original = connection
-                        .prepare_cached(&format!(
-                    "SELECT {COLUMNS} FROM activity_projection WHERE entity_type='task_block'
+            ))?;
+            let mut items = statement
+                .query_map(params![block_id, task_id], activity_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            if !items.iter().any(|item| item.event_type == "task.blocked") {
+                let original = connection
+                    .prepare_cached(&format!(
+                        "SELECT {COLUMNS} FROM activity_projection WHERE entity_type='task_block'
                      AND entity_id=?1 AND task_id=?2 AND event_type='task.blocked'
-                     AND visibility='public' AND is_hidden=0 ORDER BY latest_at,id LIMIT 1"))?
-                        .query_row(params![block_id, task_id], activity_row)
-                        .optional()?;
-                    if let Some(original) = original {
-                        items.push(original);
-                    }
+                     AND visibility='public' AND is_hidden=0 ORDER BY latest_at,id LIMIT 1"
+                    ))?
+                    .query_row(params![block_id, task_id], activity_row)
+                    .optional()?;
+                if let Some(original) = original {
+                    items.push(original);
                 }
-                Ok(ActivityPage {
-                    items,
-                    next_cursor: None,
-                })
+            }
+            Ok(ActivityPage {
+                items,
+                next_cursor: None,
             })
-            .await
+        })
+        .await
     }
 
     /// A project's feed, or one task's. It merges the public feed with the
@@ -71,41 +68,38 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let project_id = project_id.to_owned();
         let task_id = task_id.map(str::to_owned);
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                let task_id = task_id.as_deref();
-                let mut items = project_feed(
+        let cursor = cursor.map(str::to_owned);
+        let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+        access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            let task_id = task_id.as_deref();
+            let mut items = project_feed(
+                connection,
+                &project_id,
+                task_id,
+                None,
+                cursor.as_ref(),
+                limit,
+            )?;
+            if crate::access::can_read_private_pool(connection, actor)? {
+                items.extend(project_feed(
                     connection,
                     &project_id,
                     task_id,
-                    None,
+                    Some(&actor.user_id),
                     cursor.as_ref(),
                     limit,
-                )?;
-                if crate::access::can_read_private_pool(connection, &actor)? {
-                    items.extend(project_feed(
-                        connection,
-                        &project_id,
-                        task_id,
-                        Some(&actor.user_id),
-                        cursor.as_ref(),
-                        limit,
-                    )?);
-                }
-                items.sort_by(|left, right| {
-                    (right.created_at, &right.id).cmp(&(left.created_at, &left.id))
-                });
-                Ok(activity_page(items, limit))
-            })
-            .await
+                )?);
+            }
+            items.sort_by(|left, right| {
+                (right.created_at, &right.id).cmp(&(left.created_at, &left.id))
+            });
+            Ok(activity_page(items, limit))
+        })
+        .await
     }
 
     pub async fn epic_activity(
@@ -115,33 +109,22 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<ActivityPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let epic_id = epic_id.to_owned();
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id: String = connection
-                    .query_row(
-                        "SELECT project_id FROM epics WHERE id=?1 AND deleted_at IS NULL",
-                        [&epic_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "epic" })?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                let items = feed(
-                    connection,
-                    "entity_type='epic' AND entity_id=?1 AND visibility='public' AND is_hidden=0",
-                    vec![epic_id.into()],
-                    cursor.as_ref(),
-                    limit,
-                )?;
-                Ok(activity_page(items, limit))
-            })
-            .await
+        let cursor = cursor.map(str::to_owned);
+        let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+        access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
+            access::require_epic(connection, actor, &epic_id, Need::Read, false)?;
+            let items = feed(
+                connection,
+                "entity_type='epic' AND entity_id=?1 AND visibility='public' AND is_hidden=0",
+                vec![epic_id.into()],
+                cursor.as_ref(),
+                limit,
+            )?;
+            Ok(activity_page(items, limit))
+        })
+        .await
     }
 }
 
@@ -152,7 +135,7 @@ fn project_feed(
     project_id: &str,
     task_id: Option<&str>,
     owner: Option<&str>,
-    cursor: Option<&Cursor>,
+    cursor: Option<&TimeCursor>,
     limit: usize,
 ) -> AppResult<Vec<ActivityEvent>> {
     let values = [Some(project_id), task_id, owner]
@@ -187,7 +170,7 @@ fn feed(
     connection: &rusqlite::Connection,
     filter: &str,
     mut values: Vec<rusqlite::types::Value>,
-    cursor: Option<&Cursor>,
+    cursor: Option<&TimeCursor>,
     limit: usize,
 ) -> AppResult<Vec<ActivityEvent>> {
     let (time, id) = cursor.map_or((i64::MAX, "\u{10ffff}"), |cursor| {

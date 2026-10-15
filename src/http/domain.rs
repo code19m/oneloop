@@ -1,4 +1,6 @@
-use super::input::ApiQuery;
+//! Read routes for projects, the Board, the Roadmap, epics, tasks and the
+//! Pool.
+use super::input::{ApiQuery, id_list};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -8,11 +10,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    AppState,
+    AppError, AppState,
     auth::Actor,
     domain::{
         BoardCounts, BoardQuery, BoardView, BoardViewQuery, BootstrapQuery, DoneOrder, Page,
-        PageQuery, PoolItemView, PoolQuery, TaskView,
+        PageQuery, PoolItemView, PoolQuery, TaskFilter, TaskStatus, TaskView,
     },
     error::AppResult,
 };
@@ -32,9 +34,14 @@ pub(crate) fn read_router() -> Router<AppState> {
         .route("/api/tasks/{task_id}", get(task))
 }
 
+/// The query of both Board reads: the filter, and for a page of one column
+/// its status and cursor. It is one struct because serde can't flatten the
+/// shared filter into structs that refuse unknown fields.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BoardViewParams {
+struct BoardParams {
+    status: Option<TaskStatus>,
+    cursor: Option<String>,
     limit: Option<usize>,
     search: Option<String>,
     track_ids: Option<String>,
@@ -44,8 +51,23 @@ struct BoardViewParams {
     no_assignee: bool,
     #[serde(default)]
     blocked: bool,
+    /// The Board's Done order; columns other than Done ignore it.
     #[serde(default)]
     done_order: DoneOrder,
+}
+
+impl BoardParams {
+    fn filter(&self) -> TaskFilter {
+        TaskFilter {
+            search: self.search.clone(),
+            track_ids: id_list(self.track_ids.as_deref()),
+            epic_ids: id_list(self.epic_ids.as_deref()),
+            assignee_ids: id_list(self.assignee_ids.as_deref()),
+            no_assignee: self.no_assignee,
+            blocked: self.blocked,
+            done_order: self.done_order,
+        }
+    }
 }
 
 async fn board_counts(
@@ -64,26 +86,21 @@ async fn board_view(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
-    ApiQuery(query): ApiQuery<BoardViewParams>,
+    ApiQuery(query): ApiQuery<BoardParams>,
 ) -> AppResult<Json<BoardView>> {
-    state
-        .domain
-        .board_view(
-            &actor,
-            BoardViewQuery {
-                project_id,
-                limit: query.limit,
-                search: query.search,
-                track_ids: csv(query.track_ids),
-                epic_ids: csv(query.epic_ids),
-                assignee_ids: csv(query.assignee_ids),
-                no_assignee: query.no_assignee,
-                blocked: query.blocked,
-                done_order: query.done_order,
-            },
-        )
-        .await
-        .map(Json)
+    // Every column starts at its first page.
+    if query.status.is_some() {
+        return Err(AppError::validation("status", "is not supported"));
+    }
+    if query.cursor.is_some() {
+        return Err(AppError::validation("cursor", "is not supported"));
+    }
+    let query = BoardViewQuery {
+        project_id,
+        limit: query.limit,
+        filter: query.filter(),
+    };
+    state.domain.board_view(&actor, query).await.map(Json)
 }
 
 async fn bootstrap(
@@ -94,51 +111,22 @@ async fn bootstrap(
     state.domain.bootstrap(&actor, query).await.map(Json)
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BoardParams {
-    status: crate::domain::TaskStatus,
-    cursor: Option<String>,
-    limit: Option<usize>,
-    search: Option<String>,
-    track_ids: Option<String>,
-    epic_ids: Option<String>,
-    assignee_ids: Option<String>,
-    #[serde(default)]
-    no_assignee: bool,
-    #[serde(default)]
-    blocked: bool,
-    /// The Board's Done order; columns other than Done ignore it.
-    #[serde(default)]
-    done_order: DoneOrder,
-}
-
 async fn board(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(project_id): Path<String>,
     ApiQuery(query): ApiQuery<BoardParams>,
 ) -> AppResult<Json<Page<TaskView>>> {
-    state
-        .domain
-        .board_page(
-            &actor,
-            BoardQuery {
-                project_id,
-                status: query.status,
-                cursor: query.cursor,
-                limit: query.limit,
-                search: query.search,
-                track_ids: csv(query.track_ids),
-                epic_ids: csv(query.epic_ids),
-                assignee_ids: csv(query.assignee_ids),
-                no_assignee: query.no_assignee,
-                blocked: query.blocked,
-                done_order: query.done_order,
-            },
-        )
-        .await
-        .map(Json)
+    let query = BoardQuery {
+        project_id,
+        status: query
+            .status
+            .ok_or_else(|| AppError::validation("status", "is required"))?,
+        filter: query.filter(),
+        cursor: query.cursor,
+        limit: query.limit,
+    };
+    state.domain.board_page(&actor, query).await.map(Json)
 }
 
 async fn roadmap(
@@ -210,18 +198,4 @@ async fn epic_activity(
         .epic_activity(&actor, &epic_id, query.cursor.as_deref(), query.limit)
         .await
         .map(Json)
-}
-
-fn csv(value: Option<String>) -> Vec<String> {
-    value
-        .into_iter()
-        .flat_map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }

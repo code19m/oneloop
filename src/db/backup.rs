@@ -29,9 +29,8 @@ use crate::{
 mod owner;
 mod restore;
 
-use owner::*;
+use owner::{OWNER_FILE, OwnerLock, WorkOwner, reclaim_partial_copies};
 pub use restore::restore_backup;
-use restore::*;
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024 * 1024;
 /// Inside the data directory: links to the files a running backup copies.

@@ -38,14 +38,12 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<InboxPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            access::require_scope(connection, &actor, "inbox_private", None)?;
-            validate_inbox_projects(connection, &actor, &filter.project_ids)?;
+        let cursor = cursor.map(str::to_owned);
+        let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+        access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
+            access::require_scope(connection, actor, McpScope::InboxPrivate, None)?;
+            validate_inbox_projects(connection, actor, &filter.project_ids)?;
             let unread_count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM notification_recipients r
                  JOIN notification_events n ON n.id=r.notification_id
@@ -111,7 +109,8 @@ impl CollaborationService {
                 unread_count: unread_count.max(0) as u64,
                 filtered_count: filtered_count.max(0) as u64,
             })
-        }).await
+        })
+        .await
     }
 
     pub async fn purge_archived(&self, now: i64) -> AppResult<u64> {

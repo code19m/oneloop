@@ -1,4 +1,5 @@
-//! Blocking episodes preserve exact mention text and deliver only newly selected recipients.
+//! Blocking and unblocking tasks, and editing a block reason.
+use super::ordering::task_append_position;
 use super::*;
 
 pub(super) fn block_task(
@@ -10,7 +11,7 @@ pub(super) fn block_task(
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
-    ensure_revision(task.revision, expected)?;
+    check_revision(expected, task.revision)?;
     if task.status == "done" {
         return Err(AppError::PreconditionFailed(
             "completed tasks cannot be blocked".into(),
@@ -25,7 +26,7 @@ pub(super) fn block_task(
         return Err(AppError::Conflict("task is already blocked".into()));
     }
     let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
-    let mentions = validate_mentions(tx, &task.project_id, &reason, input.mentions, &[])?;
+    let mentions = mentions::validate(tx, &task.project_id, &reason, input.mentions, &[])?;
     let block_id = Uuid::now_v7().to_string();
     tx.execute(
         "INSERT INTO task_blocks (id,project_id,task_id,reason,created_by,created_at) VALUES (?1,\
@@ -44,7 +45,7 @@ pub(super) fn block_task(
         "UPDATE tasks SET updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",
         params![now, input.task_id, expected],
     )?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -104,16 +105,18 @@ pub(super) fn update_block_reason(
     let before = tx
         .query_row(ACTIVE_BLOCK_SQL, [&input.block_id], BlockRow::from_row)
         .optional()?
-        .ok_or_else(|| not_found("active task block"))?;
+        .ok_or(AppError::NotFound {
+            resource: "active task block",
+        })?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
-    ensure_revision(before.revision, expected)?;
+    check_revision(expected, before.revision)?;
     let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
     let old_mentions = mentions::load(tx, Mentioned::Block(&input.block_id))?;
     let retained: Vec<_> = old_mentions
         .iter()
         .filter_map(|m| m.user_id.clone())
         .collect();
-    let mentions = validate_mentions(tx, &before.project_id, &reason, input.mentions, &retained)?;
+    let mentions = mentions::validate(tx, &before.project_id, &reason, input.mentions, &retained)?;
     if reason == before.reason && mentions == old_mentions {
         return Err(AppError::validation(
             "payload",
@@ -127,7 +130,7 @@ pub(super) fn update_block_reason(
     )?;
     mentions::replace(tx, Mentioned::Block(&input.block_id), &mentions)?;
     let field_key = format!("block-reason:{}", input.block_id);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -188,7 +191,7 @@ pub(super) fn unblock_task(
 ) -> AppResult<Mutation> {
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
-    ensure_revision(task.revision, expected)?;
+    check_revision(expected, task.revision)?;
     let (block_id, block_revision, block_reason): (String, i64, String) = tx
         .query_row(
             "SELECT id,revision,reason FROM task_blocks WHERE task_id=?1 AND resolved_at IS NULL",
@@ -196,7 +199,9 @@ pub(super) fn unblock_task(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("active task block"))?;
+        .ok_or(AppError::NotFound {
+            resource: "active task block",
+        })?;
     let resolution = input
         .resolution
         .as_deref()
@@ -226,7 +231,7 @@ pub(super) fn unblock_task(
     } else {
         "task.unblocked"
     };
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {

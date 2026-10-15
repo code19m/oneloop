@@ -1,10 +1,10 @@
+//! Domain commands: the operations, what each needs, and their payloads,
+//! with the values they share, such as `TaskStatus`.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     access::{McpRoute, McpTool, Need},
     collaboration::MentionToken,
-    idempotency::RevisionRule,
 };
 
 /// Patch fields distinguish omission (keep) from an explicit null (clear).
@@ -32,40 +32,41 @@ pub(crate) fn require_undo_window(item: &str, deleted_at: i64, now: i64) -> crat
     )))
 }
 
-crate::idempotency::operations! {
-    /// Stable command vocabulary shared by HTTP and MCP adapters.
+crate::command::operations! {
+    /// Stable command vocabulary shared by HTTP and MCP adapters, with what
+    /// each operation says about `expectedRevision`.
     pub enum DomainOperation {
-        CreateProject = "project.create",
-        UpdateProject = "project.update",
-        DeleteProject = "project.delete",
-        AddMembership = "membership.add",
-        UpdateMembership = "membership.update",
-        RemoveMembership = "membership.remove",
-        CreateTrack = "track.create",
-        UpdateTrack = "track.update",
-        ReorderTrack = "track.reorder",
-        DeleteTrack = "track.delete",
-        CreateEpic = "epic.create",
-        UpdateEpic = "epic.update",
-        CompleteEpic = "epic.complete",
-        ReopenEpic = "epic.reopen",
-        DeleteEpic = "epic.delete",
-        CreateMilestone = "milestone.create",
-        UpdateMilestone = "milestone.update",
-        DeleteMilestone = "milestone.delete",
-        CreateTask = "task.create",
-        UpdateTask = "task.update",
-        MoveTask = "task.move",
-        DeleteTask = "task.delete",
-        RestoreTask = "task.restore",
-        BlockTask = "task.block",
-        UpdateBlockReason = "task.block.update",
-        UnblockTask = "task.unblock",
-        UnblockAndCompleteTask = "task.unblock-and-complete",
-        CreatePoolItem = "pool.create",
-        UpdatePoolItem = "pool.update",
-        DeletePoolItem = "pool.delete",
-        PromotePoolItem = "pool.promote",
+        CreateProject = "project.create" => Create,
+        UpdateProject = "project.update" => Existing,
+        DeleteProject = "project.delete" => Existing,
+        AddMembership = "membership.add" => Create,
+        UpdateMembership = "membership.update" => Existing,
+        RemoveMembership = "membership.remove" => Existing,
+        CreateTrack = "track.create" => Create,
+        UpdateTrack = "track.update" => Existing,
+        ReorderTrack = "track.reorder" => Existing,
+        DeleteTrack = "track.delete" => Existing,
+        CreateEpic = "epic.create" => Create,
+        UpdateEpic = "epic.update" => Existing,
+        CompleteEpic = "epic.complete" => Existing,
+        ReopenEpic = "epic.reopen" => Existing,
+        DeleteEpic = "epic.delete" => Existing,
+        CreateMilestone = "milestone.create" => Create,
+        UpdateMilestone = "milestone.update" => Existing,
+        DeleteMilestone = "milestone.delete" => Existing,
+        CreateTask = "task.create" => Create,
+        UpdateTask = "task.update" => Existing,
+        MoveTask = "task.move" => Existing,
+        DeleteTask = "task.delete" => Existing,
+        RestoreTask = "task.restore" => Existing,
+        BlockTask = "task.block" => Existing,
+        UpdateBlockReason = "task.block.update" => Existing,
+        UnblockTask = "task.unblock" => Existing,
+        UnblockAndCompleteTask = "task.unblock-and-complete" => Existing,
+        CreatePoolItem = "pool.create" => Create,
+        UpdatePoolItem = "pool.update" => Existing,
+        DeletePoolItem = "pool.delete" => Existing,
+        PromotePoolItem = "pool.promote" => Existing,
     }
 }
 
@@ -83,51 +84,6 @@ pub(crate) enum Access {
 }
 
 impl DomainOperation {
-    pub(crate) fn revision_rule(self) -> RevisionRule {
-        if self.creates() {
-            RevisionRule::Create
-        } else {
-            RevisionRule::Existing
-        }
-    }
-
-    /// Whether the operation makes a new record, which has no revision yet.
-    pub(crate) fn creates(self) -> bool {
-        match self {
-            Self::CreateProject
-            | Self::AddMembership
-            | Self::CreateTrack
-            | Self::CreateEpic
-            | Self::CreateMilestone
-            | Self::CreateTask
-            | Self::CreatePoolItem => true,
-            Self::UpdateProject
-            | Self::DeleteProject
-            | Self::UpdateMembership
-            | Self::RemoveMembership
-            | Self::UpdateTrack
-            | Self::ReorderTrack
-            | Self::DeleteTrack
-            | Self::UpdateEpic
-            | Self::CompleteEpic
-            | Self::ReopenEpic
-            | Self::DeleteEpic
-            | Self::UpdateMilestone
-            | Self::DeleteMilestone
-            | Self::UpdateTask
-            | Self::MoveTask
-            | Self::DeleteTask
-            | Self::RestoreTask
-            | Self::BlockTask
-            | Self::UpdateBlockReason
-            | Self::UnblockTask
-            | Self::UnblockAndCompleteTask
-            | Self::UpdatePoolItem
-            | Self::DeletePoolItem
-            | Self::PromotePoolItem => false,
-        }
-    }
-
     /// The access each handler checks. A personal Pool item needs only read
     /// access and the private Pool; its handlers and retries check that.
     pub(crate) fn access(self) -> Access {
@@ -204,21 +160,6 @@ impl DomainOperation {
         }
     }
 }
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CommandEnvelope {
-    pub operation: DomainOperation,
-    #[serde(default)]
-    pub payload: Value,
-    pub idempotency_key: String,
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
-}
-
-pub use crate::idempotency::CommandResult;
-
-pub type DomainEvent = crate::collaboration::ActivityEvent;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

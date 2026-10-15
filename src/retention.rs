@@ -1,4 +1,5 @@
-//! Bounded maintenance for transient state. Product audit history is permanent.
+//! Removes expired transient rows, such as old sessions and used OAuth
+//! codes, a batch at a time. Audit history is never removed.
 use rusqlite::params;
 
 use crate::{AppResult, Db};
@@ -72,23 +73,6 @@ pub async fn prune_transient_state(db: &Db, now: i64) -> AppResult<bool> {
     .await
 }
 
-/// The expiry index bounds the scan; active windows/blocks are never removed.
-pub async fn prune_login_throttles(db: &Db, now: i64) -> AppResult<()> {
-    db.transaction(move |tx| prune_login_throttles_connection(tx, now, BATCH))
-        .await
-}
-
-pub(crate) fn prune_login_throttles_connection(
-    conn: &rusqlite::Connection,
-    now: i64,
-    batch: i64,
-) -> AppResult<()> {
-    conn.execute(PRUNE_LOGIN_THROTTLES_SQL, params![now, now - 900, batch])?;
-    Ok(())
-}
-
-const PRUNE_LOGIN_THROTTLES_SQL: &str = "DELETE FROM login_throttles WHERE rowid IN (SELECT rowid FROM login_throttles INDEXED BY login_throttles_expiry_idx WHERE blocked_until<=?1 AND window_started_at<=?2 LIMIT ?3)";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,8 +92,5 @@ mod tests {
             }
         }
         assert_eq!(checked, 3, "a prune of an indexed table was not found");
-        // Active windows and blocks are skipped by the index, not read.
-        let plan = query_plan(&connection, PRUNE_LOGIN_THROTTLES_SQL);
-        assert!(plan.contains("window_started_at<?"), "{plan}");
     }
 }

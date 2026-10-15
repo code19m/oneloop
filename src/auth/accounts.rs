@@ -1,6 +1,7 @@
 //! Changes to accounts: a person's own profile and password, and the
 //! administration of other accounts.
 use super::*;
+use crate::command::check_revision;
 
 impl AuthService {
     pub async fn recent_authenticate(
@@ -325,12 +326,7 @@ impl AuthService {
                 if sensitive {
                     actor_for_tx.require_recent_auth(now)?;
                 }
-                if existing.revision != update.expected_revision {
-                    return Err(AppError::revision(
-                        update.expected_revision,
-                        existing.revision,
-                    ));
-                }
+                check_revision(update.expected_revision, existing.revision)?;
                 let changed = tx
                     .execute(
                         "UPDATE users SET display_name=?1,is_admin=?2,is_active=?3,updated_at=?4,

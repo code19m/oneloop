@@ -51,7 +51,12 @@ impl FileService {
         let attachment_id = attachment_id.to_owned();
         self.db
             .run(move |connection| {
-                crate::access::require_scope(connection, &actor, "attachments", None)?;
+                crate::access::require_scope(
+                    connection,
+                    &actor,
+                    crate::access::McpScope::Attachments,
+                    None,
+                )?;
                 let attachment = attachment_by_id(connection, &attachment_id)?.attachment;
                 require_file_access(connection, &actor, &attachment.project_id, false, false)?;
                 Ok(attachment)

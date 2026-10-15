@@ -1,4 +1,6 @@
-use super::input::ApiQuery;
+//! Read routes for comments, activity and the Inbox, and the live-update
+//! stream.
+use super::input::{ApiQuery, id_list};
 use std::{collections::BTreeSet, convert::Infallible};
 
 use axum::{
@@ -19,6 +21,7 @@ use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     collaboration::{ActivityPage, CommentPage, InboxFilter, InboxPage, LiveEvent},
+    paging::PageQuery,
 };
 
 pub(crate) fn router() -> Router<AppState> {
@@ -35,13 +38,6 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/inbox", get(inbox))
         .route("/events", get(events))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageQuery {
-    cursor: Option<String>,
-    limit: Option<usize>,
 }
 
 async fn comments(
@@ -126,9 +122,8 @@ async fn inbox(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<InboxQuery>,
 ) -> AppResult<Json<InboxPage>> {
-    let project_ids = parse_project_ids(query.project_ids.as_deref())?;
     let filter = InboxFilter {
-        project_ids,
+        project_ids: inbox_projects(query.project_ids.as_deref())?,
         unread_only: query.unread_only,
         archived: query.archived,
     };
@@ -222,25 +217,20 @@ async fn events(
     ))
 }
 
-fn parse_project_ids(value: Option<&str>) -> AppResult<BTreeSet<String>> {
-    let mut result = BTreeSet::new();
-    let Some(value) = value else {
-        return Ok(result);
-    };
-    if value.len() > 4_096 {
+/// The Inbox filter's projects. Each one costs an access check, so the list
+/// is bounded.
+fn inbox_projects(raw: Option<&str>) -> AppResult<BTreeSet<String>> {
+    if raw.is_some_and(|raw| raw.len() > 4_096) {
         return Err(AppError::validation("projectIds", "is too long"));
     }
-    for item in value.split(',') {
-        let item = item.trim();
-        if item.is_empty() || item.len() > 128 {
-            return Err(AppError::validation(
-                "projectIds",
-                "must contain comma-separated project IDs",
-            ));
-        }
-        result.insert(item.to_owned());
+    let ids = id_list(raw);
+    if ids.iter().any(|id| id.len() > 128) {
+        return Err(AppError::validation(
+            "projectIds",
+            "must contain comma-separated project IDs",
+        ));
     }
-    Ok(result)
+    Ok(ids.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -249,11 +239,12 @@ mod tests {
 
     #[test]
     fn inbox_project_filter_uses_one_comma_separated_query_value() {
-        let ids = parse_project_ids(Some("project-a,project-b,project-a")).unwrap();
+        let ids = inbox_projects(Some("project-a,,project-b,project-a,")).unwrap();
         assert_eq!(
             ids.into_iter().collect::<Vec<_>>(),
             ["project-a", "project-b"]
         );
-        assert!(parse_project_ids(Some("project-a,,project-b")).is_err());
+        assert!(inbox_projects(Some(&"a".repeat(129))).is_err());
+        assert!(inbox_projects(Some(&"a,".repeat(2_049))).is_err());
     }
 }

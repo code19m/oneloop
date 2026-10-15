@@ -1,4 +1,4 @@
-use oneloop::retention::{prune_login_throttles, prune_transient_state};
+use oneloop::{auth::prune_login_throttles, retention::prune_transient_state};
 
 use crate::support::{self, query_one};
 

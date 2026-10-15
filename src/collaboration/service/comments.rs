@@ -17,18 +17,12 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<CommentPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let task_id = task_id.to_owned();
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            let project_id: String = connection.query_row(
-                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                [&task_id], |row| row.get(0),
-            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(connection, &actor, &project_id, Need::Read, false)?;
+        let cursor = cursor.map(str::to_owned);
+        let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+        access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
+            access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -41,7 +35,8 @@ impl CollaborationService {
             let mut comments = rows.collect::<Result<Vec<_>, _>>()?;
             let next_cursor = next_cursor(&mut comments, limit, |item| (item.created_at, &item.id));
             comment_page_context(connection, comments, next_cursor)
-        }).await
+        })
+        .await
     }
 
     /// Bounded context for an exact notification destination, independent of feed pagination.
@@ -51,17 +46,10 @@ impl CollaborationService {
         task_id: &str,
         comment_id: &str,
     ) -> AppResult<CommentPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            let project_id: String = connection.query_row(
-                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                [&task_id], |row| row.get(0),
-            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(connection, &actor, &project_id, Need::Read, false)?;
+        access::read(&self.db, actor, move |connection, actor| {
+            access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -69,7 +57,8 @@ impl CollaborationService {
                 params![comment_id, task_id], comment_row,
             ).optional()?.ok_or(AppError::NotFound { resource: "comment" })?;
             comment_page_context(connection, vec![comment], None)
-        }).await
+        })
+        .await
     }
 
     /// Removes the text and mentions of comments deleted longer ago than the
@@ -106,16 +95,8 @@ pub(super) fn create_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
-    let project_id: String = tx
-        .query_row(
-            "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-            [&input.task_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or(AppError::NotFound { resource: "task" })?;
-    require_project(tx, actor, &project_id, Need::Discussion, false)?;
-    let mentions = access::validate_mentions(tx, &project_id, &content, input.mentions, &[])?;
+    let project_id = access::require_task(tx, actor, &input.task_id, Need::Discussion, false)?;
+    let mentions = mentions::validate(tx, &project_id, &content, input.mentions, &[])?;
     let id = Uuid::now_v7().to_string();
     let (root_id, reply_author) = match input.reply_to_id.as_deref() {
         Some(reply_to_id) => {
@@ -226,15 +207,14 @@ pub(super) fn edit_comment(
             "deleted comments cannot be edited".into(),
         ));
     }
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
     let retained: Vec<_> = before
         .mentions
         .iter()
         .filter_map(|token| token.user_id.clone())
         .collect();
-    let mentions =
-        access::validate_mentions(tx, &before.project_id, &content, input.mentions, &retained)?;
+    let mentions = mentions::validate(tx, &before.project_id, &content, input.mentions, &retained)?;
     let before_fingerprint = comment_fingerprint(
         before.content.as_deref().unwrap_or_default(),
         &before.mentions,
@@ -308,13 +288,12 @@ pub(super) fn delete_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
-    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, true)?;
     require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict("comment is already deleted".into()));
     }
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     // The text and mentions stay hidden for the Undo window; the purge in
     // `purge_deleted_comments` removes them after it.
     tx.execute(
@@ -366,13 +345,12 @@ pub(super) fn restore_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
-    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, true)?;
     require_comment_owner_or_admin(actor, &before.author_id)?;
     let Some(deleted_at) = before.deleted_at else {
         return Err(AppError::Conflict("the comment is not deleted".into()));
     };
-    ensure_revision(before.revision, expected_revision)?;
+    check_revision(expected_revision, before.revision)?;
     crate::domain::require_undo_window("comment", deleted_at, now)?;
     let content: String = tx.query_row(
         "SELECT content FROM comments WHERE id=?1",
@@ -652,14 +630,6 @@ pub(super) fn show_deleted_comment(
         replace_comment(replay, &current)?;
     }
     Ok(())
-}
-
-fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(AppError::revision(expected, actual))
-    }
 }
 
 #[cfg(test)]

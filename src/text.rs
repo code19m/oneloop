@@ -1,5 +1,5 @@
-//! Display-text validation shared by browser and MCP writes. Never used for passwords.
-//! Validate without rewriting Unicode or mention offsets; joiners remain supported.
+//! Checks display text, such as titles and comments, without changing it, so
+//! mention offsets stay valid. Passwords have their own rules.
 use crate::{AppError, AppResult};
 
 #[derive(Clone, Copy)]

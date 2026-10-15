@@ -14,7 +14,7 @@ use oneloop::{
     collaboration::{ActivityInput, CollaborationService, record_activity_tx},
     domain::{
         BoardQuery, BoardViewQuery, BootstrapQuery, DomainOperation, DomainService, DoneOrder,
-        PoolQuery, PoolScope,
+        PoolQuery, PoolScope, TaskFilter,
     },
 };
 use rusqlite::params;
@@ -113,12 +113,6 @@ fn board_query(status: &str, cursor: Option<String>) -> BoardQuery {
         status: serde_json::from_value(json!(status)).unwrap(),
         cursor,
         limit: Some(50),
-        search: None,
-        track_ids: vec![],
-        epic_ids: vec![],
-        assignee_ids: vec![],
-        no_assignee: false,
-        blocked: false,
-        done_order: Default::default(),
+        filter: TaskFilter::default(),
     }
 }
