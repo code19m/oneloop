@@ -1,5 +1,6 @@
 //! Authenticated file reads use leases and revalidate live parent access before serving bytes.
 use super::*;
+use crate::files::sanitized_html_preview;
 
 impl FileService {
     pub async fn open_for_read(

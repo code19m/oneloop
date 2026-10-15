@@ -5,6 +5,9 @@
 //! user supplied names.
 
 mod models;
+mod preview;
+pub use preview::sanitize_html_preview;
+pub(crate) use preview::sanitized_html_preview;
 mod service;
 mod storage;
 mod transfer;
@@ -13,9 +16,7 @@ pub(crate) use transfer::UploadDeadline;
 pub use models::*;
 pub use service::{
     AttachmentUpload, AvatarSlot, FileRead, FileRuntimeReport, FileService, LeasedFile,
-    PendingAttachmentUpload, ReadMode, ReplayedUpload, sanitize_html_preview,
+    PendingAttachmentUpload, ReadMode, ReplayedUpload,
 };
-pub(crate) use service::{
-    ConditionalRead, ThumbnailRead, classify_bytes, etag_matches, sanitized_html_preview,
-};
+pub(crate) use service::{ConditionalRead, ThumbnailRead, classify_bytes, etag_matches};
 pub use storage::FileStore;

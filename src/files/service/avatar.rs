@@ -1,7 +1,52 @@
 //! Account avatars use bounded decoding and shared private-file storage.
 use super::*;
 
+const AVATAR_SIDE: u32 = 256;
+/// Avatar uploads under way at once; each keeps its image in memory until it
+/// is decoded. More are told to retry.
+const AVATAR_UPLOADS: usize = 4;
+/// How long an avatar upload waits for the decodes before it, thumbnails
+/// included. The slowest decode the limits allow takes about a second on a
+/// laptop, and a few seconds on a small server.
+const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A place for one avatar upload, kept from its first byte through its
+/// decode, while the upload keeps its image in memory.
+pub struct AvatarSlot {
+    uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    user_id: String,
+}
+
+impl Drop for AvatarSlot {
+    fn drop(&mut self) {
+        self.uploaders
+            .lock()
+            .expect("avatar uploads lock")
+            .remove(&self.user_id);
+    }
+}
+
 impl FileService {
+    /// A place for an avatar upload, taken before its bytes arrive. A
+    /// person has one place at most, so no one can take them all. When all
+    /// are taken, the upload is told to retry at once.
+    pub fn avatar_slot(&self, actor: &Actor) -> AppResult<AvatarSlot> {
+        let mut uploaders = self.avatar_uploaders.lock().expect("avatar uploads lock");
+        if uploaders.contains(&actor.user_id) {
+            return Err(AppError::RateLimited { retry_after: 1 });
+        }
+        if uploaders.len() >= AVATAR_UPLOADS {
+            return Err(AppError::Unavailable(
+                "avatar processing is busy; retry shortly".into(),
+            ));
+        }
+        uploaders.insert(actor.user_id.clone());
+        Ok(AvatarSlot {
+            uploaders: self.avatar_uploaders.clone(),
+            user_id: actor.user_id.clone(),
+        })
+    }
+
     pub async fn upload_avatar(
         &self,
         actor: &Actor,
@@ -268,4 +313,42 @@ impl FileService {
             etag,
         })))
     }
+}
+
+fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
+    let format = image::guess_format(bytes)
+        .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+    ) {
+        return Err(AppError::validation(
+            "avatar",
+            "must be a PNG, JPEG or WebP image",
+        ));
+    }
+    let (image, _) =
+        decode::decode_untrusted(Cursor::new(bytes), bytes.len() as u64).map_err(|_| {
+            AppError::validation(
+                "avatar",
+                "image data is invalid, or too large to process safely",
+            )
+        })?;
+    let normalized = image
+        .resize_to_fill(
+            AVATAR_SIDE,
+            AVATAR_SIDE,
+            image::imageops::FilterType::Lanczos3,
+        )
+        .to_rgba8();
+    let mut output = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut output)
+        .write_image(
+            &normalized,
+            AVATAR_SIDE,
+            AVATAR_SIDE,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|_| AppError::validation("avatar", "image could not be normalized"))?;
+    Ok(output)
 }

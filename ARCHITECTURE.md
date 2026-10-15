@@ -72,7 +72,8 @@ small hints over SSE, and clients then fetch what changed.
   out.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
-  recovery. `FileStore` owns the bytes on disk.
+  recovery, with one submodule per job. `FileStore` owns the bytes on disk,
+  and `preview` cleans HTML before an attachment or a Knowledge file shows it.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
   project, read-only. Its commands manage the source, and each connect or
   change starts a new source generation; results from an older one are
