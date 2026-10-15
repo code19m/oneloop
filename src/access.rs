@@ -77,6 +77,13 @@ pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
     }
 }
 
+/// Whether the actor may read private My Pool content, including its
+/// activity. An app needs the `my_pool_private` scope; callers still check
+/// the project.
+pub(crate) fn can_read_private_pool(conn: &Connection, actor: &Actor) -> AppResult<bool> {
+    allowed(require_scope(conn, actor, "my_pool_private", None))
+}
+
 pub(crate) fn require_project(
     conn: &Connection,
     actor: &Actor,

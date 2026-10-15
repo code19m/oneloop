@@ -264,7 +264,7 @@ impl AuthService {
         let project_id = project_id.to_owned();
         self.db
             .run(move |connection| {
-                project_access_bool(crate::access::require_project(
+                crate::access::allowed(crate::access::require_project(
                     connection,
                     &actor,
                     &project_id,
@@ -299,7 +299,7 @@ impl AuthService {
         };
         self.db
             .run(move |connection| {
-                project_access_bool(crate::access::require_project(
+                crate::access::allowed(crate::access::require_project(
                     connection,
                     &actor,
                     &project_id,

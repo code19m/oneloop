@@ -715,31 +715,6 @@ struct McpAuthentication {
     grant_last_used: Option<i64>,
 }
 
-/// Shared capability gate for owner-private Pool content, including activity.
-/// Callers still enforce current actor and project access separately.
-pub(crate) fn can_read_private_pool(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-) -> AppResult<bool> {
-    match &actor.source {
-        ActorSource::BrowserSession { .. } => Ok(true),
-        ActorSource::McpGrant { grant_id } => Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes
-             WHERE grant_id=?1 AND scope='my_pool_private')",
-            [grant_id],
-            |row| row.get(0),
-        )?),
-    }
-}
-
-fn project_access_bool(result: AppResult<()>) -> AppResult<bool> {
-    match result {
-        Ok(()) => Ok(true),
-        Err(AppError::Forbidden | AppError::NotFound { .. } | AppError::Unauthorized) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
 #[cfg(test)]
 mod password_work_tests {
     use super::*;
