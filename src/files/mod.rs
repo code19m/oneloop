@@ -6,7 +6,6 @@
 
 mod models;
 mod preview;
-pub use preview::sanitize_html_preview;
 pub(crate) use preview::sanitized_html_preview;
 mod service;
 mod storage;

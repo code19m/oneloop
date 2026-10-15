@@ -1,7 +1,7 @@
 //! The HTML preview sanitizer: output safety, adversarial input cost and
 //! agreement with a simple reference implementation.
 
-use oneloop::files::sanitize_html_preview;
+use super::*;
 use proptest::prelude::*;
 use scraper::{Html, Selector};
 
@@ -176,4 +176,18 @@ fn find_tag_end(value: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[test]
+fn html_preview_removes_direct_navigation_primitives() {
+    let source=br#"<!doctype html><base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><iframe src="https://evil.test"></iframe><object data="x"></object><script>document.body.dataset.ok='yes'</script><p>Kept</p>"#;
+    let sanitized = String::from_utf8(sanitize_html_preview(source))
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(!sanitized.contains("<base"));
+    assert!(!sanitized.contains("http-equiv"));
+    assert!(!sanitized.contains("<iframe"));
+    assert!(!sanitized.contains("<object"));
+    assert!(sanitized.contains("<script>"));
+    assert!(sanitized.contains("<p>kept</p>"));
 }

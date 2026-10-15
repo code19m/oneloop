@@ -7,7 +7,7 @@ use crate::{AppResult, blocking::Lane};
 /// Remove direct-navigation and nested browsing primitives before applying the
 /// response-header sandbox. This lexical pass is intentionally conservative;
 /// the CSP remains the primary execution boundary.
-pub fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
+fn sanitize_html_preview(bytes: &[u8]) -> Vec<u8> {
     let Ok(source) = std::str::from_utf8(bytes) else {
         return b"<!doctype html><meta charset=utf-8><p>This HTML file is not valid UTF-8.</p>"
             .to_vec();
@@ -98,3 +98,6 @@ pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>>
     static PREVIEWS: LazyLock<Lane> = LazyLock::new(|| Lane::new("HTML preview", 2));
     PREVIEWS.run(move || sanitize_html_preview(&bytes)).await
 }
+
+#[cfg(test)]
+mod tests;
