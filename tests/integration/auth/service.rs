@@ -71,6 +71,21 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             service.revoke_other_sessions(&current).await.map(drop),
         ),
         ("app", service.revoke_connected_app(&current, "grant").await),
+        // A wrong password, because the commit rechecks a correct one.
+        (
+            "recent sign-in",
+            service
+                .recent_authenticate(&current, "wrong")
+                .await
+                .map(drop),
+        ),
+        (
+            "password",
+            service
+                .change_password(&current, "wrong", "a new password for the person")
+                .await
+                .map(drop),
+        ),
     ] {
         assert!(
             matches!(result, Err(AppError::Unauthorized)),
@@ -83,13 +98,15 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             .await
             .is_ok()
     );
-    let (name, app_revoked): (String, Option<i64>) = query_one(
+    // A revoked session can't count toward the password throttle either.
+    let (name, app_revoked, throttles): (String, Option<i64>, i64) = query_one(
         &db,
-        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
+        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants),
+                (SELECT COUNT(*) FROM login_throttles)",
         [],
     )
     .await;
-    assert_eq!((name.as_str(), app_revoked), ("person", None));
+    assert_eq!((name.as_str(), app_revoked, throttles), ("person", None, 0));
 }
 
 #[tokio::test]

@@ -222,7 +222,7 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
 }
 
 #[tokio::test]
-async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire() {
+async fn incorrect_password_is_correctable() {
     let (_directory, db, app) = application();
     add_user(&db, "person", false, false).await;
     let response = app
@@ -256,28 +256,6 @@ async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire(
     }
     let response = me(&app, &cookie).await;
     assert_eq!(response.status(), StatusCode::OK);
-    db.run(|connection| {
-        connection.execute("UPDATE sessions SET revoked_at=1", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    for (path, body) in [
-        ("/api/auth/recent-auth", r#"{"password":"wrong"}"#),
-        (
-            "/api/auth/change-password",
-            r#"{"currentPassword":"wrong","newPassword":"new password"}"#,
-        ),
-    ] {
-        let response = app
-            .clone()
-            .oneshot(password_request(path, &cookie, body))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json: serde_json::Value = body_json(response).await;
-        assert_eq!(json["error"]["code"], "unauthorized");
-    }
 }
 
 #[tokio::test]
