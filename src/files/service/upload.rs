@@ -2,7 +2,7 @@
 
 use std::{future::Future, path::PathBuf, time::Duration};
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::{
     FileService, attachment_by_id, capacity::require_capacity, log_cleanup_failure,
-    require_file_access, require_free_slot, task_project,
+    require_file_access, require_free_slot, task_id_or_key, task_project,
 };
 use crate::{
     AppError, AppResult, Db,
@@ -105,15 +105,8 @@ impl FileService {
         self.db
             .run(move |connection| {
                 crate::access::require_scope(connection, &actor, "attachments", None)?;
-                let (task_id, project_id): (String, String) = connection
-                    .query_row(
-                        "SELECT id,project_id FROM tasks
-                         WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",
-                        [&task],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "task" })?;
+                let task_id = task_id_or_key(connection, &task)?;
+                let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, true, false)?;
                 Ok(task_id)
             })

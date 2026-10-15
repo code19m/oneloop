@@ -238,7 +238,7 @@ pub(super) struct InboxInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ListAttachmentsInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
 }
 
@@ -256,7 +256,7 @@ pub(super) struct RetentionInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReorderInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     /// Stable attachment ID.
     pub attachment_id: String,

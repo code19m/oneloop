@@ -231,6 +231,12 @@ impl FileService {
     }
 }
 
+/// The ID of the task that `task` names by its ID or its key, such as
+/// `WEB-042`.
+fn task_id_or_key(connection: &rusqlite::Connection, task: &str) -> AppResult<String> {
+    crate::domain::resolve_task_id(connection, task)?.ok_or(AppError::NotFound { resource: "task" })
+}
+
 fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<String> {
     connection
         .query_row(

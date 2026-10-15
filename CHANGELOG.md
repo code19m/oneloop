@@ -18,6 +18,8 @@ All notable changes to oneloop are recorded here. The format follows
 - Editing, deleting or restoring a comment without `expectedRevision` now
   fails with `precondition_failed` (412), as changes to tasks and other
   records do. It failed with `validation_failed` (400).
+- In MCP, `list_attachments` and `reorder_attachment` now accept a task key,
+  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does.
 
 ### Fixed
 

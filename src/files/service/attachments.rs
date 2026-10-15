@@ -9,7 +9,7 @@ use serde_json::json;
 use super::{
     ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id,
     record_attachment_deletion, require_file_access, require_free_slot, require_revision,
-    stored_file_row, task_project,
+    stored_file_row, task_id_or_key, task_project,
 };
 use crate::{
     AppError, AppResult,
@@ -24,16 +24,14 @@ use crate::{
 };
 
 impl FileService {
-    pub async fn list_attachments(
-        &self,
-        actor: &Actor,
-        task_id: &str,
-    ) -> AppResult<AttachmentList> {
+    /// The files of the task that `task` names by its ID or key.
+    pub async fn list_attachments(&self, actor: &Actor, task: &str) -> AppResult<AttachmentList> {
         let actor = actor.clone();
-        let task_id = task_id.to_owned();
+        let task = task.to_owned();
         let items = self
             .db
             .run(move |connection| {
+                let task_id = task_id_or_key(connection, &task)?;
                 let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, false, false)?;
                 attachment_views(connection, &task_id)
@@ -125,17 +123,18 @@ impl FileService {
             .await
     }
 
+    /// Moves a file of the task that `task` names by its ID or key.
     pub async fn reorder(
         &self,
         actor: &Actor,
-        task_id: &str,
+        task: &str,
         input: AttachmentReorder,
     ) -> AppResult<AttachmentList> {
         let envelope = Envelope::request(
             "attachment.reorder",
             &input.idempotency_key,
             &json!({
-                "taskId": task_id,
+                "taskId": task,
                 "attachmentId": input.attachment_id,
                 "targetId": input.target_id,
                 "after": input.after,
@@ -144,10 +143,11 @@ impl FileService {
         )?;
         require_revision(input.expected_revision)?;
         let actor = actor.clone();
-        let task_id = task_id.to_owned();
+        let task = task.to_owned();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
+                let task_id = task_id_or_key(tx, &task)?;
                 let project_id = task_project(tx, &task_id)?;
                 require_file_access(tx, &actor, &project_id, true, false)?;
                 envelope.once(

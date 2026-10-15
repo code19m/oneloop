@@ -30,7 +30,7 @@ const TICKET_SECONDS: i64 = 5 * 60;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct UploadTicketInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     /// Plain original filename of 1–255 characters; path separators are forbidden.
     pub file_name: String,
