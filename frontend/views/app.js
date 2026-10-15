@@ -6,8 +6,8 @@
    action. */
 
 import {
-  boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch, clearFilterMotion,
-  renderBoard,
+  boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch,
+  clearFilterMotion, renderBoard,
 } from './app/board.js';
 import { dateHtml, field, multiHtml, resetFieldIds, selectHtml } from './app/controls.js';
 import { renderModal } from './app/dialogs.js';
@@ -32,7 +32,7 @@ import {
   showWaitingPassword, stampOverlays, syncOverlayFocus, syncSidebar,
 } from './app/overlays.js';
 import {
-  mountRoadmap, renderPeek, renderRoadmap, roadmapHeight, roadmapTopbarHtml,
+  mountRoadmap, renderPeek, renderRoadmap, roadmapHeight, roadmapMovePending, roadmapTopbarHtml,
 } from './app/roadmap.js';
 import { ensureToastRegion } from './app/toasts.js';
 
@@ -587,8 +587,12 @@ function renderContent() {
 
 // ---------- actions ----------
 Object.assign(App, {
-  /** Production compatibility boundary. New modules must not reach private state directly. */
-  context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null }; },
+  /**
+   * What the views show, which the modules in src/ read instead of the views'
+   * own state. `movePending` says whether a Board or Roadmap move on the page
+   * that shows still waits for the server.
+   */
+  context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null, movePending:state.view==='board'?boardMovePending():state.view==='roadmap'?roadmapMovePending():false }; },
   updateDocumentTitle,
   refreshCounts() {
     const badge=document.querySelector('.sidebar .nav-item[title="Board"] .end');

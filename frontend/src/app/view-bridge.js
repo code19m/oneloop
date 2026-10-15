@@ -56,7 +56,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   /** @type {Promise<unknown>} */ let avatarQueue=Promise.resolve();
   let profileNameQueueScope='',avatarQueueScope='';
   const openPeek=app.openPeek.bind(app);
-  const moveTaskOrder=app.moveTaskOrder.bind(app);
   const nav=app.nav.bind(app);
   const openModal=app.openModal.bind(app);
 
@@ -680,15 +679,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       fire(execute('task.restore',{id:item.internalId},item,`${item.id} restored`,{reload:true,expectedRevision:revision,handleError:(error)=>{if(!retryableFailure(error))return false;again(failureMessage(error));return true;}}));
     });
   }
-  app.moveTaskOrder = (id,anchor,before) => {
-    const item=task(id),target=task(anchor);if(!item||!target||app._boardMovePending)return false;
-    const projectId=item.projectId,scope=sessionScope(),projectTasks=data.tasks.filter((entry)=>entry.projectId===projectId),index=projectTasks.indexOf(item),previousBefore=index>0?projectTasks[index-1]:null,previousAfter=projectTasks[index+1]||null,revision=item.revision;
-    const pending={};app._boardMovePending=pending;moveTaskOrder(id,anchor,before);
-    const request=execute('task.move',{taskId:item.internalId,status:wireStatus(item.state),[before?'beforeTaskId':'afterTaskId']:target.internalId},item,null,{skipNoChange:true,paint:false})
-      .catch((error)=>{if(!error?.uncertain&&sessionScope()===scope&&data.tasks.includes(item)&&item.revision===revision){const current=data.tasks.indexOf(item);data.tasks.splice(current,1);if(previousAfter&&data.tasks.includes(previousAfter))data.tasks.splice(data.tasks.indexOf(previousAfter),0,item);else if(previousBefore&&data.tasks.includes(previousBefore))data.tasks.splice(data.tasks.indexOf(previousBefore)+1,0,item);else data.tasks.splice(Math.min(current,data.tasks.length),0,item);if(context().view==='board'&&context().projectId===projectId)app.refreshBoard?.();}throw error;})
-      .finally(()=>{if(app._boardMovePending===pending)app._boardMovePending=false;});
-    return fire(request);
-  };
 
   app.saveEpic = (event,id) => {
     event.preventDefault();if(app.validateFormDates?.(event.target)===false)return false;

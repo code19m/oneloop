@@ -285,16 +285,22 @@ function taskMovePlan(t, col, beforeId = null, atTop = false) {
   return { destination, index, placement };
 }
 
+/** The task's project and the tasks next to it in that project, where a rollback puts it back. */
+function moveOrigin(t) {
+  const projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId;
+  const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
+  const projectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),index=projectTasks.indexOf(t);
+  return { task:t, revision:t.revision, projectId, sessionKey:`${D.session?.id||''}:${D.session?.userId||''}`,
+    previousTaskBefore:index>0?projectTasks[index-1]:null, previousTaskAfter:projectTasks[index+1]||null };
+}
+
 function applyTaskMove(t, col, beforeId = null, atTop = false) {
   // A newest-first Done shows a finished task on top and has no manual order to change.
   const newest = col === 'done' && doneNewest();
   if (newest) { if (t.state === 'done') return null; beforeId = null; atTop = true; }
   const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
   const shownBefore = shownColumn(col).filter((item) => item !== t);
-  const previousState = t.state, projectId=t.projectId||trackById(epicById(t.epicId)?.trackId)?.projectId||state.projectId, sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
-  const taskProject=(item)=>item.projectId||trackById(epicById(item.epicId)?.trackId)?.projectId;
-  const previousProjectTasks=D.tasks.filter((item)=>taskProject(item)===projectId),taskIndex=previousProjectTasks.indexOf(t);
-  const previousTaskBefore=taskIndex>0?previousProjectTasks[taskIndex-1]:null,previousTaskAfter=previousProjectTasks[taskIndex+1]||null;
+  const origin = moveOrigin(t), { projectId } = origin, previousState = t.state;
   const previousOrders = new Map(tasks().map((item)=>[item,item.order]));
   const pageInfoReference=D.boardPageInfo;
   const previousPageInfo = D.boardPageInfo ? JSON.parse(JSON.stringify(D.boardPageInfo)) : null;
@@ -325,21 +331,30 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   const optimisticOrders=new Map([...previousOrders.keys()].map((item)=>[item,item.order]));
   const optimisticEpics=new Map([...affectedEpics].map(([id])=>{const item=epicById(id);return[id,{item,state:item?.state,done:item?.done}];}));
   return {
-    task:t, revision:t.revision, projectId, sessionKey, previousState, optimisticState:col,
-    previousTaskBefore,previousTaskAfter,previousOrders,optimisticOrders,
+    ...origin, previousState, optimisticState:col, previousOrders, optimisticOrders,
     pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
     countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
     payload:{ taskId:t.internalId||t.id, status:col, ...(newest ? {} : plan.placement), optimistic:true },
   };
 }
 
-function rollbackTaskMove(change) {
+/**
+ * Put a moved task back between the tasks it was next to, unless the move
+ * no longer stands as sent: another session, or a newer revision of the task.
+ */
+function restoreTaskPosition(change) {
   const sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`;
-  if (!change || sessionKey!==change.sessionKey || !D.tasks.includes(change.task) || change.task.revision !== change.revision || change.task.state!==change.optimisticState) return false;
+  if (sessionKey!==change.sessionKey || !D.tasks.includes(change.task) || change.task.revision !== change.revision) return false;
   const currentIndex=D.tasks.indexOf(change.task);D.tasks.splice(currentIndex,1);
   if(change.previousTaskAfter&&D.tasks.includes(change.previousTaskAfter))D.tasks.splice(D.tasks.indexOf(change.previousTaskAfter),0,change.task);
   else if(change.previousTaskBefore&&D.tasks.includes(change.previousTaskBefore))D.tasks.splice(D.tasks.indexOf(change.previousTaskBefore)+1,0,change.task);
   else D.tasks.splice(Math.min(currentIndex,D.tasks.length),0,change.task);
+  return true;
+}
+
+/** Undo a column move: the task's place and status, the column orders and the counts it changed. */
+function rollbackTaskMove(change) {
+  if (change.task.state!==change.optimisticState || !restoreTaskPosition(change)) return false;
   change.task.state=change.previousState;
   for(const [item,order] of change.previousOrders)if(D.tasks.includes(item)&&item.order===change.optimisticOrders.get(item))item.order=order;
   if(change.previousPageInfo&&D.boardPageInfo===change.pageInfoReference&&JSON.stringify(D.boardPageInfo)===JSON.stringify(change.optimisticPageInfo))D.boardPageInfo=change.previousPageInfo;
@@ -348,18 +363,27 @@ function rollbackTaskMove(change) {
   return true;
 }
 
-function submitTaskMove(change,onRollback=()=>App.refresh()) {
+/** The Board move the server has not answered yet. The Board takes one move at a time. */
+let pendingMove = null;
+export const boardMovePending = () => !!pendingMove;
+
+/**
+ * Send a move that already shows. When the server refuses it, `rollback`
+ * undoes it, and `onRollback` draws the Board again if it still shows the
+ * move's project.
+ */
+function submitTaskMove(change, { rollback = rollbackTaskMove, onRollback = () => App.refresh() } = {}) {
   if (!change) return;
-  const pending={};App._boardMovePending=pending;
+  const pending={};pendingMove=pending;
   runtime().moveTask(change.payload).catch((error)=>{
-    if(!error?.uncertain&&rollbackTaskMove(change)&&state.view==='board'&&state.projectId===change.projectId)onRollback();
+    if(!error?.uncertain&&rollback(change)&&state.view==='board'&&state.projectId===change.projectId)onRollback();
     report(error);
-  }).finally(()=>{if(App._boardMovePending===pending)App._boardMovePending=false;});
+  }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
 }
 
 function setTaskState(t, col) {
   if (!canBoard()) return;
-  if (App._boardMovePending) return false;
+  if (pendingMove) return false;
   if (t.state === col) return;
   if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
   // A column that does not show its end takes the card at the top, where it stays in view.
@@ -419,7 +443,7 @@ Object.assign(App, {
   taskDragStart(ev, id) {
     clearFilterMotion();
     if (!App.require('manage_board')) { ev.preventDefault(); return; }
-    if (App._boardMovePending) { ev.preventDefault(); return; }
+    if (pendingMove) { ev.preventDefault(); return; }
     App.dragEnd(false);
     ev.dataTransfer.setData('text/task', id);
     ev.dataTransfer.effectAllowed = 'move';
@@ -471,7 +495,7 @@ Object.assign(App, {
   dropTask(ev, col) {
     if(window.Recovery?.blockDrag()){ev.preventDefault();App.dragEnd();return;}
     if (!App.require('manage_board')) return;
-    if (App._boardMovePending) { ev.preventDefault(); App.dragEnd(); return; }
+    if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
     if (!ev.dataTransfer.types.includes('text/task') || App._drag?.kind !== 'task') return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/task');
@@ -486,14 +510,14 @@ Object.assign(App, {
     App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
     scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
     animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
-    submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
+    submitTaskMove(change,{onRollback:()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');}});
   },
   clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
     event.stopPropagation(); // The card around the button would open the task.
-    if(App._boardMovePending)return;
+    if(pendingMove)return;
     if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
     const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){App.refresh();focusMovedTask(id);}}}}));
     const ordered=!(task.state==='done'&&doneNewest());
@@ -501,7 +525,14 @@ Object.assign(App, {
     if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
     App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
   },
-  moveTaskOrder(id,anchor,before){if(!canBoard())return;const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);App.refresh();focusMovedTask(id);animateLayout(old,'.card[data-task]');},
+  /** Move a task just before or after another one in its column. */
+  moveTaskOrder(id,anchor,before){
+    if(!canBoard()||pendingMove)return;
+    const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;
+    const change={...moveOrigin(task),payload:{taskId:task.internalId,status:task.state,[before?'beforeTaskId':'afterTaskId']:target.internalId,optimistic:true}};
+    const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);App.refresh();focusMovedTask(id);animateLayout(old,'.card[data-task]');
+    submitTaskMove(change,{rollback:restoreTaskPosition,onRollback:()=>App.refreshBoard()});
+  },
 
   // filters
   setBoardQ(v,event) {

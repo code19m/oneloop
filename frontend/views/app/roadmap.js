@@ -275,6 +275,10 @@ export function renderRoadmap() {
   </div>`;
 }
 
+/** The track move the server has not answered yet. The Roadmap takes one move at a time. */
+let pendingMove = null;
+export const roadmapMovePending = () => !!pendingMove;
+
 // Scroll a lane's head into the Roadmap's view, below its sticky date axis.
 function revealLane(lane) {
   const scroll = document.getElementById('rmScroll'), head = lane?.querySelector('.lane-head');
@@ -849,7 +853,7 @@ Object.assign(App, {
 
   trackDragStart(ev, id) {
     if (!App.require('manage_roadmap')) { ev.preventDefault(); return; }
-    if (App._roadmapMovePending) { ev.preventDefault(); return; }
+    if (pendingMove) { ev.preventDefault(); return; }
     App.dragEnd(false);
     ev.dataTransfer.setData('text/track', id);
     ev.dataTransfer.effectAllowed = 'move';
@@ -872,7 +876,7 @@ Object.assign(App, {
   },
   trackDrop(ev, targetId) {
     if (!App.require('manage_roadmap')) return;
-    if (App._roadmapMovePending) { ev.preventDefault(); App.dragEnd(); return; }
+    if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
     if (!ev.dataTransfer.types.includes('text/track') || App._drag?.kind !== 'track') return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/track');
@@ -890,7 +894,7 @@ Object.assign(App, {
     event.preventDefault(); App.moveTrack(id, tracks().findIndex(track=>track.id===id) + delta);
   },
   moveTrack(id, position) {
-    if (!App.require('manage_roadmap') || App._roadmapMovePending) return;
+    if (!App.require('manage_roadmap') || pendingMove) return;
     const list = tracks(), index = list.findIndex(track=>track.id===id);
     if (index < 0) return;
     const to = Math.max(0, Math.min(list.length-1, position));
@@ -903,11 +907,11 @@ Object.assign(App, {
     App.refresh();
     focusMovedTrack(id);
     animateLayout(before, '.lane');
-    const pending={};App._roadmapMovePending=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
+    const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
     runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
       const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
       if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');App.refresh();animateLayout(rollbackBefore,'.lane');}}
       report(error);
-    }).finally(()=>{if(App._roadmapMovePending===pending)App._roadmapMovePending=false;});
+    }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
   },
 });

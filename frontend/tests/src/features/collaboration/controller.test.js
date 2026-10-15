@@ -220,7 +220,7 @@ test('SSE board hints coalesce, treat null revisions as unknown and wait for opt
   useMockedClock();
   const context={view:'board',projectId:'p1'},reloads=[];
   const t=fixture({
-    app:{context:()=>context,_boardMovePending:false},
+    app:{context:()=>context},
     transport:{reload:async(options)=>{reloads.push(options);return {stale:false};}},
   });
   t.data.tasks[0].revision=2;
@@ -234,10 +234,10 @@ test('SSE board hints coalesce, treat null revisions as unknown and wait for opt
   t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed',projectId:'p1',entityType:'task',entityId:'opaque-task',entityRevision:2})});
   await delay(90);assert.equal(reloads.length,1);
 
-  t.app._boardMovePending=true;
+  context.movePending=true;
   t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed',projectId:'p1',entityType:'task',entityId:'opaque-task',entityRevision:3})});
   await delay(90);assert.equal(reloads.length,1);
-  t.data.tasks[0].revision=3;t.app._boardMovePending=false;
+  t.data.tasks[0].revision=3;context.movePending=false;
   await delay(90);assert.equal(reloads.length,1);
   t.controller.dispose();
 });

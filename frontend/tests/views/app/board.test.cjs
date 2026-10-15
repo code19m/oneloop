@@ -213,8 +213,8 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   assert.equal(task.state,'progress');assert(t.d.querySelector(`[data-col="progress"] [data-task="${task.id}"]`));
-  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTask');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._boardMovePending);
-  t.requests[0].resolve({});await tick();assert.equal(t.A._boardMovePending,false);
+  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTask');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A.context().movePending);
+  t.requests[0].resolve({});await tick();assert.equal(t.A.context().movePending,false);
 
   const calls=t.calls.length;t.A._drag={kind:'task',id:task.id};t.A._dropBefore=task.id;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
@@ -284,6 +284,18 @@ test('a rejected move after switching projects restores only its own card and co
   const p2Counts={...t.D.projectTaskCounts.p2};t.A.selectProject('p2');
   t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
   assert.equal(t.A.context().projectId,'p2');assert(t.D.tasks.includes(sentinel));assert.deepEqual(t.D.projectTaskCounts.p2,p2Counts);assert.equal(task.state,original);
+});
+
+test('a rejected reorder after switching projects restores only its own card', async () => {
+  const t=withRuntime('board'),column=t.D.tasks.filter((item)=>item.projectId==='p1'&&item.state==='planning');
+  const [first,second]=column,ids=()=>t.D.tasks.filter((item)=>item.projectId==='p1').map((item)=>item.id),original=ids();
+  t.A.moveTaskOrder(first.id,second.id,false);
+  assert.deepEqual(t.calls.map(([name,move])=>[name,move.afterTaskId,move.optimistic]),[['moveTask',second.internalId,true]]);
+  assert.ok(ids().indexOf(first.id)>ids().indexOf(second.id));
+  const sentinel={id:'ONE-999',internalId:'p2-sentinel',projectId:'p2',epicId:'p2-epic',title:'Keep me',state:'planning',order:0,revision:1};t.D.tasks.push(sentinel);
+  t.A.selectProject('p2');let refreshed=0;const refreshBoard=t.A.refreshBoard;t.A.refreshBoard=(...args)=>{refreshed++;return refreshBoard(...args);};
+  t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
+  assert.deepEqual(ids(),original);assert(t.D.tasks.includes(sentinel));assert.equal(refreshed,0);assert.equal(t.reports.length,1);
 });
 
 test('a move rejected after the session changed does not roll back the new session', async () => {

@@ -155,7 +155,7 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   const [third] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Third track' })).entities;
   await openApp(page, instance, 'roadmap');
   const order = () => page.locator('.lane').evaluateAll(els => els.map(el => el.dataset.track));
-  const settled = () => expect.poll(() => page.evaluate(() => !!App._roadmapMovePending)).toBe(false);
+  const settled = () => expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   const grip = page.getByRole('button', { name: `Reorder ${track.name}`, exact: true });
   await grip.press('ArrowDown');
   await expect(grip).toBeFocused();
@@ -191,7 +191,7 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   await expect(page.locator('.drag-preview,#dropInd')).toHaveCount(0);
   await drag();
   await expect(page.locator('[data-col="review"] .card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate(() => !!App._boardMovePending)).toBe(false);
+  await expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   expect((await (await instance.api.get(`/api/tasks/${task.taskKey}`)).json()).status).toBe('in_review');
 });
 

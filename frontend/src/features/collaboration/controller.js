@@ -362,10 +362,6 @@ export function installCollaborationController({ transport, eventSourceFactory =
     projectReconcileTimer=null;projectReconcileProjectId=null;pendingProjectHints.clear();
   }
 
-  function motionPending(context){
-    return context?.view==='board'?!!app?._boardMovePending:context?.view==='roadmap'?!!app?._roadmapMovePending:false;
-  }
-
   function scheduleProjectReconcile(projectId,{full=false,hint=/** @type {any} */({})}={}){
     if(projectReconcileProjectId&&projectReconcileProjectId!==projectId)clearProjectReconcile();
     projectReconcileProjectId=projectId;
@@ -382,7 +378,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       projectReconcileTimer=null;
       const context=app?.context?.();
       if(!context||context.projectId!==projectReconcileProjectId){clearProjectReconcile();return;}
-      if(projectReconcileRunning||motionPending(context)){projectReconcileTimer=setTimeout(flush,60);return;}
+      if(projectReconcileRunning||context.movePending){projectReconcileTimer=setTimeout(flush,60);return;}
       const pending=[...pendingProjectHints.values()];clearProjectReconcile();
       const uncovered=pending.filter((item)=>!hintIsCovered(item.hint));
       if(!uncovered.length)return;

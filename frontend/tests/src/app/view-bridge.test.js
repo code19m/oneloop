@@ -154,18 +154,6 @@ test('an admin-list response cannot mutate or repaint a page that has been left'
   assert.equal(state.data.adminUsers.loaded,false);assert.deepEqual(state.data.adminUsers.ids,[]);assert.equal(state.data.users.length,0);
 });
 
-test('a rejected reorder after project navigation restores only its original task',async()=>{
-  const context={view:'board',projectId:'p1',board:{}},failure=Object.assign(new Error('Rejected'),{code:'validation_failed'});let reject,state;
-  state=fixture(context,{
-    gateway:{execute:()=>new Promise((_resolve,no)=>{reject=no;})},
-    app:{moveTaskOrder(id,anchor,before){const item=state.data.tasks.find((entry)=>entry.id===id),target=state.data.tasks.find((entry)=>entry.id===anchor);state.data.tasks.splice(state.data.tasks.indexOf(item),1);state.data.tasks.splice(state.data.tasks.indexOf(target)+(before?0:1),0,item);}},
-  });
-  const first={id:'ONE-1',internalId:'opaque-1',projectId:'p1',state:'planning',revision:1},second={id:'ONE-2',internalId:'opaque-2',projectId:'p1',state:'planning',revision:1},other={id:'TWO-1',internalId:'other-1',projectId:'p2',state:'planning',revision:1};state.data.tasks.push(first,second,other);
-  state.app.moveTaskOrder(first.id,second.id,false);assert.deepEqual(state.data.tasks.map((item)=>item.id),['ONE-2','ONE-1','TWO-1']);
-  const sentinel={id:'TWO-2',internalId:'other-2',projectId:'p2',state:'planning',revision:1};state.data.tasks.push(sentinel);context.projectId='p2';reject(failure);await new Promise((resolve)=>setTimeout(resolve,0));
-  assert.deepEqual(state.data.tasks.map((item)=>item.id),['ONE-1','ONE-2','TWO-1','TWO-2']);assert.deepEqual(state.paints,[]);assert(state.data.tasks.includes(sentinel));
-});
-
 test('rapid assignee toggles serialize the latest intent without an intermediate repaint',async()=>{
   const requests=[];let releaseFirst,releaseSecond;
   const gateway={execute:async(operation,payload,options)=>{
