@@ -1,4 +1,6 @@
-// Shared jsdom harness for the classic view scripts in frontend/views.
+// Shared jsdom harness for frontend/views. It evaluates the classic scripts and
+// imports the ES modules (Node's vm modules, so the test script turns on
+// --experimental-vm-modules).
 //
 // Every window is strict: a page error or jsdom error fails the test that
 // caused it, and the process exit code catches anything reported later. The
@@ -7,6 +9,8 @@ const { afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
@@ -102,6 +106,36 @@ function source(name) {
   if (name === 'data') return dataScript();
   if (name === 'recovery') return recoveryScript();
   return read(path.join(frontend, name.startsWith('vendor/') ? `${name}.js` : `views/${name}.js`));
+}
+
+/** The views that are ES modules, which `load` imports; the others are classic scripts. */
+const viewModules = new Set(['app']);
+
+/**
+ * Import `file`, an ES module, and the modules it imports into the window of
+ * `dom`, as a browser does. Each window gets its own instances.
+ */
+function importModule(dom, file) {
+  const context = dom.getInternalVMContext(), loaded = new Map();
+  const link = file => {
+    if (loaded.has(file)) return loaded.get(file);
+    const module = new vm.SourceTextModule(read(file), { context, identifier: pathToFileURL(file).href });
+    loaded.set(file, module);
+    module.linkRequests(module.moduleRequests.map(({ specifier }) => link(path.resolve(path.dirname(file), specifier))));
+    return module;
+  };
+  const module = link(file);
+  module.instantiate();
+  // A module without top-level await runs now; a failure leaves it errored.
+  module.evaluate().catch(() => {});
+  if (module.status === 'errored') throw module.error;
+  return module.namespace;
+}
+
+/** Run one script in the window of `dom`, by its `source` name, as the app loads it. */
+function load(dom, name) {
+  if (viewModules.has(name)) return importModule(dom, path.join(frontend, `views/${name}.js`));
+  dom.window.eval(source(name));
 }
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
@@ -225,7 +259,7 @@ function bootApp({
   let wiring = null;
   for (const name of scripts) {
     beforeScript?.(name, w);
-    w.eval(source(name));
+    load(dom, name);
     if (name !== 'data') continue;
     wiring = wire(w, { api, reads, auth, reloadBootstrap });
     prepare?.(w.DATA, w);
@@ -244,4 +278,4 @@ async function waitFor(condition, message = 'condition holds', timeout = 5_000) 
 /** Let pending microtasks and immediate callbacks run. */
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-module.exports = { JSDOM, jsdom, source, bootApp, appScripts, previewLibraries, waitFor, settle, fixtures };
+module.exports = { JSDOM, jsdom, source, load, bootApp, appScripts, previewLibraries, waitFor, settle, fixtures };

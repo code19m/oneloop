@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { bootApp, source, waitFor, settle } = require('../support/dom.cjs');
+const { bootApp, source, load, waitFor, settle } = require('../support/dom.cjs');
 const { ApiError } = require('../../src/data/api-client.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
@@ -304,15 +304,12 @@ async function pdfPreview(url, scriptPath) {
     },
   });
   const { w, d } = t;
-  for (const name of ['uploads', 'app']) {
-    let text = source(name);
-    if (name === 'uploads') text = text.replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)");
-    const script = name === 'uploads' && scriptPath ? d.createElement('script') : null;
-    if (script) script.src = new URL(scriptPath, url).href;
-    Object.defineProperty(d, 'currentScript', { configurable: true, value: script });
-    w.eval(text);
-    Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
-  }
+  const script = scriptPath ? d.createElement('script') : null;
+  if (script) script.src = new URL(scriptPath, url).href;
+  Object.defineProperty(d, 'currentScript', { configurable: true, value: script });
+  w.eval(source('uploads').replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)"));
+  Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
+  load(t.dom, 'app');
   t.start();
   w.UIMotion.fade = el => { if (el?.tagName === 'CANVAS') state.fades++; };
   const task = w.DATA.tasks.find(item => item.id === 'BIR-079');

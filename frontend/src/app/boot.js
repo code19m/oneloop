@@ -109,9 +109,7 @@ try {
   void buildMonitor.check();
   await Promise.all([auth.initialize(),loadViewDependencies()]);
   globalThis.ONELOOP_DEFER_BOOT_RENDER=true;
-  await loadClassic('/views/app.js');
-  app = globalThis.App;
-  if (!app) throw new Error('The web client did not initialize.');
+  ({ App: app } = await import('../../views/app.js'));
   bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope=routeScope())=>bootstrap.load({...routeScope(),...scope})});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
   app.refresh();

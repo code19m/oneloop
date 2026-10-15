@@ -6,7 +6,7 @@ and no bundler.
 ```text
 index.html  Application entry and SPA fallback
 src/        ES modules for app setup, auth, data and features
-views/      Older classic-script view layer
+views/      Older view layer: the app.js module and classic scripts
 styles/     CSS and grain texture
 icons/      Favicons and app icons
 vendor/     Browser libraries, licenses and audit records
@@ -66,9 +66,10 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads motion, file views, uploads and collaboration in order, then `app.js`.
-The view bridge installs server-backed actions before the first application
-render; preview libraries load on demand.
+loads the classic scripts motion, file views, uploads and collaboration in
+order, then imports the `app.js` module. The view bridge installs
+server-backed actions before the first application render; preview libraries
+load on demand.
 
 ## Design
 

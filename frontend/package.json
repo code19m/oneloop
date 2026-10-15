@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --disable-warning=ExperimentalWarning \"tests/**/*.test.*\"",
-    "coverage": "c8 --all --include=\"src/**/*.js\" --reporter=lcov --reporter=text-summary --reports-dir=../target/coverage/frontend --temp-directory=../target/coverage/frontend/tmp node --test --disable-warning=ExperimentalWarning \"tests/**/*.test.*\"",
+    "test": "node --experimental-vm-modules --test --disable-warning=ExperimentalWarning \"tests/**/*.test.*\"",
+    "coverage": "c8 --all --include=\"src/**/*.js\" --reporter=lcov --reporter=text-summary --reports-dir=../target/coverage/frontend --temp-directory=../target/coverage/frontend/tmp node --experimental-vm-modules --test --disable-warning=ExperimentalWarning \"tests/**/*.test.*\"",
     "typecheck": "tsc -p jsconfig.json",
     "lint": "eslint src/ views/ --max-warnings 0"
   },
