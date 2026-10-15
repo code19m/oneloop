@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     AppResult,
-    auth::unix_now,
+    clock::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
     disk::DiskReservation,
 };

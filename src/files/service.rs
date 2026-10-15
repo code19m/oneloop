@@ -21,7 +21,7 @@ pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
 use super::BlobState;
 use crate::disk::{DiskAdmission, DiskReservation};
 use crate::{
-    auth::unix_now,
+    clock::unix_now,
     idempotency::{Envelope, Resource, validate_key as validate_idempotency_key},
 };
 use std::{

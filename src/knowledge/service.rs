@@ -19,8 +19,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AppError, AppResult, Db,
     access::{Need, require_project},
-    auth::{Actor, ActorSource, refresh_actor_connection, unix_now},
+    auth::{Actor, ActorSource, refresh_actor_connection},
     blocking::Lane,
+    clock::unix_now,
     collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
     files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
     idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
