@@ -1,6 +1,6 @@
 //! Upload admission and durable reservations; streaming never holds a database write transaction.
 
-use std::path::PathBuf;
+use std::{future::Future, path::PathBuf, time::Duration};
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs::{self, File, OpenOptions},
     io::AsyncWriteExt,
+    time::{Instant, timeout_at},
 };
 use uuid::Uuid;
 
@@ -38,9 +39,15 @@ fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()
     actor.require_ready()?;
     validate_original_name(name)?;
     validate_idempotency_key(key)?;
+    check_attachment_size(size, "sizeBytes")
+}
+
+/// Refuses an attachment of `size` bytes outside the limits, naming `field`.
+/// The browser checks a declared size before it reads the body.
+pub(crate) fn check_attachment_size(size: u64, field: &'static str) -> AppResult<()> {
     if size == 0 || size > MAX_ATTACHMENT_BYTES {
         return Err(AppError::validation(
-            "sizeBytes",
+            field,
             format!(
                 "must contain 1 byte to {} MiB",
                 MAX_ATTACHMENT_BYTES / (1024 * 1024)
@@ -48,6 +55,35 @@ fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()
         ));
     }
     Ok(())
+}
+
+/// The time limits on the bytes of an upload, for browser and MCP uploads
+/// alike: a minute for each read, and the life of the reservation in all.
+pub(crate) struct UploadDeadline {
+    overall: Instant,
+}
+
+impl UploadDeadline {
+    pub(crate) fn new() -> Self {
+        Self {
+            overall: Instant::now() + Duration::from_secs(UPLOAD_RESERVATION_SECONDS as u64),
+        }
+    }
+
+    pub(crate) async fn read<T>(&self, read: impl Future<Output = T>) -> AppResult<T> {
+        let now = Instant::now();
+        // timeout_at polls the read first. Reject an expired overall deadline
+        // even when the next buffered chunk is immediately ready.
+        if now >= self.overall {
+            return Err(AppError::validation(
+                "file",
+                "upload timed out; retry the upload",
+            ));
+        }
+        timeout_at(self.overall.min(now + Duration::from_secs(60)), read)
+            .await
+            .map_err(|_| AppError::validation("file", "upload timed out; retry the upload"))
+    }
 }
 
 impl FileService {
@@ -288,6 +324,15 @@ impl AttachmentUpload {
             Self::Pending(upload) => upload.abort().await,
             Self::Replayed(_) => Ok(()),
         }
+    }
+
+    /// Aborts an upload whose bytes failed with `error`, and returns the
+    /// error. A retry then finds the task slot and the key free.
+    pub async fn fail(self, error: AppError) -> AppError {
+        if let Err(cleanup) = self.abort().await {
+            tracing::warn!(error=%cleanup, "upload abort failed; reconciliation will retry");
+        }
+        error
     }
 }
 
@@ -689,4 +734,20 @@ fn release_upload_rows(
         params![idempotency_id, reservation_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn overall_deadline_ends_even_a_trickling_upload() {
+        let deadline = UploadDeadline {
+            overall: Instant::now() + Duration::from_millis(20),
+        };
+        assert_eq!(deadline.read(async { 7 }).await.unwrap(), 7);
+        tokio::time::advance(Duration::from_millis(25)).await;
+        assert!(deadline.read(async { 8 }).await.is_err());
+        assert!(deadline.read(std::future::pending::<()>()).await.is_err());
+    }
 }

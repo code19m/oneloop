@@ -16,6 +16,7 @@ pub use avatar::AvatarSlot;
 pub use read::ReadMode;
 pub(crate) use thumbnail::ThumbnailRead;
 pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
+pub(crate) use upload::{UploadDeadline, check_attachment_size};
 
 use std::{
     pin::Pin,

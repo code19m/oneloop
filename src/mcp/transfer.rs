@@ -332,8 +332,15 @@ async fn upload(
         )
         .await?;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = deadline.read(stream.next()).await? {
-        upload.write_chunk(&chunk.map_err(body_error)?).await?;
+    let received = async {
+        while let Some(chunk) = deadline.read(stream.next()).await? {
+            upload.write_chunk(&chunk.map_err(body_error)?).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = received {
+        return Err(upload.fail(error).await);
     }
     let (attachment, _) = upload.finish().await?;
     Ok(axum::Json(ValueResponse {

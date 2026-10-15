@@ -19,6 +19,7 @@ use crate::{
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
         MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead, UploadDeadline,
+        check_attachment_size,
     },
 };
 
@@ -97,12 +98,7 @@ async fn upload_attachment(
     let declared_size = required_header(&headers, "x-file-size", "file")?
         .parse::<u64>()
         .map_err(|_| AppError::validation("file", "X-File-Size must be an integer"))?;
-    if declared_size == 0 || declared_size > MAX_ATTACHMENT_BYTES {
-        return Err(AppError::validation(
-            "file",
-            "must contain 1 byte to 25 MiB",
-        ));
-    }
+    check_attachment_size(declared_size, "file")?;
     let deadline = UploadDeadline::new();
     let mut upload = None;
     let received = async {
@@ -143,14 +139,8 @@ async fn upload_attachment(
     let upload = match (received, upload) {
         (Ok(()), Some(upload)) => upload,
         (Ok(()), None) => return Err(AppError::validation("file", "file field is required")),
-        (Err(error), upload) => {
-            if let Some(upload) = upload
-                && let Err(cleanup_error) = upload.abort().await
-            {
-                tracing::warn!(error=%cleanup_error, "upload abort failed; reconciliation will retry");
-            }
-            return Err(error);
-        }
+        (Err(error), None) => return Err(error),
+        (Err(error), Some(upload)) => return Err(upload.fail(error).await),
     };
     let (view, created) = upload.finish().await?;
     let status = if created {
