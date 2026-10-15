@@ -100,8 +100,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const [comments,activity,target,block]=await Promise.all([
         append&&page.loaded&&!page.commentsCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.comments(task.internalId,{cursor:append?page.commentsCursor:undefined,limit:50,signal:taskController.signal,background}),
         append&&page.loaded&&!page.activityCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.activity(task.projectId,{taskId:task.internalId,cursor:append?page.activityCursor:undefined,limit:50,signal:taskController.signal,background}),
-        Promise.all([...new Set([...targetCommentIds,...(targetCommentId?[targetCommentId]:[])])].map(id=>transport.api.request(`/api/discussion/tasks/${encodeURIComponent(task.internalId)}/comments/${encodeURIComponent(id)}`,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
-        targetBlockId?transport.api.request(`/api/discussion/tasks/${encodeURIComponent(task.internalId)}/blocks/${encodeURIComponent(targetBlockId)}`,{signal:taskController.signal,background}):Promise.resolve(null),
+        Promise.all([...new Set([...targetCommentIds,...(targetCommentId?[targetCommentId]:[])])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
+        targetBlockId?transport.api.block(task.internalId,targetBlockId,{signal:taskController.signal,background}):Promise.resolve(null),
       ]);
       if(reconcile){
         for(const [rows,depth,read] of [
@@ -294,7 +294,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
   async function readCanonicalTask(task){
     const expectedSession=currentSession(),expectedRoute=routeKey;
     try{
-      const view=await transport.api.request(`/api/tasks/${encodeURIComponent(task.internalId)}`,{background:true});
+      const view=await transport.api.task(task.internalId,{background:true});
       if(!view||currentSession()!==expectedSession||routeKey!==expectedRoute||!currentTask(task.internalId))return null;
       if(currentTask(task.internalId).revision>view.revision)return currentTask(task.internalId);
       const mapped=replaceTaskDetail(data,view);
@@ -457,7 +457,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
         globalThis.Recovery?.liveDisconnected?.(()=>startEvents());
         if(sessionCheck)return;
         const expectedSession=currentSession();
-        const check=transport.api.request('/api/auth/me',{background:true}).then((answer)=>{
+        const check=transport.api.me({background:true}).then((answer)=>{
           if(expectedSession===currentSession())globalThis.Recovery?.ownsAnswer?.(answer?.user?.id);
         },(error)=>{
           if(expectedSession===currentSession()&&error?.status===401&&!globalThis.Recovery?.sessionExpired?.())globalThis.location?.reload?.();

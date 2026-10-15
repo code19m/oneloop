@@ -107,6 +107,7 @@ test('every read a live update repeats can be sent as passive',async()=>{
   const reads={
     attachments:options=>api.attachments('t1',options),sessions:options=>api.sessions(options),connectedApps:options=>api.connectedApps(options),
     users:options=>api.users(options),storageUsage:options=>api.storageUsage(options),pool:options=>api.pool('p1',{scope:'personal'},options),
+    me:options=>api.me(options),task:options=>api.task('t1',options),comment:options=>api.comment('t1','c1',options),block:options=>api.block('t1','b1',options),
   };
   for(const read of Object.values(reads)){await read({background:true});await read();}
   assert.deepEqual(calls.map(([,header])=>header),Object.keys(reads).flatMap(()=>['1',undefined]),calls.map(([url])=>url).join(' '));
@@ -238,4 +239,96 @@ test('server time ignores device skew, invalid/slow dates and older concurrent r
   responses.shift()(Response.json({}, {headers:{Date:new Date(server).toUTCString()}}));await older;
   assert.equal(api.serverNow(),server+60000);
   const failed=api.me();await Promise.resolve();responses.shift()(Response.json({}, {status:503,headers:{Date:new Date(server-86400000).toUTCString()}}));await assert.rejects(failed);assert.equal(api.serverNow(),server+60000);
+});
+
+/** An XMLHttpRequest that answers 201 at once, unless a test changes it. */
+class MockXhr {
+  upload = {};
+  headers = {};
+  status = 201;
+  responseText = JSON.stringify({ id: 'attachment-1' });
+  open(method, path) { this.method = method; this.path = path; }
+  setRequestHeader(name, value) { this.headers[name] = value; }
+  getResponseHeader() { return null; }
+  send(body) {
+    this.body = body;
+    this.upload.onprogress({ lengthComputable: true, loaded: 1, total: 2 });
+    this.onload();
+  }
+  abort() { this.onabort?.(); }
+}
+const uploader = (xhr, options = {}) => createApiClient({ fetchImpl: async () => { throw new Error('An upload does not use fetch'); }, xhrFactory: () => xhr, ...options });
+
+test('an attachment upload reports byte progress and keeps its logical upload key', async () => {
+  const xhr = new MockXhr(), progress = [];
+  const result = await uploader(xhr).uploadAttachment('task/one', {
+    file: new Blob(['ab']), ephemeral: true, idempotencyKey: 'logical-upload',
+    onProgress: (value) => progress.push(value),
+  });
+  assert.deepEqual(result, { id: 'attachment-1' });
+  assert.equal(xhr.method, 'POST');
+  assert.equal(xhr.path, '/api/tasks/task%2Fone/attachments?ephemeral=true');
+  assert.equal(xhr.headers['Idempotency-Key'], 'logical-upload');
+  assert.equal(xhr.headers['X-File-Size'], '2');
+  assert.deepEqual(progress, [50, 100]);
+  assert.ok(xhr.body.get('file') instanceof Blob);
+});
+
+test('a cancelled upload aborts its request and stays uncertain', async () => {
+  const xhr = new MockXhr(), controller = new AbortController();
+  xhr.send = () => {};
+  const pending = uploader(xhr).uploadAttachment('task', { file: new Blob(['a']), signal: controller.signal, idempotencyKey: 'cancel-me' });
+  controller.abort();
+  await assert.rejects(pending, (error) => error.code === 'aborted' && error.uncertain === true);
+});
+
+test('an upload cancelled before it starts sends no bytes', async () => {
+  const xhr = new MockXhr(), controller = new AbortController();
+  let sent = false;
+  xhr.send = () => { sent = true; };
+  controller.abort();
+  await assert.rejects(
+    uploader(xhr).uploadAttachment('task', { file: new Blob(['a']), signal: controller.signal, idempotencyKey: 'cancelled-before-send' }),
+    (error) => error.code === 'aborted' && error.uncertain === false,
+  );
+  assert.equal(sent, false);
+});
+
+test('an upload refused by a busy server says why and may be sent again', async () => {
+  const xhr = new MockXhr();
+  xhr.status = 503;
+  xhr.responseText = JSON.stringify({ error: { code: 'unavailable', message: 'Storage is full' } });
+  await assert.rejects(
+    uploader(xhr).uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'retry-me' }),
+    (error) => error.status === 503 && error.code === 'unavailable' && error.message === 'Storage is full' && error.uncertain === true,
+  );
+});
+
+test('an upload\'s outcome reaches the response observer with the session context from before it was sent', async () => {
+  const events = [];
+  let generation = 1;
+  const xhr = new MockXhr();
+  xhr.send = () => {};
+  const pending = uploader(xhr, { getRequestContext: () => ({ sessionGeneration: generation }), onResponse: (event) => events.push(event) })
+    .uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'old' });
+  generation = 2; xhr.status = 401; xhr.responseText = JSON.stringify({ error: { code: 'unauthorized', message: 'Sign in' } }); xhr.onload();
+  await assert.rejects(pending, (error) => error.status === 401 && error.requestContext.sessionGeneration === 1);
+  assert.equal(events.length, 1); assert.equal(events[0].ok, false); assert.equal(events[0].requestContext.sessionGeneration, 1);
+});
+
+test('an upload has a transfer deadline and keeps the retry hint of a response that is not JSON', async () => {
+  const xhr = new MockXhr();
+  xhr.status = 503; xhr.responseText = '<html>Unavailable</html>'; xhr.getResponseHeader = () => '120';
+  const api = uploader(xhr);
+  await assert.rejects(api.uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'retry' }), (error) => error.status === 503 && error.retryAfter === '120' && error.uncertain);
+  assert.equal(xhr.timeout, 300_000);
+  xhr.send = () => xhr.ontimeout();
+  await assert.rejects(api.uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'retry' }), (error) => error.code === 'timeout' && error.uncertain);
+  assert.equal(xhr.headers['Idempotency-Key'], 'retry');
+});
+
+test('an upload names the person the page shows', async () => {
+  const xhr = new MockXhr();
+  await uploader(xhr, { getRequestContext: () => ({ sessionGeneration: 1, userId: 'u1' }) }).uploadAttachment('task', { file: new Blob(['a']), idempotencyKey: 'named-upload' });
+  assert.equal(xhr.headers['X-Oneloop-User'], 'u1');
 });

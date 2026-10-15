@@ -11,7 +11,7 @@ function fixture(overrides={}){
   const app={toasts:[],refreshes:0,context:()=>({view:'board',projectId:'p1'}),refresh(){this.refreshes++;},toast(...args){this.toasts.push(args);}};
   let expires=0,reloads=0;
   const controller=createRecoveryController({
-    data,api:{request:async()=>({}),...overrides.api},gateway:{invalidate(){},...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
+    data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
     reload:async()=>{reloads++;return {};},presentConflict:overrides.presentConflict,
     setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),
     documentObject:null,windowObject:overrides.windowObject??null,random:()=>0,
@@ -125,7 +125,7 @@ test('responses and command failures from an expired session cannot expire its r
 test('late read and reconnect success cannot override a newer browser offline event',async()=>{
   let online=true,resolveProbe;
   const listeners={};
-  const state=fixture({online:()=>online,windowObject:{addEventListener:(name,listener)=>listeners[name]=listener},api:{request:()=>new Promise(resolve=>resolveProbe=resolve)}});
+  const state=fixture({online:()=>online,windowObject:{addEventListener:(name,listener)=>listeners[name]=listener},api:{me:()=>new Promise(resolve=>resolveProbe=resolve)}});
   state.controller.bind(state.app,{});
   const oldContext=state.controller.requestContext();
   const reconnect=state.controller.reconnect();
@@ -150,24 +150,24 @@ test('a success preceding a newer API failure cannot restore writes even while b
 });
 
 test('a reconnect that finds someone else signed in ends this person\'s session and reads nothing of theirs',async()=>{
-  const state=fixture({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+  const state=fixture({api:{me:async()=>({user:{id:'u2'},sessionId:'s9'})}});
   state.controller.observeResponse({ok:false,error:new ApiError('Network',{code:'network_error'})});
   await state.controller.reconnect();
   assert.equal(state.expires,1);assert.equal(state.controller.expired,true);assert.equal(state.reloads,0);
 });
 
 test('a reconnect reads again only for the person the tab shows',async()=>{
-  const same=fixture({api:{request:async()=>({user:{id:'u1'},sessionId:'s2'})}});
+  const same=fixture({api:{me:async()=>({user:{id:'u1'},sessionId:'s2'})}});
   await same.controller.reconnect();
   assert.equal(same.expires,0);assert.equal(same.reloads,1,'the same person keeps working, on their new session');
-  const signedOut=fixture({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});signedOut.data.session=null;
+  const signedOut=fixture({api:{me:async()=>({user:{id:'u2'},sessionId:'s9'})}});signedOut.data.session=null;
   await signedOut.controller.reconnect();
   assert.equal(signedOut.expires,0);assert.equal(signedOut.reloads,0,'another person\'s sign-in loads nothing into a signed-out tab');
 });
 
 test('reconnect keeps service errors unavailable and retries reads until a successful response',async()=>{
   const timers=[];let attempts=0;
-  const state=fixture({api:{request:async()=>{attempts++;if(attempts<3)throw new ApiError('Unavailable',{status:503});return {}; }},setTimer:(callback,delay)=>{timers.push({callback,delay});return timers.length;}});
+  const state=fixture({api:{me:async()=>{attempts++;if(attempts<3)throw new ApiError('Unavailable',{status:503});return {}; }},setTimer:(callback,delay)=>{timers.push({callback,delay});return timers.length;}});
   state.controller.observeResponse({ok:false,error:new ApiError('Network',{code:'network_error'})});
   for(let attempt=0;attempt<2;attempt++){
     await state.controller.reconnect(false);

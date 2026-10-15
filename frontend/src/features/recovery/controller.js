@@ -515,7 +515,7 @@ export function createRecoveryController({
     const attempt=++reconnectGeneration;
     const context=requestContext();
     try{
-      const answer=await api.request('/api/auth/me',{background:true});
+      const answer=await api.me({background:true});
       if(disposed||attempt!==reconnectGeneration||!currentSession(context)||!online())return;
       // The shared response observer may already have restored the connection.
       if(!currentConnection(context))return;

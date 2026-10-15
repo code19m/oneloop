@@ -394,6 +394,16 @@ test('inline image previews work outside the dialog and stop when disposed', asy
   assert.equal(typeof dispose, 'function');
 });
 
+test('an upload counts as unsaved work until it settles', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+  await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment'), 'the upload was sent');
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'leaving now would lose the file');
+  t.answer('uploadAttachment', { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1 });
+  await waitFor(() => !t.w.Recovery.hasUnsavedInput(), 'the settled upload no longer counts');
+});
+
 test('an upload, retention change and delete still finish after a live update replaced the task', async () => {
   const file = (overrides = {}) => ({ id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content', downloadUrl: '/download', ...overrides });
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => ({ items: [] }) } });

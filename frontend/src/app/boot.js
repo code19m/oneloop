@@ -15,7 +15,6 @@ import { createRuntimeHooks } from './runtime-hooks.js';
 import { actionErrorFeedback, retryableFailure } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
-import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
 import { installCollaborationController } from '../features/collaboration/controller.js';
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
@@ -69,7 +68,6 @@ const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=
 const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
-runtimeHooks = installAttachmentTransport(runtimeHooks);
 globalThis.OneloopTransport = runtimeHooks;
 installCollaborationController({transport:runtimeHooks});
 installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});

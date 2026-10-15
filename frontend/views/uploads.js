@@ -108,7 +108,9 @@
   async function upload(job,task){
     job.cancelled=false;job.state='uploading';job.progress=0;job.error='';job.validation=false;const controller=new AbortController();job.reader={abort:()=>controller.abort()};mount(job.taskId);
     try{
-      const value=await transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
+      // Leaving the page while a file uploads would lose it.
+      const sending=transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
+      window.Recovery?.trackWrite?.(sending);const value=await sending;
       if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
       const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
       productionLoaded.add(current);jobs.splice(jobs.indexOf(job),1);hooks.refreshAttachments(job.taskId);app.toast('Attachment added');

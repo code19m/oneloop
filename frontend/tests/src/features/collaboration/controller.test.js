@@ -82,7 +82,7 @@ test('same-second comments and projections retain server IDs through initial, ap
   let phase=0;
   const comment=(id)=>({id,projectId:'p1',taskId:'opaque-task',authorId:'u2',authorName:'Bob',rootId:id,replyToId:null,content:id,mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1});
   const activity=(id)=>({id,eventType:'task.updated',actorUserId:'u2',actorName:'Bob',createdAt:20,fieldKey:'title',metadata:{}});
-  const t=fixture({api:{request:async()=>({id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Reconciled',description:'',status:'planning',position:1,deadline:null,createdAt:20,updatedAt:20,revision:1,assigneeIds:[],activeBlock:null})}});
+  const t=fixture({api:{task:async()=>({id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Reconciled',description:'',status:'planning',position:1,deadline:null,createdAt:20,updatedAt:20,revision:1,assigneeIds:[],activeBlock:null})}});
   const page=(items,nextCursor)=>({items,nextCursor});
   t.transport.api.comments=async(_taskId,options)=>page(phase===0?[comment('c2'),comment('c1')]:phase===1?[comment('c3')]:[comment('c4'),comment('c0')],phase===2?null:'more-comments');
   t.transport.api.activity=async(_projectId,options)=>page(phase===0?[activity('a2'),activity('a1')]:phase===1?[activity('a0')]:[activity('a3'),activity('a1')],phase===2?null:'more-activity');
@@ -208,11 +208,11 @@ test('SSE reconciliation passively refreshes canonical task fields before scoped
   let request;
   const canonical={id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Changed elsewhere',description:'',status:'in_progress',position:1,deadline:null,createdAt:1,updatedAt:2,revision:2,assigneeIds:[],activeBlock:null};
   let refreshed=0;
-  const t=fixture({api:{request:async(path,options)=>{request={path,options};return canonical;}},facade:{canonicalTask:()=>refreshed++}});
+  const t=fixture({api:{task:async(id,options)=>{request={id,options};return canonical;}},facade:{canonicalTask:()=>refreshed++}});
   t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
   t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
   assert.deepEqual(t.published,[{type:'sse',kind:'activity.changed',taskId:'ONE-101'}]);
-  assert.equal(request.path,'/api/tasks/opaque-task');assert.equal(request.options.background,true);
+  assert.equal(request.id,'opaque-task');assert.equal(request.options.background,true);
   assert.equal(t.data.tasks[0].title,'Changed elsewhere');assert.equal(refreshed,1);
   assert.ok(t.apiCalls.some(([name,_id,options])=>name==='comments'&&options.background===true));
 });
@@ -281,7 +281,7 @@ test('SSE lifecycle reports live-channel recovery without treating a healthy API
   const previous=globalThis.Recovery;
   globalThis.Recovery={liveConnected:()=>lifecycle.push('connected'),liveDisconnected:()=>lifecycle.push('disconnected'),sessionExpired:()=>{expired++;return true;}};
   try{
-    const t=fixture({api:{request:async()=>{throw Object.assign(new Error('Ended'),{status:401});}}});
+    const t=fixture({api:{me:async()=>{throw Object.assign(new Error('Ended'),{status:401});}}});
     t.events.listeners.open({});
     t.events.listeners.error({});await tick();
     assert.deepEqual(lifecycle,['connected','disconnected']);assert.equal(expired,1);
@@ -293,7 +293,7 @@ test('task access loss delegates to the shell state without a stale project toas
   const previous=globalThis.Recovery,states=[],toasts=[];
   globalThis.Recovery={handleRouteError:(error,options)=>states.push([error.status,options.background])};
   try{
-    const t=fixture({api:{request:async()=>{throw Object.assign(new Error('project was not found'),{status:404,code:'not_found'});}},app:{toast:(...args)=>toasts.push(args)}});
+    const t=fixture({api:{task:async()=>{throw Object.assign(new Error('project was not found'),{status:404,code:'not_found'});}},app:{toast:(...args)=>toasts.push(args)}});
     t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
     t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
     assert.deepEqual(states,[[404,true]]);assert.deepEqual(toasts,[]);
@@ -473,7 +473,7 @@ test('three task feed pages and deep cursors survive live comments and local sav
   const t=fixture({api:{
     comments:async(_id,options)=>{cursors.push(options.cursor);const n=Number(options.cursor??0);return {items:[comment(`c${n}`,100-n)],nextCursor:n<3?String(n+1):null};},
     activity:async(_id,options)=>{const n=Number(options.cursor??0);return {items:[{id:`a${n}`,eventType:'comment.edited',actorUserId:'u1',createdAt:100-n,metadata:{}}],nextCursor:n<3?String(n+1):null};},
-    request:async()=>({items:[comment('c2',98,edited?'Updated':'Original')]}),
+    comment:async()=>({items:[comment('c2',98,edited?'Updated':'Original')]}),
   }});
   t.controller.beforeRender(t.app.context());await t.controller.loadTaskPage('ONE-101');await t.controller.moreTask('ONE-101');await t.controller.moreTask('ONE-101');
   edited=true;t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed',projectId:'p1',taskId:'opaque-task',entityType:'comment',entityId:'c2'})});await delay(90);
@@ -522,7 +522,7 @@ test('Inbox append only publishes its fetched page and uses a busy control befor
 test('SSE open plus reconcile performs one reload after reconnect',async()=>{
   useMockedClock();
   let reloads=0;const sources=[],timers=[];
-  const t=fixture({app:{context:()=>({view:'board',projectId:'p1'})},api:{request:async()=>({})},transport:{reload:async()=>{reloads++;return {stale:false};}},eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){}};sources.push(source);return source;}});
+  const t=fixture({app:{context:()=>({view:'board',projectId:'p1'})},api:{me:async()=>({})},transport:{reload:async()=>{reloads++;return {stale:false};}},eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){}};sources.push(source);return source;}});
   const previous=globalThis.Recovery;
   const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{},getApp:()=>t.app,getAuth:()=>null,reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
   globalThis.Recovery=recovery;
@@ -571,7 +571,7 @@ test('a stream for the person the tab shows goes on, and so does one from a serv
 });
 
 test('a lost stream that finds someone else signed in ends this tab\'s session',async()=>{
-  const t=streamingPage({api:{request:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+  const t=streamingPage({api:{me:async()=>({user:{id:'u2'},sessionId:'s9'})}});
   try{
     t.sources[0].listeners.error();for(let turn=0;turn<5&&!t.expires;turn++)await tick();
     assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);
