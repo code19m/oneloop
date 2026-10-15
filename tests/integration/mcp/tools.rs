@@ -1939,3 +1939,77 @@ async fn undo_for_deletions_stays_in_the_browser() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_search_without_status_reads_every_column_at_one_moment() {
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+    type Gate = (mpsc::Sender<()>, mpsc::Receiver<()>);
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+    static COLUMNS: AtomicUsize = AtomicUsize::new(0);
+    // Holds the second column's read until the test has moved the task.
+    fn trace(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event
+            && sql.contains("ORDER BY t.position,t.id LIMIT")
+            && GATE.lock().unwrap().is_some()
+            && COLUMNS.fetch_add(1, Ordering::SeqCst) == 1
+            && let Some((entered, release)) = GATE.lock().unwrap().take()
+        {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+    let (dir, db, _, session, _) = fixture().await;
+    let reader = Db::open_with_pool_size(dir.path(), 1).unwrap();
+    reader
+        .run(|connection| {
+            connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let config = support::config(dir.path(), "http://127.0.0.1:8080", &[]);
+    let app = application(AppState::new(config, reader)).router;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "roadmap_manage"],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "moving").await;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    *GATE.lock().unwrap() = Some((entered_tx, release_rx));
+    let moved = task.clone();
+    // The task leaves Planning, which was read, for In review, which wasn't.
+    let move_task = async {
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .unwrap()
+            .unwrap();
+        db.run(move |connection| {
+            connection.execute("UPDATE tasks SET status='in_review' WHERE id=?1", [moved])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+    };
+    let (found, ()) = tokio::join!(
+        mcp.call("search_tasks", json!({"projectId":"project-1"})),
+        move_task
+    );
+    let columns = tool_value(&found);
+    let listed = ["planning", "in_progress", "in_review", "done"]
+        .iter()
+        .flat_map(|status| columns[status]["items"].as_array().unwrap())
+        .filter(|item| item["id"] == task.as_str())
+        .count();
+    assert_eq!(listed, 1, "{columns}");
+}

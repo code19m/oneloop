@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    access::{Need, require_project},
-    auth::{Actor, ActorSource, refresh_actor_connection},
+    access::{self, Need, require_project},
+    auth::{Actor, refresh_actor_connection},
     clock::unix_now,
     error::{AppError, AppResult},
     timezone::TimeZone,
@@ -19,8 +19,8 @@ use crate::{
 
 use super::{
     BlockView, BoardCounts, BoardView, BootstrapView, DomainService, EpicSummary, EpicView,
-    MembershipView, MilestoneView, Page, PoolItemView, ProjectView, SessionView, TaskView,
-    TrackView, UserView,
+    MembershipView, MilestoneView, Page, PoolItemView, ProjectMembers, ProjectView, SessionView,
+    TaskView, TrackView, UserView,
 };
 
 const PAGE_SIZE: usize = 50;
@@ -127,6 +127,45 @@ impl DomainService {
         self.db
             .snapshot(move |connection| {
                 bootstrap_snapshot(connection, &actor, query, view, &time_zone)
+            })
+            .await
+    }
+
+    /// The projects the actor may read, and what it may manage in each.
+    pub async fn projects(&self, actor: &Actor) -> AppResult<Vec<ProjectView>> {
+        actor.require_ready()?;
+        let actor = actor.clone();
+        self.db
+            .snapshot(move |connection| {
+                let actor = refresh_actor_connection(connection, &actor)?;
+                projects(connection, &actor)
+            })
+            .await
+    }
+
+    /// One project with its memberships and the people they name.
+    pub async fn project_members(
+        &self,
+        actor: &Actor,
+        project_id: String,
+    ) -> AppResult<ProjectMembers> {
+        actor.require_ready()?;
+        let actor = actor.clone();
+        self.db
+            .snapshot(move |connection| {
+                let actor = refresh_actor_connection(connection, &actor)?;
+                require_project(connection, &actor, &project_id, Need::Read, false)?;
+                let project = projects(connection, &actor)?
+                    .into_iter()
+                    .find(|project| project.id == project_id)
+                    .ok_or(AppError::NotFound {
+                        resource: "project",
+                    })?;
+                Ok(ProjectMembers {
+                    project,
+                    memberships: memberships(connection, &project_id)?,
+                    users: users(connection, &actor, &project_id)?,
+                })
             })
             .await
     }
@@ -335,28 +374,28 @@ fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<P
             .query_map([&actor.user_id], project_row)?
             .collect::<Result<Vec<_>, _>>()?
     };
-    if let ActorSource::McpGrant { grant_id } = &actor.source {
-        let has_read_scope: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes WHERE grant_id=?1 AND scope='project_read')",
-            [grant_id],
-            |row| row.get(0),
-        )?;
-        if !has_read_scope {
-            return Ok(Vec::new());
-        }
-        let selected: std::collections::HashSet<String> = {
-            let mut s = connection
-                .prepare_cached("SELECT project_id FROM mcp_grant_projects WHERE grant_id=?1")?;
-            s.query_map([grant_id], |row| row.get(0))?
-                .collect::<Result<_, _>>()?
-        };
-        Ok(rows
-            .into_iter()
-            .filter(|p| selected.contains(&p.id))
-            .collect())
-    } else {
-        Ok(rows)
+    let Some(grant_id) = actor.mcp_grant_id() else {
+        return Ok(rows);
+    };
+    // A grant narrows what the person may do to its projects and scopes.
+    let scope = |scope| access::allowed(access::require_scope(connection, actor, scope, None));
+    if !scope("project_read")? {
+        return Ok(Vec::new());
     }
+    let (manage_board, manage_roadmap) = (scope("board_manage")?, scope("roadmap_manage")?);
+    let selected: std::collections::HashSet<String> = connection
+        .prepare_cached("SELECT project_id FROM mcp_grant_projects WHERE grant_id=?1")?
+        .query_map([grant_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|project| selected.contains(&project.id))
+        .map(|project| ProjectView {
+            manage_board: project.manage_board && manage_board,
+            manage_roadmap: project.manage_roadmap && manage_roadmap,
+            ..project
+        })
+        .collect())
 }
 
 fn project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectView> {

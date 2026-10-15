@@ -32,6 +32,15 @@ pub struct ProjectView {
     pub manage_board: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMembers {
+    pub project: ProjectView,
+    pub memberships: Vec<MembershipView>,
+    /// The members, and the reader even when not a member.
+    pub users: Vec<UserView>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipView {
