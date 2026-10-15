@@ -159,8 +159,6 @@ impl DomainOperation {
     }
 }
 
-pub type DomainEvent = crate::collaboration::ActivityEvent;
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectCreate {

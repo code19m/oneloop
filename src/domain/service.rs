@@ -30,7 +30,7 @@ use crate::{
     auth::Actor,
     clock::unix_now,
     collaboration::{
-        ActivityInput, NotificationInput,
+        ActivityEvent, ActivityInput, NotificationInput,
         mentions::{self, MentionNotice, Mentioned},
         record_activity_tx, snapshot_notification_tx,
     },
@@ -41,8 +41,8 @@ use crate::{
 };
 
 use super::{
-    Access, BlockReasonUpdate, DomainEvent, DomainOperation, EntityId, EpicCreate, EpicSummary,
-    EpicUpdate, EpicView, MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView,
+    Access, BlockReasonUpdate, DomainOperation, EntityId, EpicCreate, EpicSummary, EpicUpdate,
+    EpicView, MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView,
     MilestoneCreate, MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote,
     PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate,
     TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate,
@@ -235,19 +235,6 @@ fn is_constraint(error: &rusqlite::Error) -> bool {
     matches!(error, rusqlite::Error::SqliteFailure(inner, _) if inner.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
-fn not_found(resource: &'static str) -> AppError {
-    AppError::NotFound { resource }
-}
-
-fn activity(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    input: ActivityInput<'_>,
-    now: i64,
-) -> AppResult<DomainEvent> {
-    record_activity_tx(tx, actor, input, now)
-}
-
 fn normalize_prefix(value: &str) -> AppResult<String> {
     let value = value.trim().to_ascii_uppercase();
     if !(2..=4).contains(&value.len())
@@ -274,7 +261,9 @@ fn ensure_project_and_active_user(
         |row| row.get(0),
     )?;
     if !project {
-        return Err(not_found("project"));
+        return Err(AppError::NotFound {
+            resource: "project",
+        });
     }
     let user: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND is_active=1)",
@@ -282,7 +271,9 @@ fn ensure_project_and_active_user(
         |row| row.get(0),
     )?;
     if !user {
-        return Err(not_found("active user"));
+        return Err(AppError::NotFound {
+            resource: "active user",
+        });
     }
     Ok(())
 }
@@ -324,7 +315,7 @@ fn task_row(tx: &Transaction<'_>, id: &str) -> AppResult<TaskRow> {
         TaskRow::from_row,
     )
     .optional()?
-    .ok_or_else(|| not_found("task"))
+    .ok_or(AppError::NotFound { resource: "task" })
 }
 
 /// A record a command returns, tagged with its `entityType`.
@@ -435,7 +426,7 @@ fn set_assignees(
     Ok(())
 }
 
-fn activated_epic_entity(project_id: &str, event: &DomainEvent) -> Value {
+fn activated_epic_entity(project_id: &str, event: &ActivityEvent) -> Value {
     json!({"entityType":"epic", "id":event.entity_id, "projectId":project_id,
         "state":"active", "revision":event.entity_revision})
 }
@@ -446,7 +437,7 @@ fn activate_epic_for_work(
     project_id: &str,
     epic_id: &str,
     now: i64,
-) -> AppResult<Option<DomainEvent>> {
+) -> AppResult<Option<ActivityEvent>> {
     let revision: Option<i64> = tx
         .query_row(
             "SELECT revision FROM epics WHERE id=?1 AND state='planning' AND deleted_at IS NULL",
@@ -456,7 +447,7 @@ fn activate_epic_for_work(
         .optional()?;
     if let Some(revision) = revision {
         tx.execute("UPDATE epics SET state='active',updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,epic_id,revision])?;
-        return activity(
+        return record_activity_tx(
             tx,
             actor,
             ActivityInput {

@@ -62,7 +62,7 @@ impl CollaborationRuntime {
         }
     }
 
-    pub fn db(&self) -> &Db {
+    fn db(&self) -> &Db {
         &self.inner.db
     }
 

@@ -6,7 +6,6 @@ mod grants;
 mod session;
 mod throttle;
 
-pub use crate::clock::unix_now;
 use grants::REFRESH_IDLE_SECONDS;
 use grants::revoke_all_app_access;
 pub(crate) use grants::{
@@ -28,6 +27,7 @@ use uuid::Uuid;
 
 use crate::{
     blocking::{Lane, Turn},
+    clock::unix_now,
     db::Db,
     error::{AppError, AppResult},
 };

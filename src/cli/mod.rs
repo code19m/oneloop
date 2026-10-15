@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     AppState, Config, Db,
-    auth::{NewUser, create_user, reset_password, unix_now},
+    auth::{NewUser, create_user, reset_password},
+    clock::unix_now,
     config::DataConfig,
     db::{create_backup, migrate, restore_backup},
     error::{AppError, AppResult},
@@ -191,7 +192,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let trusted_proxies = config.trusted_proxies.clone();
     let data_dir = config.data_dir.clone();
     let timezone_database = config.timezone.database().to_string();
-    let state = AppState::new(config, db);
+    let state = AppState::new(config, db.clone());
     let application = crate::application(state);
     crate::runtime::prepare_files(&application.files)
         .await
@@ -202,11 +203,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let (shutdown, signal) = tokio::sync::watch::channel(false);
     let worker = application.collaboration.spawn_worker(signal.clone());
     let knowledge_worker = application.knowledge.spawn_worker(signal.clone());
-    let maintenance = crate::runtime::spawn_maintenance(
-        application.files,
-        application.collaboration.db().clone(),
-        signal,
-    );
+    let maintenance = crate::runtime::spawn_maintenance(application.files, db, signal);
     tracing::info!(
         sqlite_version = rusqlite::version(),
         tzdb = timezone_database,

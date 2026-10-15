@@ -47,7 +47,7 @@ const PASSWORD: &str = "test-only-password-012345";
 
 /// The current Unix time in seconds, as the application records it.
 pub fn now() -> i64 {
-    oneloop::auth::unix_now().unwrap()
+    oneloop::clock::unix_now().unwrap()
 }
 
 /// An empty private directory under Cargo's scratch directory for integration tests.

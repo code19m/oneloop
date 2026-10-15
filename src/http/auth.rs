@@ -16,8 +16,9 @@ use crate::{
     AppError, AppResult, AppState,
     auth::{
         AccountSummary, AccountUpdate, Actor, ConnectedAppSummary, IssuedSession, LoginResult,
-        SessionMetadata, SessionSummary, unix_now,
+        SessionMetadata, SessionSummary,
     },
+    clock::unix_now,
 };
 
 use super::security::{

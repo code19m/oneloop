@@ -48,7 +48,7 @@ pub(super) fn add_membership(
         revision,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -84,7 +84,9 @@ pub(super) fn update_membership(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("membership"))?;
+        .ok_or(AppError::NotFound {
+            resource: "membership",
+        })?;
     check_revision(expected, before.2)?;
     if before.0 == input.manage_roadmap && before.1 == input.manage_board {
         return Err(AppError::validation(
@@ -115,7 +117,7 @@ pub(super) fn update_membership(
     })
     .value()?;
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -152,7 +154,9 @@ pub(super) fn remove_membership(
             |row| row.get(0),
         )
         .optional()?
-        .ok_or_else(|| not_found("membership"))?;
+        .ok_or(AppError::NotFound {
+            resource: "membership",
+        })?;
     check_revision(expected, revision)?;
     let unfinished: bool = tx.query_row(
         HAS_OPEN_ASSIGNMENTS_SQL,
@@ -166,7 +170,7 @@ pub(super) fn remove_membership(
         ));
     }
     let membership_id = format!("{}:{}", input.project_id, input.user_id);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {

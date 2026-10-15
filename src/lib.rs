@@ -7,7 +7,7 @@ mod access;
 pub mod auth;
 mod blocking;
 pub mod cli;
-mod clock;
+pub mod clock;
 pub mod collaboration;
 pub mod command;
 pub mod config;

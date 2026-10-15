@@ -44,7 +44,7 @@ pub(super) fn block_task(
         "UPDATE tasks SET updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",
         params![now, input.task_id, expected],
     )?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -104,7 +104,9 @@ pub(super) fn update_block_reason(
     let before = tx
         .query_row(ACTIVE_BLOCK_SQL, [&input.block_id], BlockRow::from_row)
         .optional()?
-        .ok_or_else(|| not_found("active task block"))?;
+        .ok_or(AppError::NotFound {
+            resource: "active task block",
+        })?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
     let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
@@ -127,7 +129,7 @@ pub(super) fn update_block_reason(
     )?;
     mentions::replace(tx, Mentioned::Block(&input.block_id), &mentions)?;
     let field_key = format!("block-reason:{}", input.block_id);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -196,7 +198,9 @@ pub(super) fn unblock_task(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("active task block"))?;
+        .ok_or(AppError::NotFound {
+            resource: "active task block",
+        })?;
     let resolution = input
         .resolution
         .as_deref()
@@ -226,7 +230,7 @@ pub(super) fn unblock_task(
     } else {
         "task.unblocked"
     };
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {

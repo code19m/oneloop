@@ -22,7 +22,9 @@ pub(super) fn create_task(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("project sequence"))?;
+        .ok_or(AppError::NotFound {
+            resource: "project sequence",
+        })?;
     tx.execute(
         "UPDATE project_sequences SET next_task_number=next_task_number+1 WHERE project_id=?1 AND \
                      next_task_number=?2",
@@ -49,7 +51,7 @@ pub(super) fn create_task(
     )?;
     set_assignees(tx, &id, &actor.user_id, &[], &assignees, now)?;
     let entity = task_entity(tx, &id)?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -173,7 +175,7 @@ pub(super) fn update_task(
         ("deadline", json!(before.deadline), json!(deadline)),
     ] {
         if b != a {
-            events.push(activity(
+            events.push(record_activity_tx(
                 tx,
                 actor,
                 ActivityInput {
@@ -194,7 +196,7 @@ pub(super) fn update_task(
     }
     for user_id in old_set.difference(&new_set) {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -219,7 +221,7 @@ pub(super) fn update_task(
     let newly_assigned: Vec<_> = new_set.difference(&old_set).cloned().collect();
     for user_id in &newly_assigned {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {
@@ -364,7 +366,7 @@ pub(super) fn move_task(
     };
     let revision = expected + 1;
     let entity = task_entity(tx, &input.task_id)?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -419,7 +421,7 @@ pub(super) fn delete_task(
     check_revision(expected, before.revision)?;
     tx.execute("UPDATE tasks SET deleted_at=?1,updated_at=?1,revision=revision+1 WHERE id=?2 AND revision=?3",params![now,input.id,expected])?;
     let entity = deleted("task", &input.id, &before.project_id, expected + 1);
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -456,7 +458,7 @@ pub(super) fn restore_task(
             |row| Ok((TaskRow::from_row(row)?, row.get::<_, Option<i64>>(9)?)),
         )
         .optional()?
-        .ok_or_else(|| not_found("task"))?;
+        .ok_or(AppError::NotFound { resource: "task" })?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
     let Some(deleted_at) = deleted_at else {
         return Err(AppError::Conflict("the task is not deleted".into()));
@@ -526,7 +528,7 @@ pub(super) fn restore_task(
             params![input.id, user_id],
         )?;
     }
-    events.push(activity(
+    events.push(record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -545,7 +547,7 @@ pub(super) fn restore_task(
     )?);
     for user_id in departed {
         let field_key = format!("assignee:{user_id}");
-        events.push(activity(
+        events.push(record_activity_tx(
             tx,
             actor,
             ActivityInput {

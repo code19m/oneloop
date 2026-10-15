@@ -393,7 +393,7 @@ pub(crate) fn client_ip(
 fn warn_untrusted_forwarding() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_WARNING: AtomicU64 = AtomicU64::new(0);
-    let now = crate::auth::unix_now().unwrap_or(0) as u64;
+    let now = crate::clock::unix_now().unwrap_or(0) as u64;
     let last = LAST_WARNING.load(Ordering::Relaxed);
     if now.saturating_sub(last) >= 60
         && LAST_WARNING

@@ -84,7 +84,7 @@ impl Job {
     }
 
     /// Runs one pass. Returns whether a batch was full.
-    async fn run(self, db: &Db, now: i64) -> AppResult<bool> {
+    async fn run(self, db: &Db, collaboration: &CollaborationService, now: i64) -> AppResult<bool> {
         match self {
             Self::LoginThrottles => retention::prune_login_throttles(db, now)
                 .await
@@ -97,15 +97,8 @@ impl Job {
                 })
                 .await
             }
-            Self::DeletedComments => {
-                CollaborationService::new(db.clone())
-                    .purge_deleted_comments(now)
-                    .await
-            }
-            Self::ArchivedInbox => CollaborationService::new(db.clone())
-                .purge_archived(now)
-                .await
-                .map(|_| false),
+            Self::DeletedComments => collaboration.purge_deleted_comments(now).await,
+            Self::ArchivedInbox => collaboration.purge_archived(now).await.map(|_| false),
         }
     }
 }
@@ -114,6 +107,7 @@ impl Job {
 /// step of the wall clock neither stops nor rushes it. The wall clock only
 /// decides what each pass removes. A failed pass runs again a minute later.
 async fn database_maintenance(db: Db, mut shutdown: watch::Receiver<bool>) {
+    let collaboration = CollaborationService::new(db.clone());
     let mut due = [Instant::now(); Job::ALL.len()];
     loop {
         if *shutdown.borrow() {
@@ -140,7 +134,7 @@ async fn database_maintenance(db: Db, mut shutdown: watch::Receiver<bool>) {
                 continue;
             }
             *at = tick
-                + match job.run(&db, now).await {
+                + match job.run(&db, &collaboration, now).await {
                     Ok(false) => job.every(),
                     Ok(true) => job.again(),
                     Err(error) => {

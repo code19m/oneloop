@@ -38,7 +38,7 @@ pub(super) fn create_pool_item(
         revision: 1,
     })
     .value()?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -98,7 +98,7 @@ pub(super) fn update_pool_item(
             expected
         ],
     )?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -143,7 +143,7 @@ pub(super) fn delete_pool_item(
 ) -> AppResult<Mutation> {
     let before = pool_item_for(tx, actor, &input.id, true)?;
     check_revision(expected, before.revision)?;
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -204,7 +204,7 @@ pub(super) fn promote_pool_item(
     if let Value::Object(values) = &mut metadata {
         values.insert("taskId".into(), json!(mutation.resource_id));
     }
-    let event = activity(
+    let event = record_activity_tx(
         tx,
         actor,
         ActivityInput {
@@ -261,10 +261,14 @@ fn pool_item_for(
             })
         })
         .optional()?
-        .ok_or_else(|| not_found("pool item"))?;
+        .ok_or(AppError::NotFound {
+            resource: "pool item",
+        })?;
     require_pool_scope(tx, actor, &item.project_id, item.scope, destructive)?;
     if item.scope == PoolScope::Personal && item.owner_user_id.as_deref() != Some(&actor.user_id) {
-        return Err(not_found("pool item"));
+        return Err(AppError::NotFound {
+            resource: "pool item",
+        });
     }
     Ok(item)
 }
