@@ -33,9 +33,13 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   pipeline through `App`, such as `App.refresh()`, and never imports
   `views/app.js`. TypeScript checks only `src/`, so each view module starts
   with `// @ts-nocheck` and the views carry no JSDoc types.
-- **Actions.** To change an action that saves, start from
-  `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
-  `saveTask`, and wraps a few of the views' own, such as `nav`.
+- **Actions.** The view bridge, `src/app/view-bridge.js`, adds the
+  server-backed `App` methods, such as `saveTask`, and wraps a few of the
+  views' own, such as `nav`. To change an action that saves, start from its
+  feature's module in `src/app/bridge/`: `tasks.js`, `roadmap.js`, `pool.js`,
+  `projects.js`, `account.js` or `route.js` (page changes). They share
+  `commands.js`, which runs a command and resolves its conflicts, and
+  `saves.js`, which saves one record at a time and keeps a task field's draft.
   `views/app/collaboration.js` and `views/app/attachments.js` add the comment
   and attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
