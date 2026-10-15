@@ -4,7 +4,7 @@
 .comment-conversation .tl-cmt.is-reply-target { border-color:var(--line-strong); }
 .tl-cmt .cmt-head { display:flex;align-items:center;flex-wrap:nowrap;gap:8px; }
 .cmt-head>.avatar { flex-shrink:0;border-radius:6px; }
-.cmt-head>b { flex:1;min-width:0;font-size:var(--text-label);line-height:1.4;font-weight:500;color:var(--ink); }
+.cmt-head>b { flex:1;min-width:0;overflow-wrap:anywhere;font-size:var(--text-label);line-height:1.4;font-weight:500;color:var(--ink); }
 .cmt-head>.act-time { margin-left:auto;flex-shrink:0;font-size:var(--text-xs);white-space:nowrap; }
 .cmt-head .comment-menu-button { width:28px;height:28px;min-width:28px;min-height:28px;padding:6px;margin-right:0;color:var(--ink-muted);opacity:.7; }
 .tl-cmt:hover .comment-menu-button,.comment-menu-button:focus-visible { opacity:1; }
@@ -16,7 +16,7 @@
 /* A comment has no frame around it, so the cut-off text fades into the card instead of ending at an edge. */
 .comment-reading.is-collapsed .comment-body-content { mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent);-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent); }
 .comment-reading .description-toggle { margin-top:6px; }
-.comment-actions { display:flex;align-items:center;margin-top:6px; }
+.comment-actions { display:flex;align-items:center;gap:4px;margin-top:6px; }
 .comment-actions .reply-action { min-height:30px;padding:4px 7px;margin-left:-7px;font-size:var(--text-sm);gap:6px;color:var(--ink-muted); }
 .comment-actions .reply-action:hover,.comment-actions .reply-action[aria-pressed=true] { color:var(--ink);background:var(--fill-hover); }
 .comment-removed { color:var(--ink-muted);font-size:var(--text-label); }
@@ -33,7 +33,7 @@
 .thread-composer { margin:8px 0 16px 28px;padding-left:18px;border-left:1px solid var(--line-strong); }
 .task-layout .inline-composer { margin-top:10px; }.thread-composer>.inline-composer { margin-top:0; }
 .inline-composer { padding:14px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface-canvas); }
-.reply-context { display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px; }
+.reply-context { display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;font-size:var(--text-sm);color:var(--ink-muted); }
 .reply-context-main { min-width:0;flex:1;overflow-wrap:anywhere; }.reply-context-main>strong { display:flex;align-items:center;gap:6px;color:var(--ink);font-size:var(--text-label);font-weight:500; }
 .reply-context-quote { display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:6px;color:var(--ink-muted);font-size:var(--text-sm);line-height:1.5;white-space:pre-line; }
 .reply-context>.btn { flex-shrink:0;font-size:var(--text-sm);min-height:28px;padding:3px 7px; }
