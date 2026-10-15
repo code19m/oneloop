@@ -4,7 +4,7 @@ use crate::{
     AppError, AppResult,
     auth::{Actor, refresh_actor_connection},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -205,6 +205,40 @@ pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
         Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// Access to a task is access to its project. Returns the project.
+pub(crate) fn require_task(
+    conn: &Connection,
+    actor: &Actor,
+    task: &str,
+    need: Need,
+    destructive: bool,
+) -> AppResult<String> {
+    let project: String = conn
+        .prepare_cached("SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL")?
+        .query_row([task], |row| row.get(0))
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "task" })?;
+    require_project(conn, actor, &project, need, destructive)?;
+    Ok(project)
+}
+
+/// Access to an epic is access to its project. Returns the project.
+pub(crate) fn require_epic(
+    conn: &Connection,
+    actor: &Actor,
+    epic: &str,
+    need: Need,
+    destructive: bool,
+) -> AppResult<String> {
+    let project: String = conn
+        .prepare_cached("SELECT project_id FROM epics WHERE id=?1 AND deleted_at IS NULL")?
+        .query_row([epic], |row| row.get(0))
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "epic" })?;
+    require_project(conn, actor, &project, need, destructive)?;
+    Ok(project)
 }
 
 /// Whether the actor may read private My Pool content, including its

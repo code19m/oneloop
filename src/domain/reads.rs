@@ -295,15 +295,7 @@ impl DomainService {
                 let actor = refresh_actor_connection(connection, &actor)?;
                 let id = resolve_task_id(connection, &task_id)?
                     .ok_or(AppError::NotFound { resource: "task" })?;
-                let project_id: String = connection
-                    .query_row(
-                        "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                        [&id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "task" })?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
+                access::require_task(connection, &actor, &id, Need::Read, false)?;
                 task_view(connection, &id)
             })
             .await
@@ -320,10 +312,11 @@ impl DomainService {
         self.db
             .snapshot(move |connection| {
                 let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id = epic_project(connection, &epic_id)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
+                let project_id =
+                    access::require_epic(connection, &actor, &epic_id, Need::Read, false)?;
                 epic_task_page_connection(
                     connection,
+                    &project_id,
                     &epic_id,
                     query.cursor.as_deref(),
                     page_limit(query.limit),
@@ -331,17 +324,6 @@ impl DomainService {
             })
             .await
     }
-}
-
-fn epic_project(connection: &rusqlite::Connection, epic_id: &str) -> AppResult<String> {
-    connection
-        .query_row(
-            "SELECT project_id FROM epics WHERE id=?1 AND deleted_at IS NULL",
-            [epic_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or(AppError::NotFound { resource: "epic" })
 }
 
 fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<ProjectView>> {

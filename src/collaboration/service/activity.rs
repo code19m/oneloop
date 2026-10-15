@@ -123,15 +123,7 @@ impl CollaborationService {
         self.db
             .snapshot(move |connection| {
                 let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id: String = connection
-                    .query_row(
-                        "SELECT project_id FROM epics WHERE id=?1 AND deleted_at IS NULL",
-                        [&epic_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "epic" })?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
+                access::require_epic(connection, &actor, &epic_id, Need::Read, false)?;
                 let items = feed(
                     connection,
                     "entity_type='epic' AND entity_id=?1 AND visibility='public' AND is_hidden=0",

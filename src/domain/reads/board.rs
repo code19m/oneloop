@@ -490,12 +490,12 @@ struct EpicTaskCursor {
 
 pub(super) fn epic_task_page_connection(
     connection: &rusqlite::Connection,
+    project_id: &str,
     epic_id: &str,
     cursor: Option<&str>,
     limit: usize,
 ) -> AppResult<Page<TaskView>> {
-    let project_id = epic_project(connection, epic_id)?;
-    let generation = task_page_generation(connection, &project_id)?;
+    let generation = task_page_generation(connection, project_id)?;
     let cursor = cursor.map(decode_epic_task_cursor).transpose()?;
     if let Some(cursor) = &cursor {
         check_task_cursor(cursor.generation, generation, &cursor.scope, epic_id)?;

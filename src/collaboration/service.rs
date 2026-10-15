@@ -159,15 +159,7 @@ fn authorize_replay(
     match operation {
         CreateComment => {
             let input: CommentCreate = parse_payload(payload)?;
-            let project_id: String = tx
-                .query_row(
-                    "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                    [&input.task_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(tx, actor, &project_id, Need::Discussion, false)
+            access::require_task(tx, actor, &input.task_id, Need::Discussion, false).map(drop)
         }
         EditComment | DeleteComment | RestoreComment => {
             let comment_id = payload

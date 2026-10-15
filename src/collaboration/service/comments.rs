@@ -24,11 +24,7 @@ impl CollaborationService {
         let limit = page_limit(limit);
         self.db.snapshot(move |connection| {
             let actor = refresh_actor_connection(connection, &actor)?;
-            let project_id: String = connection.query_row(
-                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                [&task_id], |row| row.get(0),
-            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(connection, &actor, &project_id, Need::Read, false)?;
+            access::require_task(connection, &actor, &task_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -57,11 +53,7 @@ impl CollaborationService {
         let comment_id = comment_id.to_owned();
         self.db.snapshot(move |connection| {
             let actor = refresh_actor_connection(connection, &actor)?;
-            let project_id: String = connection.query_row(
-                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-                [&task_id], |row| row.get(0),
-            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
-            require_project(connection, &actor, &project_id, Need::Read, false)?;
+            access::require_task(connection, &actor, &task_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -106,15 +98,7 @@ pub(super) fn create_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
-    let project_id: String = tx
-        .query_row(
-            "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
-            [&input.task_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or(AppError::NotFound { resource: "task" })?;
-    require_project(tx, actor, &project_id, Need::Discussion, false)?;
+    let project_id = access::require_task(tx, actor, &input.task_id, Need::Discussion, false)?;
     let mentions = mentions::validate(tx, &project_id, &content, input.mentions, &[])?;
     let id = Uuid::now_v7().to_string();
     let (root_id, reply_author) = match input.reply_to_id.as_deref() {
