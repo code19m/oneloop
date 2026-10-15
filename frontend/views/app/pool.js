@@ -122,7 +122,7 @@ Object.assign(App, {
     const item = poolItems(state.poolTab).find((x) => x.id === id);
     const view = document.querySelector('.pool-view');
     if (!item || !view) return;
-    (App._poolScroll ||= {})[state.poolTab] = view.querySelector('.pool-list').scrollTop;
+    state.poolScroll[state.poolTab] = view.querySelector('.pool-list').scrollTop;
     document.querySelectorAll('.pool-description-editor').forEach(el=>App.cancelPoolDescription(el.closest('[data-pool-item]').dataset.poolItem,false));resetPoolCapture();document.getElementById('poolAdd').value='';
     state.modal = { type: 'task', poolId: id, title: item.title, desc:item.desc||'' };
     stampOverlays();
@@ -144,17 +144,17 @@ Object.assign(App, {
     stampOverlays();
     view.hidden = false;
     updatePool();
-    view.querySelector('.pool-list').scrollTop = App._poolScroll?.[state.poolTab] || 0;
+    view.querySelector('.pool-list').scrollTop = state.poolScroll[state.poolTab] || 0;
     UIMotion.fade(view);
     view.querySelector('#poolAdd')?.focus();
   },
   setPoolTab(k) {
     if (!['mine', 'project'].includes(k) || k === state.poolTab) return;
     const list = document.querySelector('.pool-list');
-    (App._poolScroll ||= {})[state.poolTab] = list.scrollTop;
+    state.poolScroll[state.poolTab] = list.scrollTop;
     state.poolTab = k;
     updatePool();
-    list.scrollTop = App._poolScroll[k] || 0;
+    list.scrollTop = state.poolScroll[k] || 0;
     runtime().selectPool(k).catch(report);
   },
   loadMorePool(){runtime().loadMorePool(state.poolTab).catch(report);},

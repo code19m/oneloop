@@ -284,6 +284,12 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.dismissOverlays(); }
 });
 
+/**
+ * Open a menu of `items` at `x`, `y`, beside its trigger. A Roadmap tooltip
+ * never shows over a menu, so one Escape closes the menu.
+ */
+export function openMenu(items, x, y, options = {}) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); }
+
 Object.assign(App, {
   confirm: askConfirmation,
   askToDiscard,
@@ -320,11 +326,9 @@ Object.assign(App, {
     if (type === 'task' && !App.require('manage_board')) return;
     if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
     state.sideOpen = false;
-    state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') App._poolScroll = {}; App.refreshOverlays();
+    state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') state.poolScroll = {}; App.refreshOverlays();
     if(type==='pool')runtime().openPool().catch(report);
   },
-  // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
-  _openMenu(items, x, y, options = {}) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
   // The action starts from the menu's button, so a dialog it opens returns focus there.
   menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
   /** Draw the open dialog again from the saved values, dropping what was typed in it. */

@@ -16,7 +16,6 @@ import {
 import { beforeCollaborationRender, inboxHtml, inboxNav, mountCollaboration } from './app/collaboration.js';
 import { field, resetFieldIds } from './app/controls.js';
 import { renderModal } from './app/dialogs.js';
-import './app/drag.js';
 import {
   I, UIAction, avatarHtml, d, esc, instanceDateKey, instanceToday, iso, setHTML, today,
 } from './app/format.js';
@@ -27,8 +26,8 @@ import {
   visibleProjects,
 } from './app/model.js';
 import {
-  POP, askToDiscard, closePop, dismissMenu, hideEpicTip, overlayKey, pendingConfirmation, placeMenu,
-  placePop, rememberOpener, renderMenu, restoreOpener, showWaitingPassword, stampOverlays, syncOverlayFocus,
+  POP, askToDiscard, closePop, dismissMenu, hideEpicTip, openMenu, overlayKey, pendingConfirmation,
+  placeMenu, placePop, rememberOpener, renderMenu, restoreOpener, showWaitingPassword, stampOverlays, syncOverlayFocus,
   syncSidebar,
 } from './app/overlays.js';
 import {
@@ -365,7 +364,7 @@ Object.assign(App, {
   },
   userMenu(ev) {
     const r = ev.currentTarget.getBoundingClientRect();
-    App._openMenu([
+    openMenu([
       { theme: true },
       { autoReload: true },
       { sep: true },
@@ -398,7 +397,7 @@ Object.assign(App, {
     const r = ev.currentTarget.getBoundingClientRect();
     const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => runtime().selectProject(p.id).catch(report) }));
     if (isAdmin()) items.push({ sep: true }, { label: 'New project', icon:I.plus, fn: () => { state.modal = { type: 'project' }; renderOverlays(); } });
-    App._openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
+    openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
   },
 
   /** Enter saves a project field, then leaves it. */

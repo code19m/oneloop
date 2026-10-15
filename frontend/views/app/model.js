@@ -24,6 +24,8 @@ export const state = {
   taskId: null,
   rail: (() => { try { return localStorage.getItem('oneloop.sidebar') === 'rail'; } catch { return false; } })(),
   poolTab: 'mine',
+  // Where each Pool tab's list was scrolled, from when the Pool opened.
+  poolScroll: {},
   projectId: null,
   pxPerDay: 8.5,
   rmScrollLeft: null, rmScrollTop: 0,

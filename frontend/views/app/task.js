@@ -14,6 +14,7 @@ import { sizeDescription, sizeTaskTitle } from './forms.js';
 import {
   App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
 } from './model.js';
+import { openMenu } from './overlays.js';
 
 let taskSaveFeedback = null, taskSaveTimer;
 function clearTaskSaved() {
@@ -197,6 +198,6 @@ Object.assign(App, {
   taskActions(ev,id) {
     if(!canBoard()||!taskById(id))return;
     const r=ev.currentTarget.getBoundingClientRect();
-    App._openMenu([{label:'Delete task',danger:true,fn:()=>App.deleteTask(id)}],r.right,r.bottom+4,{taskActions:true,trigger:ev.currentTarget});
+    openMenu([{label:'Delete task',danger:true,fn:()=>App.deleteTask(id)}],r.right,r.bottom+4,{taskActions:true,trigger:ev.currentTarget});
   },
 });

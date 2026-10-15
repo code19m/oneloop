@@ -7,14 +7,15 @@ import { sessionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
 } from './format.js';
+import { drag, makeDropIndicator, setDragImage } from './drag.js';
 import { descriptionReadHtml } from './forms.js';
 import {
   App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, report, runtime,
   state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
-  EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, peekOpened, pendingConfirmation, rememberOpener,
-  restoreOpener,
+  EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, openMenu, peekOpened, pendingConfirmation,
+  rememberOpener, restoreOpener,
 } from './overlays.js';
 import { announce } from './toasts.js';
 
@@ -839,7 +840,7 @@ Object.assign(App, {
     const moves = [];
     if (index > 0) moves.push({label:'Move up',fn:()=>App.moveTrack(id,index-1)}, {label:'Move to top',fn:()=>App.moveTrack(id,0)});
     if (index < list.length-1) moves.push({label:'Move down',fn:()=>App.moveTrack(id,index+1)}, {label:'Move to bottom',fn:()=>App.moveTrack(id,list.length-1)});
-    App._openMenu([
+    openMenu([
       ...moves, ...(moves.length ? [{sep:true}] : []),
       { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; App.refreshOverlays(); } },
       { sep: true },
@@ -854,29 +855,29 @@ Object.assign(App, {
     ev.dataTransfer.setData('text/track', id);
     ev.dataTransfer.effectAllowed = 'move';
     const lane = ev.target.closest('.lane');
-    App._drag = { kind: 'track', id };
-    App._dragImage(ev, lane.querySelector('.lane-head'), true);
+    drag.item = { kind: 'track', id };
+    setDragImage(ev, lane.querySelector('.lane-head'), true);
     document.body.classList.add('is-dragging');
-    requestAnimationFrame(() => { if (App._drag?.id === id) lane.classList.add('dragging'); });
+    requestAnimationFrame(() => { if (drag.item?.id === id) lane.classList.add('dragging'); });
   },
   laneOver(ev) {
-    if (!canRoadmap() || App._drag?.kind !== 'track') return;
+    if (!canRoadmap() || drag.item?.kind !== 'track') return;
     if (!ev.dataTransfer.types.includes('text/track')) return;
     ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
     const lane = ev.currentTarget;
     const r = lane.getBoundingClientRect();
-    App._laneBefore = ev.clientY < r.top + r.height / 2;
-    const ind = App._mkInd(true);
-    ind.style.top = (lane.offsetTop + (App._laneBefore ? -2 : lane.offsetHeight - 1)) + 'px';
+    drag.laneBefore = ev.clientY < r.top + r.height / 2;
+    const ind = makeDropIndicator(true);
+    ind.style.top = (lane.offsetTop + (drag.laneBefore ? -2 : lane.offsetHeight - 1)) + 'px';
     lane.parentNode.appendChild(ind);
   },
   trackDrop(ev, targetId) {
     if (!App.require('manage_roadmap')) return;
     if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/track') || App._drag?.kind !== 'track') return;
+    if (!ev.dataTransfer.types.includes('text/track') || drag.item?.kind !== 'track') return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/track');
-    const beforeTarget = App._laneBefore;
+    const beforeTarget = drag.laneBefore;
     App.dragEnd(false);
     if (!id || id === targetId) return;
     const list = tracks().filter(track=>track.id!==id);

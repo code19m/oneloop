@@ -8,6 +8,7 @@ import {
 } from '../../src/data/board-filters.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
+import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
 import {
   I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort, instanceDateKey,
   instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
@@ -16,6 +17,7 @@ import {
   App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal,
   projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
+import { openMenu } from './overlays.js';
 import { announce } from './toasts.js';
 
 const COLS = [
@@ -155,7 +157,7 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
   const previous = new Map([...board.querySelectorAll('.col-cards > *')].map((card) =>
     [boardRowKey(card,card.closest('.col').dataset.col), { card, rect: card.getBoundingClientRect(), opacity: getComputedStyle(card).opacity }]));
   clearFilterMotion();
-  const animate = motion && !UIMotion.reduced() && typeof board.animate === 'function' && !App._drag;
+  const animate = motion && !UIMotion.reduced() && typeof board.animate === 'function' && !drag.item;
   const template = document.createElement('template');
   setHTML(template,renderBoard());
   if (!board.querySelector('.col') || !template.content.querySelector('.col')) {
@@ -447,18 +449,18 @@ Object.assign(App, {
     ev.dataTransfer.effectAllowed = 'move';
     const card = ev.currentTarget;
     const r = card.getBoundingClientRect();
-    App._drag = { kind: 'task', id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
-    App._dragImage(ev, card);
+    drag.item = { kind: 'task', id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
+    setDragImage(ev, card);
     document.body.classList.add('is-dragging');
-    requestAnimationFrame(() => { if (App._drag?.id === id) card.classList.add('dragging'); });
+    requestAnimationFrame(() => { if (drag.item?.id === id) card.classList.add('dragging'); });
   },
   colOver(ev) {
-    if (!canBoard() || App._drag?.kind !== 'task') return;
+    if (!canBoard() || drag.item?.kind !== 'task') return;
     if (!ev.dataTransfer.types.includes('text/task')) return;
     ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
     const colEl = ev.currentTarget;
     const list = colEl.querySelector('.col-cards');
-    const ind = App._ind();
+    const ind = dropIndicator();
     // Don't oscillate when the pointer is inside the insertion gap itself.
     if (ind?.parentNode === list) {
       const r = ind.getBoundingClientRect();
@@ -471,37 +473,37 @@ Object.assign(App, {
       return ev.clientY < y + c.offsetHeight / 2;
     });
     const beforeId = next ? next.dataset.task : null;
-    if (App._dropColumn === colEl.dataset.col && App._dropBefore === beforeId && ind?.parentNode === list) return;
+    if (drag.column === colEl.dataset.col && drag.before === beforeId && ind?.parentNode === list) return;
     const before = UIMotion.positions('.card[data-task]');
     document.querySelectorAll('.col.drop').forEach((el) => { if (el !== colEl) el.classList.remove('drop'); });
     colEl.classList.add('drop');
-    App._dropColumn = colEl.dataset.col;
-    App._dropBefore = beforeId;
-    const marker = App._mkInd(false);
+    drag.column = colEl.dataset.col;
+    drag.before = beforeId;
+    const marker = makeDropIndicator(false);
     if (next) list.insertBefore(marker, next); else list.appendChild(marker);
-    UIMotion.layout(before, '.card[data-task]', App._drag.id);
+    UIMotion.layout(before, '.card[data-task]', drag.item.id);
   },
   colLeave(ev) {
     if (ev.currentTarget.contains(ev.relatedTarget)) return;
     ev.currentTarget.classList.remove('drop');
-    if (App._ind()?.parentNode === ev.currentTarget.querySelector('.col-cards')) {
+    if (dropIndicator()?.parentNode === ev.currentTarget.querySelector('.col-cards')) {
       const before = UIMotion.positions('.card[data-task]');
-      App._ind().remove(); App._dropColumn = null; App._dropBefore = null;
-      UIMotion.layout(before, '.card[data-task]', App._drag?.id);
+      dropIndicator().remove(); drag.column = null; drag.before = null;
+      UIMotion.layout(before, '.card[data-task]', drag.item?.id);
     }
   },
   dropTask(ev, col) {
     if(recovery.blockDrag()){ev.preventDefault();App.dragEnd();return;}
     if (!App.require('manage_board')) return;
     if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/task') || App._drag?.kind !== 'task') return;
+    if (!ev.dataTransfer.types.includes('text/task') || drag.item?.kind !== 'task') return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/task');
-    const beforeId = App._dropBefore;
+    const beforeId = drag.before;
     const t = taskById(id);
     if (!t || id === beforeId) { App.dragEnd(); return; }
     if(t.block && col==='done'){App.dragEnd();App.openModal('completeBlocked',id);return;}
-    const before=UIMotion.positions('.card[data-task]'),from={left:ev.clientX-App._drag.offsetX,top:ev.clientY-App._drag.offsetY};
+    const before=UIMotion.positions('.card[data-task]'),from={left:ev.clientX-drag.item.offsetX,top:ev.clientY-drag.item.offsetY};
     const scrolls=[...document.querySelectorAll('.col-cards')].map((el)=>[el.closest('.col').dataset.col,el.scrollTop]);
     const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
     App.dragEnd(false);if(!change)return;
@@ -521,7 +523,7 @@ Object.assign(App, {
     const ordered=!(task.state==='done'&&doneNewest());
     if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
     if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
-    App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
+    openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
   },
   /** Move a task just before or after another one in its column. */
   moveTaskOrder(id,anchor,before){
