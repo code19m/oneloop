@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::{
     access::{self, McpScope, Need, require_project},
-    auth::{Actor, refresh_actor_connection},
+    auth::Actor,
     clock::unix_now,
     error::{AppError, AppResult},
     timezone::TimeZone,
@@ -115,31 +115,24 @@ impl DomainService {
         actor: &Actor,
         query: BootstrapQuery,
     ) -> AppResult<BootstrapView> {
-        actor.require_ready()?;
         // Without a view, the bootstrap has only what every view needs.
         let view = query.view.clone().unwrap_or_else(|| "metadata".into());
         if !["board", "roadmap", "task", "metadata"].contains(&view.as_str()) {
             return Err(AppError::validation("view", "unknown initial view"));
         }
-        let actor = actor.clone();
         let time_zone = self.time_zone.clone();
-        self.db
-            .snapshot(move |connection| {
-                bootstrap_snapshot(connection, &actor, query, view, &time_zone)
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            bootstrap_snapshot(connection, actor, query, view, &time_zone)
+        })
+        .await
     }
 
     /// The projects the actor may read, and what it may manage in each.
     pub async fn projects(&self, actor: &Actor) -> AppResult<Vec<ProjectView>> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                projects(connection, &actor)
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            projects(connection, actor)
+        })
+        .await
     }
 
     /// One project with its memberships and the people they name.
@@ -148,121 +141,101 @@ impl DomainService {
         actor: &Actor,
         project_id: String,
     ) -> AppResult<ProjectMembers> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                let project = projects(connection, &actor)?
-                    .into_iter()
-                    .find(|project| project.id == project_id)
-                    .ok_or(AppError::NotFound {
-                        resource: "project",
-                    })?;
-                Ok(ProjectMembers {
-                    project,
-                    memberships: memberships(connection, &project_id)?,
-                    users: users(connection, &actor, &project_id)?,
-                })
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            let project = projects(connection, actor)?
+                .into_iter()
+                .find(|project| project.id == project_id)
+                .ok_or(AppError::NotFound {
+                    resource: "project",
+                })?;
+            Ok(ProjectMembers {
+                project,
+                memberships: memberships(connection, &project_id)?,
+                users: users(connection, actor, &project_id)?,
             })
-            .await
+        })
+        .await
     }
 
     pub async fn board_page(&self, actor: &Actor, query: BoardQuery) -> AppResult<Page<TaskView>> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                board_page_connection(connection, &actor, &query)
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            board_page_connection(connection, actor, &query)
+        })
+        .await
     }
 
     pub async fn board_view(&self, actor: &Actor, query: BoardViewQuery) -> AppResult<BoardView> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &query.project_id, Need::Read, false)?;
-                let counts = board_counts_connection(connection, &query.project_id)?;
-                let unfiltered = query
-                    .search
-                    .as_deref()
-                    .is_none_or(|value| value.trim().is_empty())
-                    && query.track_ids.is_empty()
-                    && query.epic_ids.is_empty()
-                    && query.assignee_ids.is_empty()
-                    && !query.no_assignee
-                    && !query.blocked;
-                let page = |status: TaskStatus, total: i64| {
-                    board_page_with_total(
-                        connection,
-                        &actor,
-                        &BoardQuery {
-                            project_id: query.project_id.clone(),
-                            status,
-                            cursor: None,
-                            limit: query.limit,
-                            search: query.search.clone(),
-                            track_ids: query.track_ids.clone(),
-                            epic_ids: query.epic_ids.clone(),
-                            assignee_ids: query.assignee_ids.clone(),
-                            no_assignee: query.no_assignee,
-                            blocked: query.blocked,
-                            done_order: query.done_order,
-                        },
-                        unfiltered.then_some(total),
-                    )
-                };
-                let planning = page(TaskStatus::Planning, counts.planning)?;
-                let in_progress = page(TaskStatus::InProgress, counts.in_progress)?;
-                let in_review = page(TaskStatus::InReview, counts.in_review)?;
-                let done = page(TaskStatus::Done, counts.done)?;
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &query.project_id, Need::Read, false)?;
+            let counts = board_counts_connection(connection, &query.project_id)?;
+            let unfiltered = query
+                .search
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+                && query.track_ids.is_empty()
+                && query.epic_ids.is_empty()
+                && query.assignee_ids.is_empty()
+                && !query.no_assignee
+                && !query.blocked;
+            let page = |status: TaskStatus, total: i64| {
+                board_page_with_total(
+                    connection,
+                    actor,
+                    &BoardQuery {
+                        project_id: query.project_id.clone(),
+                        status,
+                        cursor: None,
+                        limit: query.limit,
+                        search: query.search.clone(),
+                        track_ids: query.track_ids.clone(),
+                        epic_ids: query.epic_ids.clone(),
+                        assignee_ids: query.assignee_ids.clone(),
+                        no_assignee: query.no_assignee,
+                        blocked: query.blocked,
+                        done_order: query.done_order,
+                    },
+                    unfiltered.then_some(total),
+                )
+            };
+            let planning = page(TaskStatus::Planning, counts.planning)?;
+            let in_progress = page(TaskStatus::InProgress, counts.in_progress)?;
+            let in_review = page(TaskStatus::InReview, counts.in_review)?;
+            let done = page(TaskStatus::Done, counts.done)?;
 
-                let result = BoardView {
-                    project_id: query.project_id,
-                    planning,
-                    in_progress,
-                    in_review,
-                    done,
-                    counts,
-                };
-                Ok(result)
-            })
-            .await
+            let result = BoardView {
+                project_id: query.project_id,
+                planning,
+                in_progress,
+                in_review,
+                done,
+                counts,
+            };
+            Ok(result)
+        })
+        .await
     }
 
     pub async fn board_counts(&self, actor: &Actor, project_id: String) -> AppResult<BoardCounts> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                board_counts_connection(connection, &project_id)
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            board_counts_connection(connection, &project_id)
+        })
+        .await
     }
 
     pub async fn roadmap(&self, actor: &Actor, project_id: String) -> AppResult<Value> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let time_zone = self.time_zone.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                require_project(connection, &actor, &project_id, Need::Read, false)?;
-                Ok(json!({
-                "projectId":project_id,
-                "tracks":tracks(connection,&project_id)?,
-                "epics":epics(connection,&project_id,&time_zone,Some(unix_now()?))?,
-                "milestones":milestones(connection,&project_id)?
-                }))
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            require_project(connection, actor, &project_id, Need::Read, false)?;
+            Ok(json!({
+            "projectId":project_id,
+            "tracks":tracks(connection,&project_id)?,
+            "epics":epics(connection,&project_id,&time_zone,Some(unix_now()?))?,
+            "milestones":milestones(connection,&project_id)?
+            }))
+        })
+        .await
     }
 
     pub async fn pool_page(
@@ -270,35 +243,27 @@ impl DomainService {
         actor: &Actor,
         query: PoolQuery,
     ) -> AppResult<Page<PoolItemView>> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                pool_page_connection(
-                    connection,
-                    &actor,
-                    &query.project_id,
-                    query.scope,
-                    query.cursor.as_deref(),
-                    page_limit(query.limit),
-                )
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            pool_page_connection(
+                connection,
+                actor,
+                &query.project_id,
+                query.scope,
+                query.cursor.as_deref(),
+                page_limit(query.limit),
+            )
+        })
+        .await
     }
 
     pub async fn task(&self, actor: &Actor, task_id: String) -> AppResult<TaskView> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                let id = resolve_task_id(connection, &task_id)?
-                    .ok_or(AppError::NotFound { resource: "task" })?;
-                access::require_task(connection, &actor, &id, Need::Read, false)?;
-                task_view(connection, &id)
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            let id = resolve_task_id(connection, &task_id)?
+                .ok_or(AppError::NotFound { resource: "task" })?;
+            access::require_task(connection, actor, &id, Need::Read, false)?;
+            task_view(connection, &id)
+        })
+        .await
     }
 
     pub async fn epic_tasks(
@@ -307,22 +272,17 @@ impl DomainService {
         epic_id: String,
         query: PageQuery,
     ) -> AppResult<Page<TaskView>> {
-        actor.require_ready()?;
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                let project_id =
-                    access::require_epic(connection, &actor, &epic_id, Need::Read, false)?;
-                epic_task_page_connection(
-                    connection,
-                    &project_id,
-                    &epic_id,
-                    query.cursor.as_deref(),
-                    page_limit(query.limit),
-                )
-            })
-            .await
+        access::read(&self.db, actor, move |connection, actor| {
+            let project_id = access::require_epic(connection, actor, &epic_id, Need::Read, false)?;
+            epic_task_page_connection(
+                connection,
+                &project_id,
+                &epic_id,
+                query.cursor.as_deref(),
+                page_limit(query.limit),
+            )
+        })
+        .await
     }
 }
 

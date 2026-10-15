@@ -18,8 +18,7 @@ pub(super) fn bootstrap_snapshot(
     view: String,
     time_zone: &TimeZone,
 ) -> AppResult<BootstrapView> {
-    let actor = refresh_actor_connection(connection, actor)?;
-    let projects = projects(connection, &actor)?;
+    let projects = projects(connection, actor)?;
     let direct_task = match query.task_id.as_deref() {
         Some(id) => {
             Some(resolve_task_id(connection, id)?.ok_or(AppError::NotFound { resource: "task" })?)
@@ -63,7 +62,7 @@ pub(super) fn bootstrap_snapshot(
         epics: Vec::new(),
         milestones: Vec::new(),
         tasks: Vec::new(),
-        inbox_unread_count: unread_notification_count(connection, &actor)?,
+        inbox_unread_count: unread_notification_count(connection, actor)?,
         selected_project_id: selected.clone(),
         view,
         done_order: None,
@@ -74,7 +73,7 @@ pub(super) fn bootstrap_snapshot(
     };
     if let Some(project_id) = selected.as_deref() {
         result.memberships = memberships(connection, project_id)?;
-        result.users = users(connection, &actor, project_id)?;
+        result.users = users(connection, actor, project_id)?;
         result.tracks = tracks(connection, project_id)?;
         // Only the Roadmap shows epic task counts.
         let counted_at = (result.view == "roadmap").then(unix_now).transpose()?;
@@ -91,7 +90,7 @@ pub(super) fn bootstrap_snapshot(
             ] {
                 let page = board_page_with_total(
                     connection,
-                    &actor,
+                    actor,
                     &BoardQuery {
                         project_id: project_id.into(),
                         status,

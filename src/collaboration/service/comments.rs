@@ -17,14 +17,11 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<CommentPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let task_id = task_id.to_owned();
         let cursor = cursor.map(decode_cursor).transpose()?;
         let limit = page_limit(limit);
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            access::require_task(connection, &actor, &task_id, Need::Read, false)?;
+        access::read(&self.db, actor, move |connection, actor| {
+            access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -37,7 +34,8 @@ impl CollaborationService {
             let mut comments = rows.collect::<Result<Vec<_>, _>>()?;
             let next_cursor = next_cursor(&mut comments, limit, |item| (item.created_at, &item.id));
             comment_page_context(connection, comments, next_cursor)
-        }).await
+        })
+        .await
     }
 
     /// Bounded context for an exact notification destination, independent of feed pagination.
@@ -47,13 +45,10 @@ impl CollaborationService {
         task_id: &str,
         comment_id: &str,
     ) -> AppResult<CommentPage> {
-        actor.require_ready()?;
-        let actor = actor.clone();
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
-        self.db.snapshot(move |connection| {
-            let actor = refresh_actor_connection(connection, &actor)?;
-            access::require_task(connection, &actor, &task_id, Need::Read, false)?;
+        access::read(&self.db, actor, move |connection, actor| {
+            access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                         c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
@@ -61,7 +56,8 @@ impl CollaborationService {
                 params![comment_id, task_id], comment_row,
             ).optional()?.ok_or(AppError::NotFound { resource: "comment" })?;
             comment_page_context(connection, vec![comment], None)
-        }).await
+        })
+        .await
     }
 
     /// Removes the text and mentions of comments deleted longer ago than the

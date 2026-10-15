@@ -1,7 +1,7 @@
 //! The one project access policy that every service uses, for browser
 //! sessions and apps alike. Each check reads current data.
 use crate::{
-    AppError, AppResult,
+    AppError, AppResult, Db,
     auth::{Actor, refresh_actor_connection},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -57,6 +57,23 @@ pub(crate) fn active_members(conn: &Connection, project: &str) -> AppResult<BTre
         .prepare_cached(active_members_sql!())?
         .query_map([project], |row| row.get(0))?
         .collect::<Result<_, _>>()?)
+}
+
+/// Runs a read in one snapshot, for the actor as the database knows it now,
+/// so every part of the answer comes from the same moment. Writes run
+/// through `Envelope` instead.
+pub(crate) async fn read<T: Send + 'static>(
+    db: &Db,
+    actor: &Actor,
+    read: impl FnOnce(&Connection, &Actor) -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    actor.require_ready()?;
+    let actor = actor.clone();
+    db.snapshot(move |connection| {
+        let actor = refresh_actor_connection(connection, &actor)?;
+        read(connection, &actor)
+    })
+    .await
 }
 
 #[derive(Clone, Copy)]
