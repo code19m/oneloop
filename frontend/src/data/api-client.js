@@ -189,7 +189,7 @@ export function createApiClient({
     if (!(file instanceof Blob)) throw new TypeError('Expected an image file');
     const body = new FormData();
     body.set('file', file, typeof File !== 'undefined' && file instanceof File ? file.name : 'avatar');
-    return send('/api/auth/avatar', { method: 'PUT', headers: { Accept: 'application/json', 'X-File-Size': String(file.size) }, body, signal, timeoutMs: uploadTimeoutMs });
+    return send('/api/auth/avatar', { method: 'PUT', headers: { Accept: 'application/json' }, body, signal, timeoutMs: uploadTimeoutMs });
   }
   /**
    * Upload an attachment with XMLHttpRequest, which reports the bytes sent.
