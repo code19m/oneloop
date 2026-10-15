@@ -979,8 +979,15 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
             false,
         )
         .await;
+        assert_eq!(binary.media_type, "application/octet-stream");
         assert_eq!(binary.preview_kind, None);
         assert_eq!(binary.source_url, None);
+        assert!(
+            service
+                .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
+                .await
+                .is_err()
+        );
     }
 
     let mut large_html = b"<!doctype html><p>safe</p>".to_vec();
@@ -1325,31 +1332,6 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
     ));
     let blobs: i64 = query_one(&fixture.db, "SELECT count(*) FROM file_blobs", []).await;
     assert_eq!(blobs, 0);
-}
-
-#[tokio::test]
-async fn malformed_text_is_download_only() {
-    let fixture = Fixture::new().await;
-    let service = fixture.service(100 * 1024 * 1024);
-    for name in ["broken.txt", "broken.md", "broken.markdown"] {
-        let binary = upload(
-            &service,
-            &fixture.manager,
-            name,
-            name,
-            &[0xff, 0xfe, 0, 1],
-            false,
-        )
-        .await;
-        assert_eq!(binary.media_type, "application/octet-stream");
-        assert_eq!(binary.preview_kind, None);
-        assert!(
-            service
-                .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
-                .await
-                .is_err()
-        );
-    }
 }
 
 #[tokio::test]
@@ -1885,16 +1867,6 @@ async fn startup_releases_crashed_reads_and_preserves_backup_leases() {
         .await
         .unwrap();
     assert_eq!(leases, vec!["backup-pin"]);
-    f.db.transaction(|tx| {
-        tx.execute("DELETE FROM file_leases", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    service
-        .delete_attachment(&f.manager, &file.id, file.revision, "after-restart")
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

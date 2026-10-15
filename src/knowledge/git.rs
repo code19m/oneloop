@@ -1636,6 +1636,7 @@ pub(super) mod tests {
     fn unsafe_paths_are_left_out() {
         for path in [
             "",
+            "/etc/passwd",
             "a//b",
             "../x",
             "a/./b",
@@ -1698,13 +1699,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn versions_before_2_31_are_refused() {
+    fn git_versions_are_read_from_the_version_line() {
         assert_eq!(
             parse_version("git version 2.50.1 (Apple Git-155)\n"),
             Some((2, 50))
         );
-        assert_eq!(parse_version("git version 2.39.5"), Some((2, 39)));
-        assert!(parse_version("git version 2.30.2").unwrap() < MINIMUM_VERSION);
+        assert_eq!(parse_version("git version 2.30.2"), Some((2, 30)));
         assert_eq!(parse_version("something else"), None);
     }
 

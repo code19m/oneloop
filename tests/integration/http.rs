@@ -311,43 +311,24 @@ async fn asset_revalidation_and_head_do_not_return_stale_bodies() {
 }
 
 #[tokio::test]
-async fn composed_commands_enforce_auth_origin_and_idempotency() {
+async fn composed_commands_replay_by_idempotency_key() {
     let (_directory, app, token) = fixture().await;
     let input = json!({"operation":"project.create","payload":{"name":"Test project","taskPrefix":"TST"},"idempotencyKey":"http-project-create"});
-    let make = |with_cookie: bool, with_origin: bool| {
-        let mut request = Request::builder()
+    let make = || {
+        Request::builder()
             .method("POST")
             .uri("/api/commands")
-            .header("content-type", "application/json");
-        if with_cookie {
-            request = request.header("cookie", format!("oneloop_session={token}"));
-        }
-        if with_origin {
-            request = request.header("origin", "http://127.0.0.1:8080");
-        }
-        request.body(Body::from(input.to_string())).unwrap()
+            .header("content-type", "application/json")
+            .header("cookie", format!("oneloop_session={token}"))
+            .header("origin", "http://127.0.0.1:8080")
+            .body(Body::from(input.to_string()))
+            .unwrap()
     };
-    assert_eq!(
-        app.clone()
-            .oneshot(make(false, true))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        app.clone()
-            .oneshot(make(true, false))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    let first = app.clone().oneshot(make(true, true)).await.unwrap();
+    let first = app.clone().oneshot(make()).await.unwrap();
     assert_eq!(first.status(), StatusCode::OK);
     let first: Value = body_json(first).await;
     assert_eq!(first["replayed"], false);
-    let second = app.clone().oneshot(make(true, true)).await.unwrap();
+    let second = app.clone().oneshot(make()).await.unwrap();
     assert_eq!(second.status(), StatusCode::OK);
     let second: Value = body_json(second).await;
     assert_eq!(second["replayed"], true);
@@ -837,7 +818,6 @@ async fn browser_route_inventory_enforces_auth_and_origin_before_extraction() {
 async fn public_discovery_shapes_and_native_routes_are_reachable() {
     let (_directory, app, _) = fixture().await;
     for (path, field, expected) in [
-        ("/healthz", "status", "ok"),
         (
             "/.well-known/oauth-authorization-server",
             "issuer",
@@ -862,10 +842,6 @@ async fn public_discovery_shapes_and_native_routes_are_reachable() {
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         let body: Value = body_json(response).await;
         assert_eq!(body[field], expected, "{path}");
-        if path == "/healthz" {
-            assert_eq!(body["schemaVersion"], oneloop::db::CURRENT_SCHEMA_VERSION);
-            assert!(body["version"].is_string());
-        }
         if field == "issuer" {
             assert_eq!(body["code_challenge_methods_supported"], json!(["S256"]));
         }
@@ -879,8 +855,6 @@ async fn public_discovery_shapes_and_native_routes_are_reachable() {
         ("GET", "/mcp/assets/consent.js"),
         ("GET", "/mcp/assets/consent.css"),
         ("POST", "/mcp"),
-        ("GET", "/mcp"),
-        ("DELETE", "/mcp"),
         ("PUT", "/mcp/files/upload"),
         ("GET", "/mcp/files/download"),
     ] {

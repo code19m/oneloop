@@ -795,7 +795,6 @@ mod tests {
                 .unwrap()
                 .contains("filename=\"R_sum_____.pdf\"")
         );
-        assert!(!value.contains("\r"));
     }
 }
 

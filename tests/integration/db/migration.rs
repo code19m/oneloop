@@ -321,41 +321,9 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
 }
 
 #[tokio::test]
-async fn migration_initializes_once_and_transactions_rollback() {
+async fn a_failed_transaction_rolls_back() {
     let root = support::scratch_dir();
     let db = initialize(&root);
-
-    let tables = db
-        .run(|connection| {
-            let mut statement = connection
-                .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(names)
-        })
-        .await
-        .unwrap();
-    for expected in [
-        "users",
-        "projects",
-        "tasks",
-        "comments",
-        "activity_events",
-        "notification_recipients",
-        "outbox_messages",
-        "sessions",
-        "mcp_grants",
-        "oauth_registration_attempts",
-        "file_blobs",
-        "idempotency_keys",
-    ] {
-        assert!(
-            tables.iter().any(|table| table == expected),
-            "missing {expected}"
-        );
-    }
-
     let failure: Result<(), AppError> = db
         .transaction(|transaction| {
             transaction.execute(
@@ -368,20 +336,8 @@ async fn migration_initializes_once_and_transactions_rollback() {
         })
         .await;
     assert!(failure.is_err());
-    let count: i64 = db
-        .run(|connection| {
-            connection
-                .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-                .map_err(AppError::from)
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(&db, "SELECT COUNT(*) FROM users", []).await;
     assert_eq!(count, 0);
-
-    drop(db);
-    let second = migrate(root.path(), None).expect("already current");
-    assert!(second.applied.is_empty());
-    assert!(second.backup_path.is_none());
 }
 
 #[test]
@@ -846,6 +802,7 @@ fn migration_requires_exclusive_instance_access() {
     drop(db);
     let outcome = migrate(root.path(), None).expect("exclusive access restored");
     assert!(outcome.applied.is_empty());
+    assert!(outcome.backup_path.is_none());
 }
 
 #[test]

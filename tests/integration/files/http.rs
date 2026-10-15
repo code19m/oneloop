@@ -238,6 +238,23 @@ async fn multipart_upload_over_global_json_limit_and_range_download_are_real() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */307200");
+
+    // A range the server doesn't support, such as two parts, gets the file.
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/attachments/{}/download", attachment.id))
+                .header(header::COOKIE, &fixture.manager_cookie)
+                .header(header::RANGE, "bytes=0-1,4-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await.as_ref(), original.as_slice());
 }
 
 #[tokio::test]
@@ -338,16 +355,14 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     let (status, body) = fixture.upload("undo-upload", "undo.txt", b"undo me").await;
     assert_eq!(status, StatusCode::CREATED);
     let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
-    let send = |method: &str, uri: String, origin: bool, body: Body| {
-        let mut request = Request::builder()
+    let send = |method: &str, uri: String, body: Body| {
+        let request = Request::builder()
             .method(method)
             .uri(uri)
             .header(header::COOKIE, &fixture.manager_cookie)
             .header(header::CONTENT_TYPE, "application/json")
-            .header("idempotency-key", "undo-delete");
-        if origin {
-            request = request.header(header::ORIGIN, "https://tasks.example.test");
-        }
+            .header("idempotency-key", "undo-delete")
+            .header(header::ORIGIN, "https://tasks.example.test");
         fixture.app.clone().oneshot(request.body(body).unwrap())
     };
     let deleted = send(
@@ -356,7 +371,6 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
             "/api/attachments/{}?expectedRevision={}",
             attachment.id, attachment.revision
         ),
-        true,
         Body::empty(),
     )
     .await
@@ -368,11 +382,7 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     })
     .to_string();
     let uri = format!("/api/attachments/{}/restore", attachment.id);
-    let cross_site = send("POST", uri.clone(), false, Body::from(restore.clone()))
-        .await
-        .unwrap();
-    assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
-    let restored = send("POST", uri, true, Body::from(restore)).await.unwrap();
+    let restored = send("POST", uri, Body::from(restore)).await.unwrap();
     assert_eq!(restored.status(), StatusCode::OK);
     let restored: AttachmentView = serde_json::from_value(body_json(restored).await).unwrap();
     assert_eq!(restored.id, attachment.id);
@@ -840,41 +850,6 @@ async fn multipart_and_avatar_limits_return_json_413() {
             std::fs::read_dir(f.db.layout().staging()).unwrap().count(),
             0
         );
-    }
-}
-
-#[tokio::test]
-async fn unsupported_ranges_deliver_full_file_and_unsatisfiable_ranges_return_416() {
-    let f = Fixture::new().await;
-    let (_, body) = f.upload("range-fallback", "range.bin", b"0123456789").await;
-    let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
-    for range in [
-        "items=0-1",
-        "bytes=0-1,4-5",
-        "bytes=9-3",
-        "bytes=invalid",
-        "bytes=10-",
-    ] {
-        let response = f
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(attachment.download_url.as_ref().unwrap())
-                    .header(header::COOKIE, &f.manager_cookie)
-                    .header(header::RANGE, range)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        if range == "bytes=10-" {
-            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
-            assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
-        } else {
-            assert_eq!(response.status(), StatusCode::OK, "{range}");
-            assert_eq!(body_bytes(response).await.as_ref(), b"0123456789");
-        }
     }
 }
 

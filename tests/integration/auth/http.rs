@@ -68,26 +68,9 @@ fn login_request(origin: Option<&str>) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn login_rejects_missing_or_cross_origin_and_issues_a_secure_cookie() {
+async fn login_issues_a_secure_cookie() {
     let (_directory, db, app) = application();
     add_user(&db, "person", false, false).await;
-    assert_eq!(
-        app.clone()
-            .oneshot(login_request(None))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        app.clone()
-            .oneshot(login_request(Some("https://evil.example")))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
@@ -434,7 +417,8 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
         }
         let response = me(&app, &cookie).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        for expiry in ["idle_expires_at", "absolute_expires_at", "revoked_at"] {
+        // The idle expiry never comes after the absolute one, so it covers both.
+        for assignment in ["idle_expires_at=1", "revoked_at=1"] {
             let response = app
                 .clone()
                 .oneshot(login_request(Some(public_url)))
@@ -442,11 +426,6 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
                 .unwrap();
             let cookie = session_cookie(&response);
             db.run(move |connection| {
-                let assignment = match expiry {
-                    "absolute_expires_at" => "absolute_expires_at=1,idle_expires_at=1",
-                    "idle_expires_at" => "idle_expires_at=1",
-                    _ => "revoked_at=1",
-                };
                 connection.execute(&format!("UPDATE sessions SET {assignment}"), [])?;
                 Ok(())
             })

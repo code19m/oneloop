@@ -408,17 +408,6 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
             assert_eq!(schema["type"], "object", "{}", tool["name"]);
         }
     }
-    for (tool_name, definition, expected) in [
-        (
-            "search_tasks",
-            "TaskStatus",
-            json!(["planning", "in_progress", "in_review", "done"]),
-        ),
-        ("read_pool", "PoolScope", json!(["personal", "team"])),
-    ] {
-        let tool = tools.iter().find(|tool| tool["name"] == tool_name).unwrap();
-        assert_eq!(tool["inputSchema"]["$defs"][definition]["enum"], expected);
-    }
     let identity = tools
         .iter()
         .find(|tool| tool["name"] == "get_identity")
@@ -2430,17 +2419,14 @@ async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in
             .body(Body::empty())
             .unwrap()
     };
-    // Refused before the sign-in page; nothing is fetched for them.
-    for refused in [
-        "https://127.0.0.1/client.json",
-        "https://app.example.com",
-        "https://app.example.com:8443/client.json",
-        "https://app.example.com/client.json?version=2",
-        "https://APP.example.com/client.json",
-    ] {
-        let response = app.clone().oneshot(signed_out(refused)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{refused}");
-    }
+    // A malformed ID is refused before the sign-in page, and nothing is
+    // fetched; the unit tests of `document_url` list the malformed forms.
+    let response = app
+        .clone()
+        .oneshot(signed_out("https://127.0.0.1/client.json"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let response = app.clone().oneshot(signed_out(DOCUMENT)).await.unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert!(

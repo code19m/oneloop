@@ -822,12 +822,4 @@ mod tests {
         );
         assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
     }
-
-    #[test]
-    fn requested_paths_must_be_plain_relative_paths() {
-        assert!(requested_path("guides/README.md").is_ok());
-        for bad in ["", "/etc/passwd", "../x", "a//b", ".git/config"] {
-            assert!(requested_path(bad).is_err(), "{bad:?}");
-        }
-    }
 }

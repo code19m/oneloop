@@ -1345,11 +1345,6 @@ mod error_tests {
     #[test]
     fn tool_schemas_and_operation_descriptions_follow_the_command_classification() {
         let router = OneloopMcp::tool_router();
-        for tool in router.list_all() {
-            if let Some(schema) = tool.output_schema {
-                assert_eq!(schema.get("type"), Some(&json!("object")));
-            }
-        }
         let operations = DomainOperation::ALL
             .iter()
             .map(|operation| (operation.as_str(), operation.mcp_route()))

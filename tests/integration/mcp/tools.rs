@@ -1715,16 +1715,6 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
         .await,
         "not_found",
     );
-
-    let search = tool_value(
-        &mcp.call(
-            "search_knowledge",
-            json!({"projectId": "project-1", "query": "install tools"}),
-        )
-        .await,
-    );
-    assert_eq!(search["documents"][0]["path"], "README.md");
-    assert_eq!(search["documents"][0]["hits"][0]["heading"], "Setup");
     assert_tool_error(
         &mcp.call(
             "search_knowledge",

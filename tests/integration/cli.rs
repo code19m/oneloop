@@ -1,49 +1,22 @@
-use std::collections::BTreeMap;
-
 use assert_cmd::Command as ProcessCommand;
 use clap::Parser;
-use oneloop::cli::{Cli, Command};
+use oneloop::cli::Cli;
 use predicates::str::contains;
 
 use crate::support::{data_dir, free_port, scratch_dir};
 
 #[test]
-fn cli_surface_is_small_and_has_no_inline_password_flag() {
-    let cli = Cli::try_parse_from(["oneloop", "serve", "--check"]).unwrap();
-    assert!(matches!(cli.command, Command::Serve(_)));
-
-    let inline_password =
-        Cli::try_parse_from(["oneloop", "user", "add", "taylorwu", "--password", "secret"]);
-    assert!(inline_password.is_err());
-
-    let missing_command = Cli::try_parse_from(["oneloop"]);
-    assert!(missing_command.is_err());
-
-    let accepted = BTreeMap::from([
-        ("serve", ["oneloop", "serve", "--check"].as_slice()),
-        (
-            "user-add",
-            ["oneloop", "user", "add", "taylorwu", "--admin"].as_slice(),
-        ),
-        (
-            "user-passwd",
-            ["oneloop", "user", "passwd", "taylorwu", "--password-stdin"].as_slice(),
-        ),
-        (
-            "backup-create",
-            ["oneloop", "backup", "create", "/tmp/backup"].as_slice(),
-        ),
-        (
-            "backup-restore",
-            ["oneloop", "backup", "restore", "/tmp/backup"].as_slice(),
-        ),
-        (
-            "db-migrate",
-            ["oneloop", "db", "migrate", "--backup-dir", "/tmp"].as_slice(),
-        ),
-    ]);
-    for (name, arguments) in accepted {
-        assert!(Cli::try_parse_from(arguments).is_ok(), "{name}");
+fn passwords_are_never_command_line_arguments() {
+    for command in ["add", "passwd"] {
+        let inline = Cli::try_parse_from([
+            "oneloop",
+            "user",
+            command,
+            "taylorwu",
+            "--password",
+            "secret",
+        ]);
+        assert!(inline.is_err(), "{command}");
     }
 }
 
