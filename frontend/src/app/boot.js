@@ -6,7 +6,7 @@ import { showStartupError } from './main.js';
 import { createApiClient, ApiError } from '../data/api-client.js';
 import { createBootstrapController } from '../data/bootstrap-controller.js';
 import { createCommandGateway } from '../data/command-gateway.js';
-import { createLegacyData } from '../data/projection-store.js';
+import { createLegacyData, sessionKey } from '../data/projection-store.js';
 import { createAuthController } from '../auth/auth-controller.js';
 import { authorizationReturnTarget } from '../auth/oauth-return.js';
 import { installViewBridge } from './view-bridge.js';
@@ -15,17 +15,20 @@ import { createRuntimeHooks } from './runtime-hooks.js';
 import { actionErrorFeedback, retryableFailure } from './action-feedback.js';
 import { presentFormError } from './form-feedback.js';
 import { createReadController } from '../data/read-controller.js';
-import { installAttachmentTransport } from '../features/attachments/attachment-transport.js';
 import { installCollaborationController } from '../features/collaboration/controller.js';
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
 import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
+import { UIAction, escapeHtml } from './markup.js';
 import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
-// The views' one HTML sink, UIHTML, writes through the oneloop policy.
-globalThis.OneloopSetHTML = setTrustedHTML;
+// The classic view scripts build HTML with UIEscape and UIAction and write it
+// with UIHTML, their one HTML sink, through the oneloop policy.
+globalThis.UIHTML = setTrustedHTML;
+globalThis.UIEscape = escapeHtml;
+globalThis.UIAction = UIAction;
 // First, so actions run before the document's other listeners, as inline handlers did.
 installViewActions(document);
 
@@ -58,14 +61,13 @@ const bootstrap = createBootstrapController({ api, data, onReady: (projection) =
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
 }, onForeign:(userId)=>recovery?.ownsAnswer(userId) });
-const gateway = createCommandGateway({ api, data, getScope:()=>`${data.session?.userId??''}:${data.session?.id??''}`,onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
+const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
 const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
-runtimeHooks = installAttachmentTransport(runtimeHooks);
 globalThis.OneloopTransport = runtimeHooks;
 installCollaborationController({transport:runtimeHooks});
 installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
@@ -109,9 +111,7 @@ try {
   void buildMonitor.check();
   await Promise.all([auth.initialize(),loadViewDependencies()]);
   globalThis.ONELOOP_DEFER_BOOT_RENDER=true;
-  await loadClassic('/views/app.js');
-  app = globalThis.App;
-  if (!app) throw new Error('The web client did not initialize.');
+  ({ App: app } = await import('../../views/app.js'));
   bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope=routeScope())=>bootstrap.load({...routeScope(),...scope})});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
   app.refresh();

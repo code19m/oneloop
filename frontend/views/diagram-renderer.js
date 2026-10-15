@@ -4,7 +4,6 @@
    cannot affect the app. */
 (() => {
   const ZERO_WIDTH_SPACE = '​';
-  /** @param {string} id @param {string} source @param {object} config */
   window.renderDiagram = async (id, source, config) => {
     // A copy made here, so Mermaid works with this document's own objects.
     window.mermaid.initialize(JSON.parse(JSON.stringify(config)));

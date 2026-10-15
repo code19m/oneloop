@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBootstrapController } from '../../../src/data/bootstrap-controller.js';
 import { createLegacyData } from '../../../src/data/projection-store.js';
+import { settle } from '../../support/helpers.cjs';
 
 const projection = (zone, userId = 'u1') => ({timeZone:zone,session:{userId},users:[],projects:[],memberships:[],tracks:[],epics:[],milestones:[],tasks:[],pool:[],notifications:[],browserSessions:[],appGrants:[]});
 /** The data root of a tab where `u1` is signed in. */
@@ -30,7 +31,7 @@ test('a live bootstrap never replaces a load someone started', async () => {
   let idle=false;const waiting=controller.idle().then(()=>{idle=true;});
   assert.deepEqual(await controller.load({projectId:'p1',background:true}),{stale:true});
   assert.equal(pending.length,1);assert.equal(pending[0].signal.aborted,false);
-  await new Promise(setImmediate);assert.equal(idle,false);
+  await settle();assert.equal(idle,false);
   pending[0].resolve(projection('Asia/Tashkent'));
   assert.equal((await chosen).stale,false);await waiting;
   assert.equal(data.timeZone,'Asia/Tashkent');

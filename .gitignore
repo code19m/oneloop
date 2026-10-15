@@ -1,4 +1,4 @@
-# Build and test output (Playwright and coverage reports also go to target/)
+# Build and test output (Playwright reports also go to target/)
 /target/
 /docs/book/
 *.profraw

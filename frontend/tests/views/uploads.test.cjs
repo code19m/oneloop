@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { bootApp, source, waitFor, settle } = require('../support/dom.cjs');
+const { bootApp, source, load, waitFor, settle } = require('../support/dom.cjs');
 const { ApiError } = require('../../src/data/api-client.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
@@ -304,15 +304,12 @@ async function pdfPreview(url, scriptPath) {
     },
   });
   const { w, d } = t;
-  for (const name of ['uploads', 'app']) {
-    let text = source(name);
-    if (name === 'uploads') text = text.replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)");
-    const script = name === 'uploads' && scriptPath ? d.createElement('script') : null;
-    if (script) script.src = new URL(scriptPath, url).href;
-    Object.defineProperty(d, 'currentScript', { configurable: true, value: script });
-    w.eval(text);
-    Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
-  }
+  const script = scriptPath ? d.createElement('script') : null;
+  if (script) script.src = new URL(scriptPath, url).href;
+  Object.defineProperty(d, 'currentScript', { configurable: true, value: script });
+  w.eval(source('uploads').replace("await import(new URL('pdf.mjs',root).href)", "await window.pdfTestImport(new URL('pdf.mjs',root).href)"));
+  Object.defineProperty(d, 'currentScript', { configurable: true, value: null });
+  load(t.dom, 'app');
   t.start();
   w.UIMotion.fade = el => { if (el?.tagName === 'CANVAS') state.fades++; };
   const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
@@ -343,7 +340,7 @@ test('PDF previews redraw only on width changes, zoom and paging, and stop when 
   const { d, state, observers, open } = await pdfPreview('http://localhost/', '/views/uploads.js');
   // Width changes are debounced for 120 ms; drive the clock instead of sleeping.
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const advance = async milliseconds => { t.mock.timers.tick(milliseconds); for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const advance = async milliseconds => { t.mock.timers.tick(milliseconds); for (let i = 0; i < 5; i++) await settle(); };
   const host = open(); await advance(0);
   const observer = observers.find(o => o.el === host);
   assert.equal(state.renders, 1);
@@ -393,8 +390,21 @@ test('inline image previews work outside the dialog and stop when disposed', asy
   assert.equal(t.d.querySelector('.file-dialog'), null);
   tools.querySelector('[data-image-in]').click();
   assert.equal(tools.querySelector('[data-image-out]').disabled, false);
+  const stage = host.querySelector('.image-stage');
+  const wheelZooms = () => { const event = new t.w.WheelEvent('wheel', { ctrlKey: true, deltaY: -100, bubbles: true, cancelable: true }); stage.dispatchEvent(event); return event.defaultPrevented; };
+  assert.equal(wheelZooms(), true, 'Ctrl and the wheel zoom the image');
   dispose();
-  assert.equal(typeof dispose, 'function');
+  assert.equal(wheelZooms(), false, 'a disposed preview leaves the wheel to the page');
+});
+
+test('an upload counts as unsaved work until it settles', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  assert.equal(t.w.Recovery.hasUnsavedInput(), false);
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+  await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment'), 'the upload was sent');
+  assert.equal(t.w.Recovery.hasUnsavedInput(), true, 'leaving now would lose the file');
+  t.answer('uploadAttachment', { id: 'f1', name: 'notes.txt', size: 5, mediaType: 'text/plain', previewKind: 'text', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1 });
+  await waitFor(() => !t.w.Recovery.hasUnsavedInput(), 'the settled upload no longer counts');
 });
 
 test('an upload, retention change and delete still finish after a live update replaced the task', async () => {
@@ -426,7 +436,7 @@ test('live updates read attachments and storage usage again passively', async ()
   } });
   const listener = change => t.runtime.publish(change);
   // Each read answers at once; let its reply land before the next step.
-  const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await new Promise(resolve => setImmediate(resolve)); };
+  const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await settle(); };
   await answered(1, 'the task page reads its attachments');
   listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
   await answered(2, 'a live update reads them again');
@@ -447,9 +457,9 @@ test('a live re-read of attachments that lost access stays quiet', async () => {
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => { if (++reads > 1) throw new ApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; } } });
   const listener = change => t.runtime.publish(change);
   const notices = []; t.A.toast = (text, kind) => notices.push([text, kind]);
-  await waitFor(() => reads === 1, 'the page reads its attachments'); await new Promise(resolve => setImmediate(resolve));
+  await waitFor(() => reads === 1, 'the page reads its attachments'); await settle();
   listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
-  await waitFor(() => reads === 2, 'a live update reads them again'); await new Promise(resolve => setImmediate(resolve));
+  await waitFor(() => reads === 2, 'a live update reads them again'); await settle();
   assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
 });
 

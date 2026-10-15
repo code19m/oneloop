@@ -1,20 +1,16 @@
 /* Attachment transport, previews and rendering. */
 (() => {
   // Capture the script location now; previews open after currentScript is cleared.
-  const assetBase=new URL('../',(/** @type {HTMLScriptElement|null} */(document.currentScript))?.src||new URL('/views/uploads.js',location.href));
-  const limits=()=>/** @type {Window & {DATA?:{limits?:{maxAttachmentBytes:number,maxAvatarBytes:number,maxAttachmentsPerTask:number}}}} */(window).DATA?.limits || {maxAttachmentBytes:25*1024*1024,maxAvatarBytes:5*1024*1024,maxAttachmentsPerTask:25};
+  const assetBase=new URL('../',document.currentScript?.src||new URL('/views/uploads.js',location.href));
+  const limits=()=>window.DATA?.limits || {maxAttachmentBytes:25*1024*1024,maxAvatarBytes:5*1024*1024,maxAttachmentsPerTask:25};
   const maxFile=()=>limits().maxAttachmentBytes,maxAvatar=()=>limits().maxAvatarBytes,maxFiles=()=>limits().maxAttachmentsPerTask;
   const PREVIEW_CACHE_BYTES=64*1024*1024;
   const textExtensions=new Set('txt log md markdown mdx json jsonc jsonl ndjson csv tsv yaml yml toml xml ini cfg conf config properties sql graphql gql js mjs cjs jsx ts mts cts tsx py pyi rs go java c h cc cpp cxx hpp cs php rb swift kt kts scala dart lua pl pm r sh bash zsh fish ps1 bat cmd css scss sass less svelte vue astro diff patch gitignore gitattributes editorconfig env dockerfile makefile cmake tex rst adoc svg'.split(' '));
   const textNames=new Set(['.dockerignore', '.editorconfig', '.env', '.gitattributes', '.gitignore', '.npmrc', '.nvmrc', 'authors', 'changelog', 'containerfile', 'dockerfile', 'gemfile', 'gnumakefile', 'justfile', 'licence', 'license', 'makefile', 'notice', 'procfile', 'rakefile', 'readme']);
   let productionLoaded=new WeakSet();
   const jobs=[],sources=new Map(),productionLoading=new Map(),productionRefreshPending=new Map(),retentionPending=new Set(),reorderPending=new Set();
-  /** Attachment hooks supplied by the shared renderer's bind call.
-   * @type {{task:(id:string)=>any, can:(id:string)=>boolean, canRead:(id:string)=>boolean,
-   * confirm:(options:{title:string,text:string,action:string,confirm:()=>void})=>void,
-   * instant:(value:number|string)=>string, me:()=>{admin?:boolean,id:string,avatar?:string},
-   * refresh:()=>void, refreshAttachments:(id:string)=>void}}
-   */
+  // What the shared renderer's bind call supplies: task, can, canRead, confirm,
+  // instant, me, refresh and refreshAttachments.
   let hooks;
   let next=0,app,preview=null,serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',serverStorageRead=false,runtimeUnsubscribe=null;
   // Tasks whose attachments this account has read. Reading them again, after a
@@ -108,7 +104,9 @@
   async function upload(job,task){
     job.cancelled=false;job.state='uploading';job.progress=0;job.error='';job.validation=false;const controller=new AbortController();job.reader={abort:()=>controller.abort()};mount(job.taskId);
     try{
-      const value=await transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
+      // Leaving the page while a file uploads would lose it.
+      const sending=transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mount(job.taskId);}}});
+      window.Recovery?.trackWrite?.(sending);const value=await sending;
       if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
       const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
       productionLoaded.add(current);jobs.splice(jobs.indexOf(job),1);hooks.refreshAttachments(job.taskId);app.toast('Attachment added');

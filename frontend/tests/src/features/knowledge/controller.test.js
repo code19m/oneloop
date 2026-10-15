@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import { installKnowledgeController } from '../../../../src/features/knowledge/controller.js';
+import { settle } from '../../../support/helpers.cjs';
 
 const { JSDOM } = createRequire(import.meta.url)('../../../support/dom.cjs');
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 const handbook = () => ({
   state: 'ready', syncing: false, folder: 'docs', checkedAt: 1_700_000_000, skippedFiles: 0,

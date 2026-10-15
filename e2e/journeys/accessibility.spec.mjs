@@ -191,7 +191,7 @@ test('landmarks, Board context, field descriptions and move focus survive naviga
   await page.getByRole('button', { name: 'Move to In Progress', exact: true }).click();
   await expect(move).toBeFocused();
   await expect(page.locator('[data-announce="polite"]')).toContainText(`${task.taskKey} moved to In Progress`);
-  await expect.poll(() => page.evaluate(() => !!App._boardMovePending)).toBe(false);
+  await expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   await expect(page.locator('[data-col="progress"] .card')).toHaveCount(1);
   await page.getByRole('button', { name: 'Task', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New task' }), field = dialog.getByRole('textbox', { name: 'Title', exact: true });

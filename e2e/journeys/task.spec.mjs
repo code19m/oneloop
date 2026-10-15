@@ -89,6 +89,29 @@ test('an unsent comment asks before another page or a reload discards it', async
   expect(prompts).toEqual(['beforeunload']);
 });
 
+test('Cancel after Back keeps the unsent comment and every page behind it', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await openApp(page, instance, 'board');
+  await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
+  await expect(page).toHaveURL(/#\/roadmap$/);
+  await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
+  const composer = page.locator('#cmtIn');
+  await composer.fill('Half a thought');
+  const ask = page.getByRole('alertdialog', { name: 'Discard changes?' });
+  await page.goBack({ waitUntil: 'commit' });
+  await ask.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`#/task/${task.taskKey}$`));
+  await expect(composer).toHaveValue('Half a thought');
+  // History is as it was: Back still leads to the Roadmap, then to the Board.
+  await page.goBack({ waitUntil: 'commit' });
+  await ask.getByRole('button', { name: 'Discard', exact: true }).click();
+  await expect(page).toHaveURL(/#\/roadmap$/);
+  await expect(page.locator('.rm-canvas')).toBeVisible();
+  await page.goBack({ waitUntil: 'commit' });
+  await expect(page).toHaveURL(/#\/board$/);
+  await expect(page.locator('.board')).toBeVisible();
+});
+
 test('a failed block submission keeps its reason and the retry saves once', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/500.*\/api\/commands|Failed to load resource.*\/api\/commands/);
   await openApp(page, instance);

@@ -67,3 +67,12 @@ test('large lists skip per-row layout measurement and motion', () => {
   const before = w.UIMotion.rows(host, '[data-row]', 'data-row'); w.UIMotion.reflow(host, '[data-row]', 'data-row', before);
   assert.equal(measured, 0); assert.equal(animated, 0);
 });
+
+test('a ghost keeps the look of its element but takes no input and has no IDs, names, data or handlers', () => {
+  const { w, d } = motion('<div id="card" class="card" data-task="T-1" data-action="openTask" data-args="[1]" draggable="true"><button id="move" name="move" onclick="App.logout()" data-tip="Move" aria-label="Move T-1">Move</button></div>');
+  const ghost = w.UIMotion.ghost(d.getElementById('card'));
+  assert.equal(ghost.className, 'card'); assert(ghost.inert); assert.equal(ghost.getAttribute('aria-hidden'), 'true');
+  const left = [ghost, ...ghost.querySelectorAll('*')].flatMap(node => node.getAttributeNames().filter(name => ['id', 'name', 'draggable'].includes(name) || /^(?:on|data-)/.test(name)));
+  assert.deepEqual(left, []);
+  assert.equal(ghost.querySelector('button').getAttribute('aria-label'), 'Move T-1');
+});

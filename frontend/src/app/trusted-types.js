@@ -15,7 +15,7 @@ const SCRIPT_FOLDER = /^\/(?:v\/[^/]+\/)?(?:src|views|vendor)\//;
 let policy = null;
 
 /** @param {string} value @param {string} base */
-export function appScriptURL(value, base) {
+function appScriptURL(value, base) {
   let url;
   try { url = new URL(value, base); } catch { return null; }
   return url.origin === new URL(base).origin && SCRIPT_FOLDER.test(url.pathname) ? url.href : null;
@@ -34,7 +34,7 @@ export function installTrustedTypes(win = globalThis) {
 }
 
 /** HTML from the app's own templates, ready for an HTML sink. @param {string} source */
-export function trustedHTML(source) {
+function trustedHTML(source) {
   return /** @type {string} */ (policy ? policy.createHTML(source) : source);
 }
 

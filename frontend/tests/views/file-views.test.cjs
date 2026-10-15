@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM, bootApp, source, previewLibraries, waitFor, fixtures } = require('../support/dom.cjs');
+const { JSDOM, bootApp, source, previewLibraries, waitFor, settle, fixtures } = require('../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
 const scripts = ['theme', 'data', 'motion', 'recovery', ...previewLibraries, ...markdownLibraries, 'file-views', 'uploads', 'collaboration', 'app'];
@@ -222,7 +222,7 @@ test('diagrams render in their own document, fall back on syntax errors and drop
   await rendering;
   const pending = host.querySelector('.markdown-diagram'); host.remove();
   finish({ svg: '<svg viewBox="0 0 10 10"></svg>', width: 10, height: 10 });
-  await new Promise(resolve => setImmediate(resolve));
+  await settle();
   assert(!pending.querySelector('img'));
 });
 

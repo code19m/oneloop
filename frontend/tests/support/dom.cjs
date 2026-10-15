@@ -1,4 +1,6 @@
-// Shared jsdom harness for the classic view scripts in frontend/views.
+// Shared jsdom harness for frontend/views. It evaluates the classic scripts and
+// imports the ES modules (Node's vm modules, so the test script turns on
+// --experimental-vm-modules).
 //
 // Every window is strict: a page error or jsdom error fails the test that
 // caused it, and the process exit code catches anything reported later. The
@@ -7,13 +9,17 @@ const { afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
-const { createLegacyData } = require('../../src/data/projection-store.js');
+const { createLegacyData, sessionKey } = require('../../src/data/projection-store.js');
 const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
 const { setTrustedHTML } = require('../../src/app/trusted-types.js');
+const { settle, waitFor, deferred, tick } = require('./helpers.cjs');
+const { UIAction, escapeHtml } = require('../../src/app/markup.js');
 const { installViewActions } = require('../../src/app/view-actions.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
@@ -31,8 +37,8 @@ class JSDOM extends jsdom.JSDOM {
     super(html, { ...options, virtualConsole });
     this.errors = errors;
     this.window.TestApiError = ApiError;
-    // The views' one HTML sink, as src/app/boot.js sets it.
-    this.window.OneloopSetHTML = setTrustedHTML;
+    // The HTML helpers of the classic view scripts, as src/app/boot.js sets them.
+    Object.assign(this.window, { UIHTML: setTrustedHTML, UIEscape: escapeHtml, UIAction });
     open.add(this);
   }
 }
@@ -85,23 +91,58 @@ function dataScript() {
 }
 
 /**
- * The production recovery controller, adapted from its ES module into a
- * classic script, with the API, gateway and auth that the harness wired.
- */
-function recoveryScript() {
-  return '(function(){' + read(path.join(frontend, 'src/features/recovery/controller.js')).replace(/^import .*;$/mg, 'const ApiError=window.TestApiError;').replaceAll('export ', '')
-    + '\nwindow.Recovery=createRecoveryController({data:DATA,...window.TestWiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
-}
-
-/**
- * Source for one script: `data` (the sample projection), `recovery`,
- * `vendor/...` or a file in frontend/views, named without its extension.
+ * Source for one classic script: `data` (the sample projection), `vendor/...`
+ * or a file in frontend/views, named without its extension.
  */
 function source(name) {
   name = name.replace(/^\//, '').replace(/\.js$/, '');
   if (name === 'data') return dataScript();
-  if (name === 'recovery') return recoveryScript();
   return read(path.join(frontend, name.startsWith('vendor/') ? `${name}.js` : `views/${name}.js`));
+}
+
+/** The views that are ES modules, which `load` imports; the others are classic scripts. */
+const viewModules = new Set(['app']);
+
+// Modules the window shares with the harness instead of loading its own, so
+// that an error the harness makes is an instance of the window's ApiError.
+const sharedModules = new Map([[path.join(frontend, 'src/data/api-client.js'), require('../../src/data/api-client.js')]]);
+
+/**
+ * Import `file`, an ES module, and the modules it imports into the window of
+ * `dom`, as a browser does. Each window gets its own instances.
+ */
+function importModule(dom, file) {
+  const context = dom.getInternalVMContext(), loaded = new Map();
+  const link = file => {
+    if (loaded.has(file)) return loaded.get(file);
+    const shared = sharedModules.get(file), identifier = pathToFileURL(file).href;
+    const module = shared
+      ? new vm.SyntheticModule(Object.keys(shared), function () { for (const name of Object.keys(shared)) this.setExport(name, shared[name]); }, { context, identifier })
+      : new vm.SourceTextModule(read(file), { context, identifier });
+    loaded.set(file, module);
+    if (shared) return module;
+    module.linkRequests(module.moduleRequests.map(({ specifier }) => link(path.resolve(path.dirname(file), specifier))));
+    return module;
+  };
+  const module = link(file);
+  module.instantiate();
+  // A module without top-level await runs now; a failure leaves it errored.
+  module.evaluate().catch(() => {});
+  if (module.status === 'errored') throw module.error;
+  return module.namespace;
+}
+
+/**
+ * Run one script in the window of `dom`, by its `source` name, as the app
+ * loads it. `recovery` is the production recovery controller, with the API,
+ * gateway and auth that the harness wired.
+ */
+function load(dom, name) {
+  const w = dom.window;
+  if (viewModules.has(name)) return importModule(dom, path.join(frontend, `views/${name}.js`));
+  if (name !== 'recovery') return void w.eval(source(name));
+  const { createRecoveryController } = importModule(dom, path.join(frontend, 'src/features/recovery/controller.js'));
+  w.Recovery = createRecoveryController({ data: w.DATA, ...w.TestWiring, getApp: () => w.App, windowObject: w, documentObject: w.document, setTimer: w.setTimeout.bind(w), clearTimer: w.clearTimeout.bind(w) });
 }
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
@@ -160,7 +201,7 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
   let runtime;
   const gateway = createCommandGateway({
     api, data,
-    getScope: () => `${data.session?.userId ?? ''}:${data.session?.id ?? ''}`,
+    getScope: () => sessionKey(data),
     onChange: result => runtime.publish({ type: 'command', result }),
     onPending: (key, pending) => w.Recovery?.interactionPending(key, pending),
   });
@@ -202,14 +243,16 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {Record<string,unknown>} [options.reads] read controller methods to replace
  * @param {Record<string,unknown>} [options.auth] auth controller methods to replace
  * @param {(scope?: object) => Promise<unknown>} [options.reloadBootstrap] the bootstrap reload
+ * @param {boolean} [options.layout] give every element the same 300 by 500 pixel box, as jsdom lays nothing out
  * @param {(window: any) => void} [options.setup] runs before any script
  * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
+ * @param {(window: any) => void} [options.collaboration] runs just before collaboration.js, to replace its controller
  * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
  */
 function bootApp({
   route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
   media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
-  api, reads, auth, reloadBootstrap, setup, prepare, beforeScript,
+  api, reads, auth, reloadBootstrap, layout = false, setup, prepare, collaboration, beforeScript,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
@@ -218,6 +261,7 @@ function bootApp({
   w.URL.createObjectURL = () => 'blob:test';
   w.URL.revokeObjectURL = () => {};
   for (const [key, value] of Object.entries(stored)) w.localStorage.setItem(key, value);
+  if (layout) w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
   useWindowGlobals(w);
   // Before any script, so actions run first on the document, as in the app.
   if (actions) installViewActions(w.document);
@@ -225,7 +269,8 @@ function bootApp({
   let wiring = null;
   for (const name of scripts) {
     beforeScript?.(name, w);
-    w.eval(source(name));
+    if (name === 'collaboration') collaboration?.(w);
+    load(dom, name);
     if (name !== 'data') continue;
     wiring = wire(w, { api, reads, auth, reloadBootstrap });
     prepare?.(w.DATA, w);
@@ -234,14 +279,19 @@ function bootApp({
   return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, ...wiring };
 }
 
-/** Poll `condition` on the event loop until it holds, then assert it. */
-async function waitFor(condition, message = 'condition holds', timeout = 5_000) {
-  const deadline = Date.now() + timeout;
-  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.ok(condition(), message);
+/**
+ * Boot `route` with the runtime functions `held` replaced: each records its
+ * call in `calls` and stays pending in `requests` until the test settles it.
+ */
+function withRuntime(route, held) {
+  const calls = [], reports = [], requests = [];
+  const t = bootApp({ route });
+  const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(held.map(name => [name, hold(name)])), report(error) { reports.push(error); } };
+  return { ...t, calls, reports, requests };
 }
 
-/** Let pending microtasks and immediate callbacks run. */
-const settle = () => new Promise(resolve => setImmediate(resolve));
+/** The dataTransfer of a drag that carries `id` as `type`. */
+const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-module.exports = { JSDOM, jsdom, source, bootApp, appScripts, previewLibraries, waitFor, settle, fixtures };
+module.exports = { JSDOM, jsdom, source, load, bootApp, withRuntime, transfer, appScripts, previewLibraries, waitFor, settle, deferred, tick, fixtures };

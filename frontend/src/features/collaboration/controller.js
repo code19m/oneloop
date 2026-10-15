@@ -7,22 +7,12 @@ import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
 import {mapInboxItem} from '../../data/inbox-mapper.js';
 import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js';
+import {mentionFromWire,mentionsToWire} from '../../data/wire.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
 
-/** Convert the selected ranges kept by the polished composer to the API shape. */
-export function mentionsToWire(text, mentions = []) {
-  return mentions.map((mention) => ({
-    kind: mention.id === 'everyone' ? 'everyone' : 'user',
-    ...(mention.id === 'everyone' ? {} : { userId: mention.id }),
-    startOffset: mention.start,
-    endOffset: mention.end,
-    label: text.slice(mention.start, mention.end),
-  }));
-}
-
 /** @param {any} comment */
-export function mapComment(comment) {
+function mapComment(comment) {
   const deleted = comment.deletedAt != null || comment.content == null;
   return {
     id: comment.id,
@@ -36,17 +26,9 @@ export function mapComment(comment) {
     parentId: comment.rootId === comment.id ? null : comment.rootId,
     replyToId: comment.replyToId ?? null,
     revision: comment.revision,
-    mentions: (comment.mentions ?? []).map((mention) => ({
-      id: mention.kind === 'everyone' ? 'everyone' : mention.userId,
-      label: String(mention.label ?? '').replace(/^@/, ''),
-      start: mention.startOffset,
-      end: mention.endOffset,
-    })),
+    mentions: (comment.mentions ?? []).map(mentionFromWire),
   };
 }
-
-export {mapActivity};
-
 
 function replace(array, items) { array.splice(0, array.length, ...items); }
 
@@ -115,8 +97,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
       const [comments,activity,target,block]=await Promise.all([
         append&&page.loaded&&!page.commentsCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.comments(task.internalId,{cursor:append?page.commentsCursor:undefined,limit:50,signal:taskController.signal,background}),
         append&&page.loaded&&!page.activityCursor?Promise.resolve({items:[],nextCursor:null}):transport.api.activity(task.projectId,{taskId:task.internalId,cursor:append?page.activityCursor:undefined,limit:50,signal:taskController.signal,background}),
-        Promise.all([...new Set([...targetCommentIds,...(targetCommentId?[targetCommentId]:[])])].map(id=>transport.api.request(`/api/discussion/tasks/${encodeURIComponent(task.internalId)}/comments/${encodeURIComponent(id)}`,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
-        targetBlockId?transport.api.request(`/api/discussion/tasks/${encodeURIComponent(task.internalId)}/blocks/${encodeURIComponent(targetBlockId)}`,{signal:taskController.signal,background}):Promise.resolve(null),
+        Promise.all([...new Set([...targetCommentIds,...(targetCommentId?[targetCommentId]:[])])].map(id=>transport.api.comment(task.internalId,id,{signal:taskController.signal,background}))).then(pages=>({items:pages.flatMap(page=>page.items??[]),context:pages.flatMap(page=>page.context??[]),replyCounts:Object.assign({},...pages.map(page=>page.replyCounts))})),
+        targetBlockId?transport.api.block(task.internalId,targetBlockId,{signal:taskController.signal,background}):Promise.resolve(null),
       ]);
       if(reconcile){
         for(const [rows,depth,read] of [
@@ -309,7 +291,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
   async function readCanonicalTask(task){
     const expectedSession=currentSession(),expectedRoute=routeKey;
     try{
-      const view=await transport.api.request(`/api/tasks/${encodeURIComponent(task.internalId)}`,{background:true});
+      const view=await transport.api.task(task.internalId,{background:true});
       if(!view||currentSession()!==expectedSession||routeKey!==expectedRoute||!currentTask(task.internalId))return null;
       if(currentTask(task.internalId).revision>view.revision)return currentTask(task.internalId);
       const mapped=replaceTaskDetail(data,view);
@@ -362,10 +344,6 @@ export function installCollaborationController({ transport, eventSourceFactory =
     projectReconcileTimer=null;projectReconcileProjectId=null;pendingProjectHints.clear();
   }
 
-  function motionPending(context){
-    return context?.view==='board'?!!app?._boardMovePending:context?.view==='roadmap'?!!app?._roadmapMovePending:false;
-  }
-
   function scheduleProjectReconcile(projectId,{full=false,hint=/** @type {any} */({})}={}){
     if(projectReconcileProjectId&&projectReconcileProjectId!==projectId)clearProjectReconcile();
     projectReconcileProjectId=projectId;
@@ -382,7 +360,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
       projectReconcileTimer=null;
       const context=app?.context?.();
       if(!context||context.projectId!==projectReconcileProjectId){clearProjectReconcile();return;}
-      if(projectReconcileRunning||motionPending(context)){projectReconcileTimer=setTimeout(flush,60);return;}
+      if(projectReconcileRunning||context.movePending){projectReconcileTimer=setTimeout(flush,60);return;}
       const pending=[...pendingProjectHints.values()];clearProjectReconcile();
       const uncovered=pending.filter((item)=>!hintIsCovered(item.hint));
       if(!uncovered.length)return;
@@ -476,7 +454,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
         globalThis.Recovery?.liveDisconnected?.(()=>startEvents());
         if(sessionCheck)return;
         const expectedSession=currentSession();
-        const check=transport.api.request('/api/auth/me',{background:true}).then((answer)=>{
+        const check=transport.api.me({background:true}).then((answer)=>{
           if(expectedSession===currentSession())globalThis.Recovery?.ownsAnswer?.(answer?.user?.id);
         },(error)=>{
           if(expectedSession===currentSession()&&error?.status===401&&!globalThis.Recovery?.sessionExpired?.())globalThis.location?.reload?.();
@@ -522,6 +500,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
     setArchived:(id,currentlyArchived)=>changeInbox(currentlyArchived?'inbox.restore':'inbox.archive',id),
     bulk:(action,filter)=>bulkInbox(action==='read'?'inbox.bulkMarkRead':'inbox.bulkArchive',filter),
     openNotification,
+    // collaboration.js, a classic script, maps mentions with these.
+    mentionsToWire,mentionFromWire,
     dispose(){disposed=true;stopWaitingForUse();visibility?.removeEventListener?.('visibilitychange',visibilityChanged);unsubscribe?.();source?.close?.();source=null;taskController?.abort();inboxController?.abort();clearProjectReconcile();clearLiveReads();sessionCheck=null;},
   };
   globalThis.OneloopCollaboration=controller;

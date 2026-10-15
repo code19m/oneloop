@@ -1,7 +1,7 @@
 // views/collaboration.js: comments, mentions, blocks and the discussion feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle, waitFor } = require('../support/dom.cjs');
+const { bootApp, settle, waitFor, deferred } = require('../support/dom.cjs');
 const { createRecoveryController } = require('../../src/features/recovery/controller.js');
 const { ApiError } = require('../../src/data/api-client.js');
 
@@ -41,7 +41,6 @@ function productionComments(execute=()=>new Promise(()=>{})) {
 }
 
 const conflict=()=>new ApiError('Comment changed; latest revision is 2',{status:409,code:'revision_conflict'});
-const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 const conflictButton=(t,label)=>[...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label);
 
 test('Use latest accepts comment text, mentions and revision when Save changes had focus',async()=>{
@@ -112,7 +111,6 @@ test('an open comment edit conflicts against its original revision after a live 
   Object.assign(t.comment,{content:payload.content,revision:3});return {entities:[t.comment],events:[]};
  });
  await settle();
- const previous=globalThis.Recovery;
  globalThis.Recovery=createRecoveryController({data:t.D,getApp:()=>t.A,documentObject:null,windowObject:null,presentConflict:async input=>{reviews.push(input.latestValue);return 'cancelled';}});
  try{
   t.A.editComment('BIR-079','comment-1');typeComment(t,'My local edit');

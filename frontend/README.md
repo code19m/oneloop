@@ -6,11 +6,12 @@ and no bundler.
 ```text
 index.html  Application entry and SPA fallback
 src/        ES modules for app setup, auth, data and features
-views/      Older classic-script view layer
+views/      Older view layer: the app.js module and classic scripts
 styles/     CSS and grain texture
 icons/      Favicons and app icons
 vendor/     Browser libraries, licenses and audit records
-tests/      Unit tests mirroring src/ and views/, with a shared jsdom harness
+tests/      Unit tests mirroring src/ and views/; support/ has the jsdom harness
+            (dom.cjs) and helpers that need no DOM (helpers.cjs)
 ```
 
 ## Where new code goes
@@ -19,16 +20,28 @@ Add application logic to `src/` as ES modules with JSDoc types; preserve the
 DOM contracts in `views/`. Whole-app browser journeys live in
 [`../e2e/journeys/`](../e2e/README.md).
 
+- **Views.** `views/app.js` is the shell: routing, the render pipeline and the
+  pages that have no module of their own. Each feature in `views/app/` keeps
+  its markup and its `App` handlers together: `board.js`, `roadmap.js`,
+  `pool.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and focus
+  return), `controls.js` (selects, date fields, input cleaning), `forms.js`,
+  `toasts.js` and `drag.js`. They share `model.js` (view state and data
+  lookups) and `format.js` (text, dates and icons), and animate with the one
+  motion engine, `UIMotion` from `views/motion.js`. A module reaches the render
+  pipeline through `App`, such as `App.refresh()`, and never imports
+  `views/app.js`. TypeScript checks only `src/`, so each view module starts
+  with `// @ts-nocheck` and the views carry no JSDoc types.
 - **Actions.** To change an action that saves, start from
   `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
-  `saveTask`, and wraps a few of `views/app.js`, such as `nav`.
+  `saveTask`, and wraps a few of the views' own, such as `nav`.
   `views/collaboration.js` and `views/uploads.js` add the comment and
   attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
   `App` method that its click runs in `data-action`, or that another event runs
-  in `data-action-<event>`, with JSON arguments in `data-args`. In `views/`,
-  write these with `UIAction`, such as `UIAction('openTask', id)` or
-  `UIAction.on('keydown', 'epicKey', UIAction.event, id)`.
+  in `data-action-<event>`, with JSON arguments in `data-args`. Write these
+  with `UIAction` from `src/app/markup.js`, such as `UIAction('openTask', id)`
+  or `UIAction.on('keydown', 'epicKey', UIAction.event, id)`, and escape text
+  with its `escapeHtml`.
   `src/app/view-actions.js` runs them from listeners on the document, but never
   inside rendered Markdown or file previews, and only for the names in its
   `ACTIONS` list. A new action goes into that list; a test checks that the list
@@ -53,9 +66,9 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 The page's Content-Security-Policy enforces Trusted Types and refuses inline
 `<style>` elements:
 
-- Write HTML with `UIHTML` (`setHTML` in `views/app.js`), which goes through
-  the app's `oneloop` policy. A plain string passed to `innerHTML`, `srcdoc` or
-  `DOMParser` is refused.
+- Write HTML with `setTrustedHTML` from `src/app/trusted-types.js`, which goes
+  through the app's `oneloop` policy. A plain string passed to `innerHTML`,
+  `srcdoc` or `DOMParser` is refused.
 - Load scripts only from `src/`, `views/` and `vendor/`.
 - Style with the CSS files and `style` attributes, not `<style>` elements.
 
@@ -66,9 +79,27 @@ page shows each result as an image.
 ## How it loads
 
 `theme.js` runs in the document head. `src/app/main.js` starts `boot.js`, which
-loads motion, file views, uploads and collaboration in order, then `app.js`.
-The view bridge installs server-backed actions before the first application
-render; preview libraries load on demand.
+loads the classic scripts motion, file views, uploads and collaboration in
+order, then imports the `app.js` module. The view bridge installs
+server-backed actions before the first application render; preview libraries
+load on demand.
+
+The page's parts reach each other through these `window` properties only.
+New code imports a module instead of adding one.
+
+| Global | Set by | Holds |
+| --- | --- | --- |
+| `DATA` | `boot.js` | The projection that the views draw |
+| `App` | `views/app.js` | The view actions and refresh methods |
+| `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions and the server clock |
+| `OneloopTransport` | `boot.js` | The API, commands and live updates for the classic scripts |
+| `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
+| `UIHTML`, `UIEscape`, `UIAction` | `boot.js` | The HTML helpers of the classic scripts |
+| `OneloopErrorMessage`, `OneloopRetryable` | `boot.js` | How a failure reads, and whether trying again can help |
+| `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
+| `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
+| `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
+| `Theme`, `UIMotion`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, motion, file previews, attachments, comments and the Inbox |
 
 ## Design
 

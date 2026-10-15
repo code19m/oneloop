@@ -4,12 +4,14 @@
  * Knowledge: one read-only folder of a Git repository per project. The view
  * layer calls these hooks to route, render and mount the page, the Settings
  * section and the connection dialog. Controls use data attributes and
- * delegated listeners; only `App.openModal` and `App.closeOverlays` appear
- * inline.
+ * delegated listeners; only `App.openModal` and `App.closeOverlays` are view
+ * actions (`UIAction`).
  */
 
 import { actionErrorFeedback } from '../../app/action-feedback.js';
 import { completeForm } from '../../app/form-feedback.js';
+import { UIAction, escapeHtml as esc } from '../../app/markup.js';
+import { setTrustedHTML } from '../../app/trusted-types.js';
 import {
   baseName, failureText, fileAt, fileUrl, folderEntries, folderExists, highlight,
   iconKind, originOf, parentPath, parseRoute, readmeIn, resolveImage, resolveLink, routeHash, searchTerms,
@@ -25,7 +27,6 @@ const SEARCH_DELAY_MS = 120;
 const RECENT_FILES = 6;
 const TEXT_LIMIT = 200 * 1024;
 
-const esc = (/** @type {unknown} */ value) => String(value ?? '').replace(/[&<>"']/g, (c) => /** @type {Record<string,string>} */ ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 const svg = (/** @type {string} */ body, size = 16) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 const ICONS = Object.freeze({
@@ -52,7 +53,7 @@ const SHAPES = Object.freeze({
 const icon = (/** @type {keyof typeof ICONS} */ name, size = 16) => svg(ICONS[name], size);
 const fileMark = (/** @type {string} */ path, folder = false) => {
   const kind = iconKind(path, folder);
-  return `<span class="knowledge-file-mark" data-file-kind="${kind}" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${SHAPES[/** @type {keyof typeof SHAPES} */ (kind)]}</svg></span>`;
+  return `<span class="knowledge-file-mark" data-file-kind="${esc(kind)}" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${SHAPES[/** @type {keyof typeof SHAPES} */ (kind)]}</svg></span>`;
 };
 
 const MOVED_TOKEN = 'The saved token is for the previous host. Enter a new token or remove it.';
@@ -106,7 +107,6 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
   const dateOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 10) : '—';
   const timeOf = (/** @type {number|null|undefined} */ seconds) => seconds ? instant(seconds).slice(0, 16) : '';
   const viewOf = (/** @type {string|null} */ projectId) => projectId ? cache.get(projectId)?.data ?? null : null;
-  const setHTML = (/** @type {Element} */ element, /** @type {string} */ html) => view.UIHTML ? view.UIHTML(element, html) : (element.innerHTML = html);
 
   // ---------- data ----------
 
@@ -224,17 +224,17 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const entry = cache.get(projectId);
     if (entry) entry.unpainted = false;
     const html = workspaceHtml(projectId);
-    return `<div class="knowledge-workspace" data-knowledge-key="${workspaceKey(html)}">${html}</div>`;
+    return `<div class="knowledge-workspace" data-knowledge-key="${esc(workspaceKey(html))}">${html}</div>`;
   }
 
   function readerHtml(/** @type {string} */ projectId, /** @type {KnowledgeView} */ data) {
     if (data.state === 'unconnected') {
       return emptyHtml('A home for project knowledge', 'Connect a repository folder to bring your team’s guides, product rules and decisions into the project.',
-        isAdmin() ? `<button type="button" class="btn primary" data-action="openModal" data-args='["knowledge"]'>Connect repository</button>` : '<span class="knowledge-badge">Ask an admin to connect a repository</span>');
+        isAdmin() ? `<button type="button" class="btn primary" ${UIAction('openModal','knowledge')}>Connect repository</button>` : '<span class="knowledge-badge">Ask an admin to connect a repository</span>');
     }
     if (!data.files.length && data.state === 'failed') {
       return emptyHtml('Knowledge couldn’t sync', isAdmin() ? esc(failureText(data.source?.errorCode)) : 'Ask an admin to check the repository connection.',
-        isAdmin() ? `<div class="knowledge-empty-actions">${retryButton(data)}<button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Manage connection</button></div>` : '', 'warn');
+        isAdmin() ? `<div class="knowledge-empty-actions">${retryButton(data)}<button type="button" class="btn" ${UIAction('openModal','knowledge')}>Manage connection</button></div>` : '', 'warn');
     }
     if (!data.files.length) {
       return emptyHtml(data.state === 'pending' ? 'Bringing your knowledge together' : 'This folder is empty', data.state === 'pending' ? 'Reading the selected folder and preparing files for search.' : 'Add files to the folder in Git. They appear here after the next sync.', '', 'git');
@@ -315,7 +315,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (!result) return finderShell('', `<p class="knowledge-finder-status" role="status">${S.searching ? 'Searching…' : ''}</p>`);
     const files = result.fileCount, hits = result.hitCount, quoted = `“${esc(S.query.trim())}”`, scope = S.scope;
     const partial = result.partial ? '<p class="knowledge-finder-status">Some files are searched by name only.</p>' : '';
-    const tabs = `<div class="seg knowledge-scope" role="tablist" aria-label="Search in">${[['all', 'All', files + hits], ['files', 'Files', files], ['content', 'Content', hits]].map(([id, label, count]) => `<button type="button" role="tab" aria-selected="${scope === id}" class="${scope === id ? 'on' : ''}" data-knowledge-action="scope" data-scope="${id}">${label}<span>${count}</span></button>`).join('')}</div>`;
+    const tabs = `<div class="seg knowledge-scope" role="tablist" aria-label="Search in">${[['all', 'All', files + hits], ['files', 'Files', files], ['content', 'Content', hits]].map(([id, label, count]) => `<button type="button" role="tab" aria-selected="${scope === id}" class="${scope === id ? 'on' : ''}" data-knowledge-action="scope" data-scope="${esc(id)}">${label}<span>${count}</span></button>`).join('')}</div>`;
     if (!files && !hits) return finderShell('', noResults(`No results for ${quoted}`, 'Try fewer words or a different spelling.') + partial);
     if (scope === 'files' && !files) return finderShell(tabs, noResults(`No file or folder names match ${quoted}`, `${hits} ${hits === 1 ? 'match' : 'matches'} in document text.`) + partial);
     if (scope === 'content' && !hits) return finderShell(tabs, noResults(`No document text matches ${quoted}`, `${files} matching ${files === 1 ? 'name' : 'names'} in Files.`) + partial);
@@ -329,7 +329,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     const reader = documentObject.querySelector('.knowledge-reader'), data = viewOf(S.projectId);
     if (!reader || !data || !S.projectId) return;
     disposePreviews(reader);
-    setHTML(reader, bannerHtml(data) + readerHtml(S.projectId, data));
+    setTrustedHTML(reader, bannerHtml(data) + readerHtml(S.projectId, data));
     documentObject.querySelector('.knowledge-toolbar')?.classList.toggle('is-searching', S.finding);
     // The results exist only while searching; the field names them only then.
     documentObject.querySelector('[data-knowledge-search]')?.toggleAttribute('aria-controls', false);
@@ -358,7 +358,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       const controller = new AbortController(); searchController = controller;
       api.request(`/api/projects/${encodeURIComponent(String(projectId))}/knowledge/search?${new URLSearchParams({ q: query })}`, { signal: controller.signal })
         .then((/** @type {any} */ data) => { if (sequence !== searchSequence || projectId !== S.projectId) return; S.results = { query, data }; S.searching = false; if (S.finding) paintFinder(); })
-        .catch((/** @type {any} */ error) => { if (error?.code === 'aborted' || sequence !== searchSequence) return; S.searching = false; S.results = null; if (S.finding) { const body = documentObject.getElementById('knowledge-results'); if (body) setHTML(body, noResults('Search is unavailable', esc(errorText(error, 'Try again in a moment.')))); } });
+        .catch((/** @type {any} */ error) => { if (error?.code === 'aborted' || sequence !== searchSequence) return; S.searching = false; S.results = null; if (S.finding) { const body = documentObject.getElementById('knowledge-results'); if (body) setTrustedHTML(body, noResults('Search is unavailable', esc(errorText(error, 'Try again in a moment.')))); } });
     }, SEARCH_DELAY_MS);
   }
 
@@ -432,7 +432,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     previews.set(host, () => {});
     const tools = host.closest('.knowledge-preview')?.querySelector('.knowledge-preview-modes');
     const moveTools = () => { const found = host.querySelector('.html-preview-tools'); if (found && tools) tools.append(found); };
-    const unavailable = (/** @type {string} */ text) => setHTML(host, `<p class="preview-unavailable">${text}</p>`);
+    const unavailable = (/** @type {string} */ text) => setTrustedHTML(host, `<p class="preview-unavailable">${text}</p>`);
     const viewer = viewerFile(projectId, file), views = view.FileViews;
     if (file.kind === 'image' || file.kind === 'pdf') {
       host.classList.add('knowledge-media-body', 'file-preview-content'); host.setAttribute('data-inline-kind', file.kind);
@@ -441,7 +441,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       return;
     }
     if (!file.kind || !views) { unavailable('Preview is not available for this format. Download the original file.'); return; }
-    setHTML(host, '<p class="access-note" role="status">Loading preview…</p>');
+    setTrustedHTML(host, '<p class="access-note" role="status">Loading preview…</p>');
     textOf(projectId, file).then(({ text, truncated }) => {
       if (!host.isConnected) return;
       host.replaceChildren();
@@ -548,8 +548,8 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     if (entry) entry.unpainted = false;
     let row;
     if (!data) row = entry?.error ? `<p class="access-note" role="alert">${esc(errorText(entry.error, 'Knowledge base settings could not be loaded.'))} <button type="button" class="btn quiet" data-knowledge-action="reload">Retry</button></p>` : '<p class="access-note" role="status">Loading…</p>';
-    else if (!source) row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b>No repository connected</b><small>Show a folder from any Git repository as this project’s knowledge base.</small></span><button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Connect repository</button></div>`;
-    else row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b title="${esc(source.repository)}">${esc(source.repository)}</b><small class="knowledge-source-meta"><span class="mono">${esc(source.branch)} · ${esc(source.folder || '/')}</span>${statusHtml(source)}</small>${source.state === 'failed' ? `<small class="knowledge-source-error">${esc(failureText(source.errorCode))}</small>` : ''}</span><button type="button" class="btn" data-action="openModal" data-args='["knowledge"]'>Manage connection</button></div>`;
+    else if (!source) row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b>No repository connected</b><small>Show a folder from any Git repository as this project’s knowledge base.</small></span><button type="button" class="btn" ${UIAction('openModal','knowledge')}>Connect repository</button></div>`;
+    else row = `<div class="knowledge-source-row"><span class="knowledge-source-mark" aria-hidden="true">${icon('git')}</span><span class="knowledge-source-name"><b title="${esc(source.repository)}">${esc(source.repository)}</b><small class="knowledge-source-meta"><span class="mono">${esc(source.branch)} · ${esc(source.folder || '/')}</span>${statusHtml(source)}</small>${source.state === 'failed' ? `<small class="knowledge-source-error">${esc(failureText(source.errorCode))}</small>` : ''}</span><button type="button" class="btn" ${UIAction('openModal','knowledge')}>Manage connection</button></div>`;
     return `<div class="section" id="knowledge-settings"><h2>Knowledge base</h2>${row}</div>`;
   }
 
@@ -567,7 +567,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
         <div class="field-row"><div class="field"><label for="knowledge-branch">Branch</label><input class="ctl" id="knowledge-branch" name="branch" required autocomplete="off" spellcheck="false" value="${esc(source?.branch ?? 'main')}"></div><div class="field"><label for="knowledge-folder">Folder<span class="optional-mark">Optional</span></label><input class="ctl" id="knowledge-folder" name="folder" autocomplete="off" spellcheck="false" value="${esc(connected ? source.folder : 'docs')}" placeholder="Repository root"></div></div>
         <div class="field" data-access="https"${ssh ? ' hidden' : ''}>${label('knowledge-token', 'Access token', saved ? '' : 'Private repositories only')}${token}</div>
         <div class="field" data-access="ssh"${ssh ? '' : ' hidden'}>${label('knowledge-key', 'Deploy key', 'Add to the repository, read-only')}<div class="knowledge-key"><input class="ctl" id="knowledge-key" readonly value="${esc(key)}" placeholder="Creating key…"><button type="button" class="btn" data-knowledge-action="copy-key">Copy</button></div></div>
-        <div class="modal-actions">${connected ? '<button type="button" class="btn danger knowledge-disconnect" data-knowledge-action="disconnect">Disconnect</button>' : ''}<button type="button" class="btn quiet" data-action="closeOverlays">Cancel</button><button type="submit" class="btn primary">${connected ? 'Save' : 'Connect'}</button></div>
+        <div class="modal-actions">${connected ? '<button type="button" class="btn danger knowledge-disconnect" data-knowledge-action="disconnect">Disconnect</button>' : ''}<button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button type="submit" class="btn primary">${connected ? 'Save' : 'Connect'}</button></div>
       </form>`;
   }
 

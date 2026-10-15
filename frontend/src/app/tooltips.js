@@ -1,5 +1,7 @@
 // @ts-check
 
+import { placeNear } from './layers.js';
+
 /**
  * One tooltip for details that the browser's own `title` showed only on mouse
  * hover: a full time, the reason a task is blocked, a name that is cut off.
@@ -44,10 +46,9 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
 
   function place() {
     if (!tip || !anchor) return;
-    const box = anchor.getBoundingClientRect(), width = tip.offsetWidth, height = tip.offsetHeight;
-    const below = box.bottom + 6 + height <= win.innerHeight - 8;
-    tip.style.left = `${Math.max(8, Math.min(box.left + box.width / 2 - width / 2, win.innerWidth - width - 8))}px`;
-    tip.style.top = `${Math.max(8, below ? box.bottom + 6 : box.top - height - 6)}px`;
+    const { left, top } = placeNear(anchor.getBoundingClientRect(), tip, { align: 'center' });
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
   }
 
   /** Add the tip to the element's description, after what describes it already. @param {HTMLElement} element */

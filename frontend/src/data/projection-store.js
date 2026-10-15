@@ -2,9 +2,14 @@
 
 import {secondsToMilliseconds} from './time.js';
 import {refreshPageWindow} from './page-window.js';
+import {byStatus, toLegacyScope, toLegacyStatus} from './wire.js';
 
-const STATUS_TO_LEGACY = Object.freeze({ planning: 'planning', in_progress: 'progress', in_review: 'review', done: 'done' });
-const SCOPE_TO_LEGACY = Object.freeze({ personal: 'mine', team: 'project' });
+/**
+ * Which session of which person `data` belongs to. Work started in one
+ * session never lands in another.
+ * @param {{session?:{id?:string|null,userId?:string}|null}} data
+ */
+export const sessionKey = (data) => `${data.session?.id ?? ''}:${data.session?.userId ?? ''}`;
 
 /** Create the one mutable root consumed by the compatibility client. */
 export function createLegacyData() {
@@ -21,8 +26,8 @@ function replace(array, next) {
   return array;
 }
 
-
-function mapUser(user) {
+/** An account as the server lists it, in the client's shape. */
+export function mapUser(user) {
   return {
     id: user.id, username: user.username, name: user.name ?? user.displayName ?? user.username,
     admin: !!(user.isAdmin ?? user.admin), active: user.isActive !== false && user.active !== false,
@@ -37,30 +42,59 @@ function mapMembership(membership) {
   return { userId: membership.userId, permissions, revision: membership.revision };
 }
 
-function mapProject(project, memberships) {
-  return {
-    id: project.id, name: project.name, key: project.taskPrefix, taskPrefix: project.taskPrefix,
-    revision: project.revision,
-    members: memberships.filter((item) => item.projectId === project.id).map(mapMembership),
-  };
+const text = (value) => value ?? '';
+const orNull = (value) => value ?? null;
+const orZero = (value) => value ?? 0;
+const milliseconds = (value) => secondsToMilliseconds(value);
+const millisecondsOrNull = (value) => secondsToMilliseconds(value) ?? null;
+
+/**
+ * Each entity's fields as [server name, client name, convert]. The client
+ * keeps some names from its first version, such as `desc`. A read carries
+ * every field, and a command result only the fields that changed.
+ * @type {Record<string,[string,string?,((value:any)=>any)?][]>}
+ */
+const FIELDS = {
+  project: [['name'], ['taskPrefix', 'key'], ['taskPrefix']],
+  track: [['projectId'], ['name'], ['description', 'desc', text], ['position', 'order']],
+  epic: [
+    ['projectId'], ['trackId'], ['title'], ['description', 'desc', text], ['startDate', 'start'], ['endDate', 'end', orNull], ['state'], ['position', 'order'],
+    // Only Roadmap reads carry the task counts.
+    ['taskDone', 'done', orZero], ['taskTotal', 'total', orZero], ['taskOpen', 'open'], ['completedThisWeek', 'closedThisWeek'], ['completedSinceStart'], ['weeklyCompletions', 'weekly'],
+  ],
+  milestone: [['projectId'], ['title', 'name'], ['description', 'desc', text], ['milestoneDate', 'date']],
+  task: [
+    ['projectId'], ['epicId'], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
+    ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['completedAt', 'completedAt', millisecondsOrNull],
+    ['completionOrder', 'completionOrder', orNull], ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
+  ],
+  poolItem: [['projectId'], ['scope', 'scope', toLegacyScope], ['ownerUserId', 'ownerId', orNull], ['title'], ['description', 'desc', text], ['createdAt', 'created', milliseconds]],
+  taskBlock: [['reason'], ['createdBy', 'by'], ['createdAt', 'at', milliseconds], ['mentions', 'mentions', (mentions) => mentions ?? []], ['resolution', 'resolution', orNull]],
+};
+
+/** The client's name of an entity's field. @param {string} entityType @param {string} field */
+export const clientField = (entityType, field) => FIELDS[entityType]?.find(([wire]) => wire === field)?.[1] ?? field;
+
+/**
+ * An entity from a read, in the client's shape.
+ * @param {string} entityType @param {any} view @returns {any}
+ */
+function fromWire(entityType, view) {
+  /** @type {any} */
+  const item = { id: view.id };
+  for (const [wire, client = wire, convert = (value) => value] of FIELDS[entityType]) item[client] = convert(view[wire]);
+  item.revision = view.revision;
+  return item;
 }
 
-function mapTrack(track) {
-  return { id: track.id, projectId: track.projectId, name: track.name, desc: track.description ?? '', order: track.position, revision: track.revision };
+function mapProject(project, memberships) {
+  return { ...fromWire('project', project), members: memberships.filter((item) => item.projectId === project.id).map(mapMembership) };
 }
+
+const mapTrack = (track) => fromWire('track', track);
 
 function mapEpic(epic) {
-  return {
-    id: epic.id, projectId: epic.projectId, trackId: epic.trackId, title: epic.title,
-    desc: epic.description ?? '', start: epic.startDate, end: epic.endDate ?? null,
-    state: epic.state, order: epic.position, revision: epic.revision,
-    done: epic.taskDone ?? epic.done ?? 0, total: epic.taskTotal ?? epic.total ?? 0,
-    // Only Roadmap reads carry task counts; until one arrives, they are unknown.
-    counted: epic.taskTotal !== undefined || epic.total !== undefined,
-    open: epic.taskOpen, closedThisWeek: epic.completedThisWeek,
-    completedSinceStart: epic.completedSinceStart,
-    weekly: epic.weeklyCompletions ?? epic.weekly, activity: [],
-  };
+  return { ...fromWire('epic', epic), counted: epic.taskTotal !== undefined, activity: [] };
 }
 
 /** Only Roadmap reads carry epic task counts; other reads keep the last ones known. */
@@ -70,37 +104,20 @@ function keepEpicCounts(mapped, view, previous) {
   return mapped;
 }
 
-function mapMilestone(milestone) {
-  return {
-    id: milestone.id, projectId: milestone.projectId, name: milestone.title,
-    desc: milestone.description ?? '', date: milestone.milestoneDate, revision: milestone.revision,
-  };
-}
+const mapMilestone = (milestone) => fromWire('milestone', milestone);
 
 function mapBlock(block) {
-  return block ? {
-    id: block.id, reason: block.reason, by: block.createdBy, at: secondsToMilliseconds(block.createdAt),
-    revision: block.revision, mentions: block.mentions ?? [], resolution: block.resolution ?? null,
-  } : null;
+  return block ? fromWire('taskBlock', block) : null;
 }
 
 function mapTask(task) {
   return {
-    internalId: task.id, id: task.taskKey, projectId: task.projectId, epicId: task.epicId,
-    title: task.title, desc: task.description ?? '', detailsLoaded:typeof task.description==='string', state: STATUS_TO_LEGACY[task.status] ?? task.status,
-    order: task.position, deadline: task.deadline ?? null, created: secondsToMilliseconds(task.createdAt), updatedAt: secondsToMilliseconds(task.updatedAt),
-    completedAt: secondsToMilliseconds(task.completedAt) ?? null, completionOrder: task.completionOrder ?? null, revision: task.revision, assignees: [...(task.assigneeIds ?? [])], block: mapBlock(task.activeBlock),
+    internalId: task.id, ...fromWire('task', task), detailsLoaded: typeof task.description === 'string',
     attachments: task.attachments ?? [], comments: task.comments ?? [], activity: task.activity ?? [],
   };
 }
 
-function mapPoolItem(item) {
-  return {
-    id: item.id, projectId: item.projectId, scope: SCOPE_TO_LEGACY[item.scope] ?? item.scope,
-    ownerId: item.ownerUserId ?? null, title: item.title, desc: item.description ?? '',
-    created: secondsToMilliseconds(item.createdAt), revision: item.revision,
-  };
-}
+const mapPoolItem = (item) => fromWire('poolItem', item);
 
 /** @param {{revision?:number}|null|undefined} existing @param {{revision?:number}|null|undefined} incoming */
 function isOlder(existing, incoming) {
@@ -197,7 +214,7 @@ export function replaceRoadmap(data, projection) {
 }
 
 export function replacePoolPage(data, projectId, scope, itemViews, append=false) {
-  const legacyScope=SCOPE_TO_LEGACY[scope]??scope;
+  const legacyScope=toLegacyScope(scope);
   const keep=append?data.pool:[...data.pool.filter((item)=>item.projectId!==projectId||item.scope!==legacyScope)];
   const byId=new Map(keep.map((item)=>[item.id,item]));
   for(const item of itemViews)byId.set(item.id,mapPoolItem(item));
@@ -215,7 +232,7 @@ export function setProjectTaskCounts(data,projectId,{planning=0,progress=0,revie
 }
 
 export function setPoolPageInfo(data,projectId,scope,page){
-  const legacyScope=SCOPE_TO_LEGACY[scope]??scope;
+  const legacyScope=toLegacyScope(scope);
   data.poolPageInfo[`${projectId}:${legacyScope}`]={nextCursor:page.nextCursor??null,total:Number(page.total??0),loaded:true};
   return data.poolPageInfo[`${projectId}:${legacyScope}`];
 }
@@ -275,9 +292,9 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   data.poolPageInfo={};
   data.bootstrapView=bootstrap.view??null;data.syncCursor=bootstrap.syncCursor??null;
   const projectId=bootstrap.selectedProjectId;
-  if(projectId&&bootstrap.boardCounts){const counts=bootstrap.boardCounts;setProjectTaskCounts(data,projectId,{planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked});}
+  if(projectId&&bootstrap.boardCounts)setProjectTaskCounts(data,projectId,byStatus(bootstrap.boardCounts));
   if(projectId&&Object.keys(bootstrap.boardPages??{}).length){
-    const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[STATUS_TO_LEGACY[status]??status,page]));
+    const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[toLegacyStatus(status),page]));
     setBoardPageInfo(data,projectId,bootstrap.doneOrder==='completed'?{doneOrder:'completed'}:{},pages);
   }
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
@@ -316,7 +333,7 @@ function collectionFor(data, entityType) {
 
 function mapEntity(entity) {
   switch (entity.entityType) {
-    case 'project': return { id: entity.id, name: entity.name, key: entity.taskPrefix, taskPrefix: entity.taskPrefix, revision: entity.revision, members: [] };
+    case 'project': return { ...fromWire('project', entity), members: [] };
     case 'membership': return mapMembership(entity);
     case 'track': return mapTrack(entity);
     case 'epic': return mapEpic(entity);
@@ -329,15 +346,9 @@ function mapEntity(entity) {
 
 function patchEntity(target,entity){
   if(isOlder(target,entity))return target;
-  const set=(wire,legacy=wire,transform=(value)=>value)=>{if(Object.hasOwn(entity,wire))target[legacy]=transform(entity[wire]);};
-  set('revision');
-  if(entity.entityType==='project'){set('name');set('taskPrefix','key');set('taskPrefix');}
-  if(entity.entityType==='track'){set('projectId');set('name');set('description','desc');set('position','order');}
-  if(entity.entityType==='epic'){set('projectId');set('trackId');set('title');set('description','desc');set('startDate','start');set('endDate','end');set('state');set('position','order');set('taskDone','done');set('taskTotal','total');if(Object.hasOwn(entity,'taskTotal'))target.counted=true;set('taskOpen','open');set('completedThisWeek','closedThisWeek');set('completedSinceStart');set('weeklyCompletions','weekly');}
-  if(entity.entityType==='milestone'){set('projectId');set('title','name');set('description','desc');set('milestoneDate','date');}
-  if(entity.entityType==='task'){set('projectId');set('epicId');set('taskKey','id');set('title');set('description','desc');set('status','state',(value)=>STATUS_TO_LEGACY[value]??value);set('position','order');set('deadline');set('createdAt','created',secondsToMilliseconds);set('updatedAt','updatedAt',secondsToMilliseconds);set('completedAt','completedAt',(value)=>secondsToMilliseconds(value)??null);set('completionOrder');set('assigneeIds','assignees',(value)=>[...value]);set('activeBlock','block',mapBlock);}
-  if(entity.entityType==='poolItem'){set('projectId');set('scope','scope',(value)=>SCOPE_TO_LEGACY[value]??value);set('ownerUserId','ownerId');set('title');set('description','desc');set('createdAt','created',secondsToMilliseconds);}
-  if(entity.entityType==='taskBlock'){set('reason');set('createdBy','by');set('createdAt','at',secondsToMilliseconds);set('mentions');set('resolution');}
+  if(Object.hasOwn(entity,'revision'))target.revision=entity.revision;
+  for(const [wire,client=wire,convert=(value)=>value] of FIELDS[entity.entityType]??[])if(Object.hasOwn(entity,wire))target[client]=convert(entity[wire]);
+  if(entity.entityType==='epic'&&Object.hasOwn(entity,'taskTotal'))target.counted=true;
   return target;
 }
 
@@ -376,4 +387,3 @@ export function reconcileCommandResult(data, result) {
   return data;
 }
 
-export const wireStatus = (status) => ({ progress: 'in_progress', review: 'in_review' })[status] ?? status;

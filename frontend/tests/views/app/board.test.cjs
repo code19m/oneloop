@@ -1,7 +1,7 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, deferred, tick } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
@@ -50,34 +50,19 @@ test('live Pool content patches visible titles, descriptions and labels without 
 });
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
-  prepare?.(D, w);
-  if (readOnly) D.users.find(u => u.id === D.session.userId).admin = false;
-} });
-
-const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose actions stay pending until the test settles them. */
-function withRuntime(route = 'board') {
-  const calls = [], reports = [], requests = [];
-  const t = bootApp({ route });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  return { ...t, calls, reports, requests };
-}
-const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
+const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
+/** The Board with its saving runtime functions held until the test settles them. */
+const heldBoard = () => withRuntime('board', ['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard']);
 
 /** Boot the Board with recorded animations, a fixed layout and a runtime whose actions succeed at once. */
 function recordingBoard(reduced) {
   const animations = [];
   const t = bootApp({
     html: '<meta name="theme-color"><style>.card,.empty-note,.board-load-more,.board{opacity:1}</style><div id="app"></div>',
-    media: query => reduced && query.includes('reduced-motion'),
-    setup: w => {
-      w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; };
-      w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
-    },
+    media: query => reduced && query.includes('reduced-motion'), layout: true,
+    setup: w => { w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; }; },
   });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke: () => Promise.resolve({}), report: () => {} };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTask', 'setDoneOrder', 'filterBoard', 'loadMoreBoard'].map(name => [name, () => Promise.resolve({})])), report: () => {} };
   return { ...t, animations };
 }
 
@@ -109,7 +94,7 @@ test('an unchanged Board refresh keeps cards, empty states, focus and Load more 
 
 test('Board text search coalesces typing, respects composition, flushes Enter or clear and cancels on navigation', t => {
   const board = recordingBoard(true), calls = [];
-  board.w.OneloopRuntime.invoke = (action, query) => { calls.push({ action, query }); return Promise.resolve({}); };
+  board.w.OneloopRuntime = { ...board.w.OneloopRuntime, filterBoard(query) { calls.push({ query }); return Promise.resolve({}); } };
   t.mock.timers.enable({ apis: ['setTimeout'] });
   board.A.setBoardQ('composing', { isComposing: true }); t.mock.timers.tick(220); assert.equal(calls.length, 0);
   for (const text of ['s', 'se', 'see', 'seed']) { board.A.setBoardQ(text, { isComposing: false }); t.mock.timers.tick(40); }
@@ -194,6 +179,7 @@ test('Pool does not keep unsent entries across tabs or reopening', () => {
 test('Pool descriptions are optional, cancel cleanly, move into promotion and respect stale permissions', async () => {
  const t=bootApp({route:'board'}),sent=()=>t.commands.map(command=>[command.operation,command.payload]);t.A.openModal('pool');let input=t.d.getElementById('poolAdd');input.value='Idea with context';t.A.togglePoolDescription();const notes=t.d.getElementById('poolNewDesc');notes.value='First line\n<example> & details';let prevented=false;const enter=extra=>t.A.poolDescriptionKey({key:'Enter',currentTarget:notes,preventDefault(){prevented=true;},...extra});enter({shiftKey:true});assert(!prevented);enter({isComposing:true});assert.deepEqual(sent(),[]);enter({});assert(prevented);assert(!t.d.querySelector('.pool-description-actions').textContent.includes('Enter'));
  assert.deepEqual(sent(),[['pool.create',{projectId:'p1',scope:'personal',title:'Idea with context',description:'First line\n<example> & details'}]]);assert.equal(input.value,'');assert.equal(t.d.getElementById('poolNewDesc').value,'');
+ assert(!t.d.querySelector('.pool-capture').classList.contains('is-expanded'),'the description closes for the next item');assert.equal(t.d.activeElement,input);
  t.commands[0].resolve({entities:[{entityType:'poolItem',id:'pl-new',projectId:'p1',scope:'personal',ownerUserId:'taylorwu',title:'Idea with context',description:'First line\n<example> & details',createdAt:Math.floor(Date.now()/1000),revision:1}],events:[]});await settle();
  const item=t.D.pool.find(p=>p.id==='pl-new'),row=()=>t.d.querySelector(`[data-pool-item="${item.id}"]`);assert(row().querySelector('.pool-description-preview').textContent.includes('<example>'));assert.equal(row().querySelectorAll('.act>button').length,3);
  t.A.editPoolDescription({currentTarget:row().querySelector('.pool-note-toggle'),stopPropagation(){}},item.id);let form=row().querySelector('form');form.querySelector('textarea').value='Saved context';t.A.poolDescriptionKey({key:'Enter',currentTarget:form.querySelector('textarea'),preventDefault(){}},item.id);
@@ -208,12 +194,12 @@ test('Pool descriptions are optional, cancel cleanly, move into promotion and re
 });
 
 test('a Board move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   assert.equal(task.state,'progress');assert(t.d.querySelector(`[data-col="progress"] [data-task="${task.id}"]`));
-  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'task.move');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._boardMovePending);
-  t.requests[0].resolve({});await tick();assert.equal(t.A._boardMovePending,false);
+  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTask');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A.context().movePending);
+  t.requests[0].resolve({});await tick();assert.equal(t.A.context().movePending,false);
 
   const calls=t.calls.length;t.A._drag={kind:'task',id:task.id};t.A._dropBefore=task.id;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
@@ -222,7 +208,7 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
 });
 
 test('a newest-first Done takes a finished card on top, keeps the manual order and offers no reordering', async () => {
-  const t=withRuntime('board'),projectId=t.A.context().projectId;
+  const t=heldBoard(),projectId=t.A.context().projectId;
   t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
@@ -230,7 +216,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=before.at(-1);
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
   assert.deepEqual(done(),[task.id,...before]);
-  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['task.move',['optimistic','status','taskId']]],'the server keeps the manual order');
+  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['moveTask',['optimistic','status','taskId']]],'the server keeps the manual order');
   t.requests[0].resolve({});await tick();
   const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
   t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move'),stopPropagation(){}},card.dataset.task);
@@ -242,11 +228,11 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   assert.equal(t.calls.length,1,'reordering Done sends nothing');
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').dataset.action,'toggleDoneOrder');
   t.A.toggleDoneOrder();
-  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'manual'}]));
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','manual']));
 });
 
 test('the manual Done order keeps the drop position and reordering', () => {
-  const t=withRuntime('board');
+  const t=heldBoard();
   const toggle=t.d.querySelector('[data-col="done"] .done-order');
   assert.equal(toggle.getAttribute('aria-pressed'),'false');
   const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
@@ -254,11 +240,11 @@ test('the manual Done order keeps the drop position and reordering', () => {
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
   assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
   t.A.toggleDoneOrder();
-  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'completed'}]));
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','completed']));
 });
 
 test('a rejected Board move rolls back its card', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'review');
   assert.equal(task.state,'review');t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
@@ -266,7 +252,7 @@ test('a rejected Board move rolls back its card', async () => {
 });
 
 test('an uncertain Board move keeps its new column', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   t.requests[0].reject(Object.assign(new Error('Unknown outcome'),{uncertain:true}));await tick();await tick();
@@ -274,7 +260,7 @@ test('an uncertain Board move keeps its new column', async () => {
 });
 
 test('a rejected move after switching projects restores only its own card and counts', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.D.projectTaskCounts||={};t.D.projectTaskCounts.p1={planning:5,progress:1,review:1,done:1,blocked:0,open:7};
   t.D.projectTaskCounts.p2={planning:9,progress:8,review:7,done:6,blocked:5,open:24};
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
@@ -285,8 +271,20 @@ test('a rejected move after switching projects restores only its own card and co
   assert.equal(t.A.context().projectId,'p2');assert(t.D.tasks.includes(sentinel));assert.deepEqual(t.D.projectTaskCounts.p2,p2Counts);assert.equal(task.state,original);
 });
 
+test('a rejected reorder after switching projects restores only its own card', async () => {
+  const t=heldBoard(),column=t.D.tasks.filter((item)=>item.projectId==='p1'&&item.state==='planning');
+  const [first,second]=column,ids=()=>t.D.tasks.filter((item)=>item.projectId==='p1').map((item)=>item.id),original=ids();
+  t.A.moveTaskOrder(first.id,second.id,false);
+  assert.deepEqual(t.calls.map(([name,move])=>[name,move.afterTaskId,move.optimistic]),[['moveTask',second.internalId,true]]);
+  assert.ok(ids().indexOf(first.id)>ids().indexOf(second.id));
+  const sentinel={id:'ONE-999',internalId:'p2-sentinel',projectId:'p2',epicId:'p2-epic',title:'Keep me',state:'planning',order:0,revision:1};t.D.tasks.push(sentinel);
+  t.A.selectProject('p2');let refreshed=0;const refreshBoard=t.A.refreshBoard;t.A.refreshBoard=(...args)=>{refreshed++;return refreshBoard(...args);};
+  t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
+  assert.deepEqual(ids(),original);assert(t.D.tasks.includes(sentinel));assert.equal(refreshed,0);assert.equal(t.reports.length,1);
+});
+
 test('a move rejected after the session changed does not roll back the new session', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   t.D.session={...t.D.session,id:'replacement-session'};
@@ -296,7 +294,7 @@ test('a move rejected after the session changed does not roll back the new sessi
 
 /** A Board whose Done column has `count` loaded cards, and more on the server when `more` is set. */
 function longDone(count, more) {
-  const t = withRuntime('board'), projectId = t.A.context().projectId;
+  const t = heldBoard(), projectId = t.A.context().projectId;
   const template = t.D.tasks.find(item => item.state === 'done' && item.projectId === projectId) || t.D.tasks.find(item => item.state === 'done');
   t.D.tasks = t.D.tasks.filter(item => item.state !== 'done');
   for (let i = 0; i < count; i++) t.D.tasks.push({ ...template, id: `DONE-${100 + i}`, internalId: `done-${i}`, title: `Done ${i}`, block: null, assignees: [] });
@@ -312,7 +310,7 @@ test('Move to a column that does not show its end puts the card at its top, in v
   assert.equal(shown.length, 50);
   const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
   t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['task.move', 'done', 0, undefined]]);
+  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]]);
   assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
   assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
 });

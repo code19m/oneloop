@@ -2,17 +2,18 @@
 
 import {
   appendBoardTasks, compareTaskOrder, mergeEpicActivityPage, mergeEpicTaskPage, replaceBoardTasks, replacePoolPage, replaceRoadmap, replaceTaskDetail,
-  setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts, wireStatus,
+  setBoardPageInfo, setPoolPageInfo, setProjectTaskCounts,
 } from './projection-store.js';
+import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
 import {mapActivity} from './activity-mapper.js';
+import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters} from './board-filters.js';
 import {savedDoneOrder} from './done-order.js';
 import {secondsToMilliseconds} from './time.js';
 
 const STATUSES=['planning','progress','review','done'];
 function boardFilters(filters={}){
-  return {limit:50,search:String(filters.search??'').trim()||undefined,trackIds:[...(filters.trackIds??[])].sort(),epicIds:[...(filters.epicIds??[])].sort(),assigneeIds:(filters.assigneeIds??[]).filter(id=>id!=='__unassigned__').sort(),noAssignee:(filters.assigneeIds??[]).includes('__unassigned__')||undefined,blocked:filters.blocked||undefined,
-    // The browser's Done order travels with every Board read; only Done uses it.
-    ...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
+  // The browser's Done order travels with every Board read; only Done uses it.
+  return {limit:50,...normalizeBoardFilters(filters),...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
 }
 
 /** @typedef {{slot:string,target:string,background:boolean,epoch:number,projection:number,controller:AbortController,signal:AbortSignal,promise:Promise<any>|null,next:Token|null,done:boolean}} Token */
@@ -79,7 +80,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
 
   function adoptBoard(projectId,filters={}){
     if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
-    if(filters.search||filters.blocked||(filters.trackIds??[]).length||(filters.epicIds??[]).length||(filters.assigneeIds??[]).length)return false;
+    if(boardFiltered(filters))return false;
     if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
     supersedeBoard(boardTarget(projectId,boardFilters(filters)));
     remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});
@@ -100,19 +101,19 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       try{
         const response=await api.boardView(projectId,common,{signal:token.signal,background:options.background});
         if(!current(token))return {stale:true};
-        const pages=[response.planning,response.inProgress,response.inReview,response.done];
+        const columns=byStatus(response),pages=STATUSES.map(status=>columns[status]);
         const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
         // A real reconcile rebuilds only the previously loaded depth, using the
         // server's bounded pages. Ordinary task hints use patchBoard instead.
         // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
-        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:wireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
+        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:toWireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
         if(!current(token))return {stale:true};
         replaceBoardTasks(data,projectId,pages.flatMap((page)=>page.items));
         const pageMap=Object.fromEntries(STATUSES.map((status,index)=>[status,{nextCursor:pages[index].nextCursor,total:Number(pages[index].total??0)}]));
         // Cards read before a newer projection are not reused as current.
         remember({projectId,filters:common,pages:pageMap,depths},started);
         setBoardPageInfo(data,projectId,common,pageMap);
-        setProjectTaskCounts(data,projectId,{planning:response.counts.planning,progress:response.counts.inProgress,review:response.counts.inReview,done:response.counts.done,blocked:response.counts.blocked});
+        setProjectTaskCounts(data,projectId,byStatus(response.counts));
         onBoard(boardState);return {stale:false,state:boardState};
       }catch(error){if(ignored(token,error))return {stale:true};boardLost(token);onError(error);throw error;}
     },boardLost);
@@ -132,7 +133,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     const ids=[...new Set(hints.map(hint=>hint.taskId??hint.entityId).filter(Boolean))];
     return read('board',target,true,async token=>{
       try{
-        const filtered=common.search||common.blocked||common.trackIds.length||common.epicIds.length||common.assigneeIds.length||common.noAssignee;
+        const filtered=boardFiltered(common);
         const [tasks,counts,head]=await Promise.all([
           Promise.all(ids.map(async id=>{try{return {id,view:await api.task(id,{signal:token.signal,background:true})};}catch(error){if(error?.status===404)return {id,view:null};throw error;}})),
           api.counts(projectId,{signal:token.signal,background:true}),
@@ -141,26 +142,21 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
         if(!current(token)||boardState?.projectId!==projectId)return {stale:true};
         for(const {id,view} of tasks){
           const old=data.tasks.find(item=>item.internalId===id);
-          const status=view&&({in_progress:'progress',in_review:'review'}[view.status]??view.status);
+          const status=view&&toLegacyStatus(view.status);
           const page=boardState.pages[status];
           const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
           const edge=loaded.sort((left,right)=>compareTaskOrder(left,right,common.doneOrder)).at(-1);
           const parent=view&&data.epics.find(item=>item.id===view.epicId);
-          const matches=view&&view.projectId===projectId&&
-            (!common.search||view.title.toLowerCase().includes(common.search.toLowerCase())||view.taskKey.toLowerCase().includes(common.search.toLowerCase()))&&
-            (!common.trackIds.length||common.trackIds.includes(parent?.trackId))&&
-            (!common.epicIds.length||common.epicIds.includes(view.epicId))&&
-            (!(common.assigneeIds.length||common.noAssignee)||view.assigneeIds.some(id=>common.assigneeIds.includes(id))||common.noAssignee&&!view.assigneeIds.length)&&
-            (!common.blocked||!!view.activeBlock);
+          const matches=view&&view.projectId===projectId&&matchesBoardFilters({title:view.title,key:view.taskKey,epicId:view.epicId,trackId:parent?.trackId,assigneeIds:view.assigneeIds,blocked:!!view.activeBlock},common);
           if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
-        const mapped={planning:counts.planning,progress:counts.inProgress,review:counts.inReview,done:counts.done,blocked:counts.blocked};
+        const mapped=byStatus(counts);
         setProjectTaskCounts(data,projectId,mapped);
         // Filtered totals require the authoritative bounded Board response. Keep
         // the loaded window and cursors; this read does not replace its cards.
         if(head){
-          for(const [index,status] of STATUSES.entries())boardState.pages[status].total=[head.planning,head.inProgress,head.inReview,head.done][index].total;
+          const columns=byStatus(head);for(const status of STATUSES)boardState.pages[status].total=columns[status].total;
         }else for(const status of STATUSES)boardState.pages[status].total=mapped[status];
         boardState.ids=new Set(data.tasks.filter(task=>task.projectId===projectId).map(task=>task.internalId));
         setBoardPageInfo(data,projectId,common,boardState.pages);onBoard(boardState);return {stale:false};
@@ -173,7 +169,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       try{
         const response=await api.counts(projectId,{signal:token.signal,background:options.background});
         if(!current(token))return {stale:true};
-        const result=setProjectTaskCounts(data,projectId,{planning:response.planning,progress:response.inProgress,review:response.inReview,done:response.done,blocked:response.blocked});
+        const result=setProjectTaskCounts(data,projectId,byStatus(response));
         onCounts(result);return {stale:false,counts:result};
       }catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
@@ -193,14 +189,14 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     const replaced=()=>boardState!==state||started!==epoch;
     try{
       pageController=new AbortController();
-      const next=await api.board(state.projectId,{...state.filters,status:wireStatus(status),cursor:page.nextCursor},{signal:pageController.signal});
+      const next=await api.board(state.projectId,{...state.filters,status:toWireStatus(status),cursor:page.nextCursor},{signal:pageController.signal});
       if(replaced())return {stale:true};
       appendBoardTasks(data,next.items);for(const item of next.items)state.ids.add(item.id);state.depths[status]=(state.depths[status]??1)+1;page.nextCursor=next.nextCursor;page.total=Number(next.total??page.total);
       setBoardPageInfo(data,state.projectId,state.filters,state.pages);return {done:!next.nextCursor};
     }catch(error){
       if(replaced()||error?.code==='aborted')return {stale:true};
       // A write since the last read moved the cursor: read the Board again, one page deeper in this column.
-      if(error?.code==='cursor_stale'){state.depths[status]=(state.depths[status]??1)+1;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?['__unassigned__']:[])]});}
+      if(error?.code==='cursor_stale'){state.depths[status]=(state.depths[status]??1)+1;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?[NO_ASSIGNEE]:[])]});}
       onError(error);throw error;
     }
   }
@@ -213,7 +209,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   }
 
   async function pool(projectId,scope,append=false,cursor,options={}){
-    const key=`${projectId}:${scope}`,pageKey=`${projectId}:${scope==='personal'?'mine':'project'}`;
+    const key=`${projectId}:${scope}`,pageKey=`${projectId}:${toLegacyScope(scope)}`;
     const settle=()=>{if(data.poolPageInfo[pageKey]?.loading){data.poolPageInfo[pageKey]={...data.poolPageInfo[pageKey],loading:false};onPool(data.poolPageInfo[pageKey]);}};
     return read(`pool:${key}`,append?`more:${cursor}`:'head',!!options.background,async token=>{
       data.poolPageInfo[pageKey]={nextCursor:null,total:0,loaded:false,...data.poolPageInfo[pageKey],loading:true,error:false};

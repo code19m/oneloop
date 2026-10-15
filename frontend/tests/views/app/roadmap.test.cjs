@@ -1,24 +1,14 @@
 // views/app.js: the Roadmap, its milestones, zoom and track moves.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, deferred, tick } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'roadmap', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
+const boot = (route = 'roadmap', { readOnly = false, prepare } = {}) => bootApp({ route, prepare: (D, w) => {
   prepare?.(D, w);
   if (readOnly) D.users.find(u => u.id === D.session.userId).admin = false;
 } });
 
-const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose actions stay pending until the test settles them. */
-function withRuntime(route) {
-  const calls = [], reports = [], requests = [];
-  const t = bootApp({ route });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
-  return { ...t, calls, reports, requests };
-}
-const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
 /** Resolve after the next animation frame, which applies a pending zoom step. */
 const nextFrame = w => new Promise(resolve => w.requestAnimationFrame(resolve));
@@ -245,11 +235,11 @@ test('extreme calendar spans keep Roadmap cells bounded at every zoom and record
 });
 
 test('a track move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
-  const t=withRuntime('roadmap'),ordered=()=>t.D.tracks.filter((item)=>item.projectId===t.D.projects[0].id).sort((left,right)=>left.order-right.order),before=ordered(),moved=before[0],target=before[1];
+  const t=withRuntime('roadmap', ['moveTrack', 'dateChanged']),ordered=()=>t.D.tracks.filter((item)=>item.projectId===t.D.projects[0].id).sort((left,right)=>left.order-right.order),before=ordered(),moved=before[0],target=before[1];
   t.A._drag={kind:'track',id:moved.id};t.A._laneBefore=false;
   t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);
-  assert.equal(ordered()[1],moved);assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'track.reorder');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._roadmapMovePending);
-  t.requests[0].resolve({});await tick();assert.equal(t.A._roadmapMovePending,false);
+  assert.equal(ordered()[1],moved);assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTrack');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A.context().movePending);
+  t.requests[0].resolve({});await tick();assert.equal(t.A.context().movePending,false);
 
   const calls=t.calls.length;t.A._drag={kind:'track',id:moved.id};t.A._laneBefore=false;
   t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);

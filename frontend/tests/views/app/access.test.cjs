@@ -23,10 +23,7 @@ test('Settings can page through the directory and add an eligible account from a
 });
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { readOnly = false, stored, prepare, actions } = {}) => bootApp({ route, stored, actions, prepare: (D, w) => {
-  prepare?.(D, w);
-  if (readOnly) D.users.find(u => u.id === D.session.userId).admin = false;
-} });
+const boot = (route = 'board', { prepare, actions } = {}) => bootApp({ route, actions, prepare });
 
 /** A projection with a second project the viewer cannot access. */
 function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = () => {}, options = {}) {
@@ -38,9 +35,8 @@ function withSecretProject(user = 'blairq', route = 'task/BIR-079', prepare = ()
   } });
 }
 
-const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
 /** Boot with a fixed layout. */
-const bootWithLayout = (route, options) => bootApp({ route, media: () => true, setup: layout, ...options });
+const bootWithLayout = (route, options) => bootApp({ route, media: () => true, layout: true, ...options });
 
 test('members see only their projects, files and routes; secret tasks, epics and attachments stay hidden', () => {
  const t=withSecretProject();assert(t.d.querySelector('.tp-title'));t.A.projectMenu({currentTarget:t.d.querySelector('.switcher-btn')});assert(!t.d.querySelector('.menu').textContent.includes('Secret project'));t.A.closeOverlays();

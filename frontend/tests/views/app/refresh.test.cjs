@@ -27,7 +27,7 @@ for(const replacement of [null,'modal','drawer'])test(`epic reopening updates it
 test('selecting another project from a task leaves its route and displays the selected Board',async()=>{
  const t=bootApp({route:'task/BIR-079'});
  const destination=t.D.projects.find(project=>project.id!==t.A.context().projectId),read=name=>t.reads.calls.filter(call=>call[0]===name).map(call=>call[1]);
- await t.bridge.invoke('workspace.select',{projectId:destination.id});
+ await t.bridge.selectProject(destination.id);
  assert.equal(t.w.location.hash,'#/board');assert.equal(t.A.context().view,'board');assert.equal(t.A.context().projectId,destination.id);
  assert.equal(t.d.querySelector('.task-page'),null);assert(t.d.querySelector('.board'));
  assert.deepEqual(read('board'),[destination.id]);assert.deepEqual(read('task'),[]);
@@ -132,9 +132,8 @@ test('a completed epic action cannot dismiss a dialog opened above its still-mou
  assert.equal(t.d.querySelector('.modal [name="title"]'),input);assert.equal(input.value,'Next task draft');assert.equal(t.d.activeElement,input);
 });
 
-const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
-/** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
-const boot = (route = 'task/BIR-079', prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
+/** Boot with a fixed layout; `collaboration` runs just before collaboration.js, to replace its transport. */
+const boot = (route = 'task/BIR-079', collaboration) => bootApp({ route, media: () => true, layout: true, collaboration });
 
 test('document titles follow the view and the account menu keeps unsaved profile input', () => {
   const t=boot(),task=t.D.tasks.find(task=>task.id==='BIR-079');

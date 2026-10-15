@@ -2,6 +2,8 @@
 
 import { ApiError } from '../data/api-client.js';
 import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
+import { boardFiltered } from '../data/board-filters.js';
+import { toWireScope } from '../data/wire.js';
 
 /**
  * The bootstrap view for the current address: the task, the Board, the
@@ -13,8 +15,7 @@ export function routeScope(hash, app) {
   if(route.startsWith('task/')){
     try{return {taskId:decodeURIComponent(route.slice(5)),view:'task'};}catch{return {view:'metadata'};}
   }
-  const filters=app?.context?.().board;
-  const filtered=filters&&(filters.search||filters.blocked||filters.trackIds?.length||filters.epicIds?.length||filters.assigneeIds?.length);
+  const filtered=boardFiltered(app?.context?.().board);
   return {view:route==='board'&&!filtered?'board':route==='roadmap'||!route?'roadmap':'metadata'};
 }
 
@@ -104,7 +105,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       // shown beyond it: the Board cards, the open Pool scope, the open epic
       // drawer and the loaded account pages.
       const windows=[];
-      if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,current.poolTab==='project'?'team':'personal',false,undefined,readOptions));
+      if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,toWireScope(current.poolTab),false,undefined,readOptions));
       if(current.peek&&data.epics.some((item)=>item.id===current.peek))windows.push(reads.epic(current.peek,readOptions));
       if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
         windows.push(reads.board(current.projectId,current.board,readOptions));

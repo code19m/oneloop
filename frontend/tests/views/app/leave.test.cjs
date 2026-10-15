@@ -244,21 +244,26 @@ test('Back saves a field that saves itself before the page changes, and does not
   assert.deepEqual(t.commands.map(command => [command.operation, command.payload.description]), [['task.update', 'Typed before Back']]);
 });
 
-test('Back with typed text puts the address back and asks; Discard then goes without asking again', async () => {
+test('Back with typed text puts the address back and asks, also through a redraw; Discard then goes without asking again', async () => {
   const t = bootApp({ route: 'roadmap' });
   t.A.nav('board'); await settle();
   t.A.openTask('BIR-079'); await settle();
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   await back(t);
+  await waitFor(() => ask(t) && t.w.location.hash === '#/task/BIR-079', 'the address shows the page that still shows, and oneloop asks');
   assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
-  assert.equal(t.w.location.hash, '#/task/BIR-079', 'the address shows the page that still shows');
+  // A connection change or a live update redraws the page while it asks.
+  t.A.refresh();
+  assert(ask(t), 'a redraw keeps the question open');
   t.d.querySelector('[data-confirm-cancel]').click();
   assert.equal(t.A.context().view, 'task'); assert.equal(t.d.getElementById('cmtIn').value, 'Half a thought');
   await back(t);
-  assert(ask(t));
-  t.d.querySelector('[data-confirm-accept]').click(); await settle();
+  await waitFor(() => ask(t), 'Back asks again');
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => t.A.context().view !== 'task', 'Discard leaves the task');
   assert.equal(ask(t), null, 'Discard asks once');
-  assert.equal(t.w.location.hash, '#/roadmap'); assert.equal(t.A.context().view, 'roadmap');
+  // Cancel left history as it was, so Back still leads to the Board.
+  assert.equal(t.w.location.hash, '#/board'); assert.equal(t.A.context().view, 'board');
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {
@@ -287,7 +292,7 @@ test('switching projects with typed text asks first, and Cancel stays', async ()
   const loads = [];
   const t = bootApp({ route: 'task/BIR-079', reloadBootstrap: async scope => { loads.push(scope); return { stale: false }; } });
   type(t.d.getElementById('cmtIn'), 'Half a thought');
-  const switching = t.bridge.invoke('workspace.select', { projectId: 'p2' });
+  const switching = t.bridge.selectProject('p2');
   await settle();
   assert(ask(t)); t.d.querySelector('[data-confirm-cancel]').click();
   assert.deepEqual(await switching, { stale: true });

@@ -234,7 +234,7 @@ test('a card title drags to another column and remains a keyboard task link', as
   await page.mouse.up();
   await expect.poll(async () => ((await instance.api.get(`/api/tasks/${instance.projects[0].task.id}`)).json()).then(t => t.status)).toBe('in_review');
   await expect(page.locator('[data-col=review] .card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate(() => !!App._boardMovePending)).toBe(false);
+  await expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   // Let the card's move animation settle, while the pointer-click guard is still active.
   await page.evaluate(() => Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))));
   await title.focus();
@@ -337,7 +337,7 @@ test('touch and pen grips reorder without taking away card-body scrolling', asyn
   await expect(page.locator('.drag-preview')).toHaveCount(0);
   await touch();
   await expect(page.locator('[data-col="progress"] .card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate(() => !!App._boardMovePending)).toBe(false);
+  await expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   const source = await move.boundingBox(), target = await page.locator('[data-col="review"] .col-cards').boundingBox();
   const x = source.x + source.width / 2, y = source.y + source.height / 2, tx = target.x + target.width / 2, ty = target.y + 40;
@@ -346,7 +346,7 @@ test('touch and pen grips reorder without taking away card-body scrolling', asyn
   await expect(page.locator('.drag-preview')).toBeVisible();
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
   await expect(page.locator('[data-col="review"] .card')).toHaveCount(1);
-  await expect.poll(() => page.evaluate(() => !!App._boardMovePending)).toBe(false);
+  await expect.poll(() => page.evaluate(() => App.context().movePending)).toBe(false);
   expect((await (await instance.api.get(`/api/tasks/${instance.projects[0].task.taskKey}`)).json()).status).toBe('in_review');
 });
 

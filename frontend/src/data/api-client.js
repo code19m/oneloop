@@ -40,8 +40,8 @@ export function prepareCommand(operation, payload, { expectedRevision, idempoten
 }
 
 // Internal bounds include receiving and decoding the response body.
-export const REQUEST_TIMEOUT_MS = 30_000;
-export const UPLOAD_TIMEOUT_MS = 300_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 300_000;
 
 /** A cancellation race also bounds transports that do not settle after abort. */
 function requestDeadline(signal, timeoutMs) {
@@ -67,9 +67,40 @@ function requestDeadline(signal, timeoutMs) {
   };
 }
 
-/** @param {{fetchImpl?: typeof fetch,onResponse?:(event:any)=>void,getRequestContext?:()=>any,requestTimeoutMs?:number,uploadTimeoutMs?:number,wallNow?:()=>number,monotonicNow?:()=>number}} [options] */
+/**
+ * The error that a refused response's body describes.
+ * @param {number} status @param {any} body
+ * @param {{retryAfter:string|null,uncertain:boolean,requestContext:any}} options
+ */
+function responseError(status, body, { retryAfter, uncertain, requestContext }) {
+  const metadata = body?.error && typeof body.error === 'object' ? body.error : body;
+  return new ApiError(typeof metadata?.message === 'string' ? metadata.message : 'The request could not be completed', {
+    status,
+    code: typeof metadata?.code === 'string' ? metadata.code : 'request_failed',
+    details: metadata?.details,
+    retryAfter,
+    uncertain,
+    requestContext,
+  });
+}
+
+/**
+ * The query string of Board filters: set values only, lists joined with commas.
+ * @param {Record<string,unknown>} filters
+ */
+function boardQuery(filters) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === '' || value === false) continue;
+    if (Array.isArray(value)) { if (value.length) query.set(key, value.join(',')); }
+    else query.set(key, String(value));
+  }
+  return query.size ? `?${query}` : '';
+}
+
+/** @param {{fetchImpl?: typeof fetch,xhrFactory?:()=>XMLHttpRequest,onResponse?:(event:any)=>void,getRequestContext?:()=>any,requestTimeoutMs?:number,uploadTimeoutMs?:number,wallNow?:()=>number,monotonicNow?:()=>number}} [options] */
 export function createApiClient({
-  fetchImpl = globalThis.fetch.bind(globalThis), onResponse = (_event) => {},
+  fetchImpl = globalThis.fetch.bind(globalThis), xhrFactory = () => new XMLHttpRequest(), onResponse = (_event) => {},
   getRequestContext = () => undefined,
   requestTimeoutMs = REQUEST_TIMEOUT_MS, uploadTimeoutMs = UPLOAD_TIMEOUT_MS,
   wallNow = Date.now, monotonicNow = () => performance.now(),
@@ -82,16 +113,20 @@ export function createApiClient({
   const serverNow = () => clockSample ? clockSample.epoch + monotonicNow() - clockSample.received : wallNow();
   const publish = (event) => { try { onResponse(event); } catch {} };
 
+  /**
+   * Name the person this page shows. Tabs share one session cookie, so after
+   * someone else signs in, the server refuses this page's requests instead of
+   * answering as that person.
+   * @param {any} requestContext @returns {Record<string,string>}
+   */
+  const personHeader = (requestContext) => typeof requestContext?.userId === 'string' && requestContext.userId ? { 'X-Oneloop-User': requestContext.userId } : {};
+
   /** Shared response handling for JSON and multipart requests. */
   async function send(path, { method, body, headers, signal, background = false, timeoutMs = requestTimeoutMs }) {
     const sequence = ++requestSequence, sent = monotonicNow();
     const requestContext = getRequestContext();
     const context = requestContext === undefined ? {} : { requestContext };
-    // Name the person this page shows. Tabs share one session cookie, so after
-    // someone else signs in, the server refuses this page's requests instead of
-    // answering as that person.
-    const person = requestContext?.userId;
-    if (typeof person === 'string' && person) headers = { ...headers, 'X-Oneloop-User': person };
+    headers = { ...headers, ...personHeader(requestContext) };
     const mutation = !['GET', 'HEAD'].includes(method);
     const deadline = requestDeadline(signal, timeoutMs);
     /** @type {Response | undefined} */
@@ -103,17 +138,7 @@ export function createApiClient({
         response = await fetchImpl(path, { method, headers, body, signal: deadline.signal, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
         let result = null;
         if (response.status !== 204 && method !== 'HEAD') result = await response.json();
-        if (!response.ok) {
-          const metadata = result?.error && typeof result.error === 'object' ? result.error : result;
-          throw new ApiError(typeof metadata?.message === 'string' ? metadata.message : 'The request could not be completed', {
-            status: response.status,
-            code: typeof metadata?.code === 'string' ? metadata.code : 'request_failed',
-            details: metadata?.details,
-            retryAfter: response.headers.get('Retry-After'),
-            uncertain: mutation && response.status >= 500,
-            requestContext,
-          });
-        }
+        if (!response.ok) throw responseError(response.status, result, { retryAfter: response.headers.get('Retry-After'), uncertain: mutation && response.status >= 500, requestContext });
         return result;
       });
       const received = monotonicNow(), epoch = Date.parse(response.headers.get('Date') || '');
@@ -166,6 +191,57 @@ export function createApiClient({
     body.set('file', file, typeof File !== 'undefined' && file instanceof File ? file.name : 'avatar');
     return send('/api/auth/avatar', { method: 'PUT', headers: { Accept: 'application/json', 'X-File-Size': String(file.size) }, body, signal, timeoutMs: uploadTimeoutMs });
   }
+  /**
+   * Upload an attachment with XMLHttpRequest, which reports the bytes sent.
+   * An upload sent again after an unknown result keeps its idempotency key.
+   * @param {string} taskId
+   * @param {{file:Blob,ephemeral?:boolean,idempotencyKey?:string,signal?:AbortSignal,onProgress?:(percent:number)=>void}} options
+   */
+  function uploadAttachment(taskId, { file, ephemeral = false, idempotencyKey = crypto.randomUUID(), signal, onProgress }) {
+    if (!(file instanceof Blob)) throw new TypeError('Expected a file');
+    if (typeof idempotencyKey !== 'string' || !idempotencyKey || idempotencyKey.length > 128 || !/^[\x21-\x7e]+$/.test(idempotencyKey)) throw new TypeError('Invalid idempotency key');
+    const path = `/api/tasks/${encodeURIComponent(taskId)}/attachments?ephemeral=${String(!!ephemeral)}`;
+    const body = new FormData();
+    body.set('file', file, typeof File !== 'undefined' && file instanceof File ? file.name : 'attachment');
+    const requestContext = getRequestContext();
+    const context = requestContext === undefined ? {} : { requestContext };
+    return new Promise((resolve, reject) => {
+      const xhr = xhrFactory();
+      let settled = false;
+      const abort = () => xhr.abort();
+      const finish = (/** @type {()=>void} */ callback) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        callback();
+      };
+      const fail = (/** @type {ApiError} */ error) => finish(() => { publish({ ok: false, error, path, background: false, ...context }); reject(error); });
+      const failed = (/** @type {string} */ message, /** @type {ApiErrorOptions} */ options) => fail(new ApiError(message, { ...options, requestContext }));
+      xhr.open('POST', path, true);
+      xhr.withCredentials = true;
+      xhr.timeout = uploadTimeoutMs;
+      for (const [name, value] of Object.entries({ Accept: 'application/json', 'Idempotency-Key': idempotencyKey, 'X-File-Size': String(file.size), ...personHeader(requestContext) })) xhr.setRequestHeader(name, value);
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || !event.total) return;
+        onProgress?.(Math.min(99, Math.max(0, Math.round(event.loaded / event.total * 100))));
+      };
+      xhr.onload = () => {
+        const retryAfter = xhr.getResponseHeader('Retry-After');
+        let result;
+        try { result = xhr.responseText ? JSON.parse(xhr.responseText) : null; }
+        catch { failed('Invalid server response', { status: xhr.status, code: 'invalid_response', retryAfter, uncertain: xhr.status >= 200 && xhr.status < 300 || xhr.status >= 500 }); return; }
+        if (xhr.status < 200 || xhr.status >= 300) { fail(responseError(xhr.status, result, { retryAfter, uncertain: xhr.status >= 500, requestContext })); return; }
+        finish(() => { publish({ ok: true, status: xhr.status, path, background: false, ...context }); onProgress?.(100); resolve(result); });
+      };
+      xhr.onerror = () => failed('Unable to reach oneloop', { code: 'network_error', uncertain: true });
+      xhr.ontimeout = () => failed('The upload timed out', { code: 'timeout', uncertain: true });
+      xhr.onabort = () => failed('Request cancelled', { code: 'aborted', uncertain: true });
+      if (signal?.aborted) { failed('Request cancelled', { code: 'aborted', uncertain: false }); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      xhr.send(body);
+    });
+  }
+
   return Object.freeze({
     serverNow,
     request,
@@ -179,24 +255,8 @@ export function createApiClient({
       if (view === 'board' && savedDoneOrder() === 'completed') query.set('doneOrder', 'completed');
       return request('/api/bootstrap' + (query.size ? '?' + query.toString() : ''), { signal, background });
     },
-    board: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => {
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
-        if (value === undefined || value === null || value === '' || value === false) continue;
-        if (Array.isArray(value)) { if(value.length)query.set(key,value.join(',')); }
-        else query.set(key, String(value));
-      }
-      return request(`/api/projects/${encodeURIComponent(projectId)}/board${query.size ? '?' + query : ''}`, { signal,background });
-    },
-    boardView: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => {
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
-        if (value === undefined || value === null || value === '' || value === false) continue;
-        if (Array.isArray(value)) { if(value.length)query.set(key,value.join(',')); }
-        else query.set(key, String(value));
-      }
-      return request(`/api/projects/${encodeURIComponent(projectId)}/board-view${query.size ? '?' + query : ''}`, { signal,background });
-    },
+    board: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/board${boardQuery(filters)}`, { signal,background }),
+    boardView: (projectId, filters = {}, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/board-view${boardQuery(filters)}`, { signal,background }),
     counts: (projectId, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/counts`, { signal,background }),
     roadmap: (projectId, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/projects/${encodeURIComponent(projectId)}/roadmap`, { signal,background }),
     epicTasks: (epicId,{cursor,limit=50,signal,background}=/** @type {{cursor?:string,limit?:number,signal?:AbortSignal,background?:boolean}} */({}))=>{const query=new URLSearchParams({limit:String(limit)});if(cursor)query.set('cursor',cursor);return request(`/api/epics/${encodeURIComponent(epicId)}/tasks?${query}`,{signal,background});},
@@ -208,7 +268,7 @@ export function createApiClient({
     task: (taskId, { signal,background } = /** @type {SignalOptions} */ ({})) => request(`/api/tasks/${encodeURIComponent(taskId)}`, { signal,background }),
     login: (credentials, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/auth/login', { method: 'POST', body: credentials, signal }),
     logout: ({ signal } = /** @type {SignalOptions} */ ({})) => request('/api/auth/logout', { method: 'POST', signal }),
-    me: ({ signal } = /** @type {SignalOptions} */ ({})) => request('/api/auth/me', { signal }),
+    me: ({ signal, background } = /** @type {SignalOptions} */ ({})) => request('/api/auth/me', { signal, background }),
     changePassword: (passwords, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/auth/change-password', { method: 'POST', body: passwords, signal }),
     recentAuth: (password, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/auth/recent-auth', { method: 'POST', body: { password }, signal }),
     sessions: ({ signal, background } = /** @type {SignalOptions} */ ({})) => request('/api/auth/sessions', { signal, background }),
@@ -227,11 +287,14 @@ export function createApiClient({
     revokeConnectedApp: (id,{signal}=/** @type {SignalOptions} */({}))=>request('/api/auth/apps/'+encodeURIComponent(id),{method:'DELETE',signal}),
     attachments: (taskId,{signal,background}=/** @type {SignalOptions} */({}))=>request(`/api/tasks/${encodeURIComponent(taskId)}/attachments`,{signal,background}),
     uploadAvatar,
+    uploadAttachment,
     removeAvatar: ({signal}=/** @type {SignalOptions} */({}))=>request('/api/auth/avatar',{method:'DELETE',signal}),
     updateAttachment: (id,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/attachments/${encodeURIComponent(id)}`,{method:'PATCH',body:input,signal}),
     reorderAttachment: (taskId,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/tasks/${encodeURIComponent(taskId)}/attachments/reorder`,{method:'POST',body:input,signal}),
     deleteAttachment: (id,{expectedRevision,idempotencyKey=crypto.randomUUID(),signal})=>request(`/api/attachments/${encodeURIComponent(id)}?expectedRevision=${encodeURIComponent(expectedRevision)}`,{method:'DELETE',headers:{'Idempotency-Key':idempotencyKey},signal}),
     restoreAttachment: (id,input,{signal}=/** @type {SignalOptions} */({}))=>request(`/api/attachments/${encodeURIComponent(id)}/restore`,{method:'POST',body:input,signal}),
+    comment: (taskId,commentId,{signal,background}=/** @type {SignalOptions} */({}))=>request(`/api/discussion/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`,{signal,background}),
+    block: (taskId,blockId,{signal,background}=/** @type {SignalOptions} */({}))=>request(`/api/discussion/tasks/${encodeURIComponent(taskId)}/blocks/${encodeURIComponent(blockId)}`,{signal,background}),
     comments: (taskId,{cursor,limit=50,signal,background}=/** @type {{cursor?:string,limit?:number,signal?:AbortSignal,background?:boolean}} */({}))=>{
       const query=new URLSearchParams({limit:String(limit)});if(cursor)query.set('cursor',cursor);
       return request(`/api/discussion/tasks/${encodeURIComponent(taskId)}/comments?${query}`,{signal,background});

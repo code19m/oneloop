@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { stored, prepare } = {}) => bootApp({ route, stored, prepare });
+const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
 
 /** A task page whose toasts are recorded as notices. */
 function taskPage(options) {
