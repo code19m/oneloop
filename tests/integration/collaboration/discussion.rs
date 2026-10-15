@@ -6,7 +6,9 @@ use oneloop::{
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::support::{Role, collaboration_command, drain, now, query_one, seed_project};
+use crate::support::{
+    Role, add_people, collaboration_command, drain, now, query_one, seed_project,
+};
 
 struct Fixture {
     _root: TempDir,
@@ -400,6 +402,8 @@ async fn comment_edit_activity_consolidates_reverts_and_never_resends_receipts()
 #[tokio::test]
 async fn everyone_is_members_only_and_rate_limited_across_comments() {
     let fixture = Fixture::new().await;
+    // An administrator may read the project but is not a member.
+    add_people(&fixture.db, &[("dave", Role::Admin)]).await;
     let service = fixture.service();
     service
         .execute(

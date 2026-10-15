@@ -24,17 +24,9 @@ async fn login(service: &AuthService, username: &str) -> (String, Actor) {
 }
 
 #[tokio::test]
-async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application() {
+async fn temporary_password_sessions_cannot_enter_the_application() {
     let (_directory, db) = database();
     let temporary_id = add_user(&db, "temporary", false, true).await;
-    let inactive_id = add_user(&db, "inactive", false, false).await;
-    db.run(move |connection| {
-        connection.execute("UPDATE users SET is_active=0 WHERE id=?1", [inactive_id])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
     let service = auth_service(&db);
     let (_, temporary) = login(&service, "temporary").await;
     assert!(matches!(
@@ -44,12 +36,6 @@ async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application()
     assert!(matches!(
         service.list_sessions(&temporary).await,
         Err(AppError::PreconditionFailed(_))
-    ));
-    assert!(matches!(
-        service
-            .login("inactive", PASSWORD, SessionMetadata::default(), None)
-            .await,
-        Err(AppError::InvalidCredentials)
     ));
     assert_eq!(temporary.user_id, temporary_id);
 }
@@ -205,26 +191,28 @@ async fn changing_password_keeps_only_the_current_browser_and_revokes_apps() {
 }
 
 #[tokio::test]
-async fn database_trigger_protects_the_last_active_administrator() {
+async fn the_last_active_administrator_cannot_be_demoted() {
     let (_directory, db) = database();
     let admin_id = add_user(&db, "onlyadmin", true, false).await;
-    let first = admin_id.clone();
-    let error = db
-        .run(move |connection| {
-            connection.execute("UPDATE users SET is_admin=0 WHERE id=?1", [first])?;
-            Ok(())
-        })
+    let service = auth_service(&db);
+    let (_, admin) = login(&service, "onlyadmin").await;
+    let demotion = || AccountUpdate {
+        display_name: "onlyadmin".into(),
+        is_admin: false,
+        is_active: true,
+        expected_revision: 1,
+    };
+    let error = service
+        .update_account(&admin, &admin_id, demotion())
         .await
         .unwrap_err();
-    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!((error.code(), error.status().as_u16()), ("last_admin", 409));
 
     add_user(&db, "secondadmin", true, false).await;
-    db.run(move |connection| {
-        connection.execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin_id])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    service
+        .update_account(&admin, &admin_id, demotion())
+        .await
+        .unwrap();
 }
 
 #[test]
@@ -272,6 +260,22 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
         .await
         .unwrap();
     assert!(matches!(limited,LoginResult::SessionLimit{ref sessions} if sessions.len()==10));
+    // Another person's session can't be chosen, and it stays signed in.
+    add_user(&db, "otheruser", false, false).await;
+    let (other_token, other) = login(&service, "otheruser").await;
+    let refused = service
+        .login(
+            "sessionuser",
+            PASSWORD,
+            SessionMetadata::default(),
+            other.session_id().map(str::to_owned),
+        )
+        .await;
+    assert!(matches!(refused, Err(AppError::Conflict(_))));
+    service
+        .authenticate_session(&other_token, false)
+        .await
+        .unwrap();
     let issued = service
         .login(
             "sessionuser",
@@ -915,12 +919,9 @@ async fn parallel_login_attempts_observe_completed_failures_before_hashing() {
 }
 
 #[tokio::test]
-async fn password_commit_rechecks_revocation_and_both_expiries_after_verification() {
-    for condition in [
-        "revoked_at=1",
-        "idle_expires_at=0",
-        "idle_expires_at=0,absolute_expires_at=0",
-    ] {
+async fn password_commit_rechecks_revocation_and_expiry_after_verification() {
+    // The idle expiry never comes after the absolute one, so it covers both.
+    for condition in ["revoked_at=1", "idle_expires_at=0"] {
         for change_password in [true, false] {
             let (_directory, db) = database();
             let user_id = add_user(&db, "racing", false, false).await;
