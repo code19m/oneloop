@@ -1,3 +1,8 @@
+use std::{
+    path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use axum::{
     Router,
     body::Body,
@@ -10,6 +15,7 @@ use oneloop::{
     collaboration::{ActivityInput, CollaborationRuntime, record_activity_tx},
     domain::DomainService,
 };
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use serde_json::json;
 use tokio::time::{Duration, timeout};
 use tower::ServiceExt;
@@ -67,25 +73,78 @@ async fn frame(body: &mut Body) -> String {
     String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap()
 }
 
-async fn hint(db: &Db, actor: &Actor) {
+/// Records `count` changes to task `task` by `actor`; each one becomes a hint
+/// for the members of `p1`.
+async fn hints(db: &Db, actor: &Actor, count: i64) {
     let actor = actor.clone();
     db.transaction(move |tx| {
-        record_activity_tx(
-            tx,
-            &actor,
-            ActivityInput {
-                project_id: Some("p1"),
-                entity_type: "task",
-                entity_id: "task",
-                task_id: Some("task"),
-                event_type: "task.updated",
-                field_key: Some("title"),
-                before: Some(json!("before")),
-                after: Some(json!("after")),
-                metadata: json!({}),
-                entity_revision: Some(2),
-            },
-            now(),
+        for index in 0..count {
+            record_activity_tx(
+                tx,
+                &actor,
+                ActivityInput {
+                    project_id: Some("p1"),
+                    entity_type: "task",
+                    entity_id: "task",
+                    task_id: Some("task"),
+                    event_type: "task.updated",
+                    field_key: Some("title"),
+                    before: Some(json!(index)),
+                    after: Some(json!(index + 1)),
+                    metadata: json!({}),
+                    entity_revision: Some(index + 2),
+                },
+                now(),
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+/// Project checks that hints get before a stream sends them, one counter per
+/// test, because tests run at the same time.
+static CHECKS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+const FULL_QUEUE: usize = 0;
+const LAGGING: usize = 1;
+
+/// Counts the checks by the text of `require_project`'s statement. If that
+/// text changes, a test that waits for a count times out instead of passing.
+fn count_checks<const TEST: usize>(event: TraceEvent<'_>) {
+    if let TraceEvent::Stmt(_, sql) = event
+        && sql.contains("FROM projects p JOIN users u")
+    {
+        CHECKS[TEST].fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The application on a database with one connection, which counts its
+/// project checks in `CHECKS[TEST]`.
+async fn counting_app<const TEST: usize>(root: &Path) -> (Router, CollaborationRuntime) {
+    let db = Db::open_with_pool_size(root, 1).unwrap();
+    db.run(|connection| {
+        connection.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_checks::<TEST>),
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let application = support::app(root, &db, "https://tasks.example.test", &[]);
+    (application.router, application.collaboration)
+}
+
+/// Queues a change to the Inbox of `user_id`, which streams send as the hint
+/// `id`.
+async fn inbox_change(db: &Db, id: &str, user_id: &str) {
+    let row = [id, user_id].map(str::to_owned);
+    db.transaction(move |tx| {
+        tx.execute(
+            "INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
+             VALUES(?1,'inbox.state_changed','inbox',?2,'{}',1,1)",
+            row,
         )?;
         Ok(())
     })
@@ -124,7 +183,7 @@ async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shu
     assert_eq!(runtime.receiver_count(), 1);
     drop(body);
     receivers(&runtime, 0).await;
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     let mut body = events(&app, &format!("/api/events?cursor={cursor}"))
         .await
         .into_body();
@@ -166,15 +225,9 @@ async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
     // An owner-only event for Bob must never be emitted to Alice.
-    db.transaction(|tx| {tx.execute("INSERT INTO outbox_messages(id,topic,aggregate_type,aggregate_id,payload_json,available_at,created_at)
-        VALUES('bob-only','inbox.state_changed','inbox','bob','{}',1,1)",[])?;Ok(())}).await.unwrap();
+    inbox_change(&db, "bob-only", "bob").await;
     runtime.worker().run_once().await.unwrap();
-    assert!(
-        timeout(Duration::from_millis(50), body.frame())
-            .await
-            .is_err()
-    );
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     // Hold both delivery checks so membership is removed after recipient capture.
     let left = runtime.authorization_permit().await;
     let right = runtime.authorization_permit().await;
@@ -186,11 +239,12 @@ async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
     .await
     .unwrap();
     drop((left, right));
-    assert!(
-        timeout(Duration::from_millis(100), body.frame())
-            .await
-            .is_err()
-    );
+    // A stream sends in order, so Alice's own change arrives first only if
+    // both hints before it were dropped.
+    inbox_change(&db, "alice-own", "alice").await;
+    runtime.worker().run_once().await.unwrap();
+    let next = frame(&mut body).await;
+    assert!(next.contains("id: alice-own\n"), "{next}");
     // Once Alice is a member again, her next hint arrives.
     db.transaction(|tx| {
         tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1','alice',1,1)", [])?;
@@ -198,7 +252,7 @@ async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
     })
     .await
     .unwrap();
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     runtime.worker().run_once().await.unwrap();
     let delivered = frame(&mut body).await;
     assert!(delivered.contains("event: hint"), "{delivered}");
@@ -212,48 +266,27 @@ async fn recipient_filter_and_delivery_authorization_drop_inaccessible_hints() {
 
 #[tokio::test]
 async fn lagging_streams_reconcile_and_shutdown_cancels_a_blocked_sender() {
-    let (_root, db, alice, app, runtime) = app().await;
+    let (root, db, alice, _, _) = app().await;
+    let (app, runtime) = counting_app::<LAGGING>(root.path()).await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
     let left = runtime.authorization_permit().await;
     let right = runtime.authorization_permit().await;
-    let actor = alice.clone();
-    db.transaction(move |tx| {
-        for index in 0..600 {
-            record_activity_tx(
-                tx,
-                &actor,
-                ActivityInput {
-                    project_id: Some("p1"),
-                    entity_type: "task",
-                    entity_id: "task",
-                    task_id: Some("task"),
-                    event_type: "task.updated",
-                    field_key: Some("title"),
-                    before: Some(json!(index)),
-                    after: Some(json!(index + 1)),
-                    metadata: json!({}),
-                    entity_revision: Some(index + 2),
-                },
-                now(),
-            )?;
-        }
-        Ok(())
-    })
-    .await
-    .unwrap();
+    hints(&db, &alice, 600).await;
     drain(&runtime).await;
     drop((left, right));
-    let mut reconciled = false;
-    for _ in 0..3 {
-        if frame(&mut body).await.contains("event: reconcile") {
-            reconciled = true;
-            break;
-        }
+    // At most the first hint arrives before the stream finds that it lagged.
+    let mut sent = 0;
+    while !frame(&mut body).await.contains("event: reconcile") {
+        sent += 1;
+        assert!(sent < 2, "the stream did not reconcile");
     }
-    assert!(reconciled);
-    // Leave the body unread while remaining hints fill its bounded queue.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Nobody reads on. The queue takes 63 hints, as its last place is kept
+    // for `Replaced`, so the sender waits with the 64th.
+    support::eventually("the sender waits on a full queue", async || {
+        (CHECKS[LAGGING].load(Ordering::SeqCst) >= sent + 64).then_some(())
+    })
+    .await;
     runtime.shutdown();
     receivers(&runtime, 0).await;
 }
@@ -272,7 +305,7 @@ async fn three_hundred_streams_deliver_without_exhausting_database_admission() {
             bodies.push(body);
         }
     }
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     let started = std::time::Instant::now();
     runtime.worker().run_once().await.unwrap();
     let mut reads = tokio::task::JoinSet::new();
@@ -334,7 +367,7 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
     let mut other = events_as(&app, "/api/events", &member).await.into_body();
     frame(&mut other).await;
     bodies.push(other);
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     runtime.worker().run_once().await.unwrap();
     for body in &mut bodies {
         assert!(frame(body).await.contains("event: hint"));
@@ -343,61 +376,15 @@ async fn a_person_keeps_sixteen_streams_and_a_new_one_closes_the_oldest() {
 
 #[tokio::test]
 async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
-    use rusqlite::trace::{TraceEvent, TraceEventCodes};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static CHECKS: AtomicUsize = AtomicUsize::new(0);
-    // Counts the project checks that hints get before a stream sends them,
-    // found by the text of `require_project`'s statement. If that text
-    // changes, this test times out instead of passing.
-    fn trace(event: TraceEvent<'_>) {
-        if let TraceEvent::Stmt(_, sql) = event
-            && sql.contains("FROM projects p JOIN users u")
-        {
-            CHECKS.fetch_add(1, Ordering::SeqCst);
-        }
-    }
     let (root, db, alice, _, _) = app().await;
-    let traced = Db::open_with_pool_size(root.path(), 1).unwrap();
-    traced
-        .run(|connection| {
-            connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace));
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let application = support::app(root.path(), &traced, "https://tasks.example.test", &[]);
-    let (app, runtime) = (application.router, application.collaboration);
+    let (app, runtime) = counting_app::<FULL_QUEUE>(root.path()).await;
     let mut oldest = events(&app, "/api/events").await.into_body();
     frame(&mut oldest).await;
     // More hints than the stream's queue holds, and nobody reads them.
-    let actor = alice.clone();
-    db.transaction(move |tx| {
-        for index in 0..80 {
-            record_activity_tx(
-                tx,
-                &actor,
-                ActivityInput {
-                    project_id: Some("p1"),
-                    entity_type: "task",
-                    entity_id: "task",
-                    task_id: Some("task"),
-                    event_type: "task.updated",
-                    field_key: Some("title"),
-                    before: Some(json!(index)),
-                    after: Some(json!(index + 1)),
-                    metadata: json!({}),
-                    entity_revision: Some(index + 2),
-                },
-                now(),
-            )?;
-        }
-        Ok(())
-    })
-    .await
-    .unwrap();
+    hints(&db, &alice, 80).await;
     drain(&runtime).await;
     support::eventually("the stream's queue is full", async || {
-        (CHECKS.load(Ordering::SeqCst) >= 63).then_some(())
+        (CHECKS[FULL_QUEUE].load(Ordering::SeqCst) >= 63).then_some(())
     })
     .await;
     let mut newer = Vec::new();
@@ -439,7 +426,7 @@ async fn a_request_that_fails_closes_none_of_the_persons_streams() {
     rename("security_events_away", "security_events").await;
     assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
     receivers(&runtime, 16).await;
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     runtime.worker().run_once().await.unwrap();
     for body in &mut bodies {
         assert!(frame(body).await.contains("event: hint"));
@@ -566,7 +553,7 @@ async fn operational_authorization_failure_closes_instead_of_dropping_a_hint() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
-    hint(&db, &alice).await;
+    hints(&db, &alice, 1).await;
     db.transaction(|tx| {
         tx.execute_batch("ALTER TABLE sessions RENAME TO unavailable_sessions")?;
         Ok(())
