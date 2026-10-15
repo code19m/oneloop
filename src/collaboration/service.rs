@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    access::{self, Need, require_project},
+    access::{self, McpScope, Need, require_project},
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
     command::{Command, CommandResult, Mutation, check_revision},
@@ -117,7 +117,7 @@ fn dispatch(
 ) -> AppResult<Mutation> {
     use CollaborationOperation::*;
     if command.operation.is_inbox() {
-        access::require_scope(tx, actor, "inbox_private", None)?;
+        access::require_scope(tx, actor, McpScope::InboxPrivate, None)?;
     }
     let payload = &command.payload;
     let expected = command.revision();
@@ -184,14 +184,12 @@ fn authorize_replay(
                 .ok_or(AppError::NotFound {
                     resource: "comment",
                 })?;
-            require_project(tx, actor, &project_id, Need::Discussion, false)?;
-            if operation != EditComment {
-                access::require_scope(tx, actor, "destructive", Some(&project_id))?;
-            }
+            let destructive = operation != EditComment;
+            require_project(tx, actor, &project_id, Need::Discussion, destructive)?;
             require_comment_owner_or_admin(actor, &author_id)
         }
         MarkRead | MarkUnread | Archive | RestoreArchived | BulkMarkRead | BulkArchive => {
-            access::require_scope(tx, actor, "inbox_private", None)
+            access::require_scope(tx, actor, McpScope::InboxPrivate, None)
         }
     }
 }

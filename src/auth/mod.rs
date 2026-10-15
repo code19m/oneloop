@@ -183,33 +183,6 @@ pub(crate) fn refresh_actor_connection(
     Ok(fresh)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpScope {
-    ProjectRead,
-    BoardManage,
-    RoadmapManage,
-    Discussion,
-    InboxPrivate,
-    MyPoolPrivate,
-    Attachments,
-    Destructive,
-}
-
-impl McpScope {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ProjectRead => "project_read",
-            Self::BoardManage => "board_manage",
-            Self::RoadmapManage => "roadmap_manage",
-            Self::Discussion => "discussion",
-            Self::InboxPrivate => "inbox_private",
-            Self::MyPoolPrivate => "my_pool_private",
-            Self::Attachments => "attachments",
-            Self::Destructive => "destructive",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct SessionMetadata {
     pub client_name: Option<String>,

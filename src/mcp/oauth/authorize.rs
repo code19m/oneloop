@@ -12,6 +12,7 @@ use serde::Deserialize;
 use super::consent_page::{ConsentPresentation, consent_html};
 use super::*;
 use crate::{
+    access::McpScope,
     auth::{Actor, token::random_token},
     http::{auth::authenticate_headers, security::require_canonical_origin},
     mcp::client_metadata::ClientDocument,
@@ -290,7 +291,7 @@ struct StoredAuthorizationRequest {
     redirect_uri: String,
     state: Option<String>,
     resource: String,
-    requested_scopes: Vec<String>,
+    requested_scopes: Vec<McpScope>,
     challenge: String,
 }
 
@@ -325,7 +326,7 @@ pub(super) async fn consent(
                             redirect_uri: row.get(3)?,
                             state: row.get(4)?,
                             resource: row.get(5)?,
-                            requested_scopes: serde_json::from_str::<Vec<String>>(
+                            requested_scopes: serde_json::from_str::<Vec<McpScope>>(
                                 &row.get::<_, String>(6)?,
                             )
                             .map_err(|e| {
@@ -427,26 +428,15 @@ async fn approve_consent(
             "select at least one project",
         ));
     }
-    let requested = stored
-        .requested_scopes
+    let mut selected_scopes = form
+        .scope
         .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut selected_scopes = form.scope.iter().cloned().collect::<BTreeSet<_>>();
-    selected_scopes.insert("project_read".to_owned());
-    if selected_scopes
-        .iter()
-        .any(|scope| !requested.contains(scope.as_str()) || !SCOPES.contains(&scope.as_str()))
-    {
-        return Err(AppError::validation(
-            "scope",
-            "contains an unrequested capability",
-        ));
-    }
-    if selected_scopes.contains("destructive")
-        && !selected_scopes
-            .iter()
-            .any(|v| v == "board_manage" || v == "roadmap_manage" || v == "attachments")
+        .map(|name| McpScope::parse(name).filter(|scope| stored.requested_scopes.contains(scope)))
+        .collect::<Option<BTreeSet<_>>>()
+        .ok_or_else(|| AppError::validation("scope", "contains an unrequested capability"))?;
+    selected_scopes.insert(McpScope::ProjectRead);
+    if selected_scopes.contains(&McpScope::Destructive)
+        && !selected_scopes.iter().any(|scope| scope.manages())
     {
         return Err(AppError::validation(
             "scope",
@@ -583,18 +573,14 @@ async fn validate_authorization_query(
     Ok(())
 }
 
-fn parse_requested_scopes(raw: &str) -> Result<Vec<String>, OAuthError> {
+/// The scopes an app asks for. Reading the selected projects is always
+/// part of a grant.
+fn parse_requested_scopes(raw: &str) -> Result<Vec<McpScope>, OAuthError> {
     let mut set = raw
         .split_ascii_whitespace()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if set.is_empty() {
-        set.insert("project_read".into());
-    }
-    if set.iter().any(|v| !SCOPES.contains(&v.as_str())) {
-        return Err(OAuthError::invalid("invalid_scope"));
-    }
-    set.insert("project_read".into());
+        .map(|name| McpScope::parse(name).ok_or_else(|| OAuthError::invalid("invalid_scope")))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    set.insert(McpScope::ProjectRead);
     Ok(set.into_iter().collect())
 }
 

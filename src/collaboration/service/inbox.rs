@@ -44,7 +44,7 @@ impl CollaborationService {
         let limit = page_limit(limit);
         self.db.snapshot(move |connection| {
             let actor = refresh_actor_connection(connection, &actor)?;
-            access::require_scope(connection, &actor, "inbox_private", None)?;
+            access::require_scope(connection, &actor, McpScope::InboxPrivate, None)?;
             validate_inbox_projects(connection, &actor, &filter.project_ids)?;
             let unread_count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM notification_recipients r

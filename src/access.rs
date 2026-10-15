@@ -7,6 +7,7 @@ use crate::{
     auth::{Actor, refresh_actor_connection},
 };
 use rusqlite::{Connection, Transaction, params};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// SQL that holds when the account in `$user`, an alias of a `users` row, may
@@ -71,10 +72,90 @@ impl McpTool {
     }
 }
 
+/// What an app's grant allows, within the person's own permissions. Grants
+/// store the names, and the OAuth metadata lists them. The variants sort like
+/// their names, as stored lists of scopes do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum McpScope {
+    Attachments,
+    BoardManage,
+    Destructive,
+    Discussion,
+    InboxPrivate,
+    MyPoolPrivate,
+    ProjectRead,
+    RoadmapManage,
+}
+
+impl McpScope {
+    /// Every scope, in the order the OAuth metadata lists them.
+    pub(crate) const ALL: [Self; 8] = [
+        Self::ProjectRead,
+        Self::Discussion,
+        Self::BoardManage,
+        Self::RoadmapManage,
+        Self::InboxPrivate,
+        Self::MyPoolPrivate,
+        Self::Attachments,
+        Self::Destructive,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Attachments => "attachments",
+            Self::BoardManage => "board_manage",
+            Self::Destructive => "destructive",
+            Self::Discussion => "discussion",
+            Self::InboxPrivate => "inbox_private",
+            Self::MyPoolPrivate => "my_pool_private",
+            Self::ProjectRead => "project_read",
+            Self::RoadmapManage => "roadmap_manage",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|scope| scope.as_str() == name)
+    }
+
+    /// What the scope allows, as the Connect page says it.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Attachments => "Read and manage attachments",
+            Self::BoardManage => "Create and manage tasks and Pool items",
+            Self::Destructive => "Permanently delete permitted work and files",
+            Self::Discussion => "Read and write comments and replies",
+            Self::InboxPrivate => "Read and manage your private Inbox (selected projects only)",
+            Self::MyPoolPrivate => "Read and manage your private My Pool",
+            Self::ProjectRead => "Read the selected projects",
+            Self::RoadmapManage => "Create and manage roadmap work",
+        }
+    }
+
+    /// The name of a scope that starts unticked on the Connect page, because
+    /// it reaches private data or deletes for good.
+    pub(crate) const fn off_by_default(self) -> Option<&'static str> {
+        match self {
+            Self::InboxPrivate => Some("Private Inbox"),
+            Self::MyPoolPrivate => Some("My Pool"),
+            Self::Destructive => Some("destructive access"),
+            _ => None,
+        }
+    }
+
+    /// Whether the scope manages work. Destructive access needs one that does.
+    pub(crate) const fn manages(self) -> bool {
+        matches!(
+            self,
+            Self::BoardManage | Self::RoadmapManage | Self::Attachments
+        )
+    }
+}
+
 pub(crate) fn require_scope(
     conn: &Connection,
     actor: &Actor,
-    scope: &str,
+    scope: McpScope,
     project: Option<&str>,
 ) -> AppResult<()> {
     let Some(grant) = actor.mcp_grant_id() else {
@@ -82,7 +163,7 @@ pub(crate) fn require_scope(
     };
     let allowed: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes WHERE grant_id=?1 AND scope=?2) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM mcp_grant_projects WHERE grant_id=?1 AND project_id=?3))",
-        params![grant, scope, project], |row| row.get(0))?;
+        params![grant, scope.as_str(), project], |row| row.get(0))?;
     if allowed {
         Ok(())
     } else {
@@ -103,7 +184,7 @@ pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
 /// activity. An app needs the `my_pool_private` scope; callers still check
 /// the project.
 pub(crate) fn can_read_private_pool(conn: &Connection, actor: &Actor) -> AppResult<bool> {
-    allowed(require_scope(conn, actor, "my_pool_private", None))
+    allowed(require_scope(conn, actor, McpScope::MyPoolPrivate, None))
 }
 
 pub(crate) fn require_project(
@@ -142,11 +223,11 @@ pub(crate) fn require_project(
         }
     }
     let (column, scope) = match need {
-        Need::Read => (None, "project_read"),
-        Need::Board => (Some("manage_board"), "board_manage"),
-        Need::Roadmap => (Some("manage_roadmap"), "roadmap_manage"),
-        Need::Discussion => (None, "discussion"),
-        Need::Attachments { write } => (write.then_some("manage_board"), "attachments"),
+        Need::Read => (None, McpScope::ProjectRead),
+        Need::Board => (Some("manage_board"), McpScope::BoardManage),
+        Need::Roadmap => (Some("manage_roadmap"), McpScope::RoadmapManage),
+        Need::Discussion => (None, McpScope::Discussion),
+        Need::Attachments { write } => (write.then_some("manage_board"), McpScope::Attachments),
     };
     if let Some(column) = column.filter(|_| !actor.is_admin) {
         let allowed: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM project_memberships WHERE project_id=?1 AND user_id=?2 AND {column}=1)"), params![project, actor.user_id], |row| row.get(0))?;
@@ -164,13 +245,13 @@ pub(crate) fn require_project(
         }
     })?;
     if let Need::Attachments { write } = need {
-        require_scope(conn, &actor, "project_read", Some(project))?;
+        require_scope(conn, &actor, McpScope::ProjectRead, Some(project))?;
         if write {
-            require_scope(conn, &actor, "board_manage", Some(project))?;
+            require_scope(conn, &actor, McpScope::BoardManage, Some(project))?;
         }
     }
     if destructive {
-        require_scope(conn, &actor, "destructive", Some(project))?;
+        require_scope(conn, &actor, McpScope::Destructive, Some(project))?;
     }
     Ok(())
 }

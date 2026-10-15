@@ -308,8 +308,7 @@ pub(super) fn delete_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
-    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, true)?;
     require_comment_owner_or_admin(actor, &before.author_id)?;
     if before.deleted_at.is_some() {
         return Err(AppError::Conflict("comment is already deleted".into()));
@@ -366,8 +365,7 @@ pub(super) fn restore_comment(
     now: i64,
 ) -> AppResult<Mutation> {
     let before = changeable_comment_tx(tx, &input.comment_id)?;
-    require_project(tx, actor, &before.project_id, Need::Discussion, false)?;
-    access::require_scope(tx, actor, "destructive", Some(&before.project_id))?;
+    require_project(tx, actor, &before.project_id, Need::Discussion, true)?;
     require_comment_owner_or_admin(actor, &before.author_id)?;
     let Some(deleted_at) = before.deleted_at else {
         return Err(AppError::Conflict("the comment is not deleted".into()));

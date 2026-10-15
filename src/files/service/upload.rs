@@ -104,7 +104,12 @@ impl FileService {
         let task = task.to_owned();
         self.db
             .run(move |connection| {
-                crate::access::require_scope(connection, &actor, "attachments", None)?;
+                crate::access::require_scope(
+                    connection,
+                    &actor,
+                    crate::access::McpScope::Attachments,
+                    None,
+                )?;
                 let task_id = task_id_or_key(connection, &task)?;
                 let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, true, false)?;

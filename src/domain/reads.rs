@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    access::{self, Need, require_project},
+    access::{self, McpScope, Need, require_project},
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
     error::{AppError, AppResult},
@@ -368,10 +368,13 @@ fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<P
     };
     // A grant narrows what the person may do to its projects and scopes.
     let scope = |scope| access::allowed(access::require_scope(connection, actor, scope, None));
-    if !scope("project_read")? {
+    if !scope(McpScope::ProjectRead)? {
         return Ok(Vec::new());
     }
-    let (manage_board, manage_roadmap) = (scope("board_manage")?, scope("roadmap_manage")?);
+    let (manage_board, manage_roadmap) = (
+        scope(McpScope::BoardManage)?,
+        scope(McpScope::RoadmapManage)?,
+    );
     let selected: std::collections::HashSet<String> = connection
         .prepare_cached("SELECT project_id FROM mcp_grant_projects WHERE grant_id=?1")?
         .query_map([grant_id], |row| row.get(0))?

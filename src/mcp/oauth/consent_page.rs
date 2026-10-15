@@ -3,32 +3,12 @@
 
 use super::authorize::ConsentForm;
 use super::*;
+use crate::access::McpScope;
 
 pub(super) struct ConsentPresentation<'a> {
     pub(super) client_id: &'a str,
     pub(super) redirect: &'a str,
     pub(super) retry: Option<(&'a ConsentForm, &'a str)>,
-}
-
-/// Capabilities that start unticked, because they reach private data or
-/// delete for good, with the names the page's note gives them.
-const OFF_BY_DEFAULT: [(&str, &str); 3] = [
-    ("inbox_private", "Private Inbox"),
-    ("my_pool_private", "My Pool"),
-    ("destructive", "destructive access"),
-];
-
-fn scope_label(scope: &str) -> &str {
-    match scope {
-        "discussion" => "Read and write comments and replies",
-        "board_manage" => "Create and manage tasks and Pool items",
-        "roadmap_manage" => "Create and manage roadmap work",
-        "inbox_private" => "Read and manage your private Inbox (selected projects only)",
-        "my_pool_private" => "Read and manage your private My Pool",
-        "attachments" => "Read and manage attachments",
-        "destructive" => "Permanently delete permitted work and files",
-        _ => scope,
-    }
 }
 
 pub(super) fn consent_html(
@@ -37,7 +17,7 @@ pub(super) fn consent_html(
     display_name: &str,
     username: &str,
     projects: &[(String, String)],
-    scopes: &[String],
+    scopes: &[McpScope],
     presentation: ConsentPresentation<'_>,
 ) -> String {
     let project_rows = projects
@@ -60,18 +40,18 @@ pub(super) fn consent_html(
         .collect::<String>();
     let scope_rows = scopes
         .iter()
-        .filter(|v| v.as_str() != "project_read")
+        .filter(|scope| **scope != McpScope::ProjectRead)
         .map(|scope| {
             let selected = presentation.retry.map_or_else(
-                || !OFF_BY_DEFAULT.iter().any(|(off, _)| off == scope),
-                |(form, _)| form.scope.contains(scope),
+                || scope.off_by_default().is_none(),
+                |(form, _)| form.scope.iter().any(|name| name == scope.as_str()),
             );
             let checked = if selected { " checked" } else { "" };
             format!(
                 "<label><input type=checkbox name=scope value=\"{}\"{}> <span>{}</span></label>",
-                escape_html(scope),
+                scope.as_str(),
                 checked,
-                escape_html(scope_label(scope))
+                escape_html(scope.label())
             )
         })
         .collect::<String>();
@@ -100,8 +80,12 @@ pub(super) fn consent_html(
         ),
         Ok(url) => format!("App name from {url}."),
     };
-    let [(_, inbox), (_, pool), (_, destructive)] = OFF_BY_DEFAULT;
-    let off_by_default = format!("{inbox}, {pool} and {destructive} are off by default.");
+    let off: Vec<_> = McpScope::ALL
+        .into_iter()
+        .filter_map(McpScope::off_by_default)
+        .collect();
+    let (last, rest) = off.split_last().expect("scopes that start unticked");
+    let off_by_default = format!("{} and {last} are off by default.", rest.join(", "));
     let error = presentation
         .retry
         .map(|(_, error)| format!("<p class=warning role=alert>{}</p>", escape_html(error)))

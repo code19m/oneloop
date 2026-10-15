@@ -80,7 +80,7 @@ async fn consent_from_a_session_revoked_after_sign_in_creates_no_code() {
         redirect_uri: CALLBACK.into(),
         state: None,
         resource: RESOURCE.into(),
-        requested_scopes: vec!["project_read".into()],
+        requested_scopes: vec![crate::access::McpScope::ProjectRead],
         challenge: "challenge".into(),
     };
     let result = approve_consent(&state, &actor, &form, &stored).await;
