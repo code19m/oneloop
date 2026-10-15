@@ -2379,16 +2379,21 @@ async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in
         )
         .await
     };
-    let (_dir, _db, app, session, _) = fixture().await;
+    let signed_out = |client: &str| {
+        Request::builder()
+            .uri(authorization_path(client, CALLBACK))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (_dir, _db, app, _, _) = fixture().await;
     assert!(
         metadata(app.clone())
             .await
             .get("client_id_metadata_document_supported")
             .is_none()
     );
-    let (status, html) =
-        consent_page(&app, &session, &authorization_path(DOCUMENT, CALLBACK)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+    let response = app.clone().oneshot(signed_out(DOCUMENT)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let (_dir, _db, app, _, _) =
         fixture_with(&[("ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS", "true")]).await;
@@ -2396,12 +2401,6 @@ async fn client_metadata_documents_are_off_by_default_and_checked_before_sign_in
         metadata(app.clone()).await["client_id_metadata_document_supported"],
         true
     );
-    let signed_out = |client: &str| {
-        Request::builder()
-            .uri(authorization_path(client, CALLBACK))
-            .body(Body::empty())
-            .unwrap()
-    };
     // A malformed ID is refused before the sign-in page, and nothing is
     // fetched; the unit tests of `document_url` list the malformed forms.
     let response = app
