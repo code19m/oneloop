@@ -4,7 +4,7 @@ use axum::{
 };
 use oneloop::{
     AppError, AppState, Db, application,
-    auth::{Actor, ActorSource, AuthService, ProjectPermission},
+    auth::{Actor, ActorSource, ProjectPermission},
     collaboration::{CollaborationCommand, CollaborationService},
     domain::{BootstrapQuery, DomainService},
     files::FileService,
@@ -65,7 +65,7 @@ async fn account_administration_rechecks_a_cached_admin_role() {
     let cached_admin = support::add_user(&db, "old-admin", true).await.actor;
     demote(&db, &instance.owner.actor, &cached_admin).await;
     assert!(matches!(
-        AuthService::new(db)
+        support::auth_service(&db)
             .list_accounts(&cached_admin, None)
             .await,
         Err(AppError::Forbidden)
@@ -228,7 +228,7 @@ async fn malformed_auth_json_uses_the_structured_error_contract_without_echoing_
 }
 
 async fn demote(db: &Db, owner: &Actor, old_admin: &Actor) {
-    AuthService::new(db.clone())
+    support::auth_service(db)
         .update_account(
             owner,
             &old_admin.user_id,
@@ -251,7 +251,7 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
         alice,
         ..
     } = seeded_project().await;
-    let auth = AuthService::new(db.clone());
+    let auth = support::auth_service(&db);
     let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
@@ -371,7 +371,7 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
     actor.source = ActorSource::McpGrant {
         grant_id: "g".into(),
     };
-    let auth = AuthService::new(db.clone());
+    let auth = support::auth_service(&db);
     let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);

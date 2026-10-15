@@ -582,12 +582,13 @@ async fn authorization_login_return_is_internal_validated_and_preserved() {
                 must_change_password: true,
             },
             unix_now()?,
+            &oneloop::auth::password::PasswordPolicy::default(),
         )?;
         Ok(())
     })
     .await
     .unwrap();
-    let LoginResult::Authenticated(temporary) = AuthService::new(db.clone())
+    let LoginResult::Authenticated(temporary) = support::auth_service(&db)
         .login(
             "temporary",
             "temporary-test-password-012345",
@@ -780,7 +781,7 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
     assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(replay).await["error"], "invalid_grant");
     assert!(
-        AuthService::new(db.clone())
+        support::auth_service(&db)
             .authenticate_mcp_access_token(&new_access)
             .await
             .is_err(),
@@ -1045,7 +1046,7 @@ async fn demoted_admin_loses_apps_for_projects_they_are_not_a_member_of() {
     let (code, verifier) = authorize(&app, &session, &client).await;
     let tokens = issue(&app, &client, &code, &verifier).await;
     let admin = support::add_user(&db, "admin", true).await;
-    let accounts = AuthService::new(db.clone());
+    let accounts = support::auth_service(&db);
     // Demoted, then promoted again before the app's next request.
     for (is_admin, expected_revision) in [(false, revision), (true, revision + 1)] {
         accounts
@@ -1288,7 +1289,7 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
         .unwrap();
     assert_eq!(revoked.status(), StatusCode::OK);
     assert!(
-        AuthService::new(db)
+        support::auth_service(&db)
             .authenticate_mcp_access_token(&revoke_access)
             .await
             .is_err()
@@ -1433,7 +1434,7 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
         assert_eq!(pending, 0, "admin reset={reset}");
 
         let other_tokens = issue(&app, &client, &other_code, &other_verifier).await;
-        let actor = AuthService::new(db)
+        let actor = support::auth_service(&db)
             .authenticate_mcp_access_token(other_tokens["access_token"].as_str().unwrap())
             .await
             .unwrap();
@@ -1495,7 +1496,7 @@ async fn deactivation_ends_connections_until_the_app_connects_again() {
     let tokens = issue(&app, &client, &code, &verifier).await;
     let access = tokens["access_token"].as_str().unwrap();
     let (pending, pending_verifier) = authorize(&app, &session, &client).await;
-    let auth = AuthService::new(db);
+    let auth = support::auth_service(&db);
     let set_active = |is_active, expected_revision| {
         auth.update_account(
             &admin.actor,
@@ -2028,7 +2029,7 @@ async fn concurrent_refreshes_keep_the_grant_active_without_extending_grace() {
     for result in [&left, &right] {
         let access = result["access_token"].as_str().unwrap();
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(&db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_ok()
@@ -2119,7 +2120,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
         StatusCode::BAD_REQUEST
     );
     assert!(
-        AuthService::new(db.clone())
+        support::auth_service(&db)
             .authenticate_mcp_access_token(access)
             .await
             .is_ok(),

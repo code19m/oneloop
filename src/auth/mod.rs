@@ -292,22 +292,12 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    /// With the default password rules.
-    pub fn new(db: Db) -> Self {
-        Self::with_password_policy(db, PasswordPolicy::default())
-    }
-
-    pub fn with_password_policy(db: Db, policy: PasswordPolicy) -> Self {
+    pub fn new(db: Db, policy: PasswordPolicy) -> Self {
         Self { db, policy }
     }
 }
 
-/// Creates an account under the default password rules.
-pub fn create_user(tx: &Transaction<'_>, input: NewUser, now: i64) -> AppResult<User> {
-    create_user_with_policy(tx, input, now, &PasswordPolicy::default())
-}
-
-pub fn create_user_with_policy(
+pub fn create_user(
     tx: &Transaction<'_>,
     input: NewUser,
     now: i64,
@@ -380,17 +370,9 @@ fn insert_user(
     Ok(user)
 }
 
-/// Sets a temporary password under the default password rules.
-pub fn reset_password(
-    tx: &Transaction<'_>,
-    username: &str,
-    password: &str,
-    now: i64,
-) -> AppResult<()> {
-    reset_password_with_policy(tx, username, password, now, &PasswordPolicy::default())
-}
-
-pub fn reset_password_with_policy(
+/// Gives an account a new temporary password and ends its sessions and app
+/// access, for `oneloop user passwd`.
+pub(crate) fn reset_password(
     tx: &Transaction<'_>,
     username: &str,
     password: &str,

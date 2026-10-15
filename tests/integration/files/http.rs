@@ -107,7 +107,7 @@ impl Fixture {
     }
 
     async fn actor(&self, cookie: &str) -> Actor {
-        oneloop::auth::AuthService::new(self.db.clone())
+        support::auth_service(&self.db)
             .authenticate_session(cookie.split_once('=').unwrap().1, false)
             .await
             .unwrap()

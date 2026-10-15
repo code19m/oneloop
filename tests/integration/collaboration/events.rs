@@ -444,10 +444,7 @@ async fn membership_removal_reconciles_and_session_revocation_closes_stream() {
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1"));
-    oneloop::auth::AuthService::new(db)
-        .logout(&alice)
-        .await
-        .unwrap();
+    support::auth_service(&db).logout(&alice).await.unwrap();
     while runtime.worker().run_once().await.unwrap() {}
     assert!(
         timeout(Duration::from_secs(1), body.frame())

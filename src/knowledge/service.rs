@@ -1587,7 +1587,9 @@ mod tests {
         files: Vec<(String, String)>,
         people: &[&str],
     ) -> (tempfile::TempDir, KnowledgeService, Vec<Actor>) {
-        use crate::auth::{AuthService, LoginResult, NewUser, create_user};
+        use crate::auth::{
+            AuthService, LoginResult, NewUser, create_user, password::PasswordPolicy,
+        };
         let root = tempfile::tempdir_in("target").unwrap();
         crate::db::migrate(root.path(), None).unwrap();
         let db = Db::open(root.path()).unwrap();
@@ -1603,7 +1605,7 @@ mod tests {
                     is_admin: true,
                     must_change_password: false,
                 };
-                create_user(tx, user, unix_now()?)?;
+                create_user(tx, user, unix_now()?, &PasswordPolicy::default())?;
             }
             tx.execute_batch(
                 "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
@@ -1621,7 +1623,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let auth = AuthService::new(db.clone());
+        let auth = AuthService::new(db.clone(), PasswordPolicy::default());
         let mut actors = Vec::new();
         for username in &usernames {
             let login = auth

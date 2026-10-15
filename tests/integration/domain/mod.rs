@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use axum::{Extension, body::Body};
 use oneloop::{
     AppError, AppState, Db,
-    auth::{Actor, ActorSource, AuthService},
+    auth::{Actor, ActorSource},
     collaboration::CollaborationService,
     domain::{
         BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation,

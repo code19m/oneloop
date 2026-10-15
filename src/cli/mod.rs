@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     AppState, Config, Db,
-    auth::{NewUser, create_user_with_policy, reset_password_with_policy, unix_now},
+    auth::{NewUser, create_user, reset_password, unix_now},
     config::DataConfig,
     db::{create_backup, migrate, restore_backup},
     error::{AppError, AppResult},
@@ -271,7 +271,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
                     let existing_users: i64 =
                         transaction
                             .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
-                    create_user_with_policy(
+                    create_user(
                         transaction,
                         NewUser {
                             username,
@@ -297,7 +297,7 @@ async fn user(arguments: UserArgs) -> AppResult<()> {
             let password = read_password(arguments.password_stdin)?;
             let username = arguments.username;
             db.transaction(move |transaction| {
-                reset_password_with_policy(transaction, &username, &password, unix_now()?, &policy)
+                reset_password(transaction, &username, &password, unix_now()?, &policy)
             })
             .await?;
             print_line(format_args!("password reset; existing credentials revoked"))

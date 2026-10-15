@@ -167,6 +167,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
                     must_change_password: false,
                 },
                 unix_now()?,
+                &oneloop::auth::password::PasswordPolicy::default(),
             )?;
             transaction.execute(
                 "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,0,0,1,1)",
@@ -1257,7 +1258,7 @@ fn refresh_token_revocation_during_writer_contention_is_retryable() {
             "temporarily_unavailable"
         );
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_ok()
@@ -1272,7 +1273,7 @@ fn refresh_token_revocation_during_writer_contention_is_retryable() {
             StatusCode::OK
         );
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_err()
@@ -1527,7 +1528,7 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
     let access = tokens["access_token"].as_str().unwrap();
     let mut mcp = McpClient::connect(&app, access).await;
     let task = create_protocol_task(&mut mcp, "project-1", "service-destructive").await;
-    let actor = AuthService::new(db.clone())
+    let actor = support::auth_service(&db)
         .authenticate_mcp_access_token(access)
         .await
         .unwrap();

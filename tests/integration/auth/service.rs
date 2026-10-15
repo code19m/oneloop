@@ -8,7 +8,7 @@ use oneloop::{
     },
 };
 
-use crate::support::database;
+use crate::support::{auth_service, database};
 
 async fn add_user(db: &Db, username: &str, admin: bool, temporary: bool) -> String {
     let username = username.to_owned();
@@ -23,6 +23,7 @@ async fn add_user(db: &Db, username: &str, admin: bool, temporary: bool) -> Stri
                 must_change_password: temporary,
             },
             1_700_000_000,
+            &PasswordPolicy::default(),
         )?
         .id)
     })
@@ -58,7 +59,7 @@ async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application()
     .await
     .unwrap();
 
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (_, temporary) = login(&service, "temporary").await;
     assert!(matches!(
         temporary.require_ready(),
@@ -98,7 +99,7 @@ async fn permissions_are_rechecked_and_admin_assignment_still_requires_membershi
         Ok(())
     }).await.unwrap();
 
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (_, member) = login(&service, "member").await;
     let (_, admin) = login(&service, "administrator").await;
     assert!(
@@ -143,7 +144,7 @@ async fn permissions_are_rechecked_and_admin_assignment_still_requires_membershi
 async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
     let (_directory, db) = database();
     let user_id = add_user(&db, "person", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (_, current) = login(&service, "person").await;
     let (other_token, other) = login(&service, "person").await;
     let revoked = current.session_id().unwrap().to_owned();
@@ -200,7 +201,7 @@ async fn session_lists_and_revocation_are_owner_private_even_for_admins() {
     let (_directory, db) = database();
     add_user(&db, "administrator", true, false).await;
     add_user(&db, "ordinary", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (_, admin) = login(&service, "administrator").await;
     let (_, ordinary) = login(&service, "ordinary").await;
 
@@ -249,7 +250,7 @@ async fn session_lists_and_revocation_are_owner_private_even_for_admins() {
 async fn changing_password_keeps_only_the_current_browser_and_revokes_apps() {
     let (_directory, db) = database();
     let user_id = add_user(&db, "person", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (first_token, _first) = login(&service, "person").await;
     let (second_token, second) = login(&service, "person").await;
     let user_for_grant = user_id.clone();
@@ -363,7 +364,7 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
         }
         Ok(())
     }).await.unwrap();
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let limited = service
         .login(
             "sessionuser",
@@ -409,7 +410,7 @@ async fn login_throttles_and_expired_sessions_fail_closed() {
             rusqlite::params![key,now,now+60])?;
         Ok(())
     }).await.unwrap();
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     assert!(
         matches!(service.login("limited","correct horse battery staple",SessionMetadata::default(),None).await,
         Err(AppError::RateLimited{retry_after}) if retry_after>0)
@@ -451,7 +452,7 @@ async fn login_throttles_and_expired_sessions_fail_closed() {
 async fn passive_authentication_does_not_extend_idle_activity() {
     let (_directory, db) = database();
     add_user(&db, "passive", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (token, actor) = login(&service, "passive").await;
     let session_id = actor.session_id().unwrap().to_owned();
     let old = unix_now().unwrap() - 120;
@@ -515,7 +516,7 @@ async fn mcp_project_access_is_intersected_with_live_grant_scopes() {
             VALUES('access','grant','family','access',?1,1,9999999999)",[access_hash])?;
         Ok(())
     }).await.unwrap();
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let actor = service
         .authenticate_mcp_access_token(&access_token)
         .await
@@ -560,7 +561,7 @@ async fn mcp_project_access_is_intersected_with_live_grant_scopes() {
 async fn sensitive_account_changes_require_fresh_browser_authentication() {
     let (_directory, db) = database();
     add_user(&db, "adminuser", true, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (_, admin) = login(&service, "adminuser").await;
     let created = service
         .create_account(&admin, "newperson", "New Person", false)
@@ -624,6 +625,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                     must_change_password: false,
                 },
                 unix_now()?,
+                &PasswordPolicy::default(),
             )
         })
         .await
@@ -646,6 +648,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                     must_change_password: false,
                 },
                 unix_now()?,
+                &PasswordPolicy::default(),
             )
         })
         .await
@@ -699,7 +702,7 @@ async fn cli_creation_reset_and_browser_password_change_share_the_five_character
         .write_stdin("😀😀😀😀\n")
         .assert()
         .failure();
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     assert!(matches!(
         service
             .login("newadmin", "12345", SessionMetadata::default(), None)
@@ -750,7 +753,7 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
     let (_directory, db) = database();
     add_user(&db, "chief", true, false).await;
     add_user(&db, "longusername", false, false).await;
-    let service = AuthService::with_password_policy(
+    let service = AuthService::new(
         db.clone(),
         PasswordPolicy {
             min_length: 12,
@@ -820,7 +823,7 @@ async fn temporary_passwords_stop_working_after_the_configured_lifetime() {
     // Set at 1_700_000_000, long before now.
     add_user(&db, "invited", false, true).await;
     let password = "correct horse battery staple";
-    let weekly = AuthService::with_password_policy(
+    let weekly = AuthService::new(
         db.clone(),
         PasswordPolicy {
             temporary_lifetime_seconds: Some(7 * 24 * 60 * 60),
@@ -837,7 +840,7 @@ async fn temporary_passwords_stop_working_after_the_configured_lifetime() {
     assert_eq!(error.status().as_u16(), 401);
     // Without the setting, a temporary password works until it is changed.
     assert!(matches!(
-        AuthService::new(db.clone())
+        auth_service(&db)
             .login("invited", password, SessionMetadata::default(), None)
             .await
             .unwrap(),
@@ -988,7 +991,7 @@ async fn cli_creation_and_reset_enforce_the_password_byte_limit() {
     )
     .assert()
     .code(2);
-    let auth = AuthService::new(db);
+    let auth = auth_service(&db);
     assert!(matches!(
         auth.login("person", &maximum, Default::default(), None)
             .await
@@ -1014,7 +1017,7 @@ async fn cli_creation_and_reset_enforce_the_password_byte_limit() {
 async fn password_gates_share_account_delay_across_sessions_and_clear_on_success() {
     let (_directory, db) = database();
     add_user(&db, "confirm", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (token, actor) = login(&service, "confirm").await;
     let (_, other) = login(&service, "confirm").await;
     for attempt in 0..5 {
@@ -1084,7 +1087,7 @@ async fn parallel_login_attempts_observe_completed_failures_before_hashing() {
     add_user(&db, "independent", false, false).await;
     let mut requests = tokio::task::JoinSet::new();
     for _ in 0..12 {
-        let service = AuthService::new(db.clone());
+        let service = auth_service(&db);
         requests.spawn(async move {
             service
                 .login("parallel", "wrong", SessionMetadata::default(), None)
@@ -1105,7 +1108,7 @@ async fn parallel_login_attempts_observe_completed_failures_before_hashing() {
     }
     assert!((5..=8).contains(&verified), "verified {verified} attempts");
     assert_eq!(verified + limited, 12);
-    let service = AuthService::new(db);
+    let service = auth_service(&db);
     assert!(matches!(
         service
             .login("parallel", "wrong", SessionMetadata::default(), None)
@@ -1126,7 +1129,7 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
         for change_password in [true, false] {
             let (_directory, db) = database();
             let user_id = add_user(&db, "racing", false, false).await;
-            let service = AuthService::new(db.clone());
+            let service = auth_service(&db);
             let (_, actor) = login(&service, "racing").await;
             let (other_token, _) = login(&service, "racing").await;
             let before: (String, i64) = db
@@ -1189,7 +1192,7 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
 async fn session_activity_does_not_wait_for_an_external_sqlite_writer() {
     let (_directory, db) = database();
     add_user(&db, "contention", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     let (token, actor) = login(&service, "contention").await;
     let id = actor.session_id().unwrap().to_owned();
     db.transaction(move |tx| {
@@ -1234,7 +1237,7 @@ async fn session_activity_does_not_wait_for_an_external_sqlite_writer() {
 async fn distributed_login_failures_share_an_account_delay_and_clear_after_success() {
     let (_directory, db) = database();
     add_user(&db, "target", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     for index in 0..30 {
         let result = service
             .login(
@@ -1319,7 +1322,7 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
 async fn ipv6_subnet_login_throttle_preserves_exact_session_address() {
     let (_directory, db) = database();
     add_user(&db, "target", false, false).await;
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     for index in 1..=6 {
         let result = service
             .login(
@@ -1372,7 +1375,7 @@ async fn unknown_addresses_do_not_share_a_global_login_counter() {
     })
     .await
     .unwrap();
-    let service = AuthService::new(db.clone());
+    let service = auth_service(&db);
     for index in 0..21 {
         assert!(matches!(
             service

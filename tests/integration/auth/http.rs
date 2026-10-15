@@ -5,7 +5,7 @@ use axum::{
 };
 use oneloop::{
     AppState, Db,
-    auth::{NewUser, create_user},
+    auth::{NewUser, create_user, password::PasswordPolicy},
 };
 use tower::ServiceExt;
 
@@ -35,6 +35,7 @@ async fn seed_user(db: &Db) {
                 must_change_password: false,
             },
             1_700_000_000,
+            &PasswordPolicy::default(),
         )?;
         Ok(())
     })
@@ -201,6 +202,7 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
                 must_change_password: false,
             },
             oneloop::auth::unix_now()?,
+            &PasswordPolicy::default(),
         )?;
         Ok(())
     })

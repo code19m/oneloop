@@ -13,7 +13,7 @@ use axum::{
 };
 use oneloop::{
     AppState, Db, application,
-    auth::{AuthService, LoginResult, NewUser, SessionMetadata, create_user, unix_now},
+    auth::{LoginResult, NewUser, SessionMetadata, create_user, unix_now},
     db::{create_backup, restore_backup},
 };
 use serde_json::{Value, json};
