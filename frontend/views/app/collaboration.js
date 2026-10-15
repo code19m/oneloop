@@ -12,6 +12,7 @@ import {
   trackById, userById, visibleProjects,
 } from './model.js';
 import { askConfirmation, openMenu } from './overlays.js';
+import { fadeOutRows, placeRows } from './rows.js';
 
 const id=prefix=>prefix+'-'+(crypto.randomUUID?.()||Date.now()+'-'+Math.random().toString(36).slice(2));
 let controller,mention=null,pendingTarget=null;
@@ -98,9 +99,9 @@ function refreshInbox(meta={}){
  const oldKeys=new Map([...list.querySelectorAll('[data-inbox-key]')].map(el=>[el.dataset.inboxKey,el]));list.querySelector('.inbox-exit-layer')?.remove();
  const focused=document.activeElement,focusRow=focused?.closest('[data-notification-id]'),focusIndex=[...oldRows.keys()].indexOf(focusRow?.dataset.notificationId),focusAction=focusRow?[...focusRow.querySelectorAll('.inbox-row-actions button')].indexOf(focused):-1,focusOpen=focused?.classList?.contains('inbox-open'),focusBulk=focused?.closest('.inbox-bulk')?[...page.querySelectorAll('.inbox-bulk button')].indexOf(focused):-1,focusMore=focused?.classList?.contains('inbox-load-more');
  const template=document.createElement('template');setHTML(template,inboxHtml({oldRows}));const next=template.content.querySelector('.inbox-page'),nextList=next.querySelector('.inbox-list'),wanted=new Set([...nextList.querySelectorAll('[data-notification-id]')].map(el=>el.dataset.notificationId));
- const exiting=document.createElement('div');exiting.className='inbox-exit-layer';exiting.inert=true;exiting.setAttribute('aria-hidden','true');const listRect=list.getBoundingClientRect(),viewport=scroll?.getBoundingClientRect();
- if(!UIMotion.reduced())oldRows.forEach((el,id)=>{const rect=before.get('row-'+id);if(wanted.has(id)||!rect?.height||viewport&&(rect.bottom<viewport.top||rect.top>viewport.bottom))return;const ghost=UIMotion.ghost(el);Object.assign(ghost.style,{position:'absolute',top:rect.top-listRect.top+'px',left:rect.left-listRect.left+'px',width:rect.width+'px',height:rect.height+'px',margin:'0'});exiting.append(ghost);});
- const children=[...nextList.children].map((el)=>{const old=oldKeys.get(el.dataset.inboxKey);if(!old)return el;if(el.dataset.sig&&old.dataset.sig===el.dataset.sig)return old;old.className=el.className;if(el.dataset.sig||!sameMarkup(old,el))setHTML(old,el.innerHTML);if(el.dataset.sig)old.dataset.sig=el.dataset.sig;return old;});let cursor=list.firstElementChild;for(const child of children){if(child===cursor)cursor=cursor.nextElementSibling;else list.insertBefore(child,cursor);}while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}if(exiting.children.length){exiting.style.height=beforeHeight+'px';list.append(exiting);const animation=UIMotion.animate(exiting,[{opacity:1},{opacity:0}],140);if(animation)animation.finished.then(()=>exiting.remove(),()=>exiting.remove());else exiting.remove();}
+ const listRect=list.getBoundingClientRect(),viewport=scroll?.getBoundingClientRect(),gone=[...oldRows].filter(([id])=>!wanted.has(id)).map(([id,el])=>[el,before.get('row-'+id)]);
+ placeRows(list,[...nextList.children].map((el)=>{const old=oldKeys.get(el.dataset.inboxKey);if(!old)return el;if(el.dataset.sig&&old.dataset.sig===el.dataset.sig)return old;old.className=el.className;if(el.dataset.sig||!sameMarkup(old,el))setHTML(old,el.innerHTML);if(el.dataset.sig)old.dataset.sig=el.dataset.sig;return old;}));
+ fadeOutRows(list,gone,{listRect,viewport,height:beforeHeight,className:'inbox-exit-layer'});
  const controls=page.querySelector('.inbox-controls'),newControls=next.querySelector('.inbox-controls');
  for(const selector of ['.seg button','.inbox-unread-filter']){const old=[...controls.querySelectorAll(selector)];newControls.querySelectorAll(selector).forEach((el,i)=>{old[i].className=el.className;old[i].setAttribute('aria-pressed',el.getAttribute('aria-pressed'));old[i].dataset.action=el.dataset.action;old[i].dataset.args=el.dataset.args;});}
  const project=controls.querySelector('[data-filter-key="inboxProjects"]'),newProject=newControls.querySelector('[data-filter-key="inboxProjects"]');setHTML(project,newProject.innerHTML);project.dataset.tip=newProject.dataset.tip;project.className=newProject.className;

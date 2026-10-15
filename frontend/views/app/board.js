@@ -18,6 +18,7 @@ import {
   projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
+import { patchInPlace, placeRows } from './rows.js';
 import { announce } from './toasts.js';
 
 const COLS = [
@@ -117,26 +118,6 @@ function boardRowKey(row, column) {
   return `${column}:${row.classList.contains('empty-note') ? 'empty' : 'more'}`;
 }
 
-// Board rows have stable actions for their key. Preserve their DOM/listeners,
-// focus and images while updating changed presentation. Permission changes
-// replace a card so its drag handlers are installed/removed together.
-export function patchBoardRow(current, next) {
-  for (const attribute of [...current.attributes])
-    if (!attribute.name.startsWith('on') && !next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
-  for (const attribute of next.attributes)
-    if (!attribute.name.startsWith('on') && current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
-  const children = [...next.childNodes];
-  children.forEach((child, index) => {
-    const old = current.childNodes[index];
-    if (!old) { current.append(child); return; }
-    if (old.nodeType !== child.nodeType || old.nodeName !== child.nodeName) { old.replaceWith(child); return; }
-    if (child.nodeType === Node.ELEMENT_NODE) patchBoardRow(old, child);
-    else if (old.nodeValue !== child.nodeValue) old.nodeValue = child.nodeValue;
-  });
-  while (current.childNodes.length > children.length) current.lastChild.remove();
-  return current;
-}
-
 /** Show the Board unfiltered, from the first page of each column, as for another project. */
 export function resetBoardFilters() {
   state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false;
@@ -195,16 +176,12 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
         if (!layer.children.length) { layer.remove(); filterExitLayers.delete(layer); }
       });
     });
-    // Keep unchanged children connected; replaceChildren would detach focused
-    // controls and restart empty-state/Load more entrance animations.
-    let cursor=list.firstElementChild;
-    for (const row of desired) {
+    // A row keeps its element while its actions stay; a permission change
+    // replaces a card, so its drag handlers come and go together.
+    placeRows(list, desired.map((row) => {
       const old=previous.get(boardRowKey(row,column.dataset.col))?.card;
-      const child=old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchBoardRow(old,row) : row;
-      if (child===cursor) cursor=cursor.nextElementSibling;
-      else list.insertBefore(child,cursor);
-    }
-    while(cursor){const next=cursor.nextElementSibling;cursor.remove();cursor=next;}
+      return old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+    }));
     const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
     if(count.textContent!==nextCount)count.textContent=nextCount;
     const order=column.querySelector('.col-head .done-order'),pressed=next.querySelector('.col-head .done-order')?.getAttribute('aria-pressed');

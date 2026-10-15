@@ -3,12 +3,12 @@
    a task from an item. */
 
 import { UIMotion } from '../../src/app/motion.js';
-import { patchBoardRow } from './board.js';
 import { optionalMark } from './controls.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
 import { App, D, canBoard, me, poolItems, poolTotal, report, runtime, state } from './model.js';
 import { closePop, stampOverlays } from './overlays.js';
+import { patchInPlace, placeRows } from './rows.js';
 
 function poolRowHtml(p) {
   const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();
@@ -40,10 +40,7 @@ function updatePool({ completeItemId } = {}) {
   const items = poolItems(state.poolTab);
   const ids = new Set(items.map((item) => item.id));
   list.querySelectorAll('[data-pool-item]').forEach((row) => { if (!ids.has(row.dataset.poolItem)) { if (!tabChanged) UIMotion.exit(row); row.remove(); } });
-  list.querySelector('.empty-note')?.remove();
-  list.querySelector('.pool-read-status')?.remove();
-  let cursor = list.firstElementChild;
-  items.forEach((item) => {
+  placeRows(list, items.map((item) => {
     let row = list.querySelector(`[data-pool-item="${esc(item.id)}"]`);
     if (row) {
       const editor=row.querySelector('.pool-description-editor');
@@ -53,7 +50,7 @@ function updatePool({ completeItemId } = {}) {
       const actions=element=>[...element.querySelectorAll('.act > button')].map(button=>button.className).join('|');
       const sameActions=row.className===fresh.className&&actions(row)===actions(fresh);
       row.className=fresh.className;
-      if(sameActions)patchBoardRow(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
+      if(sameActions)patchInPlace(row.querySelector('.pool-item-main'),fresh.querySelector('.pool-item-main'));
       else row.querySelector('.pool-item-main')?.replaceWith(fresh.querySelector('.pool-item-main'));
       if(item.id===completeItemId){editor?.remove();if(editedHere)row.querySelector('.pool-note-toggle')?.focus({preventScroll:true});}
       else if(editor){
@@ -62,12 +59,10 @@ function updatePool({ completeItemId } = {}) {
       }
     }
     if (!row) { const template = document.createElement('template'); setHTML(template,poolRowHtml(item)); row = template.content.firstElementChild; }
-    if (row !== cursor) list.insertBefore(row, cursor);
-    cursor = row.nextElementSibling;
-  });
+    return row;
+  }));
   if (!items.length) setHTML(list,poolReadNotice(true));
   else if(D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.error){const note=document.createElement('template');setHTML(note,poolReadNotice());list.append(note.content);}
-  list.querySelector('.pool-load-more')?.remove();
   const more=document.createElement('template');setHTML(more,poolLoadMoreHtml());list.append(more.content);
   view.querySelectorAll('[data-pool-tab]').forEach((button) => {
     const selected = button.dataset.poolTab === state.poolTab;

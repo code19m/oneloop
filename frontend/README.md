@@ -27,7 +27,8 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   (comments and the Inbox), `account.js` (Profile, Users and Settings),
   `storage.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and
   focus return), `controls.js` (selects, date fields, input cleaning),
-  `forms.js`, `toasts.js` and `drag.js`. They share `model.js` (view state and data
+  `forms.js`, `toasts.js`, `drag.js` and `rows.js` (redrawing a list in place,
+  so focus and a pressed button survive). They share `model.js` (view state and data
   lookups) and `format.js` (text, dates and icons), and animate with the one
   motion engine, `UIMotion` from `src/app/motion.js`. A module reaches the render
   pipeline through `App`, such as `App.refresh()`, and never imports
