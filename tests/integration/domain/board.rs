@@ -712,14 +712,15 @@ async fn task_pages_detect_concurrent_moves_and_sort_epic_numbers_across_prefixe
 async fn done_column_removal_and_anchored_move_do_not_rewrite_other_cards() {
     let f = fixture().await;
     f.db.transaction(|tx| {
-        // The trigger below counts every card that is written, so a few cards
-        // show what a large column does. The weekly workload times moves into
-        // and deletions from a Done column of about 50,000 cards.
+        // Position writes are recorded, so a few cards show what a large
+        // column does. The weekly workload times moves into and deletions
+        // from a Done column of about 50,000 cards.
         let mut insert=tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at,completed_at) VALUES(?1,'p1','e1',?2,?1,'Done column','done',?3,1,1,1)")?;
         for n in 1..=6_i64 {insert.execute(params![format!("bulk-{n}"),n,n*1024])?;}
-        tx.execute_batch("CREATE TABLE position_writes(id TEXT); CREATE TRIGGER count_position_writes AFTER UPDATE OF position ON tasks BEGIN INSERT INTO position_writes VALUES(NEW.id); END;")?;
         Ok(())
     }).await.unwrap();
+    count_position_writes(&f).await;
+    let mut completed_at = Vec::new();
     for (operation, payload, key) in [
         (
             DomainOperation::MoveTask,
@@ -737,33 +738,21 @@ async fn done_column_removal_and_anchored_move_do_not_rewrite_other_cards() {
             "bulk-delete",
         ),
     ] {
-        f.service
+        let result = f
+            .service
             .execute(&f.manager, command(operation, payload, key, Some(1)))
             .await
             .unwrap();
+        completed_at.push(result.entities[0]["completedAt"].clone());
     }
-    let writes: i64 = query_one(&f.db, "SELECT COUNT(*) FROM position_writes", []).await;
-    assert_eq!(writes, 2, "only the two moved cards write their positions");
-    let completion_times =
-        f.db.run(|c| {
-            Ok((
-                c.query_row(
-                    "SELECT completed_at FROM tasks WHERE id='bulk-1'",
-                    [],
-                    |r| r.get::<_, Option<i64>>(0),
-                )?,
-                c.query_row(
-                    "SELECT completed_at FROM tasks WHERE id='bulk-2'",
-                    [],
-                    |r| r.get::<_, Option<i64>>(0),
-                )?,
-            ))
-        })
-        .await
-        .unwrap();
     assert_eq!(
-        completion_times,
-        (Some(1), None),
+        position_writes(&f).await,
+        HashSet::from(["bulk-1".to_owned(), "bulk-2".to_owned()]),
+        "only the two moved cards write their positions"
+    );
+    assert_eq!(
+        completed_at[..2],
+        [json!(1), Value::Null],
         "reordering Done preserves completion history; reopening clears it"
     );
     let page = f

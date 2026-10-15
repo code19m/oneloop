@@ -12,7 +12,7 @@ use tower::ServiceExt;
 
 use crate::support::{
     http::{body_bytes, body_json},
-    query_one,
+    now, query_one,
 };
 
 use super::add_user;
@@ -162,7 +162,7 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
                 is_admin: false,
                 must_change_password: false,
             },
-            oneloop::auth::unix_now()?,
+            now(),
             &PasswordPolicy::default(),
         )?;
         Ok(())
@@ -430,7 +430,7 @@ async fn rotated_cookies_keep_the_original_absolute_deadline() {
         .await
         .unwrap();
     let mut cookie = session_cookie(&response);
-    let deadline = oneloop::auth::unix_now().unwrap() + 3600;
+    let deadline = now() + 3600;
     db.run(move |connection| {
         connection.execute(
             "UPDATE sessions SET created_at=?1,absolute_expires_at=?2,idle_expires_at=?2",
@@ -450,13 +450,13 @@ async fn rotated_cookies_keep_the_original_absolute_deadline() {
             r#"{"currentPassword":"correct horse battery staple","newPassword":"new password"}"#,
         ),
     ] {
-        let before = oneloop::auth::unix_now().unwrap();
+        let before = now();
         let response = app
             .clone()
             .oneshot(password_request(path, &cookie, body))
             .await
             .unwrap();
-        let after = oneloop::auth::unix_now().unwrap();
+        let after = now();
         assert_eq!(response.status(), StatusCode::OK);
         let issued = response.headers()[header::SET_COOKIE].to_str().unwrap();
         let max_age: i64 = issued

@@ -150,7 +150,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
                     is_admin: false,
                     must_change_password: false,
                 },
-                unix_now()?,
+                now(),
                 &oneloop::auth::password::PasswordPolicy::default(),
             )?;
             transaction.execute(
@@ -1279,14 +1279,13 @@ async fn stale_mcp_write_is_a_structured_conflict_with_current_revision() {
 
 #[tokio::test]
 async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects() {
-    use oneloop::auth::{Actor, ActorSource};
     use oneloop::collaboration::{CollaborationRuntime, CollaborationService};
     let (_dir, db, app, session, user) = fixture().await;
     add_project(&db, "project-2", "Beta Secret", "BET", &user).await;
+    let sender = support::add_people(&db, &[("sender", support::Role::Outsider)])
+        .await
+        .remove(0);
     db.transaction(move |tx| {
-        let now=unix_now()?;
-        tx.execute("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('sender','sender','Sender','x',1,1,1)",[])?;
-        tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('sender-session','sender','sender-hash',?1,?1,?1,?2,?2)",rusqlite::params![now,now+86400])?;
         for project in ["project-1","project-2"] {
             tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES(?1,'sender',1,1)",[project])?;
             tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES(?1,?1,'Track',0,1,1)",[project])?;
@@ -1294,17 +1293,6 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
             tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,?1,?1,1,?1,?2,'planning',0,1,1)",rusqlite::params![project,if project=="project-2" {"Confidential acquisition"} else {"Alpha"}])?;
         } Ok(())
     }).await.unwrap();
-    let sender = Actor {
-        user_id: "sender".into(),
-        username: "sender".into(),
-        display_name: "Sender".into(),
-        is_admin: false,
-        must_change_password: false,
-        authenticated_at: unix_now().unwrap(),
-        source: ActorSource::BrowserSession {
-            session_id: "sender-session".into(),
-        },
-    };
     let service = CollaborationService::new(db.clone());
     for (project, content) in [
         ("project-1", "@Owner Alpha mention"),

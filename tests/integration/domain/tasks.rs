@@ -315,19 +315,12 @@ async fn pool_promotion_is_atomic_and_preserves_item_on_validation_failure() {
         f.service.execute(&f.manager, invalid).await,
         Err(AppError::PreconditionFailed(_))
     ));
-    let count: i64 =
-        f.db.run({
-            let id = pool_id.clone();
-            move |c| {
-                Ok(
-                    c.query_row("SELECT COUNT(*) FROM pool_items WHERE id=?1", [id], |r| {
-                        r.get(0)
-                    })?,
-                )
-            }
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(
+        &f.db,
+        "SELECT COUNT(*) FROM pool_items WHERE id=?1",
+        [pool_id.clone()],
+    )
+    .await;
     assert_eq!(count, 1);
     let promoted=f.service.execute(&f.manager,command(DomainOperation::PromotePoolItem,json!({"poolItemId":pool_id,"epicId":"e1","deadline":"2020-01-01","assigneeIds":["u3"]}),"promotion",Some(1))).await.unwrap();
     assert!(

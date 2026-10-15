@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use oneloop::{Db, auth::unix_now};
+use oneloop::Db;
 use serde_json::{Value, json};
 use sha2::Digest;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ use tower::ServiceExt;
 use crate::support::{
     self,
     http::{body_bytes, body_json, body_text},
-    query_one,
+    now, query_one,
 };
 
 async fn fixture() -> (TempDir, Router, String) {
@@ -353,7 +353,7 @@ async fn composed_commands_replay_by_idempotency_key() {
 async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
     let (directory, app, token) = fixture().await;
     let db = Db::open(directory.path()).unwrap();
-    let before = unix_now().unwrap() - 3600;
+    let before = now() - 3600;
     let idle_before = before + 86400;
     db.run(move |connection| {
         connection.execute("UPDATE sessions SET last_activity_at=?1,idle_expires_at=?2", [before,idle_before])?;
@@ -764,7 +764,7 @@ async fn browser_route_inventory_enforces_auth_and_origin_before_extraction() {
     }
     for &(method, path, _) in BROWSER_ROUTES {
         // Fresh session per route so logout/revoke-others cannot invalidate later checks.
-        let now = unix_now().unwrap();
+        let now = now();
         connection.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
             SELECT ?1,user_id,?2,?3,?3,?3,?4,?4 FROM sessions LIMIT 1",
             rusqlite::params![uuid::Uuid::now_v7().to_string(), oneloop::auth::token_hash("inventory-session-00000000000000000000"), now, now+3600]).unwrap();

@@ -173,7 +173,7 @@ async fn registration_quota_uses_trusted_caller_and_retains_global_ceiling() {
         for index in 0..279 {
             connection.execute(
                 "INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at) VALUES(?1,'Seed','[]',?2)",
-                rusqlite::params![format!("seed-{index}"), unix_now()?],
+                rusqlite::params![format!("seed-{index}"), now()],
             )?;
         }
         Ok(())
@@ -198,7 +198,7 @@ async fn registration_quota_expires_old_caller_entries() {
         StatusCode::TOO_MANY_REQUESTS
     );
     db.run(|connection| {
-        let old = unix_now()? - 3601;
+        let old = now() - 3601;
         connection.execute(
             "UPDATE oauth_registration_attempts SET created_at=?1",
             [old],
@@ -296,10 +296,9 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let session_id = response.headers().get("mcp-session-id").cloned();
     let initialized = mcp_body(response).await;
     assert_eq!(initialized["result"]["serverInfo"]["name"], "oneloop");
-    let mut builder = Request::builder()
+    let builder = Request::builder()
         .method("POST")
         .uri("/mcp")
         .header(header::HOST, "127.0.0.1:8080")
@@ -307,9 +306,6 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("mcp-protocol-version", "2025-11-25");
-    if let Some(id) = session_id {
-        builder = builder.header("mcp-session-id", id);
-    }
     let response = app
         .clone()
         .oneshot(
@@ -557,7 +553,7 @@ async fn authorization_login_return_is_internal_validated_and_preserved() {
                 is_admin: false,
                 must_change_password: true,
             },
-            unix_now()?,
+            now(),
             &oneloop::auth::password::PasswordPolicy::default(),
         )?;
         Ok(())
@@ -608,20 +604,11 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
         "https://user@example.com/callback",
         "https://example.com/callback#fragment",
     ] {
-        let invalid = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/oauth/register")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({"client_name":"Bad","redirect_uris":[redirect]}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let invalid = registration(
+            &app,
+            json!({"client_name":"Bad","redirect_uris":[redirect]}),
+        )
+        .await;
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "{redirect}");
     }
     let client = register(&app).await;
@@ -670,19 +657,10 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
     assert_eq!(wrong_resource.status(), StatusCode::BAD_REQUEST);
     let wrong_verifier = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client),
-                ("code", &code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                (
-                    "code_verifier",
-                    "wrong-verifier-with-forty-three-characters-0123456789ABCDE",
-                ),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
+        .oneshot(code_request(
+            &client,
+            &code,
+            "wrong-verifier-with-forty-three-characters-0123456789ABCDE",
         ))
         .await
         .unwrap();
@@ -727,7 +705,7 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
     db.run(|connection| {
         connection.execute(
             "UPDATE mcp_tokens SET last_used_at=?1 WHERE rotated_to_id IS NOT NULL",
-            [unix_now()? - 31],
+            [now() - 31],
         )?;
         Ok(())
     })
@@ -857,9 +835,7 @@ async fn connected_app_clients(app: &Router, session: &str) -> Vec<String> {
 #[tokio::test]
 async fn member_removal_revokes_grants_even_if_re_added_before_next_request() {
     let (_dir, db, app, session, user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let pending_client = register(&app).await;
     let (pending_code, pending_verifier) = authorize(&app, &session, &pending_client).await;
     let admin = support::add_user(&db, "admin", true).await;
@@ -870,16 +846,8 @@ async fn member_removal_revokes_grants_even_if_re_added_before_next_request() {
         json!({"operation":"membership.add","payload":{"projectId":"project-1","userId":colleague.actor.user_id,"manageBoard":false,"manageRoadmap":false},"idempotencyKey":"add-colleague"}),
     )
     .await;
-    let colleague_client = register(&app).await;
-    let (code, verifier) = authorize_with(
-        &app,
-        &colleague.token,
-        &colleague_client,
-        &["project_read"],
-        &["project-1"],
-    )
-    .await;
-    let colleague_tokens = issue(&app, &colleague_client, &code, &verifier).await;
+    let (colleague_client, colleague_tokens) =
+        connect_app(&app, &colleague.token, &["project_read"], &["project-1"]).await;
 
     // Both changes land before the member's apps make another request.
     browser_command(
@@ -1039,16 +1007,13 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
     .await
     .unwrap();
     // This app also selected the project that stays, so the cascade alone would leave it working.
-    let both_client = register(&app).await;
-    let (code, verifier) = authorize_with(
+    let (both_client, both) = connect_app(
         &app,
         &session,
-        &both_client,
         &["project_read", "board_manage", "attachments"],
         &["project-1", "project-2"],
     )
     .await;
-    let both = issue(&app, &both_client, &code, &verifier).await;
     let both_access = both["access_token"].as_str().unwrap().to_owned();
     let mut mcp = McpClient::connect(&app, both_access.clone()).await;
     let ticket = tool_value(
@@ -1161,7 +1126,7 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
     db.run(move |connection| {
         connection.execute(
             "UPDATE mcp_tokens SET last_used_at=?1 WHERE kind='refresh' AND grant_id=(SELECT id FROM mcp_grants WHERE client_id=?2)",
-            rusqlite::params![unix_now()? - 30 * 24 * 60 * 60 - 1, idle_client_for_db],
+            rusqlite::params![now() - 30 * 24 * 60 * 60 - 1, idle_client_for_db],
         )?;
         Ok(())
     })
@@ -1335,9 +1300,7 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
 #[tokio::test]
 async fn inactive_accounts_cannot_redeem_codes_or_refresh_tokens() {
     let (_dir, db, app, session, user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let (pending, pending_verifier) = authorize(&app, &session, &client).await;
     // Only the flag changes, without the revocation an admin's deactivation
     // adds, so both endpoints must read the account's current state.
@@ -1368,9 +1331,7 @@ async fn inactive_accounts_cannot_redeem_codes_or_refresh_tokens() {
 async fn deactivation_ends_connections_until_the_app_connects_again() {
     let (_dir, db, app, session, user) = fixture().await;
     let admin = support::add_user(&db, "administrator", true).await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap();
     let (pending, pending_verifier) = authorize(&app, &session, &client).await;
     let auth = support::auth_service(&db);
@@ -1509,18 +1470,7 @@ async fn oauth_errors_are_protocol_shaped_even_for_extractor_rejections() {
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(body_json(response).await["error"], expected);
     }
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/oauth/register")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = registration(&app, json!({})).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
         body_json(response).await["error"],
@@ -1895,7 +1845,7 @@ async fn concurrent_refreshes_keep_the_grant_active_without_extending_grace() {
         use sha2::{Digest, Sha256};
         hex::encode(Sha256::digest(old.as_bytes()))
     };
-    let rotation = unix_now().unwrap() - 10;
+    let rotation = now() - 10;
     db.run({
         let old_hash = old_hash.clone();
         move |c| {
@@ -1968,7 +1918,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
     })
     .await
     .unwrap();
-    oneloop::retention::prune_transient_state(&db, unix_now().unwrap())
+    oneloop::retention::prune_transient_state(&db, now())
         .await
         .unwrap();
     let replay = app.clone().oneshot(request(&verifier)).await.unwrap();
@@ -2000,7 +1950,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    oneloop::retention::prune_transient_state(&db, unix_now().unwrap())
+    oneloop::retention::prune_transient_state(&db, now())
         .await
         .unwrap();
     let codes: i64 = query_one(&db, "SELECT COUNT(*) FROM oauth_authorization_codes", []).await;
@@ -2011,8 +1961,11 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
 async fn registration_labels_reject_display_spoofing_and_preserve_unicode() {
     let (_root, _db, app, _, _) = fixture().await;
     for name in ["bad\0name", "bad\u{202e}name", "\u{200b}", "bad\nname"] {
-        let response=app.clone().oneshot(Request::builder().method("POST").uri("/oauth/register").header(header::CONTENT_TYPE,"application/json")
-            .body(Body::from(json!({"client_name":name,"redirect_uris":["https://client.example.test/callback"]}).to_string())).unwrap()).await.unwrap();
+        let response = registration(
+            &app,
+            json!({"client_name":name,"redirect_uris":["https://client.example.test/callback"]}),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             body_json(response).await["error"],
@@ -2020,8 +1973,11 @@ async fn registration_labels_reject_display_spoofing_and_preserve_unicode() {
         );
     }
     let name = "می‌خواهم 👩‍💻";
-    let response=app.oneshot(Request::builder().method("POST").uri("/oauth/register").header(header::CONTENT_TYPE,"application/json")
-        .body(Body::from(json!({"client_name":name,"redirect_uris":["https://client.example.test/callback"]}).to_string())).unwrap()).await.unwrap();
+    let response = registration(
+        &app,
+        json!({"client_name":name,"redirect_uris":["https://client.example.test/callback"]}),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(body_json(response).await["client_name"], name);
 }

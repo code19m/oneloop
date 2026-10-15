@@ -123,17 +123,13 @@ async fn connections_enable_durable_sync_and_collect_planner_statistics() {
     }).await.unwrap();
     drop(db);
     let reopened = Db::open(root.path()).unwrap();
-    reopened
-        .run(|connection| {
-            assert!(connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE idx='planner_owner')",
-                [],
-                |r| r.get::<_, bool>(0)
-            )?);
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let analyzed: bool = query_one(
+        &reopened,
+        "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE idx='planner_owner')",
+        [],
+    )
+    .await;
+    assert!(analyzed);
 }
 
 #[cfg(unix)]

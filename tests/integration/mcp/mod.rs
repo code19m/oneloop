@@ -13,14 +13,14 @@ use axum::{
 };
 use oneloop::{
     Db,
-    auth::{LoginResult, NewUser, SessionMetadata, create_user, unix_now},
+    auth::{LoginResult, NewUser, SessionMetadata, create_user},
     db::{create_backup, restore_backup},
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::support::http::{body_bytes, body_json, body_text};
-use crate::support::{self, collaboration_command, drain, query_one};
+use crate::support::{self, collaboration_command, drain, now, query_one};
 
 pub(crate) async fn fixture() -> (tempfile::TempDir, Db, Router, String, String) {
     fixture_with_trusted_proxies("").await
