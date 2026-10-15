@@ -128,11 +128,16 @@ test.describe('on a phone', () => {
   test('the Roadmap header keeps Today, Milestone and Epic in view', async ({ page, instance }) => {
     await openApp(page, instance, 'roadmap');
     const header = page.locator('.topbar');
-    for (const name of ['Today', 'Milestone', 'Epic']) {
-      const box = await header.getByRole('button', { name, exact: true }).boundingBox();
-      expect(box.x, name).toBeGreaterThanOrEqual(0);
-      expect(box.x + box.width, name).toBeLessThanOrEqual(375);
+    for (const width of [375, 320]) {
+      await page.setViewportSize({ width, height: 812 });
+      for (const name of ['Today', 'Milestone', 'Epic']) {
+        const box = await header.getByRole('button', { name, exact: true }).boundingBox();
+        expect(box.x, `${width}: ${name}`).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, `${width}: ${name}`).toBeLessThanOrEqual(width);
+      }
     }
+    // At 320 pixels only screen readers get the heading.
+    await expect(header.getByRole('heading', { name: 'Roadmap', exact: true })).toBeAttached();
     // Pinch zoom, the wheel and W, M and Q still change the scale here.
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });

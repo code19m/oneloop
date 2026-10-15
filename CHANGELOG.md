@@ -83,6 +83,9 @@ All notable changes to oneloop are recorded here. The format follows
   skipped a page.
 - After you add a Pool item with a description, the description field closes,
   so the next item starts with its title. Before, it stayed open and empty.
+- On a 320-pixel-wide screen, the Roadmap header shows the whole **Epic**
+  button. Before, part of it was cut off. Screen readers still read the
+  Roadmap heading there.
 
 ### Security
 
