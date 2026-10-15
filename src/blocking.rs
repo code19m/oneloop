@@ -2,7 +2,11 @@
 //! blocking threads, so a burst of slow work can't take those threads or add
 //! up the memory each job needs.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -69,6 +73,62 @@ impl Turn {
         })
         .await
         .map_err(|error| AppError::internal(format!("{name} failed: {error}")))
+    }
+}
+
+/// One place per person for work that waits for a lane, so no one person can
+/// take every place in its queue.
+#[derive(Clone)]
+pub(crate) struct PerPerson {
+    people: Arc<Mutex<HashSet<String>>>,
+    /// The most people with a place at once.
+    max: usize,
+}
+
+/// A person's place, until it is dropped.
+pub(crate) struct Place {
+    people: Arc<Mutex<HashSet<String>>>,
+    user_id: String,
+}
+
+/// Why a person gets no place.
+pub(crate) enum Taken {
+    /// They have one already.
+    Mine,
+    /// All places are taken.
+    Full,
+}
+
+impl PerPerson {
+    pub(crate) fn new(max: usize) -> Self {
+        Self {
+            people: Arc::default(),
+            max,
+        }
+    }
+
+    pub(crate) fn claim(&self, user_id: &str) -> Result<Place, Taken> {
+        let mut people = self.people.lock().expect("per-person lock");
+        if people.contains(user_id) {
+            return Err(Taken::Mine);
+        }
+        if people.len() >= self.max {
+            return Err(Taken::Full);
+        }
+        people.insert(user_id.to_owned());
+        Ok(Place {
+            people: self.people.clone(),
+            user_id: user_id.to_owned(),
+        })
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.people
+            .lock()
+            .expect("per-person lock")
+            .remove(&self.user_id);
     }
 }
 

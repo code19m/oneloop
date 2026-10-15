@@ -10,7 +10,7 @@ mod mcp;
 pub use commands::KnowledgeCommand;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::Not,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -33,7 +33,7 @@ use crate::{
     AppError, AppResult, Db,
     access::{Need, require_project},
     auth::{Actor, ActorSource, refresh_actor_connection},
-    blocking::Lane,
+    blocking::{Lane, PerPerson},
     collaboration::ActivityInput,
     files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
 };
@@ -73,7 +73,7 @@ pub(super) struct Inner {
     searches: Lane,
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
-    searchers: Mutex<HashSet<String>>,
+    searchers: PerPerson,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -295,7 +295,7 @@ impl KnowledgeService {
                 builds: tokio::sync::Mutex::new(()),
                 readers: Lane::new("knowledge reader", 1),
                 searches: Lane::new("knowledge search", 1),
-                searchers: Mutex::new(HashSet::new()),
+                searchers: PerPerson::new(usize::MAX),
             }),
         }
     }

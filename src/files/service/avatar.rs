@@ -1,6 +1,6 @@
 //! Account avatars use bounded decoding and shared private-file storage.
 
-use std::{collections::HashSet, io::Cursor};
+use std::io::Cursor;
 
 use image::{ImageEncoder, ImageFormat};
 use rusqlite::{OptionalExtension, params};
@@ -18,6 +18,7 @@ use super::{
 use crate::{
     AppError, AppResult,
     auth::{Actor, refresh_actor_connection},
+    blocking::{Place, Taken},
     clock::unix_now,
     files::{FileStore, MAX_AVATAR_BYTES},
 };
@@ -25,7 +26,7 @@ use crate::{
 const AVATAR_SIDE: u32 = 256;
 /// Avatar uploads under way at once; each keeps its image in memory until it
 /// is decoded. More are told to retry.
-const AVATAR_UPLOADS: usize = 4;
+pub(super) const AVATAR_UPLOADS: usize = 4;
 /// How long an avatar upload waits for the decodes before it, thumbnails
 /// included. The slowest decode the limits allow takes about a second on a
 /// laptop, and a few seconds on a small server.
@@ -34,17 +35,7 @@ const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(3
 /// A place for one avatar upload, kept from its first byte through its
 /// decode, while the upload keeps its image in memory.
 pub struct AvatarSlot {
-    uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
-    user_id: String,
-}
-
-impl Drop for AvatarSlot {
-    fn drop(&mut self) {
-        self.uploaders
-            .lock()
-            .expect("avatar uploads lock")
-            .remove(&self.user_id);
-    }
+    _place: Place,
 }
 
 impl FileService {
@@ -52,20 +43,13 @@ impl FileService {
     /// person has one place at most, so no one can take them all. When all
     /// are taken, the upload is told to retry at once.
     pub fn avatar_slot(&self, actor: &Actor) -> AppResult<AvatarSlot> {
-        let mut uploaders = self.avatar_uploaders.lock().expect("avatar uploads lock");
-        if uploaders.contains(&actor.user_id) {
-            return Err(AppError::RateLimited { retry_after: 1 });
-        }
-        if uploaders.len() >= AVATAR_UPLOADS {
-            return Err(AppError::Unavailable(
+        match self.avatar_uploaders.claim(&actor.user_id) {
+            Ok(place) => Ok(AvatarSlot { _place: place }),
+            Err(Taken::Mine) => Err(AppError::RateLimited { retry_after: 1 }),
+            Err(Taken::Full) => Err(AppError::Unavailable(
                 "avatar processing is busy; retry shortly".into(),
-            ));
+            )),
         }
-        uploaders.insert(actor.user_id.clone());
-        Ok(AvatarSlot {
-            uploaders: self.avatar_uploaders.clone(),
-            user_id: actor.user_id.clone(),
-        })
     }
 
     pub async fn upload_avatar(

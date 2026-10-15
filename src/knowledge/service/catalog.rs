@@ -30,40 +30,15 @@ pub(super) struct Catalog {
     pub(super) index: Index,
 }
 
-/// A person's search while it runs or waits.
-struct Searching<'a> {
-    inner: &'a Inner,
-    user_id: &'a str,
-}
-
-impl<'a> Searching<'a> {
-    /// A person who already has a search is told to try again at once.
-    fn start(inner: &'a Inner, user_id: &'a str) -> AppResult<Self> {
-        let mut searchers = inner.searchers.lock().expect("searchers lock");
-        if !searchers.insert(user_id.to_owned()) {
-            return Err(AppError::Unavailable(
-                "your previous knowledge search is still running; try again shortly".into(),
-            ));
-        }
-        Ok(Self { inner, user_id })
-    }
-}
-
-impl Drop for Searching<'_> {
-    // A search ends when its request does, even one that is cancelled.
-    fn drop(&mut self) {
-        self.inner
-            .searchers
-            .lock()
-            .expect("searchers lock")
-            .remove(self.user_id);
-    }
-}
-
 impl KnowledgeService {
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
         actor.require_ready()?;
-        let _searching = Searching::start(&self.inner, &actor.user_id)?;
+        // A search ends when its request does, even one that is cancelled.
+        let _searching = self.inner.searchers.claim(&actor.user_id).map_err(|_| {
+            AppError::Unavailable(
+                "your previous knowledge search is still running; try again shortly".into(),
+            )
+        })?;
         let Some(catalog) = self.catalog(actor, project_id).await? else {
             return Ok(Results::default());
         };
@@ -244,7 +219,7 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::service::tests::synced_project;
+    use crate::{blocking::Taken, knowledge::service::tests::synced_project};
 
     #[tokio::test]
     async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
@@ -282,9 +257,13 @@ mod tests {
             let (service, actor) = (service.clone(), actor.clone());
             tokio::spawn(async move { service.search(&actor, "p", "shared").await })
         };
+        // Probes whether a person's search runs or waits; a free place is
+        // given back at once.
         let searching = |actor: &Actor| {
-            let searchers = service.inner.searchers.lock().unwrap();
-            searchers.contains(&actor.user_id)
+            matches!(
+                service.inner.searchers.claim(&actor.user_id),
+                Err(Taken::Mine)
+            )
         };
         // A long search holds the one slot, and Alice's search waits for it.
         let held = service.inner.searches.turn().await;

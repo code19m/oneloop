@@ -18,7 +18,6 @@ pub(crate) use thumbnail::ThumbnailRead;
 pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
 
 use std::{
-    collections::HashSet,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -38,7 +37,7 @@ use super::{
 use crate::{
     AppError, AppResult, Db,
     auth::Actor,
-    blocking::Lane,
+    blocking::{Lane, PerPerson},
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
     db::DataLayout,
     disk::DiskAdmission,
@@ -52,7 +51,7 @@ pub struct FileService {
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
     /// People with an avatar upload under way, one upload each.
-    avatar_uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    avatar_uploaders: PerPerson,
     scans: Lane,
     /// One image decode at a time, for avatar uploads and thumbnails together,
     /// so their memory never adds up.
@@ -183,7 +182,7 @@ impl FileService {
             storage_limit_bytes,
             disk,
             thumbnails: Default::default(),
-            avatar_uploaders: Default::default(),
+            avatar_uploaders: PerPerson::new(avatar::AVATAR_UPLOADS),
             scans: Lane::new("file scanner", 2),
             decodes: Lane::new("image decoder", 1),
             inspections: Lane::new("text inspection", 2),
