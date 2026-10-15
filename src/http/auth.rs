@@ -68,9 +68,6 @@ pub async fn account_boundary(
     )?;
     if !matches!(request.uri().path(), "/api/auth/login" | "/api/auth/logout") {
         let actor = authenticate_headers(&state, request.headers(), true).await?;
-        if request.uri().path().starts_with("/api/users") {
-            actor.require_admin()?;
-        }
         request.extensions_mut().insert(actor);
     }
     Ok(next.run(request).await)
