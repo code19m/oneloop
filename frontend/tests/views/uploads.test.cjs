@@ -208,7 +208,7 @@ test('a task holds at most 25 files, uploads them as permanent and previews text
 
 test('text file names match the server detection list', () => {
   const read = file => fs.readFileSync(path.resolve(__dirname, '../../..', file), 'utf8');
-  const js = read('frontend/views/uploads.js'), rust = read('src/files/service/detect.rs');
+  const js = read('frontend/views/uploads.js'), rust = read('src/files/detect.rs');
   const body = rust.slice(rust.indexOf('fn is_text_name('), rust.indexOf('fn is_text_name(') + 8000).split('\n}')[0];
   const ext = js.match(/textExtensions=new Set\('([^']+)'/)[1].split(' ');
   const names = [...js.match(/textNames=new Set\(\[(.*?)\]/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
