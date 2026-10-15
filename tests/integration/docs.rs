@@ -8,7 +8,7 @@ use clap::CommandFactory;
 use oneloop::cli::Cli;
 use serde_json::json;
 
-use crate::mcp::{McpClient, authorize, fixture, issue, register};
+use crate::mcp::{ALL_SCOPES, fixture, scoped_mcp};
 
 fn read(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -97,11 +97,7 @@ fn command_reference_names_every_subcommand() {
 #[tokio::test]
 async fn mcp_reference_lists_every_tool_and_operation() {
     let (_dir, _db, app, session, _user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let listed = mcp.request("tools/list", json!({})).await;
     let registered = listed["result"]["tools"].as_array().unwrap();
     let docs = read("docs/src/mcp.md");

@@ -1,5 +1,5 @@
 use oneloop::{
-    AppError, Db,
+    AppError,
     auth::{
         AccountUpdate, Actor, ActorSource, AuthService, LoginResult, NewUser, SessionMetadata,
         create_user,
@@ -10,35 +10,11 @@ use oneloop::{
 
 use crate::support::{auth_service, database};
 
-async fn add_user(db: &Db, username: &str, admin: bool, temporary: bool) -> String {
-    let username = username.to_owned();
-    db.transaction(move |tx| {
-        Ok(create_user(
-            tx,
-            NewUser {
-                display_name: username.clone(),
-                username,
-                password: "correct horse battery staple".into(),
-                is_admin: admin,
-                must_change_password: temporary,
-            },
-            1_700_000_000,
-            &PasswordPolicy::default(),
-        )?
-        .id)
-    })
-    .await
-    .unwrap()
-}
+use super::{PASSWORD, add_user};
 
 async fn login(service: &AuthService, username: &str) -> (String, Actor) {
     match service
-        .login(
-            username,
-            "correct horse battery staple",
-            SessionMetadata::default(),
-            None,
-        )
+        .login(username, PASSWORD, SessionMetadata::default(), None)
         .await
         .unwrap()
     {
@@ -71,12 +47,7 @@ async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application()
     ));
     assert!(matches!(
         service
-            .login(
-                "inactive",
-                "correct horse battery staple",
-                SessionMetadata::default(),
-                None
-            )
+            .login("inactive", PASSWORD, SessionMetadata::default(), None)
             .await,
         Err(AppError::InvalidCredentials)
     ));
@@ -255,11 +226,7 @@ async fn changing_password_keeps_only_the_current_browser_and_revokes_apps() {
     .unwrap();
 
     let changed = service
-        .change_password(
-            &second,
-            "correct horse battery staple",
-            "an even better password",
-        )
+        .change_password(&second, PASSWORD, "an even better password")
         .await
         .unwrap();
     assert!(!changed.actor.must_change_password);
@@ -354,19 +321,14 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
     }).await.unwrap();
     let service = auth_service(&db);
     let limited = service
-        .login(
-            "sessionuser",
-            "correct horse battery staple",
-            SessionMetadata::default(),
-            None,
-        )
+        .login("sessionuser", PASSWORD, SessionMetadata::default(), None)
         .await
         .unwrap();
     assert!(matches!(limited,LoginResult::SessionLimit{ref sessions} if sessions.len()==10));
     let issued = service
         .login(
             "sessionuser",
-            "correct horse battery staple",
+            PASSWORD,
             SessionMetadata::default(),
             Some("session-0".into()),
         )
@@ -400,7 +362,7 @@ async fn login_throttles_and_expired_sessions_fail_closed() {
     }).await.unwrap();
     let service = auth_service(&db);
     assert!(
-        matches!(service.login("limited","correct horse battery staple",SessionMetadata::default(),None).await,
+        matches!(service.login("limited",PASSWORD,SessionMetadata::default(),None).await,
         Err(AppError::RateLimited{retry_after}) if retry_after>0)
     );
 
@@ -587,7 +549,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                 NewUser {
                     username: "oversized".into(),
                     display_name: "x".repeat(81),
-                    password: "correct horse battery staple".into(),
+                    password: PASSWORD.into(),
                     is_admin: false,
                     must_change_password: false,
                 },
@@ -610,7 +572,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                 NewUser {
                     username: "boundary".into(),
                     display_name: "🙂".repeat(40),
-                    password: "correct horse battery staple".into(),
+                    password: PASSWORD.into(),
                     is_admin: false,
                     must_change_password: false,
                 },
@@ -731,7 +693,7 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
             temporary_lifetime_seconds: None,
         },
     );
-    let current = "correct horse battery staple";
+    let current = PASSWORD;
     let (_, member) = login(&service, "longusername").await;
     for (password, message) in [
         ("eleven char", "Use at least 12 characters."),
@@ -789,7 +751,7 @@ async fn temporary_passwords_stop_working_after_the_configured_lifetime() {
     let (_directory, db) = database();
     // Set at 1_700_000_000, long before now.
     add_user(&db, "invited", false, true).await;
-    let password = "correct horse battery staple";
+    let password = PASSWORD;
     let weekly = AuthService::new(
         db.clone(),
         PasswordPolicy {
@@ -1004,11 +966,11 @@ async fn password_gates_share_account_delay_across_sessions_and_clear_on_success
         assert!(matches!(error, AppError::IncorrectPassword { .. }));
     }
     assert!(
-        matches!(service.recent_authenticate(&other, "correct horse battery staple").await,
+        matches!(service.recent_authenticate(&other, PASSWORD).await,
         Err(AppError::RateLimited { retry_after }) if retry_after > 0)
     );
     assert!(
-        matches!(service.change_password(&actor, "correct horse battery staple", "new password").await,
+        matches!(service.change_password(&actor, PASSWORD, "new password").await,
         Err(AppError::RateLimited { retry_after }) if retry_after > 0)
     );
     assert!(service.authenticate_session(&token, false).await.is_ok());
@@ -1019,10 +981,7 @@ async fn password_gates_share_account_delay_across_sessions_and_clear_on_success
     })
     .await
     .unwrap();
-    let refreshed = service
-        .recent_authenticate(&other, "correct horse battery staple")
-        .await
-        .unwrap();
+    let refreshed = service.recent_authenticate(&other, PASSWORD).await.unwrap();
     let failures: i64 = db
         .run(|connection| {
             Ok(connection
@@ -1127,12 +1086,10 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
             }).await.unwrap();
             let result = if change_password {
                 service
-                    .change_password(&actor, "correct horse battery staple", "replacement")
+                    .change_password(&actor, PASSWORD, "replacement")
                     .await
             } else {
-                service
-                    .recent_authenticate(&actor, "correct horse battery staple")
-                    .await
+                service.recent_authenticate(&actor, PASSWORD).await
             };
             assert!(
                 matches!(result, Err(AppError::Unauthorized)),
@@ -1250,12 +1207,7 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
     };
     assert!(matches!(
         service
-            .login(
-                "target",
-                "correct horse battery staple",
-                metadata.clone(),
-                None
-            )
+            .login("target", PASSWORD, metadata.clone(), None)
             .await,
         Err(AppError::RateLimited { .. })
     ));
@@ -1267,7 +1219,7 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
     .unwrap();
     assert!(matches!(
         service
-            .login("target", "correct horse battery staple", metadata, None)
+            .login("target", PASSWORD, metadata, None)
             .await
             .unwrap(),
         LoginResult::Authenticated(_)
@@ -1312,7 +1264,7 @@ async fn ipv6_subnet_login_throttle_preserves_exact_session_address() {
     let result = service
         .login(
             "target",
-            "correct horse battery staple",
+            PASSWORD,
             SessionMetadata {
                 client_ip: Some(exact.into()),
                 ..Default::default()
