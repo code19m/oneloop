@@ -32,9 +32,9 @@
  const context=()=>commentMode;
  const keyFor=(t,c=context())=>JSON.stringify([me()?.id,t.id,c.mode,c.target]);
  function editor(t){const key=keyFor(t);if(commentEditor?.key!==key)commentEditor={key,text:'',mentions:[],editorId:id('editor'),interactionId:id('interaction'),revision:null};return commentEditor;}
- const legacyMentions=tokens=>(tokens||[]).map(token=>Object.hasOwn(token,'start')?token:{id:token.kind==='everyone'?'everyone':token.userId,label:String(token.label||'').replace(/^@/,''),start:token.startOffset,end:token.endOffset});
+ const {mentionsToWire:wireMentions,mentionFromWire}=window.OneloopCollaboration;
+ const legacyMentions=tokens=>(tokens||[]).map(token=>Object.hasOwn(token,'start')?token:mentionFromWire(token));
  const hasInvalidMention=(mentions,eligible,saved)=>{const retained=new Set(legacyMentions(saved).map(m=>m.id));return mentions.some(m=>m.id!=='everyone'&&!eligible.has(m.id)&&!retained.has(m.id));};
- const wireMentions=(text,tokens)=>(tokens||[]).map(token=>({kind:token.id==='everyone'?'everyone':'user',...(token.id==='everyone'?{}:{userId:token.id}),startOffset:token.start,endOffset:token.end,label:text.slice(token.start,token.end)}));
  function blockInputState(t){const key=JSON.stringify([me()?.id,t.id,t.block?.id||'new']);if(blockEditor?.key!==key)blockEditor={key,text:t.block?.reason||'',mentions:structured(legacyMentions(t.block?.mentions))};return blockEditor;}
  function beforeRender(next){
   capture();

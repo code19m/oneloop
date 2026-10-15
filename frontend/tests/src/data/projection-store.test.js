@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap, wireStatus } from '../../../src/data/projection-store.js';
+import { createLegacyData, hydrateLegacyData, mergeAdminUsersPage, mergeEpicActivityPage, mergeEpicTaskPage, reconcileCommandResult, appendBoardTasks, replacePoolPage, replaceTaskDetail, replaceBoardTasks, replaceRoadmap } from '../../../src/data/projection-store.js';
+import { toWireStatus } from '../../../src/data/wire.js';
 
 const bootstrap = () => ({
   view: 'board', timeZone: 'Asia/Tashkent',
@@ -29,7 +30,34 @@ test('bootstrap hydrates one stable legacy root and performs explicit wire mappi
   assert.equal(data.epics[0].total, 1);
   replacePoolPage(data, 'p1', 'personal', [{ id:'pool1', projectId:'p1', scope:'personal', ownerUserId:'u1', title:'Later', description:'', createdAt:100, revision:1 }]);
   assert.equal(data.pool[0].scope, 'mine');
-  assert.equal(wireStatus('review'), 'in_review');
+  assert.equal(toWireStatus('review'), 'in_review');
+});
+
+test('a read and a command result give each entity the same fields under the client\'s names', () => {
+  const data = createLegacyData();
+  hydrateLegacyData(data, bootstrap());
+  const block = { id:'b1', reason:'Waiting', createdBy:'u1', createdAt:100, revision:1, mentions:[] };
+  const cases = [
+    ['project', data.projects, { id:'p2', name:'Pine', taskPrefix:'PIN', revision:1 }, { name:'Pine', key:'PIN', taskPrefix:'PIN' }],
+    ['track', data.tracks, { id:'tr2', projectId:'p1', name:'API', description:'Calls', position:2, revision:1 }, { projectId:'p1', name:'API', desc:'Calls', order:2 }],
+    ['epic', data.epics, { id:'e2', projectId:'p1', trackId:'tr1', title:'Beta', description:'Try', startDate:'2026-10-01', endDate:'2026-11-01', state:'planning', position:2, taskTotal:3, taskDone:1, taskOpen:2, completedThisWeek:1, completedSinceStart:1, weeklyCompletions:[1], revision:1 },
+      { projectId:'p1', trackId:'tr1', title:'Beta', desc:'Try', start:'2026-10-01', end:'2026-11-01', state:'planning', order:2, total:3, done:1, open:2, closedThisWeek:1, completedSinceStart:1, weekly:[1], counted:true }],
+    ['milestone', data.milestones, { id:'m2', projectId:'p1', title:'Beta', description:'Ready', milestoneDate:'2026-11-01', revision:1 }, { projectId:'p1', name:'Beta', desc:'Ready', date:'2026-11-01' }],
+    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1 },
+      { internalId:'opaque-2', id:'BIR-002', projectId:'p1', epicId:'e1', title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, completedAt:null, completionOrder:null, assignees:['u1'],
+        block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null } }],
+    ['poolItem', data.pool, { id:'i2', projectId:'p1', scope:'team', ownerUserId:null, title:'Idea', description:'Later', createdAt:100, revision:1 }, { projectId:'p1', scope:'project', ownerId:null, title:'Idea', desc:'Later', created:100000 }],
+  ];
+  for (const [entityType, collection, view, expected] of cases) {
+    reconcileCommandResult(data, { entities: [{ entityType, ...view }] });
+    const item = collection.find((entry) => (entry.internalId ?? entry.id) === view.id);
+    for (const [key, value] of Object.entries(expected)) assert.deepEqual(item[key], value, `${entityType}.${key} from a read`);
+    // A later result with every field changes each of them in place.
+    for (const key of Object.keys(expected)) if (key !== 'internalId') item[key] = 'stale';
+    reconcileCommandResult(data, { entities: [{ entityType, ...view, revision: 2 }] });
+    for (const [key, value] of Object.entries(expected)) assert.deepEqual(item[key], value, `${entityType}.${key} from a command result`);
+    assert.equal(item.revision, 2);
+  }
 });
 
 test('canonical command entities replace by opaque identity and never create activity', () => {

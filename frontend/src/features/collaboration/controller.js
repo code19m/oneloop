@@ -7,19 +7,9 @@ import {replaceTaskDetail} from '../../data/projection-store.js';
 import {mapActivity} from '../../data/activity-mapper.js';
 import {mapInboxItem} from '../../data/inbox-mapper.js';
 import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js';
+import {mentionFromWire,mentionsToWire} from '../../data/wire.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
-
-/** Convert the selected ranges kept by the polished composer to the API shape. */
-export function mentionsToWire(text, mentions = []) {
-  return mentions.map((mention) => ({
-    kind: mention.id === 'everyone' ? 'everyone' : 'user',
-    ...(mention.id === 'everyone' ? {} : { userId: mention.id }),
-    startOffset: mention.start,
-    endOffset: mention.end,
-    label: text.slice(mention.start, mention.end),
-  }));
-}
 
 /** @param {any} comment */
 export function mapComment(comment) {
@@ -36,12 +26,7 @@ export function mapComment(comment) {
     parentId: comment.rootId === comment.id ? null : comment.rootId,
     replyToId: comment.replyToId ?? null,
     revision: comment.revision,
-    mentions: (comment.mentions ?? []).map((mention) => ({
-      id: mention.kind === 'everyone' ? 'everyone' : mention.userId,
-      label: String(mention.label ?? '').replace(/^@/, ''),
-      start: mention.startOffset,
-      end: mention.endOffset,
-    })),
+    mentions: (comment.mentions ?? []).map(mentionFromWire),
   };
 }
 
@@ -518,6 +503,8 @@ export function installCollaborationController({ transport, eventSourceFactory =
     setArchived:(id,currentlyArchived)=>changeInbox(currentlyArchived?'inbox.restore':'inbox.archive',id),
     bulk:(action,filter)=>bulkInbox(action==='read'?'inbox.bulkMarkRead':'inbox.bulkArchive',filter),
     openNotification,
+    // collaboration.js, a classic script, maps mentions with these.
+    mentionsToWire,mentionFromWire,
     dispose(){disposed=true;stopWaitingForUse();visibility?.removeEventListener?.('visibilitychange',visibilityChanged);unsubscribe?.();source?.close?.();source=null;taskController?.abort();inboxController?.abort();clearProjectReconcile();clearLiveReads();sessionCheck=null;},
   };
   globalThis.OneloopCollaboration=controller;

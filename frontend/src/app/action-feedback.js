@@ -1,6 +1,6 @@
 // @ts-check
 
-const LEGACY_TO_WIRE_STATUS = Object.freeze({ planning:'planning', progress:'in_progress', review:'in_review', done:'done' });
+import { toWireStatus } from '../data/wire.js';
 
 /** @param {unknown[]} left @param {unknown[]} right */
 function sameSet(left, right) {
@@ -56,7 +56,7 @@ export function commandIsUnchanged(operation, payload, entity) {
         && (!has('assigneeIds') || sameSet(payload.assigneeIds ?? [], entity.assignees ?? entity.assigneeIds ?? []));
     case 'task.move': {
       if (has('beforeTaskId') || has('afterTaskId')) return false;
-      const sameStatus = !has('status') || payload.status === (LEGACY_TO_WIRE_STATUS[entity.state] ?? entity.status ?? entity.state);
+      const sameStatus = !has('status') || payload.status === (entity.state === undefined ? entity.status : toWireStatus(entity.state));
       // Stored positions may have gaps; a command position is an insertion index.
       return sameStatus && !has('position');
     }

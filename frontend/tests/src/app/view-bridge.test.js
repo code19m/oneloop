@@ -670,6 +670,16 @@ test('a conflict over a dialog\'s date draws the dialog again, since its picker 
   assert.equal(target.latestValue({start:'2026-02-01'}),'2026-02-01','the prompt still names the saved date');
 }));
 
+test('a conflict over a milestone\'s name shows the saved name',()=>withFormData(async()=>{
+  let target;
+  const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'milestone:m1',finishRevision(){},handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
+  const state=fixture({view:'roadmap',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
+  const milestone={id:'m1',projectId:'p1',name:'Launch',desc:'',date:'2026-11-10',revision:1};state.data.milestones.push(milestone);
+  state.app.openModal('milestone','m1');
+  state.app.saveMilestone({preventDefault(){},target:dialogForm({name:'Public launch',desc:'',date:'2026-11-10'})},'m1');await tick();await tick();
+  assert.equal(target.latestValue({...milestone,name:'Beta launch'}),'Beta launch');
+}));
+
 test('a dialog whose conflict prompt closed without a choice saves again from the revision it was opened at',()=>withFormData(async()=>{
   const remembered=new Map([['epic:e1',1]]),sent=[];
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',revisionKey:()=>'epic:e1',expectedRevision:(key,latest)=>remembered.get(key)??latest,finishRevision:key=>remembered.delete(key),handleCommandFailure:async()=>{},

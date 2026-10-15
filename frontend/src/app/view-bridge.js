@@ -1,7 +1,8 @@
 // @ts-check
 
 import { ApiError } from '../data/api-client.js';
-import { mergeAdminUsersPage, wireStatus } from '../data/projection-store.js';
+import { clientField, mapUser, mergeAdminUsersPage } from '../data/projection-store.js';
+import { toWireScope, toWireStatus } from '../data/wire.js';
 import { saveDoneOrder } from '../data/done-order.js';
 import {
   actionErrorFeedback,
@@ -141,7 +142,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
 
   async function reloadConflict(operation,payload,original,options){
     if(operation.startsWith('task.')){const item=task(payload.taskId??payload.id??original?.internalId??original?.id);if(item)await reads.task(item.internalId);return;}
-    if(operation.startsWith('pool.')){await reads.pool(context().projectId,options.poolScope??(original?.scope==='project'?'team':'personal'));return;}
+    if(operation.startsWith('pool.')){await reads.pool(context().projectId,options.poolScope??toWireScope(original?.scope));return;}
     if(/^(?:epic|track|milestone)\./.test(operation)){const projectId=original?.projectId??context().projectId;if(projectId)await reads.roadmap(projectId);return;}
     await reloadBootstrap({projectId:context().projectId});app.refresh();
   }
@@ -153,12 +154,13 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     return keys.length===1?keys[0]:null;
   }
 
+  /** The value of the one field a save changes, in `item`: the payload, or the entity as the client keeps it. */
   function conflictValue(operation,payload,item){
     const field=conflictField(payload);
-    const aliases={description:'desc',startDate:'start',endDate:'end',milestoneDate:'date',taskPrefix:'key',status:'state',assigneeIds:'assignees'};
     if(!field)return undefined;
     if(item===payload)return payload[field];
-    return item?.[aliases[field]??field];
+    const entityType=operation.startsWith('task.block')?'taskBlock':operation.startsWith('pool.')?'poolItem':operation.split('.')[0];
+    return item?.[clientField(entityType,field)];
   }
 
   /** The control of a dialog's field, in the dialog as it is drawn now. */
@@ -319,7 +321,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     // Status shows the saved status again behind the dialog, which opens once
     // the Status menu has returned focus, so it takes focus and gives it back.
     if(field==='state'&&value==='done'&&item.block){app.refresh();queueMicrotask(()=>app.openModal('completeBlocked',item.id));return false;}
-    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:wireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
+    if(field==='state')return accepted(execute('task.move',{taskId:item.internalId,status:toWireStatus(value)},item,null,{reload:true,coalesce:true}).then((result)=>noteTaskSaved(result,item.id)));
     const names={title:'title',desc:'description',deadline:'deadline',epicId:'epicId'};
     if(!names[field])return false;
     const next=field==='deadline'?(value||null):text(value,field==='title'?140:4000);
@@ -605,7 +607,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     if(!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username))return fieldError(form,'username','Use 3–32 lowercase letters, numbers, dots, dashes, or underscores.');
     const create=()=>api.createUser({username:text(values.get('username'),32),displayName,isAdmin:values.has('admin')}).then(({user,temporaryPassword})=>{
       if(sessionScope()!==scope)return;
-      const account=mapAccount(user);
+      const account=mapUser(user);
       if(data.adminUsers.loaded){
         // Users list in the server's username order, a page at a time. A new
         // account joins only the loaded range; otherwise its own page brings it.
@@ -726,7 +728,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const enteredTitle=input.value,title=text(enteredTitle,140);
     if(!title){if(!capturesSending)app.toast('Give the Pool item a title.','error');return false;}
     const notes=/** @type {HTMLTextAreaElement|null} */(document.getElementById('poolNewDesc'));
-    const description=text(notes?.value||'',2000),scope=context().poolTab==='project'?'team':'personal',projectId=context().projectId,sent=sessionScope(),userId=data.session?.userId??'';
+    const description=text(notes?.value||'',2000),scope=toWireScope(context().poolTab),projectId=context().projectId,sent=sessionScope(),userId=data.session?.userId??'';
     // An item sent again after an unknown result keeps its key, so it is added once.
     const returned=returnedCapture;returnedCapture=null;
     const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
@@ -745,7 +747,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const input=/** @type {HTMLInputElement|null} */(globalThis.document?.getElementById?.('poolAdd'));
     const notes=/** @type {HTMLTextAreaElement|null} */(globalThis.document?.getElementById?.('poolNewDesc'));
     if(!input||input.hidden||input.value||notes?.value)return;
-    const scope=context().poolTab==='project'?'team':'personal',index=unsentCaptures.findIndex(item=>item.projectId===context().projectId&&item.scope===scope);
+    const scope=toWireScope(context().poolTab),index=unsentCaptures.findIndex(item=>item.projectId===context().projectId&&item.scope===scope);
     if(index<0)return;
     const [item]=unsentCaptures.splice(index,1);
     input.value=item.title;
@@ -759,8 +761,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     returnedCapture={projectId:item.projectId,scope:item.scope,title:item.title,description:item.description,key:item.key};
   }
   recovery?.trackUnsaved?.(()=>unsentCaptures.some(item=>!data.session||item.userId===data.session.userId));
-  app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:item.scope==='project'?'team':'personal',form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
-  app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:item.scope==='project'?'team':'personal',paint:false,onAccepted:()=>app.refreshPool?.()}))});};
+  app.savePoolDescription=(event,id)=>{const form=event.target,values=formValues(event),item=poolItem(id);if(!item)return false;return fire(execute('pool.update',{poolItemId:item.id,description:text(values.get('desc'),2000)},item,'Description saved',{poolScope:toWireScope(item.scope),form,paint:false,onAccepted:()=>completeForm(form,()=>app.refreshPool?.({completeItemId:id}))}));};
+  app.delPool=(event,id)=>{event?.stopPropagation?.();const item=poolItem(id);if(!item)return;app.confirm({title:'Delete Pool item?',text:item.title,action:'Delete item',confirm:()=>fire(execute('pool.delete',{id:item.id},item,'Pool item deleted',{poolScope:toWireScope(item.scope),paint:false,onAccepted:()=>app.refreshPool?.()}))});};
 
   app.saveProjectNew=(event)=>{
     const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
@@ -791,7 +793,6 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.removeMember=(userId)=>{const project=data.projects.find((item)=>item.id===context().projectId),membership=project?.members.find((item)=>item.userId===userId);if(!membership)return;const assigned=data.tasks.filter((item)=>item.projectId===project.id&&item.state!=='done'&&(item.assignees||[]).includes(userId));if(assigned.length){showMemberOpenWork(project,userId,assigned.length);return false;}app.confirm({title:'Remove member?',text:'They will lose access to this project.',action:'Remove member',confirm:()=>fire(execute('membership.remove',{projectId:project.id,userId},membership,'Member removed',{handleError:(error)=>{if(!['member_has_open_tasks','precondition_failed'].includes(error?.code))return false;showMemberOpenWork(project,userId);return true;}}).catch(report))});};
   app.deleteProject=()=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item)return;app.confirm({title:'Delete project?',text:'This permanently removes the project and all of its work.',action:'Delete project',match:item.name,confirm:()=>fire(auth.withRecentAuth(()=>execute('project.delete',{projectId:item.id,confirmedName:item.name},item,'Project deleted')).then((result)=>ifCurrent(result,()=>nav('roadmap'))).catch(report))});};
 
-  const mapAccount=(user)=>({id:user.id,username:user.username,name:user.displayName,admin:user.isAdmin,active:user.isActive,mustChange:user.mustChangePassword,avatar:user.avatarUrl??null,revision:user.revision});
   /**
    * A refresh with `keepDepth` reloads as many pages as were loaded, so the list keeps its place.
    * A `background` (live) refresh is passive: it never counts as the person using the session.
@@ -811,7 +812,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     }
     catch(error){if(generation!==usersGeneration||error?.code==='aborted'||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};data.adminUsers.loading=false;data.adminUsers.error='Could not load users.';app.refreshUsers?.();return {error};}
     if(generation!==usersGeneration||expectedSession!==sessionScope()||!['users','settings'].includes(context().view))return {stale:true};
-    const mapped=response.users.map(mapAccount);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
+    const mapped=response.users.map(mapUser);usersAfter=Object.hasOwn(response,'nextCursor')?response.nextCursor:(mapped.length===50?mapped.at(-1).username:null);usersDepth=append?usersDepth+1:pages;mergeAdminUsersPage(data,mapped,{append,nextCursor:usersAfter});data.adminUsers.loading=false;data.adminUsers.error=null;append?app.acceptMoreUsers():app.refreshUsers?.();return {stale:false};
   }
   app.retryUsers=()=>fire(loadUsers(false).catch(report));
   app.loadMoreUsers=()=>{if(usersAfter&&!data.adminUsers.loading)return fire(loadUsers(true).catch(report));};
@@ -890,7 +891,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
      * An `optimistic` move already shows, so it paints nothing and says nothing.
      * @param {{taskId:string,status:string,position?:number,beforeTaskId?:string,afterTaskId?:string,optimistic?:boolean}} move
      */
-    async moveTask(move){const item=task(move.taskId),body={taskId:item.internalId,status:wireStatus(move.status)};for(const key of ['position','beforeTaskId','afterTaskId'])if(move[key]!==undefined)body[key]=move[key];return execute('task.move',body,item,move.optimistic?null:'Task moved',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
+    async moveTask(move){const item=task(move.taskId),body={taskId:item.internalId,status:toWireStatus(move.status)};for(const key of ['position','beforeTaskId','afterTaskId'])if(move[key]!==undefined)body[key]=move[key];return execute('task.move',body,item,move.optimistic?null:'Task moved',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
     /** @param {{trackId:string,position:number,optimistic?:boolean}} move */
     async moveTrack(move){const item=track(move.trackId);return execute('track.reorder',{trackId:item.id,position:move.position},item,move.optimistic?null:'Track reordered',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
     /** @param {string} order `completed` lists the newest Done task first; anything else keeps the manual order. */
@@ -911,9 +912,9 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
     },
     /** @param {string} scope `mine` or `project`, as the Pool's tabs name them */
-    async selectPool(scope){returnCaptures();return reads.pool(context().projectId,scope==='project'?'team':'personal');},
+    async selectPool(scope){returnCaptures();return reads.pool(context().projectId,toWireScope(scope));},
     /** @param {string} scope */
-    async loadMorePool(scope){return reads.morePool(context().projectId,scope==='project'?'team':'personal');},
+    async loadMorePool(scope){return reads.morePool(context().projectId,toWireScope(scope));},
     /** Switch to another project, once typed text may be left. @param {string} projectId */
     async selectProject(projectId){
       if(!await mayLeavePage())return {stale:true};

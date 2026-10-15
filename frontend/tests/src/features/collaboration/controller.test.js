@@ -3,7 +3,8 @@ import test, {mock} from 'node:test';
 import {mapInboxItem} from '../../../../src/data/inbox-mapper.js';
 import {ApiError} from '../../../../src/data/api-client.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
-import {installCollaborationController,mapActivity,mapComment,mentionsToWire} from '../../../../src/features/collaboration/controller.js';
+import {installCollaborationController,mapActivity,mapComment} from '../../../../src/features/collaboration/controller.js';
+import {mentionsToWire} from '../../../../src/data/wire.js';
 
 // The controller coalesces live reads with 60 ms timers. Tests that observe
 // that coalescing drive a mocked clock and let promise chains settle between

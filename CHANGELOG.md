@@ -75,6 +75,9 @@ All notable changes to oneloop are recorded here. The format follows
 - When a person opens more than 16 tabs, the oldest tab is now always told
   that it was closed, even when it was behind on updates. Before, such a tab
   could reconnect at once and close another tab.
+- When someone else renamed a milestone while you edited its name, the
+  question about the change now shows their name. Before, it showed no saved
+  value.
 
 ### Security
 
