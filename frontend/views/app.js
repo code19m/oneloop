@@ -19,18 +19,18 @@ import {
   milestones, poolItems, project, projectMembers, setLocalHash, state, taskById, tasks, trackById,
   tracks, userById, userHandle, visibleProjects,
 } from './app/model.js';
+import {
+  EPIC_TIP, POP, askConfirmation, askToDiscard, closePop, dismissMenu, hideEpicTip,
+  mountRoadmapTip, openPop, overlayKey, peekOpened, pendingConfirmation, placeMenu, placePop,
+  rememberOpener, renderMenu, restoreOpener, showWaitingPassword, stampOverlays, syncOverlayFocus,
+  syncSidebar,
+} from './app/overlays.js';
 
 const NO_ASSIGNEE = '__unassigned__';
 const TOUCH = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
   `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
   || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
-function overlayKey(selector) {
-  if (selector === '.modal') return state.modal ? (state.modal.poolId || state.modal.type === 'pool' ? 'pool' : state.modal.type + ':' + (state.modal.id || 'new')) : '';
-  if (selector === '.peek') return state.peek || '';
-  if (selector === '.menu') return state.menu ? (state.menu.version ? 'profile' : state.menu.projectMenu ? 'project' : state.menu.items.map(i => i.label || '').join('|')) : '';
-  return '';
-}
 const boardScrollMemory=new Map();
 function prepareRenderMotion(overlaysOnly=false) {
   const page = overlaysOnly?null:document.querySelector('.content');
@@ -71,16 +71,6 @@ function finishRenderMotion(before,overlaysOnly=false) {
     const key = overlayKey(selector); el.dataset.motionKey = key;
     if (before.previous.get(selector) === key) el.style.animation = 'none';
   });
-}
-// Each opened dialog or drawer gets a generation that its re-renders keep,
-// so a late save can tell its own dialog from one opened after it.
-let overlayOpens = 0, peekGeneration = 0;
-const modalGenerations = new WeakMap();
-function stampOverlays() {
-  if (state.modal && !modalGenerations.has(state.modal)) modalGenerations.set(state.modal, ++overlayOpens);
-  const modal = document.querySelector('#app .modal'), peek = document.querySelector('#app .peek');
-  if (modal && state.modal) modal.dataset.openGeneration = String(modalGenerations.get(state.modal));
-  if (peek && state.peek) peek.dataset.openGeneration = String(peekGeneration);
 }
 
 // Notifications live outside #app so renders never restart them or clear entered text.
@@ -236,119 +226,9 @@ function dismissToast(id) {
 }
 document.addEventListener('visibilitychange', () => setToastPause('hidden', document.hidden));
 
-let pendingConfirmation = null;
-// A `local` choice, such as discarding typed text, changes nothing on the server, so it works offline.
-function askConfirmation({ title, text, action, match, confirm, cancel, local = false }) {
-  if (pendingConfirmation) return false;
-  closePop(true);
-  const returnFocus = document.activeElement;
-  state.menu = null;
-  document.querySelectorAll('#overlay-root > .menu, #overlay-root > .menu-scrim').forEach(el => el.remove());
-  const layer = document.createElement('div'); layer.className = 'confirmation-layer';
-  setHTML(layer,`<div class="scrim"></div><div class="confirmation-wrap"><form class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-description" novalidate>
-    <h2 id="confirmation-title">${esc(title)}</h2><p id="confirmation-description">${esc(text)}</p>
-    ${match !== undefined ? `<label class="confirmation-match-label" for="confirmation-match">Type <strong>${esc(match)}</strong> to confirm</label><input id="confirmation-match" class="ctl" autocomplete="off" spellcheck="false" required>` : ''}
-    <div class="modal-actions"><button type="button" class="btn quiet" data-confirm-cancel>Cancel</button><button type="submit" class="btn danger" data-confirm-accept ${match !== undefined ? 'disabled' : ''}>${esc(action)}</button></div>
-    </form></div>`);
-  const inerted = [...document.querySelectorAll('#app, #toast-region .toast-stack')].map(el => [el, el.inert]);
-  inerted.forEach(([el]) => { el.inert = true; });
-  const record = { layer, returnFocus, inerted, cancel, session:D.session?.id, hash:location.hash, close:null }; pendingConfirmation = record;
-  const close = (accepted, restoreFocus = true) => {
-    if (pendingConfirmation !== record) return;
-    pendingConfirmation = null;
-    document.removeEventListener('keydown', onKey, true);
-    exitVisual(layer.querySelector('.scrim'));exitVisual(layer.querySelector('.confirm-dialog')); layer.remove();
-    inerted.forEach(([el, wasInert]) => { el.inert = wasInert; });
-    if (!accepted) cancel?.();
-    if (restoreFocus) {
-      const focus = returnFocus?.isConnected && returnFocus !== document.body && !returnFocus.closest('[inert]') ? returnFocus :
-        [...document.querySelectorAll('.modal button,.peek button,.me-chip,.menu-btn')].find(el => !el.closest('[inert]') && !el.disabled);
-      focus?.focus({preventScroll:true});
-    }
-  };
-  record.close = close;
-  const form = layer.querySelector('form'), input = layer.querySelector('input'), accept = layer.querySelector('[data-confirm-accept]');
-  input?.addEventListener('input', () => { accept.disabled = input.value !== match; });
-  layer.querySelector('[data-confirm-cancel]').addEventListener('click', () => close(false));
-  form.addEventListener('submit', event => {
-    event.preventDefault();
-    if (pendingConfirmation !== record || (match !== undefined && input.value !== match)) return;
-    if(!local && window.Recovery && !Recovery.ensureOnline())return;
-    accept.disabled = true; close(true); confirm();
-  });
-  function onKey(event) {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(false); }
-    else if (event.key === 'Tab') {
-      const controls = [...form.querySelectorAll('input,button')].filter(el => !el.disabled);
-      const first = controls[0], last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-  }
-  document.addEventListener('keydown', onKey, true);
-  document.body.append(layer);
-  (input || layer.querySelector('[data-confirm-cancel]')).focus();
-  return true;
-}
-/** Ask before typed text is lost: Discard runs `leave`; Cancel, or a question already open, runs `stay`. */
-function askToDiscard(leave, stay = () => {}, text = 'Text you typed on this page will be lost.') {
-  if (askConfirmation({ title:'Discard changes?', text, action:'Discard', local:true, confirm:leave, cancel:stay }) === false) stay();
-}
-
 // Popovers are imperative on purpose: opening one never re-renders the app,
 // so text already typed into a form is never lost.
 const SELS = {}, DPS = {};
-const POP = { el: null, id: null, onKey: null, anchor: /** @type {HTMLElement|null} */ (null), dateTrigger: /** @type {Element|null} */ (null), onClose: /** @type {(()=>void)|null} */ (null), trigger: /** @type {HTMLElement|null} */ (null) };
-
-function closePop(silent) {
-  if (!POP.el) return;
-  if (!silent) exitVisual(POP.el);
-  POP.el.remove(); POP.el = null; POP.id = null; POP.anchor = null;
-  if (POP.onKey) { document.removeEventListener('keydown', POP.onKey, true); POP.onKey = null; }
-  const cb = POP.onClose; POP.onClose = null;
-  POP.dateTrigger?.setAttribute('aria-expanded', 'false'); POP.dateTrigger = null;
-  POP.trigger?.setAttribute('aria-expanded','false');POP.trigger?.removeAttribute('aria-controls');POP.trigger=null;
-  if (cb && !silent) cb();
-}
-function openPop(anchor, width) {
-  closePop();
-  const el = document.createElement('div');
-  el.className = 'pop';
-  if (width) el.style.width = width + 'px'; else el.style.minWidth = anchor.getBoundingClientRect().width + 'px';
-  document.body.appendChild(el);
-  POP.el = el; POP.anchor = anchor;
-  return el;
-}
-function placePop(anchor) {
-  const el = POP.el;
-  if (!el || !anchor.isConnected) return;
-  const r = anchor.getBoundingClientRect();
-  const W = window.innerWidth, H = window.innerHeight;
-  el.style.minWidth = Math.min(parseFloat(el.style.minWidth) || 0, W - 16) + 'px';
-  el.style.maxHeight = Math.min(340, H - 16) + 'px';
-  const flip = r.bottom + el.offsetHeight + 8 > H;
-  el.style.left = Math.max(Math.min(r.left, W - el.offsetWidth - 8), 8) + 'px';
-  el.style.top = Math.max(Math.min(flip ? r.top - el.offsetHeight - 6 : r.bottom + 6, H - el.offsetHeight - 8), 8) + 'px';
-}
-function placeMenu() {
-  const el = document.querySelector('.menu');
-  if (!el || !state.menu) return;
-  if (state.menu.version || state.menu.projectMenu) {
-    const anchor = document.querySelector(state.menu.projectMenu ? '.switcher-btn' : '.me-chip').getBoundingClientRect();
-    el.style.width = Math.min(anchor.width < 100 ? 208 : anchor.width, innerWidth - 16) + 'px';
-    state.menu.x = anchor.left; state.menu.y = state.menu.projectMenu ? anchor.bottom + 6 : anchor.top;
-  }
-  // Menus that belong to a button sit next to it, whether a mouse or a key opened them.
-  if(state.menu.commentId||state.menu.taskActions||state.menu.trackId){
-    const anchor=state.menu.taskActions?document.querySelector('.task-actions-button')
-      :state.menu.trackId?[...document.querySelectorAll('.lane[data-track]')].find(lane=>lane.dataset.track===state.menu.trackId)?.querySelector('.kebab')
-      :[...document.querySelectorAll('[data-comment]')].find(row=>row.dataset.comment===state.menu.commentId)?.querySelector('.comment-menu-button');
-    if(anchor){const r=anchor.getBoundingClientRect();state.menu.x=r.right-el.offsetWidth;state.menu.y=r.bottom+4;if(state.menu.y+el.offsetHeight>innerHeight-8)state.menu.y=r.top-el.offsetHeight-4;}
-  }
-  el.style.left = Math.max(8, Math.min(state.menu.x, innerWidth - el.offsetWidth - 8)) + 'px';
-  const top = state.menu.above ? state.menu.y - el.offsetHeight - 6 : state.menu.y;
-  el.style.top = Math.max(8, Math.min(top, innerHeight - el.offsetHeight - 8)) + 'px';
-}
 function setFieldError(control, wrap, message, className = 'ferr') {
   if (!control || !wrap) return;
   if (!control.id) control.id = 'field-error-control-' + (++fieldSequence);
@@ -729,27 +609,6 @@ function epicBar(item, ppd, top) {
     <div class="t"><span class="txt">${esc(e.title)}</span>${right}</div>
     <div class="m">${meta}</div>${prog}</div>`;
 }
-
-const EPIC_TIP = { el: null, anchor: null, showTimer: null, hideTimer: null };
-function hideEpicTip() {
-  clearTimeout(EPIC_TIP.showTimer); clearTimeout(EPIC_TIP.hideTimer);
-  EPIC_TIP.anchor?.removeAttribute('aria-describedby');
-  if(EPIC_TIP.el)exitVisual(EPIC_TIP.el);EPIC_TIP.el?.remove(); EPIC_TIP.el = null; EPIC_TIP.anchor = null;
-}
-function mountRoadmapTip(anchor, id, html) {
-  if (!anchor.isConnected || state.modal || state.peek || state.menu) return;
-  hideEpicTip();
-  const el = document.createElement('div'); el.className = 'epic-tooltip'; el.id = id; el.setAttribute('role', 'tooltip');
-  setHTML(el,html);
-  document.body.append(el); EPIC_TIP.el = el; EPIC_TIP.anchor = anchor;
-  anchor.setAttribute('aria-describedby', el.id);
-  const rect = anchor.getBoundingClientRect(), width = el.offsetWidth, height = el.offsetHeight;
-  const left = Math.max(8, Math.min(rect.left, innerWidth - width - 8));
-  const top = rect.bottom + height + 10 <= innerHeight ? rect.bottom + 8 : rect.top - height - 8;
-  el.style.left = left + 'px'; el.style.top = Math.max(8, Math.min(top, innerHeight - height - 8)) + 'px';UIMotion.enter(el);
-  el.addEventListener('mouseenter', () => clearTimeout(EPIC_TIP.hideTimer));
-  el.addEventListener('mouseleave', () => App.epicLeave());
-}
 // The words the product uses for an epic's status.
 const epicStatus = (epic) => ({ planning: 'Planning', active: 'In progress', done: 'Done' })[epic.state] || epic.state;
 function showEpicTip(anchor, id) {
@@ -943,7 +802,7 @@ function rollbackTaskMove(change) {
   return true;
 }
 
-function submitTaskMove(change,onRollback=()=>render()) {
+function submitTaskMove(change,onRollback=()=>App.refresh()) {
   if (!change) return;
   const pending={};App._boardMovePending=pending;
   window.OneloopRuntime.invoke('task.move',change.payload).catch((error)=>{
@@ -1098,7 +957,7 @@ function patchBoardRow(current, next) {
 }
 function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
   if (!fromServer) cancelBoardSearch();
-  updateDocumentTitle();
+  App.updateDocumentTitle();
   if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
   if(!fromServer){invoke('board.filter',App.context().board);return;}
   const board = document.querySelector('.board');
@@ -1618,6 +1477,8 @@ const fieldPlaceholders = {
   Description: 'Scope and outcome', Goal: 'Target outcome',
 };
 let fieldSequence = 0;
+/** Number field labels from the start again, so a page drawn again keeps its IDs. */
+function resetFieldIds() { fieldSequence = 0; }
 function field(label, inner, optional = false) {
   let targetId = '';
   inner = inner.replace(/<(input|textarea)\b([^>]*)>/g, (match, tag, attrs) => {
@@ -1680,7 +1541,7 @@ function poolLoadMoreHtml() {
   return D.poolPageInfo?.[`${state.projectId}:${state.poolTab}`]?.nextCursor?`<button class="btn quiet pool-load-more" ${UIAction('loadMorePool')}>Load more</button>`:'';
 }
 function updatePool({ completeItemId } = {}) {
-  updateDocumentTitle();
+  App.updateDocumentTitle();
   const view = document.querySelector('.pool-view');
   if (!view) return;
   const list = view.querySelector('.pool-list');
@@ -1838,99 +1699,6 @@ function renderModal() {
   return `<div class="scrim"></div><div class="modal-wrap"><div class="modal${m.type === 'pool' ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title">${body}</div></div>`;
 }
 
-function renderMenu() {
-  const m = state.menu;
-  if (!m) return '';
-  const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" ${UIAction('setTheme', theme)}><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
-  const autoReload = window.Recovery?.autoReload;
-  // A choice for this browser, like the theme, so it keeps the menu open.
-  const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" ${UIAction('toggleAutoReload')}><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;
-  const items = m.items.map((it) => it.theme ? themeControl() : it.autoReload ? autoReloadControl() : it.sep ? '<div class="sep"></div>' : it.projectId ? `<button type="button" class="project-option${it.projectId===state.projectId?' selected':''}" aria-current="${it.projectId===state.projectId}" data-tip="${esc(it.projectName)}" data-tip-overflow ${UIAction('menuAction', it.i)}><span class="project-option-avatar" aria-hidden="true">${esc(it.projectName.slice(0,1).toUpperCase())}</span><span class="project-option-name">${esc(it.projectName)}</span><span class="project-option-check" aria-hidden="true">${it.projectId===state.projectId?I.tick:''}</span></button>` :
-    `<button class="${it.danger ? 'danger' : ''}" ${UIAction('menuAction', it.i)}>${it.icon ? `<span class="menu-icon" aria-hidden="true">${it.icon}</span>` : ''}${esc(it.label)}</button>`).join('');
-  return `<div class="scrim menu-scrim" style="background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none" ${UIAction('closeOverlays')}></div>
-    <div ${m.projectMenu?'id="project-switcher-menu" role="group" aria-label="Projects"':'id="action-menu"'} class="menu${m.version ? ' profile-menu' : m.projectMenu ? ' project-menu' : m.commentId||m.taskActions ? ' comment-menu' : ''}" style="left:${m.x}px;top:${m.y}px">${items}${m.version && window.ONELOOP_BUILD ? `<div class="menu-version"><span aria-hidden="true">v${esc(window.ONELOOP_BUILD.version)} · ${esc(window.ONELOOP_BUILD.build)}</span><span class="sr-only">Version ${esc(window.ONELOOP_BUILD.version)}, build ${esc(window.ONELOOP_BUILD.build)}</span></div>` : ''}</div>`;
-}
-let lastMenuTrigger = null;
-function dismissMenu(restoreFocus=true){
-  const trigger=state.menu?.trigger;
-  if (trigger) lastMenuTrigger = trigger;
-  state.menu=null;document.querySelector('#overlay-root > .menu-scrim')?.remove();document.querySelector('#overlay-root > .menu')?.remove();
-  if(trigger?.isConnected){trigger.setAttribute('aria-expanded','false');if(restoreFocus)trigger.focus({preventScroll:true});}
-}
-
-// Full SPA renders replace the opener as well as the dialog. Remember its
-// identifying attributes so dismissing a dialog can focus its new counterpart.
-const overlayReturn = { modal:null, peek:null };
-// What a click on the element runs, which its redrawn copy runs too.
-const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('data-action')} ${el.getAttribute('data-args') ?? ''}` : null;
-function rememberOpener(element) {
-  const el = element?.closest?.('button,a[href],[role="button"],input,textarea') || element;
-  if (!el || el === document.body) return null;
-  return { element:el, id:el.id, action:clickAction(el), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
-    epic:el.dataset.epic, milestone:el.dataset.milestone, text:el.textContent.trim(),
-    selection: typeof el.selectionStart === 'number' ? [el.selectionStart,el.selectionEnd,el.selectionDirection] : null,
-    scope:el.closest('.topbar') ? '.topbar' : el.closest('.sidebar') ? '.sidebar' : el.closest('.peek') ? '.peek' : el.closest('.modal') ? '.modal' : '#app' };
-}
-function restoreOpener(record) {
-  const app = document.getElementById('app');
-  let target = record?.element?.isConnected && !record.element.closest('[inert],[hidden]') ? record.element : null;
-  if (!target && record?.id) target = document.getElementById(record.id);
-  if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
-  if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
-  // A scrim and a close button can share an action; prefer the same kind of control in the same place.
-  if (!target && record?.action) target = [...app.querySelectorAll(`${record.scope} [data-action]`), ...app.querySelectorAll('[data-action]')].find(el => el.tagName === record.tag && clickAction(el) === record.action);
-  if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);
-  if (!target && record?.name) target = app.querySelector(`${record.tag?.toLowerCase() || 'input'}[name="${record.name}"]`);
-  if (!target && record?.text) target = [...app.querySelectorAll(`${record.scope} ${record.tag.toLowerCase()}`)].find(el => el.textContent.trim() === record.text);
-  if (!target || target.closest('[inert],[hidden]') || target.disabled) target = ['.modal button','.peek button','.topbar button','.menu-btn']
-    .flatMap(selector => [...app.querySelectorAll(selector)]).find(el => !el.closest('[inert],[hidden]') && !el.disabled);
-  target?.focus({preventScroll:true});
-  if(record?.selection && typeof target?.setSelectionRange === 'function')try{target.setSelectionRange(...record.selection);}catch{}
-}
-const overlayControls = panel => [...panel.querySelectorAll('a[href],button:not(:disabled),input:not(:disabled):not([type="hidden"]),textarea:not(:disabled),select:not(:disabled),[tabindex]:not([tabindex="-1"])')]
-  .filter(el => !el.closest('[hidden],[inert]') && el.getAttribute('tabindex') !== '-1');
-function syncSidebar() {
-  const app = document.getElementById('app'), open = innerWidth <= 900 && state.sideOpen;
-  const overlay = !!app.querySelector('.modal,.peek');
-  const sidebar = app.querySelector('.sidebar'), main = app.querySelector('.main');
-  if (sidebar) sidebar.inert = overlay || innerWidth <= 900 && !state.sideOpen;
-  if (main) {
-    main.inert = overlay;
-    for (const child of main.children) child.inert = open && !child.classList.contains('page-header');
-    const topbar = main.querySelector('.topbar'); if (topbar) topbar.inert = open;
-  }
-  const skip = app.querySelector('.skip-link'); if (skip) skip.inert = open || overlay;
-  app.querySelector('.menu-btn')?.setAttribute('aria-expanded', String(innerWidth <= 900 ? !!state.sideOpen : !state.rail));
-}
-function syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, oldPeekKey, oldPanelFocus }) {
-  const app = document.getElementById('app');
-  const modal = app.querySelector('.modal'), peek = app.querySelector('.peek');
-  const shellInert = !!(modal || peek);
-  for (const selector of ['.main','.sidebar','.side-scrim']) {
-    const node = app.querySelector(`:scope > ${selector}`); if (node) node.inert = shellInert || selector === '.sidebar' && window.innerWidth <= 900 && !state.sideOpen;
-  }
-  syncSidebar();
-  if (peek) peek.inert = !!modal;
-  if (modal && !oldModal) overlayReturn.modal = rememberOpener(oldFocus?.closest?.('.menu') ? lastMenuTrigger : oldFocus);
-  if (peek && !oldPeek) overlayReturn.peek = rememberOpener(oldFocus);
-  if (modal || peek) {
-    const panel = modal || peek;
-    const externalLayer = document.querySelector('.confirmation-layer,.file-overlay') || app.inert;
-    const samePanel = modal ? oldModal && oldModalKey === overlayKey('.modal') : oldPeek && !oldModal && oldPeekKey === overlayKey('.peek');
-    if (oldModal && !modal && !externalLayer) restoreOpener(overlayReturn.modal);
-    else if (!externalLayer && samePanel && oldPanelFocus) restoreOpener(oldPanelFocus);
-    else if (!externalLayer && (!samePanel || document.activeElement === document.body)) {
-      const preferred = modal?.querySelector('[autofocus]:not(:disabled)') || (state.modal?.type === 'pool' ? modal?.querySelector('#poolAdd:not([hidden])') : null) || (peek && !modal ? peek.querySelector('button') : null);
-      (preferred || overlayControls(panel)[0] || panel)?.focus({preventScroll:true});
-    }
-  } else if (oldModal || oldPeek) {
-    restoreOpener(overlayReturn.modal || overlayReturn.peek);
-    overlayReturn.modal = overlayReturn.peek = null;
-  }
-  if (oldModal && !modal) overlayReturn.modal = null;
-  if (oldPeek && !peek) overlayReturn.peek = null;
-}
-
 // ---------- shell ----------
 const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span><strong>${value}</strong></span>`;
 function renderTopbar() {
@@ -2054,14 +1822,6 @@ function render(){
   }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
   window.Recovery?.resumeEditing?.();
 }
-/** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
-const waitingPasswords=[];
-// A temporary password is shown once. While it shows, or waits for another
-// dialog to close, a reload or leaving oneloop would lose it for good.
-window.Recovery?.trackUnsaved?.(()=>!!D.session&&(state.modal?.type==='temppw'||waitingPasswords.length>0));
-function showWaitingPassword(){
-  while(!state.modal&&waitingPasswords.length){const next=waitingPasswords.shift();if(D.session&&next.ownerSession===D.session.id&&next.ownerId===me()?.id&&isAdmin())state.modal=next;}
-}
 function renderOverlays(){
   showWaitingPassword();
   const root=document.getElementById('overlay-root');
@@ -2091,7 +1851,7 @@ function renderContent() {
   const oldFocus = document.activeElement;
   const oldModalKey = oldModalElement?.dataset.motionKey,oldPeekKey = oldPeekElement?.dataset.motionKey;
   const oldPanelFocus = (oldModalElement || oldPeekElement)?.contains(oldFocus) ? rememberOpener(oldFocus) : null;
-  fieldSequence = 0;
+  resetFieldIds();
   showWaitingPassword();
   if(state.modal?.type==='temppw'&&(!D.session||state.modal.ownerSession!==D.session.id||state.modal.ownerId!==me()?.id||!isAdmin()))state.modal=null;
   if(taskSaveFeedback&&(state.view!=='task'||state.taskId!==taskSaveFeedback.id||me()?.id!==taskSaveFeedback.owner))clearTaskSaved();
@@ -2649,43 +2409,23 @@ Object.assign(App, {
   noteTaskSaving: taskSaving,
   clearTaskSaving,
   retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
-  confirm: askConfirmation,
-  askToDiscard,
   followAddress,
   fieldError: failField,
-  showBlocked(title, text) { state.modal = { type:'confirm', title, text, blocked:true }; renderOverlays(); },
-  // With `wait`, a password that arrives while another dialog is open shows
-  // when that dialog closes, so it neither replaces the dialog nor gets lost.
-  showTemporaryPassword(id, password, { wait = false } = {}) {
-    const modal = { type:'temppw', id, pw:password, ownerSession:D.session?.id, ownerId:me()?.id };
-    if (wait && state.modal && !(state.modal.type === 'user' && state.modal.id === id)) { waitingPasswords.push(modal); return false; }
-    state.modal = modal; renderOverlays(); return true;
-  },
-  async copyTemporaryPassword() {
-    const modal=state.modal;
-    if(modal?.type!=='temppw'||!isAdmin()||modal.ownerSession!==D.session?.id||modal.ownerId!==me()?.id)return;
-    try{
-      await navigator.clipboard.writeText(modal.pw);
-      if(state.modal===modal)App.toast('Copied');
-    }catch{
-      if(state.modal===modal)App.toast('Could not copy. Select the password and copy it manually.','error');
-    }
-  },
   selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
   // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
   refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
   refreshRoadmap() {
     refreshEpicSummary();
-    if(state.view!=='roadmap'){refreshBackground();return;}
+    if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
-    if(!content||!scroll){render();return;}
+    if(!content||!scroll){App.refresh();return;}
     roadmapGestureCleanup();
     const before=motionRects('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
     const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
     setHTML(content,renderRoadmap());mountRoadmap();
     const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
     if(focusId){const equivalent=[...content.querySelectorAll(`[data-${focusType}]`)].find(el=>el.dataset[focusType]===focusId);(equivalent||document.querySelector('.topbar button'))?.focus({preventScroll:true});}
-    updateDocumentTitle();
+    App.updateDocumentTitle();
     if(before)animateLayout(before,'.lane');
     App.refreshCounts();
   },
@@ -2836,7 +2576,7 @@ Object.assign(App, {
     state.rmScrollLeft = Math.max(RAIL + (today - start) / DAY * state.pxPerDay - (sc ? sc.clientWidth : 900) * 0.42, 0);
     // Scroll the mounted Roadmap in place; rebuilding the page would only repeat it.
     if (sc && state.view === 'roadmap' && Number(sc.dataset.rangeStart) === +start) sc.scrollLeft = state.rmScrollLeft;
-    else render();
+    else App.refresh();
   },
   epicHover(ev, id, keyboard = false, kind = 'epic') {
     if (!keyboard && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
@@ -2865,26 +2605,8 @@ Object.assign(App, {
     App.roadmapTipKey(ev);
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.openPeek(id); }
   },
-  openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekGeneration = ++overlayOpens; state.peek = id; roadmapSelection = id; renderOverlays(); },
-  /** Escape: a dialog with typed text asks before it closes. */
-  dismissOverlays() {
-    const close = () => state.modal?.poolId ? App.returnToPool() : App.closeOverlays();
-    const dialog = state.modal ? document.querySelector('#overlay-root .modal') : null;
-    if (dialog && window.Recovery?.hasTypedInputIn?.(dialog)) { askToDiscard(close, () => {}, 'Text you typed in this dialog will be lost.'); return; }
-    close();
-  },
+  openPeek(id) { if(!canReadProject(trackById(epicById(id)?.trackId)?.projectId)){App.toast('This project is unavailable','error');return;}if (state.peek !== id) peekOpened(); state.peek = id; roadmapSelection = id; App.refreshOverlays(); },
   closeOverlays() { if (state.menu&&!state.modal&&!state.peek){dismissMenu();return;}if (state.modal?.poolId) { App.returnToPool(); return; } state.peek = state.peek && state.modal ? state.peek : null; state.modal = null; state.menu = null; if (dialogPaintOwed) render(); else renderOverlays(); },
-  openModal(type, id, epicId) {
-    if(type==='pool'&&!canReadProject(state.projectId))return;
-    const targetProject=id&&(type==='epic'?trackById(epicById(id)?.trackId)?.projectId:type==='track'?trackById(id)?.projectId:type==='milestone'?D.milestones.find(m=>m.id===id)?.projectId:['block','unblock','completeBlocked'].includes(type)?trackById(epicById(taskById(id)?.epicId)?.trackId)?.projectId:null);
-    if(targetProject&&!canReadProject(targetProject))return;
-    if (['epic', 'milestone', 'track'].includes(type) && !App.require('manage_roadmap')) return;
-    if (type === 'task' && !App.require('manage_board')) return;
-    if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
-    state.sideOpen = false;
-    state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') App._poolScroll = {}; renderOverlays();
-    if(type==='pool')invoke('pool.open');
-  },
   toast: pushToast,
   offerUndo,
   announce,
@@ -2906,15 +2628,11 @@ Object.assign(App, {
     if (index < list.length-1) moves.push({label:'Move down',fn:()=>App.moveTrack(id,index+1)}, {label:'Move to bottom',fn:()=>App.moveTrack(id,list.length-1)});
     App._openMenu([
       ...moves, ...(moves.length ? [{sep:true}] : []),
-      { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; renderOverlays(); } },
+      { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; App.refreshOverlays(); } },
       { sep: true },
       { label: 'Delete track', danger: true, fn: () => App.deleteTrack(id) },
     ], 0, 0, {trigger:ev.currentTarget, trackId:id});
   },
-  // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
-  _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
-  // The action starts from the menu's button, so a dialog it opens returns focus there.
-  menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
 
   /** Enter saves a project field, then leaves it. */
   leaveProjectField(event, input) { event.preventDefault(); App.updateProjectField(input); input.blur(); },
@@ -3077,13 +2795,13 @@ Object.assign(App, {
     const moved = list.splice(index, 1)[0];
     list.splice(to, 0, moved);
     list.forEach((t, i) => { t.order = i; });
-    render();
+    App.refresh();
     focusMovedTrack(id);
     animateLayout(before, '.lane');
     const pending={};App._roadmapMovePending=pending;const revision=moved.revision,projectId=moved.projectId,sessionKey=`${D.session?.id||''}:${D.session?.userId||''}`,optimisticOrders=new Map(original.map((item)=>[item,item.order]));
     window.OneloopRuntime.invoke('track.reorder',{trackId:id,position:to,optimistic:true}).catch((error)=>{
       const sameSession=sessionKey===`${D.session?.id||''}:${D.session?.userId||''}`;
-      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');render();animateLayout(rollbackBefore,'.lane');}}
+      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=motionRects('.lane');App.refresh();animateLayout(rollbackBefore,'.lane');}}
       window.OneloopRuntime.report(error);
     }).finally(()=>{if(App._roadmapMovePending===pending)App._roadmapMovePending=false;});
   },
@@ -3215,7 +2933,7 @@ Object.assign(App, {
     if (wrap) { normalizeInput(wrap.querySelector('.date-text')); dateFieldError(wrap, ''); }
   },
   dateBlur(ev, key) {
-    if(rendering)return;
+    if(App.isRendering())return;
     if (POP.id === 'dp:' + key) return;
     commitDate(key, ev.target.value);
   },
@@ -3283,10 +3001,10 @@ Object.assign(App, {
   },
 
   refresh: render,
+  /** Draw the dialog, drawer and menu again, and leave the page as it is. */
+  refreshOverlays: renderOverlays,
   refreshBackground,
   refreshAfterDialog,
-  /** Draw the open dialog again from the saved values, dropping what was typed in it. */
-  redrawDialog(){if(state.modal)renderOverlays();},
   isRendering:()=>rendering,
   clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};invoke('board.filter',App.context().board);},
   retryPool(){invoke('pool.select',{scope:state.poolTab});},
@@ -3296,13 +3014,13 @@ Object.assign(App, {
     event.stopPropagation(); // The card around the button would open the task.
     if(App._boardMovePending)return;
     if(!canBoard())return;const task=taskById(id),list=boardTasks().filter(t=>t.state===task.state),index=list.indexOf(task),r=event.currentTarget.getBoundingClientRect();
-    const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){render();focusMovedTask(id);}}}}));
+    const items=COLS.filter(c=>c.key!==task.state).map(c=>({label:'Move to '+c.name,fn:()=>{if(canBoard()){if(setTaskState(task,c.key)!==false){App.refresh();focusMovedTask(id);}}}}));
     const ordered=!(task.state==='done'&&doneNewest());
     if(ordered&&index>0)items.push({label:'Move up',fn:()=>App.moveTaskOrder(id,list[index-1].id,true)});
     if(ordered&&index<list.length-1)items.push({label:'Move down',fn:()=>App.moveTaskOrder(id,list[index+1].id,false)});
     App._openMenu(items,r.left,r.bottom+6,{trigger:event.currentTarget});
   },
-  moveTaskOrder(id,anchor,before){if(!canBoard())return;const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);render();focusMovedTask(id);animateLayout(old,'.card[data-task]');},
+  moveTaskOrder(id,anchor,before){if(!canBoard())return;const task=taskById(id),target=taskById(anchor);if(!task||!target||task.state!==target.state)return;const old=motionRects('.card[data-task]');D.tasks.splice(D.tasks.indexOf(task),1);D.tasks.splice(D.tasks.indexOf(target)+(before?0:1),0,task);App.refresh();focusMovedTask(id);animateLayout(old,'.card[data-task]');},
 
   // filters
   setBoardQ(v,event) {
@@ -3475,9 +3193,6 @@ document.addEventListener('scroll', (e) => { if (!EPIC_TIP.el?.contains(e.target
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && EPIC_TIP.el) { e.preventDefault(); e.stopImmediatePropagation(); hideEpicTip(); }
 }, true);
-document.addEventListener('focusin', (event) => {
-  if (state.menu && !event.target.closest?.('#overlay-root > .menu')) dismissMenu(false);
-}, true);
 // W, M and Q switch the Roadmap's scale while focus is on the Roadmap page,
 // or on the page itself, as after a click on empty space or, in Safari, on a
 // button. Not in a text field, a menu or a dialog: single-letter keys work
@@ -3491,31 +3206,12 @@ document.addEventListener('keydown', (event) => {
   App.setRoadmapScale(scale.key);
   announce(`Roadmap scale: ${scale.label}`);
 });
-document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Tab' || pendingConfirmation || document.querySelector('.confirmation-layer,.file-overlay') || POP.el?.contains(document.activeElement)) return;
-  const panel = document.querySelector('#overlay-root > .modal-wrap .modal') || document.querySelector('#overlay-root > .peek');
-  if (!panel && innerWidth <= 900 && state.sideOpen && !state.menu) {
-    const controls = [...overlayControls(document.querySelector('.sidebar')), document.querySelector('.menu-btn')].filter(Boolean);
-    const index = controls.indexOf(document.activeElement);
-    event.preventDefault(); controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length]?.focus(); return;
-  }
-  if (!panel) return;
-  const controls = overlayControls(panel), first = controls[0], last = controls.at(-1);
-  if (!first) { event.preventDefault(); panel.focus(); return; }
-  if (!panel.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
-  else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-}, true);
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.sideOpen && !state.menu && !state.modal && !state.peek && !POP.el) { e.preventDefault(); App.toggleSidebar(false); return; }
-  if (e.key === 'Escape' && state.modal?.poolId) { App.dismissOverlays(); return; }
-  if (e.key === 'Escape' && state.menu&&!state.modal&&!state.peek) {e.preventDefault();dismissMenu();return;}
-  if (e.key === 'Escape' && (state.modal || state.menu || state.peek)) { e.preventDefault(); App.dismissOverlays(); }
+document.addEventListener('pointerdown', (e) => {
+  if (EPIC_TIP.el && !EPIC_TIP.el.contains(e.target) && !EPIC_TIP.anchor?.contains(e.target)) hideEpicTip();
 });
 document.addEventListener('pointerdown', (e) => {
   clearTimeout(pressedControlTimer);
   pressedTaskControl=!!e.target.closest?.('.task-page,.peek,.modal');
-  if (EPIC_TIP.el && !EPIC_TIP.el.contains(e.target) && !EPIC_TIP.anchor?.contains(e.target)) hideEpicTip();
 });
 const releasePressedControl=()=>{clearTimeout(pressedControlTimer);pressedControlTimer=setTimeout(()=>{pressedTaskControl=false;},0);};
 // Retain the guard through click dispatch and intervening promise callbacks.
@@ -3573,8 +3269,10 @@ document.addEventListener('paste', (e) => {
   if (inputKind(input) === 'date') { e.preventDefault(); if (/[0-9]/.test(text)) editDateDigits(input, text); }
   else if (sanitizeInputValue(input, text) !== text) { e.preventDefault(); insertCleanText(input, text); }
 }, true);
-document.addEventListener('input', (e) => { if(e.target.closest('.task-page'))clearTaskSaved();if (!e.isComposing) normalizeInput(e.target); }, true);
-document.addEventListener('compositionend', (e) => { normalizeInput(e.target);if(e.target.matches?.('[data-board-search]'))App.setBoardQ(e.target.value,e); }, true);
+document.addEventListener('input', (e) => { if (!e.isComposing) normalizeInput(e.target); }, true);
+document.addEventListener('compositionend', (e) => { normalizeInput(e.target); }, true);
+document.addEventListener('compositionend', (e) => { if(e.target.matches?.('[data-board-search]'))App.setBoardQ(e.target.value,e); }, true);
+document.addEventListener('input', (e) => { if(e.target.closest('.task-page'))clearTaskSaved(); }, true);
 document.addEventListener('input', (e) => {
   if (e.target.classList && (e.target.classList.contains('ctl') || e.target.classList.contains('tp-title'))) clearFieldError(e.target);
 });
