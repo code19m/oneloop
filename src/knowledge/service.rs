@@ -593,9 +593,7 @@ mod tests {
         use crate::auth::{
             AuthService, LoginResult, NewUser, create_user, password::PasswordPolicy,
         };
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let db = Db::open(root.path()).unwrap();
+        let (root, db) = crate::db::migrated_db();
         let password = "test-only-password-012345";
         let usernames: Vec<String> = people.iter().map(|name| (*name).to_owned()).collect();
         let names = usernames.clone();
@@ -776,10 +774,7 @@ mod tests {
     fn an_html_preview_reads_no_bytes_of_other_files() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let mut connection =
-            crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+        let (_root, mut connection) = crate::db::migrated_connection();
         connection.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);").unwrap();
         for (path, media_type, kind, content) in [
             (

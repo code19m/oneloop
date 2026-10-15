@@ -586,9 +586,7 @@ mod tests {
 
     /// A project `p1` whose source points at `url`, and an administrator.
     async fn fixture(url: &str) -> (tempfile::TempDir, Db, KnowledgeService) {
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let db = Db::open(root.path()).unwrap();
+        let (root, db) = crate::db::migrated_db();
         let url = url.to_owned();
         db.run(move |connection| {
             connection.execute_batch(
@@ -648,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn unchanged_branches_are_checked_without_disk_space_above_the_floor() {
-        let source = tempfile::tempdir_in("target").unwrap();
+        let source = tempfile::tempdir().unwrap();
         let commit = docs_repository(source.path());
         let url = format!("file://{}", source.path().display());
         let (_root, db, _) = fixture(&url).await;
@@ -709,7 +707,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_sync_reserves_disk_against_other_syncs_and_attachment_uploads() {
-        let source = tempfile::tempdir_in("target").unwrap();
+        let source = tempfile::tempdir().unwrap();
         docs_repository(source.path());
         // Only a download reads the root tree. As a pipe without a writer, it
         // stops Git in the clone, after the check found a new commit.
@@ -882,7 +880,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_result_that_cannot_be_stored_waits_before_the_next_try() {
-        let source = tempfile::tempdir_in("target").unwrap();
+        let source = tempfile::tempdir().unwrap();
         docs_repository(source.path());
         let (_root, db, _) = fixture(&format!("file://{}", source.path().display())).await;
         // The database refuses to record any sync result.

@@ -665,11 +665,11 @@ fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{query_plan, test_database};
+    use crate::db::{migrated_connection, query_plan};
 
     #[test]
     fn the_comment_purge_reads_only_deleted_comments_with_text() {
-        let (_root, connection) = test_database();
+        let (_root, connection) = migrated_connection();
         let plan = query_plan(&connection, DELETED_COMMENT_TEXT_SQL);
         assert!(plan.contains("comments_deleted_text_idx"), "{plan}");
     }

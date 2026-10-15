@@ -260,11 +260,11 @@ fn activity_row(row: &Row<'_>) -> rusqlite::Result<ActivityEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{query_plan, test_database};
+    use crate::db::{migrated_connection, query_plan};
 
     #[test]
     fn project_feeds_read_their_partial_index_in_order() {
-        let (_root, connection) = test_database();
+        let (_root, connection) = migrated_connection();
         for (task, owner, index) in [
             (false, false, "activity_projection_project_public_feed_idx"),
             (true, false, "activity_projection_task_public_feed_idx"),

@@ -3,9 +3,7 @@ use jiff::{Timestamp, civil::date};
 
 #[test]
 fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+    let (_root, c) = crate::db::migrated_connection();
     c.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','ONE',1,1);
         INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('tr','p','Track',0,1,1);
         INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at) VALUES('e','p','tr','Epic','2026-11-01',0,1,1),('empty','p','tr','Empty','2026-11-02',1,1,1);").unwrap();
@@ -56,9 +54,7 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
 
 #[test]
 fn newest_done_pages_read_the_partial_index_in_order() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let c = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+    let (_root, c) = crate::db::migrated_connection();
     for (sql, values) in [
         (NEWEST_DONE_SQL, params!["p", 51]),
         (

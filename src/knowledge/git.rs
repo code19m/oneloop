@@ -1297,7 +1297,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn reading_many_blobs_uses_bounded_processes_and_phase_walks() {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let repository = root.path().join("source");
         std::fs::create_dir(&repository).unwrap();
         for n in 0..64 {
@@ -1452,7 +1452,7 @@ pub(super) mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelling_after_git_exits_kills_pipe_holding_helpers_and_reaps_git() {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let git = Git::new(
             root.path().join("work"),
             root.path().join("known_hosts"),
@@ -1529,7 +1529,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_checkout_around_the_data_directory_cannot_change_git_settings() {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("README.md"), "# Docs\n").unwrap();
@@ -1756,7 +1756,7 @@ pub(super) mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn downloads_stop_once_the_working_copy_passes_the_budget() {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let git = Git::new(
             root.path().join("work"),
             root.path().join("known_hosts"),

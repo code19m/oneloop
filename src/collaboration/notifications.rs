@@ -171,11 +171,11 @@ fn eligible_recipients(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{query_plan, test_database};
+    use crate::db::{migrated_connection, query_plan};
 
     #[test]
     fn the_broadcast_cooldown_reads_the_persons_recent_notifications() {
-        let (_root, connection) = test_database();
+        let (_root, connection) = migrated_connection();
         let plan = query_plan(&connection, RECENT_BROADCAST_SQL);
         assert!(plan.contains("notification_broadcast_lookup_idx"), "{plan}");
     }
