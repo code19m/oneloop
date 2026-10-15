@@ -8,7 +8,8 @@ import { mentionFromWire, mentionsToWire as wireMentions } from '../../src/data/
 import { multiHtml } from './controls.js';
 import { UIAction, ago, avatarHtml, esc, formatInstant, instanceDateKey, previousDate, setHTML } from './format.js';
 import {
-  App, D, collaborationController, epicById, hasPermission, me, state, taskById, trackById, userById, visibleProjects,
+  App, D, collaborationController, epicById, hasPermission, me, recovery, state, taskById,
+  trackById, userById, visibleProjects,
 } from './model.js';
 import { askConfirmation } from './overlays.js';
 
@@ -132,7 +133,7 @@ function appendInbox(page,list,items){
  else {oldMore?.remove();if(more)page.append(more);}
  page.querySelector('.inbox-refresh-notice')?.remove();badge();
 }
-const inboxWritable=()=>!window.Recovery||Recovery.ensureOnline();
+const inboxWritable=()=>recovery.ensureOnline();
 // The exact time shows as a tooltip on hover, focus and tap.
 function exactTimeAttributes(value){const exact=esc(formatInstant(value));return `aria-label="${exact}" data-tip="${esc(formatInstant(value))}"`;}
 const own=()=>me()?.active?D.notifications:[];
@@ -232,7 +233,7 @@ function savedComment(task,c,mode,changed,submitted=null){
  if(elsewhere){if(mode!=='edit'&&commentMode.mode==='comment')refreshComments(task);if(changed)App.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');return;}
  if(c.parentId)expanded.add(c.parentId);commentEditor=null;commentMode={mode:'comment',target:null};closeMentions();refreshComments(task,true);if(changed)App.toast(mode==='edit'?'Comment updated':mode==='reply'?'Reply added':'Comment added');const focus=mode==='comment'?document.getElementById('cmtIn'):[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===c.id);if(focus&&mode!=='comment'){focus.classList.add('comment-save-focus');focus.addEventListener('blur',()=>focus.classList.remove('comment-save-focus'),{once:true});}focus?.focus({preventScroll:true});scrollWithinTask(mode==='comment'?focus?.closest('.collaboration-composer')||focus:focus);
 }
-function post(taskId){const task=taskById(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(window.Recovery&&!Recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){if(!commentsOnTheirWay(task))feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
+function post(taskId){const task=taskById(taskId);if(!task||!canComment(task)){feedback('You must be an active project member to comment.');return false;}if(!recovery.ensureOnline())return false;capture();const cxt=context(task),d=editor(task),text=d.text;if(!text.trim()){if(!commentsOnTheirWay(task))feedback('Write a comment first.');return false;}if(text.length>2000){feedback('Comments are limited to 2,000 characters.');return false;}
  const existing=cxt.mode==='edit'?task.comments.find(c=>c.id===cxt.target):null,target=cxt.mode==='reply'?task.comments.find(c=>c.id===cxt.target):null;
  if(cxt.mode==='edit'&&(!existing||existing.deleted||existing.who!==me().id&&!me().admin)||cxt.mode==='reply'&&(!target||target.deleted)){feedback('That comment is no longer available.');return false;}
  const selected=validTokens(text,d.mentions),eligible=new Set(members(projectOf(task)).map(u=>u.id));if(hasInvalidMention(selected,eligible,existing?.mentions)){feedback('A mentioned person is no longer an active project member. Remove that mention before sending.');return false;}
@@ -343,7 +344,7 @@ export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,comp
 // Leaving oneloop would lose comments kept for an empty box. While no one
 // is signed in, that is any of them, and any comment still on its way when
 // the session ended, which comes back if it isn't saved.
-window.Recovery?.trackUnsaved?.(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
+recovery.trackUnsaved(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
 Object.assign(App,{
  prepareBlock,
  loadOlderActivity:(taskId)=>controller.moreTask(taskId),

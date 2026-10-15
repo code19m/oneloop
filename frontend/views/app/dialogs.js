@@ -6,7 +6,7 @@ import { dateHtml, dateValue, field, selectHtml } from './controls.js';
 import { UIAction, esc, iso, today } from './format.js';
 import { descriptionEditorHtml, taskModalHtml } from './forms.js';
 import {
-  D, activeAdmins, epicById, state, taskById, trackById, tracks, userById, userHandle,
+  D, activeAdmins, epicById, knowledge, state, taskById, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { poolViewHtml } from './pool.js';
 
@@ -85,7 +85,7 @@ export function renderModal() {
   } else if (m.type === 'pool') {
     body = poolViewHtml();
   } else if (m.type === 'knowledge') {
-    body = window.OneloopKnowledge?.modalHtml() || '';
+    body = knowledge.modalHtml();
   } else if (m.type === 'confirm') {
     body = `<h2>${esc(m.title)}</h2><div class="sub">${esc(m.text)}</div>
     <div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button></div>`;

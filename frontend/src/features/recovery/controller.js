@@ -218,7 +218,7 @@ export function createRecoveryController({
   windowObject = globalThis.window,
   documentObject = globalThis.document,
 }) {
-  let hooks=null,pageError=null,pageReference=null,expired=false;
+  let pageError=null,pageReference=null,expired=false;
   // What the person was typing when their session ended, kept in memory for their next sign-in.
   /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any}|null} */
   let resume=null;
@@ -373,7 +373,7 @@ export function createRecoveryController({
   const visibleConnection=()=>!apiReachable?'offline':liveReachable?'live':'reconnecting';
   const renderPreservingEditor=()=>{
     const snapshot=documentObject?(captureOpenEditor(documentObject)??[...pendingEditors.values()].at(-1)??null):null;
-    if(hooks?.refresh)hooks.refresh();else getApp()?.refresh?.();
+    getApp()?.refresh();
     if(snapshot&&documentObject)restoreOpenEditor(snapshot,documentObject);
   };
   const setConnectivity=(nextApi,nextLive=liveReachable)=>{
@@ -723,7 +723,8 @@ export function createRecoveryController({
     retryRefresh:()=>reconcile({background:true}),
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast?.('Error reference copied'),()=>getApp()?.toast?.('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast?.('Move was not saved. Try again.','error');return true;},
-    bind(nextApp,nextHooks){hooks=nextHooks;if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
+    /** Start following the page: focus, input, activity, visibility, storage and the connection. */
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject?.addEventListener?.('focusin',rememberEditorRevision,true);documentObject?.addEventListener?.('focusout',(event)=>rememberCommitted(event.target),true);windowObject?.addEventListener?.('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject?.addEventListener?.(type,noteActivity,{capture:true,passive:true});documentObject?.addEventListener?.('visibilitychange',visibilityChanged);windowObject?.addEventListener?.('storage',storageChanged);scheduleHiddenCheck();windowObject?.addEventListener?.('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject?.addEventListener?.('online',()=>reconnect(true));}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject?.removeEventListener?.('beforeunload',warnBeforeUnload);windowObject?.removeEventListener?.('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };

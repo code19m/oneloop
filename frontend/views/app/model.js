@@ -3,8 +3,12 @@
    lookups and permissions. */
 
 export const D = window.DATA;
-/** The collaboration controller from src/features/collaboration/, which boot.js installs before the views load. */
+// What boot.js installs before the views load: Recovery (connection, conflict
+// and unsaved-input handling) and the collaboration and Knowledge controllers
+// from src/features/.
+export const recovery = window.Recovery;
 export const collaborationController = window.OneloopCollaboration;
+export const knowledge = window.OneloopKnowledge;
 /** The view bridge's server-backed functions, which boot.js installs once the views have loaded. */
 export const runtime = () => window.OneloopRuntime;
 /** Report a failed runtime call as a failed save is reported. */

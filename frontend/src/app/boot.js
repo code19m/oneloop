@@ -106,6 +106,7 @@ try {
   await auth.initialize();
   globalThis.ONELOOP_DEFER_BOOT_RENDER=true;
   ({ App: app } = await import('../../views/app.js'));
+  recovery.start();
   bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope=routeScope())=>bootstrap.load({...routeScope(),...scope})});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
   app.refresh();

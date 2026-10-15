@@ -81,7 +81,7 @@ test('a passive current-view probe detects access loss even when no SSE recipien
     setTimer:(callback)=>{timers.push(callback);return timers.length;},
   });
   state.app.context=()=>({view:'roadmap',projectId:'p1'});
-  state.controller.bind(state.app,{refresh:()=>state.app.refresh()});
+  state.controller.start();
   await timers[0]();
   assert.equal(state.controller.pageError,null);assert.equal(state.reloads,1);
 });
@@ -93,7 +93,7 @@ test('an open editor keeps its focus-time revision across a live projection refr
   const data={session:{id:'s1',userId:'u1'},tasks:[task],projects:[],tracks:[],epics:[],milestones:[],pool:[]};
   const app={context:()=>({view:'task',taskId:'ONE-1',projectId:'p1'}),refresh(){}};
   const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
-  controller.bind(app,{refresh(){}});
+  controller.start();
   const target={closest:(selector)=>selector.includes('.task-page')?root:null};
   listeners.focusin({target});
   const key=controller.revisionKey(task);
@@ -129,7 +129,7 @@ test('late read and reconnect success cannot override a newer browser offline ev
   let online=true,resolveProbe;
   const listeners={};
   const state=fixture({online:()=>online,windowObject:{addEventListener:(name,listener)=>listeners[name]=listener},api:{me:()=>new Promise(resolve=>resolveProbe=resolve)}});
-  state.controller.bind(state.app,{});
+  state.controller.start();
   const oldContext=state.controller.requestContext();
   const reconnect=state.controller.reconnect();
   online=false;listeners.offline();
@@ -257,7 +257,7 @@ test('a promotion editor keeps the Pool source focus-time revision after a backg
   const data={session:{id:'s1',userId:'u1'},pool:[source]};
   const app={context:()=>({view:'board',projectId:'p1',modal:{type:'task',poolId:'pool1'}}),refresh(){}};
   const controller=createRecoveryController({data,api:{},gateway:{},getApp:()=>app,getAuth:()=>null,reload:async()=>{},setTimer:()=>0,clearTimer:()=>{},online:()=>true,documentObject,windowObject:null});
-  controller.bind(app,{refresh(){}});
+  controller.start();
   const target={closest:selector=>selector==='.pool-editor'||selector.startsWith('.modal,')?root:null};
   listeners.focusin({target});data.pool=[{id:'pool1',revision:2}];listeners.focusin({target});
   assert.equal(controller.expectedRevision(controller.revisionKey(data.pool[0]),2),1);
@@ -302,7 +302,7 @@ test('forced password sessions neither schedule nor run project access probes',a
   const timers=[];let probes=0;
   const state=fixture({api:{counts:async()=>{probes++;}},setTimer:callback=>{timers.push(callback);return timers.length;}});
   state.app.context=()=>({view:'roadmap',projectId:'p1'});
-  state.data.session.temporary=true;state.controller.bind(state.app,{});state.controller.sessionChanged(state.data.session);
+  state.data.session.temporary=true;state.controller.start();state.controller.sessionChanged(state.data.session);
   assert.equal(timers.length,0);
   state.data.session.temporary=false;state.controller.sessionChanged(state.data.session);
   assert.equal(timers.length,1);await timers[0]();assert.equal(probes,1);
@@ -315,7 +315,7 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
     const timers=[],calls=[];
     const state=fixture({api:{counts:async(...args)=>calls.push(args)},setTimer:callback=>{timers.push(callback);return timers.length;}});
     state.app.context=()=>({view,projectId:'p1'});
-    state.controller.bind(state.app,{refresh:()=>state.app.refresh()});await timers[0]();
+    state.controller.start();await timers[0]();
     assert.deepEqual(calls,[['p1',{background:true}]]);state.controller.dispose();
   }
 });
@@ -354,7 +354,7 @@ function updatable({autoReload=true,hidden=false,stores={local:new Map(),session
   const controller=createRecoveryController({data:{session:{id:'s1',userId:'u1'}},api:{counts:async()=>({})},gateway:{hasPending:()=>saving,invalidate(){}},getApp:()=>app,
     setTimer:(callback,delay)=>{timers.set(++next,{callback,at:clock+delay});return next;},clearTimer:id=>{timers.delete(id);},now:()=>clock,documentObject,windowObject,
     checkBuild:()=>monitor.check()});
-  controller.bind(app,{});
+  controller.start();
   const fire=type=>{for(const listener of listeners[type]??[])listener({});};
   return {controller,stores,documentObject,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
     /** Another tab of this browser changes the stored setting. */

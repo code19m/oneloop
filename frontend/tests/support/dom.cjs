@@ -224,6 +224,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     answer(method, value) { for (const call of calls) if (call.method === method && !call.settled) call.resolve(value); },
     /** Install the view bridge and the runtime, then draw the first page. */
     start() {
+      w.Recovery.start();
       const bridge = installViewBridge({ app: w.App, data, gateway, auth, api, reads, recovery: w.Recovery, reloadBootstrap });
       w.OneloopRuntime = Object.freeze({ ...bridge, transport: runtime, now: api.serverNow });
       w.App.refresh();

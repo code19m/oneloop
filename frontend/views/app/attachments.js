@@ -9,7 +9,7 @@ import {
   previewFile, resetPreviews, shownPreview,
 } from '../../src/features/files/preview.js';
 import { UIAction, esc, formatInstant, setHTML } from './format.js';
-import { App, D, canReadTask, epicById, hasPermission, runtime, taskById, trackById } from './model.js';
+import { App, D, canReadTask, epicById, hasPermission, recovery, runtime, taskById, trackById } from './model.js';
 import { askConfirmation } from './overlays.js';
 
 const maxFile=()=>D.limits.maxAttachmentBytes,maxFiles=()=>D.limits.maxAttachmentsPerTask;
@@ -90,7 +90,7 @@ function start(job){
   const task=taskById(job.taskId);if(!task||!canEdit(job.taskId)||D.session?.userId!==job.owner){reject(job,'You no longer have permission to attach this file.');return;}
   if(available(task).length+jobs.filter(j=>j!==job&&j.taskId===job.taskId&&j.state==='uploading').length>=maxFiles()){reject(job,`A task can have at most ${maxFiles()} available attachments.`,true);return;}
   if(job.file.size>maxFile()){reject(job,`File exceeds ${maxFile()/1024/1024} MB.`,true);return;}
-  if(window.Recovery?.connection==='offline'){reject(job,'The server is unreachable. Retry when connected.');return;}
+  if(recovery.connection==='offline'){reject(job,'The server is unreachable. Retry when connected.');return;}
   upload(job,task);
 }
 async function upload(job,task){
@@ -98,7 +98,7 @@ async function upload(job,task){
   try{
     // Leaving the page while a file uploads would lose it.
     const sending=transport().uploadAttachment(task.internalId||job.taskId,{file:job.file,ephemeral:job.ephemeral,idempotencyKey:job.idempotencyKey ||= crypto.randomUUID(),signal:controller.signal,onProgress:percent=>{if(job.state==='uploading'&&!job.cancelled){job.progress=percent;mountAttachments(job.taskId);}}});
-    window.Recovery?.trackWrite?.(sending);const value=await sending;
+    recovery.trackWrite(sending);const value=await sending;
     if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
     const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
     loaded.add(current);jobs.splice(jobs.indexOf(job),1);refreshAttachments(job.taskId);App.toast('Attachment added');
@@ -108,7 +108,7 @@ function editableAttachment(taskId,fileId,includeCleaned=false){
   const task=taskById(taskId),file=(task?.attachments||[]).find(f=>f.id===fileId&&(!f.state||f.state==='available'||includeCleaned&&f.state==='cleaned'));
   if(!file){App.toast('This attachment is no longer available','error');return null;}
   if(!canEdit(taskId)){App.toast('You no longer have permission to change attachments','error');return null;}
-  if(window.Recovery&&!Recovery.ensureOnline())return null;
+  if(!recovery.ensureOnline())return null;
   return file;
 }
 function setTemporary(taskId,fileId,value){

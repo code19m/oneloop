@@ -27,10 +27,9 @@ import {
   mountDescription, sizeDescription, sizeDescriptionEditors, sizeTaskTitle,
 } from './app/forms.js';
 import {
-  App, D, canBoard, canReadProject, canReadTask, counts, epicById, epics,
-  hasPermission, instanceNow, isAdmin, me, poolItems, project,
-  projectMembers, report, runtime, state, taskById, tasks, trackById, userById,
-  userHandle, visibleProjects,
+  App, D, canBoard, canReadProject, canReadTask, counts, epicById, epics, hasPermission,
+  instanceNow, isAdmin, knowledge, me, poolItems, project, projectMembers, recovery, report,
+  runtime, state, taskById, tasks, trackById, userById, userHandle, visibleProjects,
 } from './app/model.js';
 import {
   POP, askToDiscard, closePop, dismissMenu, hideEpicTip, overlayKey,
@@ -91,7 +90,7 @@ function finishRenderMotion(before,overlaysOnly=false) {
 // ---------- auth ----------
 function renderAuth(mode) {
   // Someone typing when their session ended keeps typing into nothing, not into Username.
-  const keptInput = !!window.Recovery?.keepsInput;
+  const keptInput = !!recovery.keepsInput;
   const inner = mode === 'change'
     ? `<h1 tabindex="-1">Set a new password</h1>
       <form novalidate ${UIAction.on('submit', 'setPassword', UIAction.event)}>
@@ -107,13 +106,13 @@ function renderAuth(mode) {
         <div class="modal-actions"><button class="btn primary wide" type="submit">Sign in</button></div>
       </form>`;
   return `<main class="auth-wrap" id="main" tabindex="-1"><div class="auth-card">
-    <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?`<p class="auth-notice" role="alert">${keptInput?'Your session ended. Sign in again to keep what you typed.':'Your session ended. Sign in to continue.'}</p>`:''}${inner}</div></main>`;
+    <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${recovery.expired?`<p class="auth-notice" role="alert">${keptInput?'Your session ended. Sign in again to keep what you typed.':'Your session ended. Sign in to continue.'}</p>`:''}${inner}</div></main>`;
 }
 
 const currentBrowserSession = () => D.session ? (D.browserSessions || []).find(item => item.id === D.session.id && item.userId === D.session.userId && item.revokedAt == null) : null;
 function renderProfileAccess() {
   const current = currentBrowserSession(), userId = me().id;
-  const sessions = (D.browserSessions || []).filter(item => item.userId === userId && (window.Recovery ? Recovery.sessionActive(item) : item.revokedAt == null)).sort((a,b) => Number(b.id === current?.id) - Number(a.id === current?.id) || b.lastActiveAt - a.lastActiveAt);
+  const sessions = (D.browserSessions || []).filter(item => item.userId === userId && recovery.sessionActive(item)).sort((a,b) => Number(b.id === current?.id) - Number(a.id === current?.id) || b.lastActiveAt - a.lastActiveAt);
   const grants = (D.appGrants || []).filter(item => item.userId === userId && item.revokedAt == null && (!item.expiresAt || item.expiresAt > Date.now())).sort((a,b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
   const fact = (label,value) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`;
   const date = value => value ? formatInstant(value) : 'Unavailable';
@@ -194,7 +193,7 @@ function clearTaskSaving(token) {
 
 function documentTitle() {
   if(!D.session||!me()?.active||me()?.mustChange)return 'oneloop';
-  if(window.Recovery?.pageError||['forbidden','notfound','no-projects'].includes(state.view))return 'oneloop';
+  if(recovery.pageError||['forbidden','notfound','no-projects'].includes(state.view))return 'oneloop';
   const names={board:'Board',roadmap:'Roadmap',knowledge:'Knowledge base',inbox:'Inbox',profile:'Profile',users:'Users',settings:'Settings',storage:'Storage'};
   if(state.view==='task'){
     const task=taskById(state.taskId);
@@ -208,7 +207,7 @@ function documentTitle() {
 function updateDocumentTitle(){const title=documentTitle();if(document.title!==title)document.title=title;}
 function awaitingServerTask() {
   return !!((state.view === 'notfound'||state.view==='task'&&taskById(state.taskId)?.detailsLoaded===false) && state.taskId &&
-    location.hash.startsWith('#/task/') && !['403','404','deleted'].includes(window.Recovery?.pageError));
+    location.hash.startsWith('#/task/') && !['403','404','deleted'].includes(recovery.pageError));
 }
 
 // ---------- task page ----------
@@ -295,7 +294,7 @@ function msHtml(key, taskId, disabled) {
     icon: () => { const a = (taskById(taskId)?.assignees || []).filter(userById); return a.length ? `<span class="avs">${a.slice(0, 3).map((x) => avatarHtml(x, 16)).join('')}</span>` : I.person; },
     options: projectMembers().map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) })),
     values: () => taskById(taskId)?.assignees || [],
-    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]).catch(report); },
+    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || !recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]).catch(report); },
     summary: () => { const a = taskById(taskId)?.assignees || []; return a.length ? a.map((x) => (userById(x) || { name: x }).name).join(', ') : 'Unassigned'; },
     onClose: () => render(),
   });
@@ -355,7 +354,7 @@ function renderSettings() {
       ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users ${UIAction('loadMoreUsers')} ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
       ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
     </div>
-    ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
+    ${knowledge.settingsHtml(p.id)}
     <div class="section danger-zone">
       <h2>Danger zone</h2>
       <button class="btn danger" ${UIAction('deleteProject')}>Delete project</button>
@@ -385,7 +384,7 @@ function renderUsers() {
 }
 
 function renderTopbar() {
-  if (state.view === 'knowledge') return window.OneloopKnowledge?.topbar() || '<h1>Knowledge base</h1>';
+  if (state.view === 'knowledge') return knowledge.topbar();
   if (state.view === 'notfound') return awaitingServerTask() ? '<h1>Task</h1>' : '<h1>Page not found</h1>';
   if (state.view === 'no-projects') return '<h1>Projects</h1>';
   if (state.view === 'forbidden') return '<h1>Access denied</h1>';
@@ -419,7 +418,7 @@ function refreshAfterDialog(){
 // Keep live metadata current without removing an active control or overlay.
 function refreshBackground(){
   clearTimeout(backgroundRenderTimer);
-  const authorized=D.session&&(!['task','board','roadmap','settings'].includes(state.view)||canReadProject(state.projectId))&&(!window.Recovery?.pageError);
+  const authorized=D.session&&(!['task','board','roadmap','settings'].includes(state.view)||canReadProject(state.projectId))&&(!recovery.pageError);
   // WebKit may blur an editor without focusing the pressed button. Keep its
   // DOM target alive through pointer release/click, including slow presses.
   const busy=POP.el||state.modal||state.peek||pendingConfirmation||document.activeElement?.closest('.task-page,.peek,.modal')||pressedTaskControl;
@@ -431,7 +430,7 @@ function render(){
   clearTimeout(backgroundRenderTimer);dialogPaintOwed=false;
   if(!window.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
   const scope=renderScope(),active=document.activeElement;
-  const preserve=paintedScope===scope&&!window.Recovery?.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
+  const preserve=paintedScope===scope&&!recovery.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
   const focused=preserve&&active?.matches('input:not([type=file]),textarea')?{opener:rememberOpener(active),value:active.value,scrollTop:active.scrollTop}:null;
   // Text typed into a task field whose edit rights just ended stays as a Not saved draft.
   if(focused&&state.view==='task'&&!active.disabled&&!active.readOnly&&!canBoard()){
@@ -442,13 +441,13 @@ function render(){
   // The page heading and main area outlast any content render of the same page, such as
   // a loading skeleton during a slow read, so a keyboard user keeps their place.
   const landmark=active?.matches?.('.topbar h1')?'.topbar h1':active?.id==='main'?'#main':null,page=pageScope();
-  const snapshot=focused?window.Recovery?.captureEditor?.():null;
+  const snapshot=focused?recovery.captureEditor():null;
   if(snapshot)snapshot.controls=snapshot.controls.filter(control=>control.key===snapshot.activeKey);
   rendering=true;
   try{
     renderContent();
     // An unanswered conflict prompt goes back beside its redrawn field before focus is restored.
-    window.Recovery?.keepPrompts?.();
+    recovery.keepPrompts();
     const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
     if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
     if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
@@ -456,7 +455,7 @@ function render(){
       target?.focus({preventScroll:true});
     }
     if(scope===renderScope()&&focused){
-      if(snapshot)window.Recovery.restoreEditor(snapshot);
+      if(snapshot)recovery.restoreEditor(snapshot);
       restoreOpener(focused.opener);
       const target=document.activeElement;
       if(target?.matches('input,textarea')){target.value=focused.value;target.scrollTop=focused.scrollTop;if(focused.opener.selection)try{target.setSelectionRange(...focused.opener.selection);}catch{}}
@@ -466,7 +465,7 @@ function render(){
     const sidebar=document.querySelector('.sidebar');
     if(innerWidth<=900 && state.sideOpen && sidebar && !sidebar.inert && !sidebar.closest('[inert]') && document.activeElement===document.body)sidebar.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
   }finally{rendering=false;paintedScope=renderScope();paintedPage=pageScope();}
-  window.Recovery?.resumeEditing?.();
+  recovery.resumeEditing();
 }
 function renderOverlays(){
   showWaitingPassword();
@@ -490,7 +489,7 @@ function renderOverlays(){
 }
 function renderContent() {
   if(state.view!=='board'||!D.session)cancelBoardSearch();
-  window.OneloopKnowledge?.beforeRender();
+  knowledge.beforeRender();
   const oldModalElement = document.querySelector('#overlay-root > .modal-wrap .modal');
   const oldPeekElement = document.querySelector('#overlay-root > .peek');
   const oldModal = !!oldModalElement, oldPeek = !!oldPeekElement;
@@ -523,8 +522,8 @@ function renderContent() {
   const c = counts();
   const p = project() || {name:'No projects'};
   const u = me();
-  const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
+  const error = recovery.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
+  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? recovery.errorHtml(error) : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? knowledge.render(state.projectId) : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`
     <a class="skip-link" href="#main">Skip to content</a>
@@ -543,7 +542,7 @@ function renderContent() {
         <span class="lbl uname">${esc(u.name)}</span><span class="lbl profile-chevron">${I.chev}</span></button></div></div>
     </nav>
     <div class="main">
-      <div class="page-header"><button type="button" class="btn icon menu-btn" aria-label="Toggle sidebar" aria-expanded="${window.innerWidth <= 900 ? !!state.sideOpen : !state.rail}">${I.menu}</button><header class="topbar${state.view === 'board' ? ' board-topbar' : ['settings','profile','users','inbox','storage'].includes(state.view) ? ' form-topbar'+(['inbox','storage'].includes(state.view)?' workspace-topbar':'') : ''}">${renderTopbar().replaceAll('<h1','<h1 tabindex="-1"')}</header></div>${window.Recovery?.connectionHtml() || ''}
+      <div class="page-header"><button type="button" class="btn icon menu-btn" aria-label="Toggle sidebar" aria-expanded="${window.innerWidth <= 900 ? !!state.sideOpen : !state.rail}">${I.menu}</button><header class="topbar${state.view === 'board' ? ' board-topbar' : ['settings','profile','users','inbox','storage'].includes(state.view) ? ' form-topbar'+(['inbox','storage'].includes(state.view)?' workspace-topbar':'') : ''}">${renderTopbar().replaceAll('<h1','<h1 tabindex="-1"')}</header></div>${recovery.connectionHtml()}
       <main id="main" tabindex="-1" class="content${['settings','profile','users','inbox','storage'].includes(state.view) ? ' form-content'+(['inbox','storage'].includes(state.view)?' workspace-content':'') : ''}">${view}</main>
 
     </div>
@@ -579,7 +578,7 @@ function renderContent() {
   mountDescription();
   if (state.view === 'task') mountAttachments(state.taskId);
   if (state.view === 'roadmap' && !error) mountRoadmap();
-  window.OneloopKnowledge?.mount();
+  knowledge.mount();
   finishRenderMotion(renderMotion);
   stampOverlays();
   if (state.menu) placeMenu();
@@ -675,9 +674,9 @@ Object.assign(App, {
   retryTaskActivity(id){retryTaskPage(id);},
   refreshTaskActivity,
   followAddress,
-  selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
+  selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){knowledge.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
   acceptMoreUsers() { if(state.view==='settings'){App.refreshUsers();return;}state.usersLimit+=50;render(); },
-  nav(v) { window.Recovery?.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') window.OneloopKnowledge?.route(v, state.projectId); setLocalHash('#/' + v); render(); },
+  nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash('#/' + v); render(); },
   require(permission) {
     if (hasPermission(permission)) return true;
     App.toast(`${permission === 'manage_roadmap' ? 'Roadmap' : 'Board'}: read only`, 'info');
@@ -702,14 +701,14 @@ Object.assign(App, {
   },
   /** What Sign out asks, which says when typed text would be lost. */
   signOutText() {
-    return window.Recovery?.hasUnsavedInput?.() ? 'End your current browser session. Text you typed and have not saved will be lost.' : 'End your current browser session.';
+    return recovery.hasUnsavedInput() ? 'End your current browser session. Text you typed and have not saved will be lost.' : 'End your current browser session.';
   },
   chooseAvatar() { document.getElementById('avIn')?.click(); },
   userMenu(ev) {
     const r = ev.currentTarget.getBoundingClientRect();
     App._openMenu([
       { theme: true },
-      ...(window.Recovery?.setAutoReload ? [{ autoReload: true }] : []),
+      { autoReload: true },
       { sep: true },
       { label: 'Profile', icon: I.person, fn: () => App.nav('profile') },
       ...(isAdmin() ? [{ label: 'Users', icon: I.users, fn: () => App.nav('users') },{ label: 'Storage', icon: I.storage, fn: () => App.nav('storage') }] : []),
@@ -719,12 +718,12 @@ Object.assign(App, {
   },
   setTheme(value) { window.Theme.set(value); },
   toggleAutoReload() {
-    window.Recovery?.setAutoReload?.(!window.Recovery?.autoReload);
+    recovery.setAutoReload(!recovery.autoReload);
     App.autoReloadChanged();
   },
   /** Show Reload after updates as it is now, also after another tab changed it. */
   autoReloadChanged() {
-    const on = !!window.Recovery?.autoReload, button = document.querySelector('[data-auto-reload]');
+    const on = !!recovery.autoReload, button = document.querySelector('[data-auto-reload]');
     if (!button || button.getAttribute('aria-pressed') === String(on)) return;
     button.setAttribute('aria-pressed', String(on));
     setHTML(button.querySelector('.menu-check'), on ? I.tick : '');
@@ -778,7 +777,7 @@ function resolveRoute() {
   }
   state.taskId=null;
   if(route==='knowledge'||/^knowledge[/?]/.test(route)){
-    const projectId=window.OneloopKnowledge?.route(route,state.projectId);
+    const projectId=knowledge.route(route,state.projectId);
     if(projectId&&projectId!==state.projectId){
       if(!visibleProjects().some(project=>project.id===projectId)){state.view='notfound';return;}
       state.projectId=projectId;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;
@@ -817,7 +816,7 @@ function mayFollowAddress(event, typed) {
   if (event.newURL === discardedFor) { discardedFor = null; return true; }
   const active = document.activeElement;
   if (active?.matches?.('[data-autosave]')) active.blur();
-  if (!window.Recovery?.hasUnsavedInput?.({ leaving:false })) return true;
+  if (!recovery.hasUnsavedInput({ leaving:false })) return true;
   const { oldURL, newURL } = event, steps = placeOf() - shownPlace;
   if (typed || !steps) {
     // A new entry: it shows the old address until Discard.
@@ -841,7 +840,7 @@ window.addEventListener('hashchange',(event)=>{
   // Local navigation already painted its destination. Consume only that
   // exact history event, so external hashes and Back/Forward still route.
   const index=locallyRenderedHashes.indexOf(event.newURL);
-  if(index!==-1){locallyRenderedHashes.splice(index,1);window.Recovery?.clearPageError();return;}
+  if(index!==-1){locallyRenderedHashes.splice(index,1);recovery.clearPageError();return;}
   if(event.newURL && event.newURL!==location.href)return;
   // An entry without a place is new: a link, or an address typed by hand.
   const typed=typeof placeOf()!=='number';
@@ -849,7 +848,7 @@ window.addEventListener('hashchange',(event)=>{
   // Staying keeps the page, so the route loader must not load the new one either.
   if(!mayFollowAddress(event,typed)){event.stopImmediatePropagation();return;}
   shownPlace=placeOf();
-  window.Recovery?.clearPageError();
+  recovery.clearPageError();
   state.peek=null;state.modal=null;state.menu=null;resolveRoute();render();
 });
 // ---------- global listeners ----------
@@ -872,7 +871,7 @@ window.addEventListener('resize', () => {
     syncSidebar();
     // Resize only the timeline; keep form input, focus, and open dialogs intact.
     const content = document.querySelector('.content');
-    if (state.view === 'roadmap' && content && !window.Recovery?.pageError) {
+    if (state.view === 'roadmap' && content && !recovery.pageError) {
       setHTML(content,renderRoadmap());
       mountRoadmap();
     }
@@ -886,7 +885,6 @@ window.addEventListener('resize', () => {
   }, 120);
 });
 
-window.Recovery?.bind(App,{refresh:render});
 setInterval(()=>{
   const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));
   if(!D.session||me()?.mustChange)return;

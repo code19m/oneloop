@@ -4,7 +4,7 @@
 
 import { UIMotion } from '../../src/app/motion.js';
 import { I, UIAction, d, esc, humanFull, iso, setHTML, today } from './format.js';
-import { App } from './model.js';
+import { App, recovery } from './model.js';
 import { POP, closePop, openPop, placePop, rememberOpener, restoreOpener } from './overlays.js';
 
 // Popovers are imperative on purpose: opening one never re-renders the app,
@@ -199,7 +199,7 @@ function commitDate(key, raw, focusError = false) {
   if (def.autosave) {
     const settled = (saved) => {
       const current = document.querySelector(`[data-date-key="${esc(key)}"]`), input = current?.querySelector('.date-text'), shown = !!input && parseDateInput(input.value) === value;
-      if (saved !== false) { if (shown) { window.Recovery?.markSaved?.(input); input.removeAttribute('data-unsaved'); } return; }
+      if (saved !== false) { if (shown) { recovery.markSaved(input); input.removeAttribute('data-unsaved'); } return; }
       if (DPS[key] !== def || def.value !== value) return;
       def.value = previous;
       const hidden = current?.querySelector('input[type="hidden"]'); if (hidden) hidden.value = previous || '';

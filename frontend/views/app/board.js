@@ -13,8 +13,8 @@ import {
   instanceDateKey, instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
-  App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, report, runtime,
-  state, taskById, tasks, trackById, tracks, userById, userHandle,
+  App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, recovery, report,
+  runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { announce } from './toasts.js';
 
@@ -485,7 +485,7 @@ Object.assign(App, {
     }
   },
   dropTask(ev, col) {
-    if(window.Recovery?.blockDrag()){ev.preventDefault();App.dragEnd();return;}
+    if(recovery.blockDrag()){ev.preventDefault();App.dragEnd();return;}
     if (!App.require('manage_board')) return;
     if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
     if (!ev.dataTransfer.types.includes('text/task') || App._drag?.kind !== 'task') return;

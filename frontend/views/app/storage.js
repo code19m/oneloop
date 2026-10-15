@@ -5,7 +5,7 @@
 import { errorMessage } from '../../src/app/action-feedback.js';
 import { byteSize as size, displayText, fileIcons as icons } from '../../src/features/files/preview.js';
 import { UIAction, esc, formatInstant } from './format.js';
-import { App, D, me, runtime } from './model.js';
+import { App, D, me, recovery, runtime } from './model.js';
 
 let serverStorage=null,serverStorageLoading=null,serverStorageState='unloaded',serverStorageRead=false;
 const transport=()=>runtime().transport.api;
@@ -44,5 +44,5 @@ function followChanges(){
 
 Object.assign(App, {
   retryStorageUsage(){return loadStorageUsage();},
-  cleanupStorage(){if(!me()?.admin||window.Recovery&&!Recovery.ensureOnline())return;transport().cleanupStorage().then(report=>{serverStorage=null;return loadStorageUsage().then(()=>App.toast(report.temporaryFilesCleaned?`Removed ${report.temporaryFilesCleaned} temporary ${report.temporaryFilesCleaned===1?'file':'files'} (${size(report.bytesReclaimed)})`:'No temporary files are eligible for cleanup','info'));}).catch(error=>App.toast(errorMessage(error,'Storage cleanup could not be completed.'),'error'));},
+  cleanupStorage(){if(!me()?.admin||!recovery.ensureOnline())return;transport().cleanupStorage().then(report=>{serverStorage=null;return loadStorageUsage().then(()=>App.toast(report.temporaryFilesCleaned?`Removed ${report.temporaryFilesCleaned} temporary ${report.temporaryFilesCleaned===1?'file':'files'} (${size(report.bytesReclaimed)})`:'No temporary files are eligible for cleanup','info'));}).catch(error=>App.toast(errorMessage(error,'Storage cleanup could not be completed.'),'error'));},
 });
