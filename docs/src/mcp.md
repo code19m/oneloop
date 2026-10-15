@@ -193,9 +193,9 @@ schema describes the payload of each operation.
   the change only once. The same key with different input fails with
   `idempotency_key_reused`.
 - **Conflicts.** Edits and deletions need the `expectedRevision` from your last
-  read; without it, the call fails with `precondition_failed`. If someone
-  changed the item since then, the call fails with `revision_conflict`. Read it
-  again and retry.
+  read. A command tool answers a call without it with `precondition_failed`;
+  the attachment tools require it. If someone changed the item since then, the
+  call fails with `revision_conflict`. Read it again and retry.
 - **Pages.** List tools return a `nextCursor`. Pass it back as `cursor`, with
   the same filters, to get the next page. [Limits](reference.md#limits) gives
   the page sizes. If the tasks change between pages, the call fails with

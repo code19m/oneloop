@@ -73,6 +73,9 @@ All notable changes to oneloop are recorded here. The format follows
   mention. Before, the mention was dropped and the person was not notified.
 - An epic's activity now comes in pages of up to 100 items, like all other
   activity, as the limits in the documentation say. It stopped at 50.
+- In MCP, `execute_destructive_command` without `expectedRevision` now fails
+  with `precondition_failed`, as edits do and as the documentation says.
+  Before, the call was refused as invalid arguments.
 - In MCP, `search_tasks` without a status now reads all four columns at one
   moment. Before, a task that moved while it was read could show up twice or
   not at all.

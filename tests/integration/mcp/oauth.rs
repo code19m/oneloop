@@ -434,11 +434,6 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
     assert!(
         destructive_required
             .iter()
-            .any(|field| field == "expectedRevision")
-    );
-    assert!(
-        destructive_required
-            .iter()
             .any(|field| field == "idempotencyKey")
     );
     // Account, membership and storage administration stay in the browser.

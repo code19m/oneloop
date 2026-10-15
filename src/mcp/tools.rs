@@ -151,9 +151,11 @@ pub(super) struct PoolInput {
     pub limit: Option<usize>,
 }
 
+/// The arguments of every command tool. The revision is optional here, so
+/// each command's own revision rule decides, as it does for the browser.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WorkCommandInput {
+pub(super) struct CommandInput {
     /// Command name; its payload shape is selected by the operation schema.
     pub operation: String,
     #[serde(default)]
@@ -164,20 +166,6 @@ pub(super) struct WorkCommandInput {
     #[serde(default)]
     /// Current entity revision from a read; required for edits and deletions.
     pub expected_revision: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DestructiveCommandInput {
-    /// Command name; its payload shape is selected by the operation schema.
-    pub operation: String,
-    #[serde(default)]
-    /// Operation-specific object; use the matching operation variant below.
-    pub payload: Value,
-    /// Unique key of 1–128 visible ASCII characters per logical write; reuse with identical input on retry.
-    pub idempotency_key: String,
-    /// Current entity revision from a read; required for edits and deletions.
-    pub expected_revision: i64,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -602,7 +590,7 @@ impl OneloopMcp {
     async fn execute_work(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<WorkCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported ordinary work operation";
         let operation = DomainOperation::parse(&input.operation)
@@ -638,7 +626,7 @@ impl OneloopMcp {
     async fn execute_discussion(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<WorkCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         const UNSUPPORTED: &str = "unsupported discussion or Inbox operation";
         let operation = CollaborationOperation::parse(&input.operation)
@@ -674,7 +662,7 @@ impl OneloopMcp {
     async fn execute_destructive(
         &self,
         Extension(parts): Extension<Parts>,
-        Parameters(input): Parameters<DestructiveCommandInput>,
+        Parameters(input): Parameters<CommandInput>,
     ) -> Result<Json<Value>, ToolError> {
         // The services check the destructive scope for the project.
         const UNSUPPORTED: &str = "unsupported destructive operation";
@@ -690,7 +678,7 @@ impl OneloopMcp {
                         operation: input.operation,
                         payload: input.payload,
                         idempotency_key: input.idempotency_key,
-                        expected_revision: Some(input.expected_revision),
+                        expected_revision: input.expected_revision,
                     },
                 )
                 .await?;
@@ -709,7 +697,7 @@ impl OneloopMcp {
                     operation,
                     payload: input.payload,
                     idempotency_key: input.idempotency_key,
-                    expected_revision: Some(input.expected_revision),
+                    expected_revision: input.expected_revision,
                 },
             )
             .await?;
