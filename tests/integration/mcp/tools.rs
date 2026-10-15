@@ -720,6 +720,75 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
 }
 
 #[tokio::test]
+async fn deleting_an_attachment_needs_the_destructive_scope_also_on_retry() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
+    let mut mcp = McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
+    let mut managing = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "attachments"],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "kept-file").await;
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId":task,"fileName":"kept.txt","sizeBytes":4,"idempotencyKey":"kept-file"}),
+        )
+        .await,
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from("kept"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let attachment = body_json(response).await["value"].clone();
+    let deletion = json!({
+        "attachmentId": attachment["id"],
+        "expectedRevision": attachment["revision"],
+        "idempotencyKey": "delete-kept-file",
+    });
+
+    assert_tool_error(
+        &managing.call("delete_attachment", deletion.clone()).await,
+        "forbidden",
+    );
+    let listed = tool_value(
+        &managing
+            .call("list_attachments", json!({"taskId":task}))
+            .await,
+    );
+    assert_eq!(listed["items"][0]["id"], attachment["id"]);
+
+    // A retry of a deletion checks the scope again.
+    tool_value(&mcp.call("delete_attachment", deletion.clone()).await);
+    db.run(move |connection| {
+        connection.execute(
+            "DELETE FROM mcp_grant_scopes WHERE scope='destructive'
+             AND grant_id=(SELECT id FROM mcp_grants WHERE client_id=?1)",
+            [client],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_tool_error(&mcp.call("delete_attachment", deletion).await, "not_found");
+}
+
+#[tokio::test]
 async fn an_upload_body_that_breaks_off_is_a_client_error() {
     let (_dir, _db, app, session, _user) = fixture().await;
     let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
