@@ -734,6 +734,8 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const returned=returnedCapture;returnedCapture=null;
     const key=returned&&returned.projectId===projectId&&returned.scope===scope&&returned.title===title&&returned.description===description?returned.key:`pool:create:${crypto.randomUUID()}`;
     input.value='';if(notes)notes.value='';capturesSending++;
+    // The next item starts as a title alone, as the first one did.
+    if(notes?.closest('.pool-capture')?.classList.contains('is-expanded'))app.togglePoolDescription?.();
     return fire(execute('pool.create',{projectId,scope,title,description},null,'Pool item added',{
       create:true,paint:false,interactionKey:key,poolScope:scope,onAccepted:returnCaptures,
     }).catch((error)=>{

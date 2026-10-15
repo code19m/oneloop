@@ -81,6 +81,8 @@ All notable changes to oneloop are recorded here. The format follows
 - When you press **Back** or **Forward** with text you haven't sent and then
   **Cancel**, the browser history stays as it was. Before, the next **Back**
   skipped a page.
+- After you add a Pool item with a description, the description field closes,
+  so the next item starts with its title. Before, it stayed open and empty.
 
 ### Security
 
