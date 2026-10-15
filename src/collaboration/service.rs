@@ -10,9 +10,7 @@ use inbox::*;
 
 use std::collections::BTreeSet;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{OptionalExtension, Row, Transaction, params};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -24,6 +22,7 @@ use crate::{
     clock::unix_now,
     command::{Command, CommandResult, Mutation, check_revision},
     input::parse_payload,
+    paging::{self, TimeCursor, next_cursor},
 };
 
 use super::{
@@ -184,46 +183,4 @@ fn authorize_replay(
             access::require_scope(tx, actor, McpScope::InboxPrivate, None)
         }
     }
-}
-
-/// Cuts a page that was read with one item too many back to `limit` items,
-/// and returns the cursor of the next page when that extra item was there.
-fn next_cursor<T>(
-    items: &mut Vec<T>,
-    limit: usize,
-    key: impl Fn(&T) -> (i64, &String),
-) -> Option<String> {
-    let more = items.len() > limit;
-    items.truncate(limit);
-    items.last().filter(|_| more).map(|item| {
-        let (time, id) = key(item);
-        encode_cursor(time, id)
-    })
-}
-
-fn page_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
-}
-
-#[derive(Serialize, Deserialize)]
-struct Cursor {
-    time: i64,
-    id: String,
-}
-
-fn encode_cursor(time: i64, id: &str) -> String {
-    URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&Cursor {
-            time,
-            id: id.to_owned(),
-        })
-        .unwrap_or_default(),
-    )
-}
-
-fn decode_cursor(value: &str) -> AppResult<Cursor> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| AppError::validation("cursor", "is invalid"))?;
-    serde_json::from_slice(&bytes).map_err(|_| AppError::validation("cursor", "is invalid"))
 }

@@ -126,6 +126,46 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
 }
 
 #[tokio::test]
+async fn pool_pages_continue_from_their_cursor() {
+    use oneloop::domain::{PoolQuery, PoolScope};
+    let f = fixture().await;
+    // One item more than a page, all from the same second, so IDs order them.
+    f.db.transaction(|tx| {
+        for index in 0..51 {
+            tx.execute(
+                "INSERT INTO pool_items(id,project_id,scope,title,created_by,created_at,updated_at)
+                 VALUES(?1,'p1','team','Idea','u1',1,1)",
+                [format!("pool-{index:02}")],
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let page = |cursor| {
+        let query = PoolQuery {
+            project_id: "p1".into(),
+            scope: PoolScope::Team,
+            cursor,
+            limit: None,
+        };
+        f.service.pool_page(&f.member, query)
+    };
+    let first = page(None).await.unwrap();
+    let second = page(first.next_cursor.clone()).await.unwrap();
+    assert_eq!((first.items.len(), first.total), (50, 51));
+    assert_eq!((second.items.len(), second.next_cursor), (1, None));
+    let ids: Vec<_> = first
+        .items
+        .iter()
+        .chain(&second.items)
+        .map(|item| &item.id)
+        .collect();
+    let expected: Vec<_> = (0..51).map(|index| format!("pool-{index:02}")).collect();
+    assert_eq!(ids, expected.iter().collect::<Vec<_>>());
+}
+
+#[tokio::test]
 async fn epic_task_counts_come_only_with_the_roadmap() {
     let f = fixture().await;
     let created = f

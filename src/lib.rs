@@ -22,6 +22,7 @@ mod input;
 pub mod knowledge;
 mod legacy_values;
 pub mod mcp;
+mod paging;
 pub mod retention;
 pub mod runtime;
 pub mod state;

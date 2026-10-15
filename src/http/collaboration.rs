@@ -19,7 +19,7 @@ use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     collaboration::{ActivityPage, CommentPage, InboxFilter, InboxPage, LiveEvent},
-    domain::PageQuery,
+    paging::PageQuery,
 };
 
 pub(crate) fn router() -> Router<AppState> {

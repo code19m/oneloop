@@ -111,7 +111,8 @@ small hints over SSE, and clients then fetch what changed.
   bytes arrive between two transactions.
 - `input.rs`: reads command payloads into typed input, with errors that name
   the field. `text.rs`: validation for display text such as titles and
-  comments.
+  comments. `paging.rs`: page sizes and the opaque cursors that continue a
+  page.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`: background maintenance and the supervision of every worker.

@@ -3,7 +3,6 @@
 
 mod board;
 mod bootstrap;
-mod paging;
 mod roadmap;
 
 use rusqlite::{OptionalExtension, params};
@@ -15,6 +14,7 @@ use crate::{
     auth::Actor,
     clock::unix_now,
     error::{AppError, AppResult},
+    paging::{self, PageQuery, TimeCursor, next_cursor},
     timezone::TimeZone,
 };
 
@@ -27,7 +27,6 @@ use super::{
 pub(super) use board::task_view;
 use board::*;
 use bootstrap::*;
-use paging::*;
 use roadmap::*;
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -41,21 +40,8 @@ pub struct BootstrapQuery {
     pub done_order: DoneOrder,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PageQuery {
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
-impl Default for PageQuery {
-    fn default() -> Self {
-        Self {
-            cursor: None,
-            limit: Some(PAGE_SIZE),
-        }
-    }
-}
+/// The size of a page of tasks or Pool items, and the most one may hold.
+const PAGE_SIZE: usize = 50;
 
 /// Which tasks a Board read shows, and the order of its Done column.
 #[derive(Clone, Debug, Default)]
@@ -239,7 +225,7 @@ impl DomainService {
                 &query.project_id,
                 query.scope,
                 query.cursor.as_deref(),
-                page_limit(query.limit),
+                paging::page_limit(query.limit, PAGE_SIZE, PAGE_SIZE),
             )
         })
         .await
@@ -268,7 +254,7 @@ impl DomainService {
                 &project_id,
                 &epic_id,
                 query.cursor.as_deref(),
-                page_limit(query.limit),
+                paging::page_limit(query.limit, PAGE_SIZE, PAGE_SIZE),
             )
         })
         .await
@@ -397,7 +383,8 @@ fn pool_page_connection(
         PoolScope::Team => require_project(connection, actor, project_id, Need::Read, false)?,
         PoolScope::Personal => access::require_private_pool(connection, actor, project_id, false)?,
     }
-    let (cursor_time, cursor_id) = parse_position_cursor(cursor)?;
+    let cursor: Option<TimeCursor> = cursor.map(paging::decode).transpose()?;
+    let (cursor_time, cursor_id) = cursor.map(|cursor| (cursor.time, cursor.id)).unzip();
     let own = &actor.user_id;
     let scope = scope.as_str();
     let predicate = "project_id=?1 AND scope=?3 AND (scope='team' OR owner_user_id=?2)";
@@ -409,7 +396,7 @@ fn pool_page_connection(
     let mut s=connection.prepare_cached(&format!("SELECT id,project_id,scope,owner_user_id,title,description,created_at,revision FROM \
                      pool_items WHERE {predicate} AND (?4 IS NULL OR created_at>?4 OR (created_at=?4 AND \
                      id>?5)) ORDER BY created_at,id LIMIT ?6"))?;
-    let rows = s
+    let mut items = s
         .query_map(
             params![
                 project_id,
@@ -433,13 +420,7 @@ fn pool_page_connection(
             },
         )?
         .collect::<Result<Vec<_>, _>>()?;
-    let more = rows.len() > limit;
-    let items: Vec<_> = rows.into_iter().take(limit).collect();
-    let next_cursor = if more {
-        items.last().map(|i| format!("{}:{}", i.created_at, i.id))
-    } else {
-        None
-    };
+    let next_cursor = next_cursor(&mut items, limit, |item| (item.created_at, &item.id));
     Ok(Page {
         items,
         next_cursor,

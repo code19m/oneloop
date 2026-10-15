@@ -18,8 +18,8 @@ impl CollaborationService {
         limit: Option<usize>,
     ) -> AppResult<CommentPage> {
         let task_id = task_id.to_owned();
-        let cursor = cursor.map(decode_cursor).transpose()?;
-        let limit = page_limit(limit);
+        let cursor: Option<TimeCursor> = cursor.map(paging::decode).transpose()?;
+        let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         access::read(&self.db, actor, move |connection, actor| {
             access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let mut statement = connection.prepare(

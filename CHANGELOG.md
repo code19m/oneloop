@@ -22,6 +22,9 @@ All notable changes to oneloop are recorded here. The format follows
   such as `WEB-042`, in `taskId`, as `create_attachment_upload` does. The
   browser API's `GET /api/tasks/{id}/attachments` and
   `POST /api/tasks/{id}/attachments/reorder` accept one too.
+- `read_pool` and the Pool return a `nextCursor` in a new form. A cursor
+  from an earlier version now fails with `validation_failed`; start again
+  from the first page.
 - In MCP, `discussion.comment.create` and the `inbox.*` operations now refuse
   an `expectedRevision` with `validation_failed`, as creating a task does.
   Before, they accepted it and ignored it.
