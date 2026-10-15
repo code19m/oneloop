@@ -10,6 +10,14 @@ pub(super) struct ConsentPresentation<'a> {
     pub(super) retry: Option<(&'a ConsentForm, &'a str)>,
 }
 
+/// Capabilities that start unticked, because they reach private data or
+/// delete for good, with the names the page's note gives them.
+const OFF_BY_DEFAULT: [(&str, &str); 3] = [
+    ("inbox_private", "Private Inbox"),
+    ("my_pool_private", "My Pool"),
+    ("destructive", "destructive access"),
+];
+
 fn scope_label(scope: &str) -> &str {
     match scope {
         "discussion" => "Read and write comments and replies",
@@ -55,12 +63,7 @@ pub(super) fn consent_html(
         .filter(|v| v.as_str() != "project_read")
         .map(|scope| {
             let selected = presentation.retry.map_or_else(
-                || {
-                    !matches!(
-                        scope.as_str(),
-                        "destructive" | "inbox_private" | "my_pool_private"
-                    )
-                },
+                || !OFF_BY_DEFAULT.iter().any(|(off, _)| off == scope),
                 |(form, _)| form.scope.contains(scope),
             );
             let checked = if selected { " checked" } else { "" };
@@ -97,6 +100,8 @@ pub(super) fn consent_html(
         ),
         Ok(url) => format!("App name from {url}."),
     };
+    let [(_, inbox), (_, pool), (_, destructive)] = OFF_BY_DEFAULT;
+    let off_by_default = format!("{inbox}, {pool} and {destructive} are off by default.");
     let error = presentation
         .retry
         .map(|(_, error)| format!("<p class=warning role=alert>{}</p>", escape_html(error)))
@@ -108,6 +113,7 @@ pub(super) fn consent_html(
         error = error,
         project_rows = project_rows,
         scope_rows = scope_rows,
+        off_by_default = off_by_default,
         client = escape_html(client),
         display_name = escape_html(display_name),
         username = escape_html(username),
