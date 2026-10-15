@@ -191,7 +191,6 @@ function showMilestoneTip(anchor, id) {
     <div class="epic-tip-description">${milestone.desc ? esc(milestone.desc) : '<span class="tone-ghost">No description</span>'}</div>`);
 }
 
-/** @type {number|null} */
 export let roadmapHeight=null;
 
 function measureEpicHeight() {
@@ -204,7 +203,7 @@ function measureEpicHeight() {
   probe.remove();
   return height;
 }
-/** @type {{model:any,layout:any,metrics:{barHeight:number,width:number,height:number}}|null} The latest rendered Roadmap, which mountRoadmap binds. */
+/** The latest rendered Roadmap, which mountRoadmap binds. */
 let renderedRoadmap = null;
 
 export function renderRoadmap() {
@@ -395,21 +394,17 @@ export function roadmapTopbarHtml() {
 
 // ---------- roadmap mount: scroll + zoom ----------
 /**
- * The mounted Roadmap: what was rendered, the elements a zoom step moves,
- * and the calendar window currently in the DOM.
- * @typedef {{sc:HTMLElement,canvas:HTMLElement,axis:HTMLElement,model:any,layout:any,metrics:{barHeight:number,width:number,height:number},ppd:number,
- *   lanes:{lane:HTMLElement,bars:{el:HTMLElement,item:any}[]}[],goals:{goal:any,line:HTMLElement,connector:HTMLElement,label:HTMLElement}[],
- *   today:HTMLElement[],cells:{axis:HTMLElement,lines:HTMLElement,months:HTMLElement},calendar:{from:number,to:number,labels:string}|null,zoomLeft:number}} RoadmapView
+ * Returns the mounted Roadmap: what was rendered, the elements a zoom step
+ * moves, and the calendar window currently in the DOM.
  */
-/** @returns {RoadmapView} */
 function bindRoadmap(sc, rendered) {
-  const all = (/** @type {string} */ selector) => /** @type {HTMLElement[]} */([...sc.querySelectorAll(selector)]);
+  const all = (selector) => [...sc.querySelectorAll(selector)];
   const lines = all('.rm-canvas > .ms-line'), connectors = all('.goal-connector'), labels = all('.ms-label');
   const laneEls = all('.lane');
   return {
     sc, canvas: sc.querySelector('.rm-canvas'), axis: sc.querySelector('.rm-axis'), ...rendered, ppd: rendered.layout.ppd, calendar: null, zoomLeft: NaN,
     lanes: rendered.model.lanes.map((lane, i) => {
-      const bars = /** @type {HTMLElement[]} */([...(laneEls[i]?.querySelector('.lane-body')?.children || [])]);
+      const bars = [...(laneEls[i]?.querySelector('.lane-body')?.children || [])];
       return { lane: laneEls[i], bars: lane.epics.map((item, j) => ({ el: bars[j], item })).filter((bar) => bar.el) };
     }),
     goals: rendered.model.goals.map((goal, i) => ({ goal, line: lines[i], connector: connectors[i], label: labels[i] })).filter((goal) => goal.line && goal.connector && goal.label),
@@ -544,8 +539,8 @@ const monthFormatter = new Intl.DateTimeFormat('en-US', { timeZone:'UTC', month:
 function mountRoadmapCalendar(view) {
   const { sc, model, ppd } = view, start = model.start, width = sc.clientWidth || window.innerWidth;
   const end = Math.max(model.span, (view.metrics.width - RAIL) / ppd);
-  const day = (/** @type {Date} */ dt) => (dt - start) / DAY;
-  const labeled = (/** @type {number} */ from, /** @type {number} */ to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
+  const day = (dt) => (dt - start) / DAY;
+  const labeled = (from, to) => Math.round(to * ppd) - Math.round(from * ppd) > 46;
   const weeks = ppd >= WEEK_AXIS_PPD;
   const startMonth = new Date(start); startMonth.setUTCDate(1); startMonth.setUTCMonth(startMonth.getUTCMonth() + 1);
   const endMonth = new Date(+start + end * DAY); endMonth.setUTCDate(1); endMonth.setUTCHours(0, 0, 0, 0);
@@ -585,21 +580,21 @@ function mountRoadmapCalendar(view) {
 }
 
 let roadmapGestureCleanup = () => {};
-/** @type {(RoadmapView & {zoomTo:(ppd:number)=>void})|null} The Roadmap on the page, which a scale change zooms. */
+/** The Roadmap on the page, which a scale change zooms. */
 let mountedRoadmap = null;
 
 export function mountRoadmap() {
   roadmapGestureCleanup();
-  const sc = /** @type {HTMLElement|null} */(document.getElementById('rmScroll'));
+  const sc = document.getElementById('rmScroll');
   if (!sc || !renderedRoadmap) return;
-  const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (/** @type {number} */ _ppd) => {} });
+  const view = Object.assign(bindRoadmap(sc, renderedRoadmap), { zoomTo: (_ppd) => {} });
   mountedRoadmap = view;
-  sc.addEventListener('focusin', (event) => { const bar = /** @type {Element} */(event.target).closest?.('[data-epic]'); if (bar) roadmapSelection = bar.dataset.epic; });
+  sc.addEventListener('focusin', (event) => { const bar = event.target.closest?.('[data-epic]'); if (bar) roadmapSelection = bar.dataset.epic; });
   if (state.rmScrollLeft === null) state.rmScrollLeft = Math.max(RAIL + view.model.today * view.ppd - sc.clientWidth * 0.42, 0);
   sc.scrollLeft = state.rmScrollLeft;
   sc.scrollTop = state.rmScrollTop;
   mountRoadmapCalendar(view);
-  /** @type {{kind:'wheel'|'pinch'|'gesture',left:number,cx:number,day:number,ppd0:number,log:number,target:number|null,distance:number,cy:number,dy:number}|null} The zoom gesture in progress. */
+  /** The zoom gesture in progress. */
   let gesture = null;
   let calendarFrame = 0;
   sc.addEventListener('scroll', () => {
@@ -613,7 +608,7 @@ export function mountRoadmap() {
     });
   });
   const sample = sc.querySelector('.bar');
-  /** @type {number|null} */ let sizeFrame = null;
+  let sizeFrame = null;
   const sizeObserver = typeof ResizeObserver === 'undefined' || !sample ? null : new ResizeObserver(() => {
     if(sizeFrame===null && sc.isConnected && Math.ceil(sample.getBoundingClientRect().height)!==Number(sc.dataset.barHeight)){
       sizeFrame=requestAnimationFrame(()=>{sizeFrame=null;if(sc.isConnected)App.refreshRoadmap();});
@@ -625,8 +620,8 @@ export function mountRoadmap() {
   // gesture keeps the day under the pointer, or under the pinch center as it
   // moves, in place.
   let frame = 0, pointerX = NaN;
-  /** @type {ReturnType<typeof setTimeout>|undefined} */ let idle;
-  const begin = (/** @type {'wheel'|'pinch'|'gesture'} */ kind, /** @type {number} */ clientX, left = sc.getBoundingClientRect().left) => {
+  let idle;
+  const begin = (kind, clientX, left = sc.getBoundingClientRect().left) => {
     stopScale(false);
     hideEpicTip();
     const cx = clientX - left;
@@ -661,9 +656,9 @@ export function mountRoadmap() {
     schedule();
     clearTimeout(idle); idle = setTimeout(end, 120);
   }, {passive:false});
-  const center = (/** @type {TouchList} */ touches) => ({ x:(touches[0].clientX + touches[1].clientX) / 2, y:(touches[0].clientY + touches[1].clientY) / 2 });
-  const spread = (/** @type {TouchList} */ touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-  function movePinch(/** @type {TouchEvent} */ e) {
+  const center = (touches) => ({ x:(touches[0].clientX + touches[1].clientX) / 2, y:(touches[0].clientY + touches[1].clientY) / 2 });
+  const spread = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  function movePinch(e) {
     if (gesture?.kind !== 'pinch' || e.touches.length !== 2) return;
     e.preventDefault();
     const point = center(e.touches);
@@ -679,13 +674,13 @@ export function mountRoadmap() {
     current.distance = spread(e.touches); current.cy = point.y;
     sc.addEventListener('touchmove', movePinch, {passive:false});
   }, {passive:true});
-  const endPinch = (/** @type {TouchEvent} */ e) => { if (gesture?.kind === 'pinch' && e.touches.length < 2) end(); };
+  const endPinch = (e) => { if (gesture?.kind === 'pinch' && e.touches.length < 2) end(); };
   sc.addEventListener('touchend', endPinch, {passive:true});
   sc.addEventListener('touchcancel', endPinch, {passive:true});
   // Safari reports a touchpad pinch as gesture events, not ctrl+wheel. On
   // touch screens, touch events already drive the pinch.
   sc.addEventListener('pointermove', e => { pointerX = e.clientX; }, {passive:true});
-  const pinchGesture = (/** @type {Event & {scale?:number,clientX?:number}} */ e) => {
+  const pinchGesture = (e) => {
     e.preventDefault();
     if (gesture?.kind === 'pinch') return;
     if (e.type === 'gesturestart') {
@@ -704,7 +699,7 @@ export function mountRoadmap() {
 
   // A scale change eases to its zoom in place, over a few frames like the
   // other short motions; a wheel or pinch takes over from wherever it is.
-  /** @type {{ppd:number,day:number,cx:number,from:number,started:number|null}|null} */ let scaled = null;
+  let scaled = null;
   let scaleFrame = 0;
   function stopScale(finish = true) {
     if (scaleFrame) cancelAnimationFrame(scaleFrame);
@@ -712,7 +707,7 @@ export function mountRoadmap() {
     if (finish && scaled && sc.isConnected) zoomRoadmap(view, scaled.ppd, scaled.day, scaled.cx);
     scaled = null;
   }
-  const stepScale = (/** @type {number} */ time) => {
+  const stepScale = (time) => {
     scaleFrame = 0;
     if (!scaled || !sc.isConnected) return;
     scaled.started ??= time - 1000 / 60;

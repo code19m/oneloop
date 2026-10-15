@@ -17,11 +17,10 @@ export const iso = (dt) => `${String(dt.getUTCFullYear()).padStart(4, '0')}-${St
 export const instanceTimeZone = () => D.timeZone || 'UTC';
 const warnedTimeZones = new Set();
 let formatterZone;
-/** @type {Intl.DateTimeFormat} */ let instantFormatter, shortInstantFormatter;
+let instantFormatter, shortInstantFormatter;
 function timeFormatters() {
   const zone = instanceTimeZone();
   if (formatterZone !== zone) {
-    /** @param {string} timeZone */
     const build = timeZone => [
       new Intl.DateTimeFormat('en-GB', {timeZone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'}),
       new Intl.DateTimeFormat('en-US', {timeZone, month:'short', day:'numeric'}),
@@ -56,7 +55,6 @@ export const previousDate = value => { const date = d(value); date.setUTCDate(da
 window.OneloopTime = { instant: formatInstant };
 const calendarFormatter = new Intl.DateTimeFormat('en-US', {timeZone:'UTC',month:'short',day:'numeric'});
 export const human = (dt) => calendarFormatter.format(dt);
-/** @param {Date} dt */
 export const humanShort = dt => dt.getUTCFullYear() === today.getUTCFullYear() ? human(dt) : humanFull(iso(dt));
 export const humanFull = (ds) => d(ds).toLocaleDateString('en-US', { timeZone:'UTC', month: 'short', day: 'numeric', year: 'numeric' });
 export const humanInstant = (value) => {timeFormatters();return shortInstantFormatter.format(new Date(value));};

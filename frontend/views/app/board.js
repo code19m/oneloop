@@ -42,7 +42,6 @@ function boardTasks() {
   return tasks().filter((t) => matchesBoardFilters({ title: t.title, key: t.id, epicId: t.epicId, trackId: epicById(t.epicId)?.trackId, assigneeIds: t.assignees || [], blocked: !!t.block && t.state !== 'done' }, filters));
 }
 
-/** @param {{column?:string|null,excludeIds?:Set<string>|null}} [options] */
 export function renderBoard({column=null,excludeIds=null}={}) {
   const ts = boardTasks();
   const filtered = boardFiltered(boardFilters());
@@ -420,13 +419,13 @@ Object.assign(App, {
     state.boardLimits[col]=(state.boardLimits[col]||50)+50;
     const board=document.querySelector('.board'),column=board?.querySelector(`[data-col="${esc(col)}"]`),list=column?.querySelector('.col-cards');
     if(!list||state.view!=='board')return;
-    const ids=new Set([...list.querySelectorAll(/** @type {'div'} */('[data-task]'))].map(card=>card.dataset.task));
+    const ids=new Set([...list.querySelectorAll('[data-task]')].map(card=>card.dataset.task));
     const template=document.createElement('template');setHTML(template,renderBoard({column:col,excludeIds:ids}));
     const next=template.content.querySelector('.col-cards'),more=list.querySelector('.board-load-more');
     for(const card of next.querySelectorAll('.card')){list.insertBefore(card,more);UIMotion.enter(card);}
     if(list.querySelector('.card'))list.querySelector('.empty-note')?.remove();
     const nextMore=next.querySelector('.board-load-more');
-    if(!nextMore){const focused=more?.contains(document.activeElement);more?.remove();if(focused)list.querySelector(/** @type {'button'} */('.card:last-of-type .title'))?.focus({preventScroll:true});}
+    if(!nextMore){const focused=more?.contains(document.activeElement);more?.remove();if(focused)list.querySelector('.card:last-of-type .title')?.focus({preventScroll:true});}
     else if(!more)list.append(nextMore);
     column.querySelector('.col-head .mono').textContent=template.content.querySelector('.col-head .mono').textContent;
     boardSnapshots.set(board,boardSnapshot());

@@ -14,19 +14,13 @@
   const assetBase=new URL('../',document.currentScript?.src||new URL('/views/file-views.js',location.href));
   const rendererURL=new URL('views/diagram-renderer.html',assetBase);
   const markdownAssets=new Map();
-  /** @type {Promise<void>|null} */
   let markdownLoad=null;
   let markdownReady=['marked','DOMPurify','markedFootnote','markedAlert'].every(name=>!!window[name]);
-  /** @type {Promise<void>|null} */
   let mathLoad=null;
-  /** @param {string} text */
   const needsHighlight=text=>/[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^>]*\blanguage-/i.test(text);
   // Broad detection preserves nested fences, GitHub math and safe embedded code.
-  /** @param {string} text */
   const needsMath=text=>/\$|(?:`{3,}|~{3,})\s*math\b/.test(text);
-  const previewWindow=/** @type {Window & {hljs?:unknown,katex?:unknown,markedKatex?:unknown}} */(window);
-  /** @param {string} text */
-  const readyFor=text=>markdownReady&&(!needsHighlight(text)||!!previewWindow.hljs)&&(!needsMath(text)||!!previewWindow.katex&&!!previewWindow.markedKatex);
+  const readyFor=text=>markdownReady&&(!needsHighlight(text)||!!window.hljs)&&(!needsMath(text)||!!window.katex&&!!window.markedKatex);
 
   function loadMarkdownAsset(path,globalName){
     if(globalName&&window[globalName])return Promise.resolve();
@@ -48,7 +42,6 @@
     return promise;
   }
 
-  /** @param {string} text */
   function loadMarkdown(text){
     if(!markdownReady&&!markdownLoad)markdownLoad=Promise.all([
       loadMarkdownAsset('vendor/marked/marked.js','marked'),

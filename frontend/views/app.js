@@ -298,7 +298,6 @@ function msHtml(key, taskId, disabled) {
 }
 
 // ---------- settings ----------
-/** @type {{projectId:string|null,query:string,limit:number}} */
 let memberWindow = {projectId:null, query:'', limit:100};
 document.addEventListener('input', event => {
   const input=event.target;
@@ -316,10 +315,10 @@ function renderSettings() {
     record: typeof raw === 'string' ? { userId: raw, permissions: [] } : raw,
     user: userById(typeof raw === 'string' ? raw : raw.userId),
   })).filter((x) => x.user);
-  const memberIds = new Set((p.members || []).map((/** @type {any} */ raw) => typeof raw === 'string' ? raw : raw.userId));
+  const memberIds = new Set((p.members || []).map((raw) => typeof raw === 'string' ? raw : raw.userId));
   const candidates = D.users.filter((u) => u.active && !memberIds.has(u.id));
   const query=memberWindow.query.toLowerCase();
-  const matching=members.filter((/** @type {{user:any}} */ {user})=>!query||`${user.name} ${userHandle(user)}`.toLowerCase().includes(query));
+  const matching=members.filter(({user})=>!query||`${user.name} ${userHandle(user)}`.toLowerCase().includes(query));
   return `<div class="settings settings-wide">
     <div class="section">
       <h2>Project</h2>
@@ -469,7 +468,7 @@ function renderOverlays(){
   showWaitingPassword();
   const root=document.getElementById('overlay-root');
   if(!root||!D.session||!me()?.active){render();return;}
-  const oldModalElement=/** @type {HTMLElement|null} */(root.querySelector('.modal')),oldPeekElement=/** @type {HTMLElement|null} */(root.querySelector('.peek')),oldFocus=document.activeElement;
+  const oldModalElement=root.querySelector('.modal'),oldPeekElement=root.querySelector('.peek'),oldFocus=document.activeElement;
   const focus={oldModal:!!oldModalElement,oldPeek:!!oldPeekElement,oldFocus,oldModalKey:oldModalElement?.dataset.motionKey,oldPeekKey:oldPeekElement?.dataset.motionKey,oldPanelFocus:(oldModalElement||oldPeekElement)?.contains(oldFocus)?rememberOpener(oldFocus):null};
   collaboration?.beforeRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
   const motion=prepareRenderMotion(true);hideEpicTip();closePop(true);

@@ -29,7 +29,7 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   motion engine, `UIMotion` from `views/motion.js`. A module reaches the render
   pipeline through `App`, such as `App.refresh()`, and never imports
   `views/app.js`. TypeScript checks only `src/`, so each view module starts
-  with `// @ts-nocheck`.
+  with `// @ts-nocheck` and the views carry no JSDoc types.
 - **Actions.** To change an action that saves, start from
   `src/app/view-bridge.js`. It adds the server-backed `App` methods, such as
   `saveTask`, and wraps a few of the views' own, such as `nav`.

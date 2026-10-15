@@ -76,7 +76,7 @@ export function askToDiscard(leave, stay = () => {}, text = 'Text you typed on t
   if (askConfirmation({ title:'Discard changes?', text, action:'Discard', local:true, confirm:leave, cancel:stay }) === false) stay();
 }
 
-export const POP = { el: null, id: null, onKey: null, anchor: /** @type {HTMLElement|null} */ (null), dateTrigger: /** @type {Element|null} */ (null), onClose: /** @type {(()=>void)|null} */ (null), trigger: /** @type {HTMLElement|null} */ (null) };
+export const POP = { el: null, id: null, onKey: null, anchor: null, dateTrigger: null, onClose: null, trigger: null };
 
 export function closePop(silent) {
   if (!POP.el) return;
@@ -247,7 +247,6 @@ export function syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, old
   if (oldPeek && !peek) overlayReturn.peek = null;
 }
 
-/** @type {{type:string,id:string,pw:string,ownerSession:string|undefined,ownerId:string|undefined}[]} */
 const waitingPasswords=[];
 // A temporary password is shown once. While it shows, or waits for another
 // dialog to close, a reload or leaving oneloop would lose it for good.
@@ -323,7 +322,7 @@ Object.assign(App, {
     if(type==='pool')runtime().openPool().catch(report);
   },
   // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
-  _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
+  _openMenu(items, x, y, options = {}) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },
   // The action starts from the menu's button, so a dialog it opens returns focus there.
   menuAction(i) { const it = state.menu?.items[i],trigger=state.menu?.trigger;dismissMenu(false);if(trigger?.isConnected)trigger.focus({preventScroll:true});else if(trigger)restoreOpener(rememberOpener(trigger));it?.fn(); },
   /** Draw the open dialog again from the saved values, dropping what was typed in it. */
