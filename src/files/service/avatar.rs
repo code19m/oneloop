@@ -191,7 +191,7 @@ impl FileService {
         let user_id_tx = user_id.clone();
         let lease_id = Uuid::now_v7().to_string();
         let lease_id_tx = lease_id.clone();
-        let (row, unchanged) = self
+        let (row, etag, modified) = self
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
@@ -228,7 +228,7 @@ impl FileService {
                     .ok_or(AppError::NotFound { resource: "avatar" })?;
                 let etag = file_etag(&row.2, false);
                 if etag_matches(validator.as_deref(), &etag) {
-                    return Ok((row, Some(etag)));
+                    return Ok((row, etag, false));
                 }
                 tx.execute(
                     "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
@@ -241,13 +241,13 @@ impl FileService {
                         now + FILE_LEASE_SECONDS
                     ],
                 )?;
-                Ok((row, None))
+                Ok((row, etag, true))
             })
             .await?;
-        if let Some(etag) = unchanged {
+        if !modified {
             return Ok(ConditionalRead::NotModified(etag));
         }
-        let (key, size, checksum, blob_id) = row;
+        let (key, size, _, _) = row;
         let file = match File::open(self.store.file_path(&key)?).await {
             Ok(file) => file,
             Err(_) => {
@@ -261,30 +261,11 @@ impl FileService {
                 db: self.db.clone(),
                 lease_id: Some(lease_id),
             },
-            attachment: AttachmentView {
-                id: blob_id,
-                project_id: String::new(),
-                task_id: String::new(),
-                name: "avatar.png".into(),
-                size: size as u64,
-                media_type: "image/png".into(),
-                checksum,
-                is_ephemeral: false,
-                position: 0,
-                uploaded_by: user_id,
-                uploaded_at: 0,
-                last_accessed_at: 0,
-                state: BlobState::Available,
-                revision: 1,
-                preview_kind: Some(PreviewKind::Image),
-                download_url: None,
-                content_url: None,
-                thumbnail_url: None,
-                source_url: None,
-                html_preview_url: None,
-            },
+            name: "avatar.png".into(),
+            size: size as u64,
             media_type: "image/png".into(),
             byte_limit: None,
+            etag,
         })))
     }
 }

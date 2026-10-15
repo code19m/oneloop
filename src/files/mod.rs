@@ -16,6 +16,6 @@ pub use service::{
     PendingAttachmentUpload, ReadMode, ReplayedUpload, sanitize_html_preview,
 };
 pub(crate) use service::{
-    ConditionalRead, ThumbnailRead, classify_bytes, etag_matches, file_etag, sanitized_html_preview,
+    ConditionalRead, ThumbnailRead, classify_bytes, etag_matches, sanitized_html_preview,
 };
 pub use storage::FileStore;

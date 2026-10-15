@@ -111,11 +111,17 @@ enum UploadCleanupDecision {
     RemoveUncommitted,
 }
 
+/// An open file to send, with what its response needs.
 pub struct FileRead {
     pub file: LeasedFile,
-    pub attachment: AttachmentView,
+    /// The name to offer when the file is saved.
+    pub name: String,
+    /// The size of the whole file.
+    pub size: u64,
     pub media_type: String,
+    /// Only this many bytes are sent, for a source view.
     pub byte_limit: Option<u64>,
+    pub etag: String,
 }
 
 pub(crate) enum ConditionalRead {
@@ -123,7 +129,7 @@ pub(crate) enum ConditionalRead {
     NotModified(String),
 }
 
-pub(crate) fn file_etag(checksum: &str, source: bool) -> String {
+fn file_etag(checksum: &str, source: bool) -> String {
     if source {
         format!("\"{checksum}-source-{MAX_TEXT_PREVIEW_BYTES}\"")
     } else {

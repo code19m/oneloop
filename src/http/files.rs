@@ -504,8 +504,7 @@ async fn conditional_file_response(
             (StatusCode::NOT_MODIFIED.into_response(), etag)
         }
         crate::files::ConditionalRead::Modified(read) => {
-            let etag =
-                crate::files::file_etag(&read.attachment.checksum, read.byte_limit.is_some());
+            let etag = read.etag.clone();
             // A stale If-Range requires the whole representation, not a partial body.
             let mut headers = headers.clone();
             if headers
@@ -533,9 +532,9 @@ pub(crate) async fn file_response(
     request_headers: &HeaderMap,
     attachment: bool,
 ) -> AppResult<Response> {
-    let full_size = read.byte_limit.map_or(read.attachment.size, |limit| {
-        read.attachment.size.min(limit)
-    });
+    let full_size = read
+        .byte_limit
+        .map_or(read.size, |limit| read.size.min(limit));
     let range = if request_headers.get_all(header::RANGE).iter().count() > 1 {
         SingleRange::Ignore
     } else {
@@ -591,7 +590,7 @@ pub(crate) async fn file_response(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        content_disposition(&read.attachment.name, attachment)?,
+        content_disposition(&read.name, attachment)?,
     );
     if status == StatusCode::PARTIAL_CONTENT {
         headers.insert(
