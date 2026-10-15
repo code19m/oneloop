@@ -209,8 +209,8 @@ schema describes the payload of each operation.
 - **Files.** Upload and download tickets work once and
   [expire](reference.md#limits) soon. Send the bytes to the returned `url`
   with the returned `Authorization` header: `PUT` exactly `sizeBytes` bytes to upload, within the
-  [file limits](reference.md#limits), or `GET` to download. Never send a local
-  file path. To retry a failed upload, ask for a new ticket with the same
+  [file limits](reference.md#limits), or `GET` to download. A download names
+  the file in its `Content-Disposition` header. Never send a local file path. To retry a failed upload, ask for a new ticket with the same
   `idempotencyKey`, file name, size and bytes, so the file is attached only once.
 - **Knowledge base.** `read_knowledge_overview` returns the README and a list
   of files, each Markdown file with its title and headings; pass a `folder`, or

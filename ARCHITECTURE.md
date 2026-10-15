@@ -94,8 +94,8 @@ small hints over SSE, and clients then fetch what changed.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, `client_metadata` fetches client
   ID metadata documents from public addresses only, `cors` answers clients
-  that run in a web page, and `mod.rs` wires the transport and file transfer
-  endpoints.
+  that run in a web page, `transfer` issues and claims the one-use tickets
+  that move file bytes, and `mod.rs` wires the transport.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
   `Envelope`, which runs each command, and each reorder, deletion and restore
   of an attachment, once around it. Uploads use the ledger directly, because

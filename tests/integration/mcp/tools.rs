@@ -1010,6 +1010,13 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
         .await
         .unwrap();
     assert_eq!(download.status(), StatusCode::OK);
+    let disposition = download.headers()[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap();
+    assert!(
+        disposition.starts_with("attachment;") && disposition.contains("filename=\"large.txt\""),
+        "{disposition}"
+    );
     assert_eq!(body_bytes(download).await, bytes.as_slice());
 
     let deleted = tool_value(

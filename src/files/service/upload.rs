@@ -1,7 +1,56 @@
 //! Upload admission and durable reservations; streaming never holds a database write transaction.
 use super::*;
 
+/// The rules an upload meets before its bytes arrive. The fields are named as
+/// MCP upload tickets name them.
+fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()> {
+    actor.require_ready()?;
+    validate_original_name(name)?;
+    validate_idempotency_key(key)?;
+    if size == 0 || size > MAX_ATTACHMENT_BYTES {
+        return Err(AppError::validation(
+            "sizeBytes",
+            format!(
+                "must contain 1 byte to {} MiB",
+                MAX_ATTACHMENT_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 impl FileService {
+    /// Checks an upload as `begin_attachment_upload` will, before anything
+    /// is reserved for it. `task` is the task's ID or key; the result is its
+    /// ID.
+    pub(crate) async fn check_attachment_upload(
+        &self,
+        actor: &Actor,
+        task: &str,
+        name: &str,
+        size: u64,
+        key: &str,
+    ) -> AppResult<String> {
+        check_upload(actor, name, size, key)?;
+        let actor = actor.clone();
+        let task = task.to_owned();
+        self.db
+            .run(move |connection| {
+                let (task_id, project_id): (String, String) = connection
+                    .query_row(
+                        "SELECT id,project_id FROM tasks
+                         WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",
+                        [&task],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+                    .ok_or(AppError::NotFound { resource: "task" })?;
+                require_file_access(connection, &actor, &project_id, true, false)?;
+                Ok(task_id)
+            })
+            .await
+    }
+
     pub async fn begin_attachment_upload(
         &self,
         actor: &Actor,
@@ -11,18 +60,7 @@ impl FileService {
         is_ephemeral: bool,
         idempotency_key: &str,
     ) -> AppResult<AttachmentUpload> {
-        actor.require_ready()?;
-        validate_original_name(original_name)?;
-        validate_idempotency_key(idempotency_key)?;
-        if claimed_size == 0 || claimed_size > MAX_ATTACHMENT_BYTES {
-            return Err(AppError::validation(
-                "file",
-                format!(
-                    "must contain 1 byte to {} MiB",
-                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
-                ),
-            ));
-        }
+        check_upload(actor, original_name, claimed_size, idempotency_key)?;
         let request_hash = crate::idempotency::request_hash(&json!({
             "taskId": task_id,
             "name": original_name,

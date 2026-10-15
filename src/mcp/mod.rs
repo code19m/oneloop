@@ -2,30 +2,23 @@ pub(crate) mod client_metadata;
 mod cors;
 mod oauth;
 mod tools;
+mod transfer;
 
 use std::sync::Arc;
 
 use axum::{
     Router,
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::State,
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, put},
 };
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, session::never::NeverSessionManager, tower::StreamableHttpService,
 };
-use tokio_stream::StreamExt;
-use tokio_util::io::ReaderStream;
 
-use crate::{
-    AppError, AppResult, AppState,
-    auth::{Actor, ActorSource},
-    clock::unix_now,
-    files::ReadMode,
-};
+use crate::{AppError, AppState};
 
 pub use tools::OneloopMcp;
 
@@ -80,15 +73,9 @@ pub fn router(state: AppState) -> Router<AppState> {
             state.clone(),
             cors::listed_origins,
         ));
-    let transfers = Router::new()
-        .route("/mcp/files/upload", put(upload_file))
-        .route("/mcp/files/download", get(download_file))
-        .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            cors::listed_origins,
-        ));
-    oauth::router(&state).merge(transport).merge(transfers)
+    oauth::router(&state)
+        .merge(transport)
+        .merge(transfer::router(&state))
 }
 
 async fn require_mcp_actor(
@@ -144,170 +131,4 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         && !token.is_empty()
         && !token.bytes().any(|b| b.is_ascii_whitespace()))
     .then_some(token)
-}
-
-struct Transfer {
-    task_id: Option<String>,
-    attachment_id: Option<String>,
-    file_name: Option<String>,
-    size_bytes: Option<u64>,
-    temporary: bool,
-    idempotency_key: Option<String>,
-}
-
-async fn claim_transfer(
-    state: &AppState,
-    headers: &HeaderMap,
-    direction: &'static str,
-) -> AppResult<(Actor, Transfer)> {
-    let token = bearer(headers).ok_or(AppError::Unauthorized)?;
-    let hash = crate::auth::token_hash(token);
-    let now = unix_now()?;
-    let claimed = state
-        .db
-        .transaction(move |tx| {
-            let row = tx
-                .query_row(
-                    "SELECT f.grant_id,f.direction,f.task_id,f.attachment_id,f.file_name,
-                            f.size_bytes,f.is_ephemeral,f.idempotency_key,u.id,u.username,
-                            u.display_name,u.is_admin,u.must_change_password
-                     FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id
-                     JOIN users u ON u.id=g.user_id
-                     WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL
-                       AND f.expires_at>?3",
-                    rusqlite::params![hash, direction, now],
-                    |r| {
-                        Ok((
-                            Transfer {
-                                task_id: r.get(2)?,
-                                attachment_id: r.get(3)?,
-                                file_name: r.get(4)?,
-                                size_bytes: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
-                                temporary: r.get(6)?,
-                                idempotency_key: r.get(7)?,
-                            },
-                            Actor {
-                                user_id: r.get(8)?,
-                                username: r.get(9)?,
-                                display_name: r.get(10)?,
-                                is_admin: r.get(11)?,
-                                must_change_password: r.get(12)?,
-                                authenticated_at: 0,
-                                source: ActorSource::McpGrant {
-                                    grant_id: r.get(0)?,
-                                },
-                            },
-                        ))
-                    },
-                )
-                .map_err(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => AppError::Unauthorized,
-                    other => other.into(),
-                })?;
-            let grant = row.1.mcp_grant_id().ok_or(AppError::Unauthorized)?;
-            if !crate::auth::revoke_unless_current(tx, grant, now)? {
-                return Ok(None);
-            }
-            row.1.require_ready()?;
-            tx.execute(
-                "UPDATE mcp_file_transfers SET consumed_at=?1
-                 WHERE token_hash=?2 AND consumed_at IS NULL",
-                rusqlite::params![now, hash],
-            )?;
-            Ok(Some((row.1, row.0)))
-        })
-        .await?;
-    claimed.ok_or(AppError::Unauthorized)
-}
-
-async fn upload_file(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Body,
-) -> AppResult<axum::Json<ValueResponse>> {
-    let deadline = crate::files::UploadDeadline::new();
-    let (actor, transfer) = claim_transfer(&state, &headers, "upload").await?;
-    let task = transfer
-        .task_id
-        .ok_or_else(|| AppError::internal("upload ticket has no task"))?;
-    let name = transfer
-        .file_name
-        .ok_or_else(|| AppError::internal("upload ticket has no file name"))?;
-    let size = transfer
-        .size_bytes
-        .ok_or_else(|| AppError::internal("upload ticket has no size"))?;
-    let key = transfer
-        .idempotency_key
-        .ok_or_else(|| AppError::internal("upload ticket has no idempotency key"))?;
-    if let Some(length) = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        && length != size
-    {
-        return Err(AppError::validation(
-            "content-length",
-            "does not match the reserved upload size",
-        ));
-    }
-    let mut upload = state
-        .files
-        .begin_attachment_upload(&actor, &task, &name, size, transfer.temporary, &key)
-        .await?;
-    let mut stream = body.into_data_stream();
-    while let Some(chunk) = deadline.read(stream.next()).await? {
-        upload.write_chunk(&chunk.map_err(body_error)?).await?;
-    }
-    let (attachment, _) = upload.finish().await?;
-    Ok(axum::Json(ValueResponse {
-        value: serde_json::to_value(attachment).map_err(|e| AppError::internal(e.to_string()))?,
-    }))
-}
-
-/// A body that ends early or stalls is the client's failure, as for browser
-/// uploads; the server's request-body limit turns a stall into a 408.
-fn body_error(_: axum::Error) -> AppError {
-    AppError::validation("file", "upload stream ended unexpectedly")
-}
-
-async fn download_file(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
-    let (actor, transfer) = claim_transfer(&state, &headers, "download").await?;
-    let attachment = transfer
-        .attachment_id
-        .ok_or_else(|| AppError::internal("download ticket has no attachment"))?;
-    let read = state
-        .files
-        .open_for_read(&actor, &attachment, ReadMode::Download)
-        .await?;
-    let length = read.attachment.size;
-    let media = read.media_type.clone();
-    let mut response = Response::new(Body::from_stream(ReaderStream::with_capacity(
-        read.file,
-        64 * 1024,
-    )));
-    *response.status_mut() = StatusCode::OK;
-    response.headers_mut().insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&length.to_string())
-            .map_err(|e| AppError::internal(e.to_string()))?,
-    );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&media)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment"),
-    );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    Ok(response)
-}
-
-#[derive(serde::Serialize)]
-struct ValueResponse {
-    value: serde_json::Value,
 }

@@ -4,7 +4,7 @@
 
 mod detect;
 use detect::preview_kind_from_metadata;
-pub(crate) use detect::validate_original_name;
+use detect::validate_original_name;
 mod avatar;
 mod decode;
 mod maintenance;
@@ -295,6 +295,23 @@ impl FileService {
             })
             .await?;
         Ok(AttachmentList { items })
+    }
+
+    /// An attachment the person may read.
+    pub(crate) async fn attachment(
+        &self,
+        actor: &Actor,
+        attachment_id: &str,
+    ) -> AppResult<AttachmentView> {
+        let actor = actor.clone();
+        let attachment_id = attachment_id.to_owned();
+        self.db
+            .run(move |connection| {
+                let attachment = attachment_by_id(connection, &attachment_id)?.attachment;
+                require_file_access(connection, &actor, &attachment.project_id, false, false)?;
+                Ok(attachment)
+            })
+            .await
     }
 
     pub async fn set_ephemeral(

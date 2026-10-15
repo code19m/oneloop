@@ -528,7 +528,7 @@ async fn conditional_file_response(
     Ok(response)
 }
 
-async fn file_response(
+pub(crate) async fn file_response(
     mut read: FileRead,
     request_headers: &HeaderMap,
     attachment: bool,

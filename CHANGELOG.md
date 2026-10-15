@@ -13,6 +13,8 @@ All notable changes to oneloop are recorded here. The format follows
 - A Knowledge change or disconnect without `expectedRevision` now gets 412
   `precondition_failed`, like other edits, instead of 400. A revision below 1
   gets 400.
+- An MCP download now names the file in its `Content-Disposition` header, as
+  a browser download does.
 
 ### Fixed
 
