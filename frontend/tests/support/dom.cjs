@@ -218,7 +218,6 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
   w.Recovery = createRecoveryController({ data, api, gateway, getApp: () => w.App, getAuth: () => auth, reload: reloadBootstrap, windowObject: w, documentObject: w.document, setTimer: w.setTimeout.bind(w), clearTimer: w.clearTimeout.bind(w) });
   w.OneloopCollaboration = installCollaborationController({ transport: runtime, recovery: w.Recovery, visibility: w.document, eventSourceFactory: url => { const source = fakeEventSource(url); events.push(source); return source; } });
   w.OneloopKnowledge = knowledgeStub();
-  w.ONELOOP_DEFER_BOOT_RENDER = true;
   return {
     calls, commands, events, api, reads, gateway, runtime,
     /** Answer every waiting call of the API's `method` with `value`. */

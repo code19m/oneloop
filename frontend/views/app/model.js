@@ -21,7 +21,7 @@ export const state = {
   taskId: null,
   rail: (() => { try { return localStorage.getItem('oneloop.sidebar') === 'rail'; } catch { return false; } })(),
   poolTab: 'mine',
-  projectId: 'p1',
+  projectId: null,
   pxPerDay: 8.5,
   rmScrollLeft: null, rmScrollTop: 0,
   boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
@@ -61,8 +61,7 @@ export const visibleProjects = () => D.projects.filter(p=>canReadProject(p.id));
 const memberRecord = (userId, projectId) => {
   const p = D.projects.find((x) => x.id === (projectId || state.projectId));
   if (!p) return null;
-  const raw = (p.members || []).find((m) => (typeof m === 'string' ? m : m.userId) === userId);
-  return typeof raw === 'string' ? { userId: raw, permissions: [] } : raw || null;
+  return (p.members || []).find((m) => m.userId === userId) || null;
 };
 export const canReadProject = id => !!(me()?.active && D.projects.some(p=>p.id===id) && (me().admin||memberRecord(me().id,id)));
 export const canReadTask = task => {const id=trackById(epicById(task?.epicId)?.trackId)?.projectId;return !!id&&canReadProject(id);};
@@ -76,7 +75,7 @@ export const hasPermission = (permission, projectId) => {
 export const canRoadmap = () => hasPermission('manage_roadmap');
 export const canBoard = () => hasPermission('manage_board');
 export const projectMembers = () => ((project() || {}).members || [])
-  .map((m) => userById(typeof m === 'string' ? m : m.userId))
+  .map((m) => userById(m.userId))
   .filter((u) => u && u.active);
 export const activeAdmins = () => D.users.filter((u) => u.admin && u.active);
 export const counts = () => {

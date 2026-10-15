@@ -93,7 +93,7 @@ New code imports a module instead of adding one.
 | `App` | `views/app.js` | The view actions and refresh methods |
 | `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions, the server clock, and the API, commands and live updates |
 | `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
-| `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
+| `ONELOOP_BUILD` | `boot.js` | The server's version |
 | `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
 | `Theme` | `views/theme.js` | The color theme |
 

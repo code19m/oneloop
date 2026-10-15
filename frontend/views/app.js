@@ -1,7 +1,7 @@
 // @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
 /* The views' shell: it routes addresses and draws the page around the
-   features in views/app/. frontend/src/app/boot.js imports it once it has set
-   DATA and loaded the classic view scripts, and the view bridge then adds the
+   features in views/app/. frontend/src/app/boot.js imports it once DATA and
+   the controllers are in place, and the view bridge then adds the
    server-backed actions to `App`. See frontend/README.md before changing an
    action. */
 
@@ -314,11 +314,8 @@ document.addEventListener('click', event => {
 function renderSettings() {
   const p = project();
   if(memberWindow.projectId!==p.id)memberWindow={projectId:p.id,query:'',limit:100};
-  const members = (p.members || []).map((raw) => ({
-    record: typeof raw === 'string' ? { userId: raw, permissions: [] } : raw,
-    user: userById(typeof raw === 'string' ? raw : raw.userId),
-  })).filter((x) => x.user);
-  const memberIds = new Set((p.members || []).map((raw) => typeof raw === 'string' ? raw : raw.userId));
+  const members = (p.members || []).map((record) => ({ record, user: userById(record.userId) })).filter((x) => x.user);
+  const memberIds = new Set((p.members || []).map((member) => member.userId));
   const candidates = D.users.filter((u) => u.active && !memberIds.has(u.id));
   const query=memberWindow.query.toLowerCase();
   const matching=members.filter(({user})=>!query||`${user.name} ${userHandle(user)}`.toLowerCase().includes(query));
@@ -428,7 +425,6 @@ function refreshBackground(){
 // Snapshot immediately around the DOM swap, never across an awaited read.
 function render(){
   clearTimeout(backgroundRenderTimer);dialogPaintOwed=false;
-  if(!window.ONELOOP_DEFER_BOOT_RENDER)D.peopleVersion=(D.peopleVersion||0)+1;
   const scope=renderScope(),active=document.activeElement;
   const preserve=paintedScope===scope&&!recovery.pageError&&(!D.session||canReadProject(state.projectId)||['profile','users','inbox','storage'].includes(state.view));
   const focused=preserve&&active?.matches('input:not([type=file]),textarea')?{opener:rememberOpener(active),value:active.value,scrollTop:active.scrollTop}:null;
@@ -898,4 +894,3 @@ setInterval(()=>{
 },60000);
 ensureToastRegion();
 resolveRoute();
-if(!window.ONELOOP_DEFER_BOOT_RENDER)render();

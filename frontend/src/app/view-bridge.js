@@ -529,7 +529,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   app.setAvatar=(input)=>{
     const file=input.files?.[0],me=data.users.find((item)=>item.id===data.session?.userId);if(!file||!me)return;
     // The server takes avatars up to this size, so a larger image isn't sent.
-    const limit=data.limits?.maxAvatarBytes??5*1024*1024,tooLarge=`Use an image of at most ${Math.round(limit/1024/1024*10)/10} MiB.`;
+    const limit=data.limits.maxAvatarBytes,tooLarge=`Use an image of at most ${Math.round(limit/1024/1024*10)/10} MiB.`;
     if(file.size>limit){input.value='';app.toast(tooLarge,'error');return;}
     const scope=sessionScope(),generation=++avatarGeneration;
     if(avatarQueueScope!==scope){avatarQueueScope=scope;avatarQueue=Promise.resolve();}
