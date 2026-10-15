@@ -1,5 +1,103 @@
-//! Comment mutations preserve ownership, immutable audit and notification recipient snapshots.
+//! Comments: their pages, their changes and the purge of deleted comments'
+//! text. Changes keep ownership, audit and recipient snapshots together.
 use super::*;
+
+const COMMENT_MAX: usize = 2_000;
+/// Deleted comments whose text the Undo window no longer needs.
+const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
+    WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT ?2";
+/// Deleted comments emptied in one pass.
+const DELETED_COMMENT_BATCH: usize = 500;
+
+impl CollaborationService {
+    pub async fn comments(
+        &self,
+        actor: &Actor,
+        task_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> AppResult<CommentPage> {
+        actor.require_ready()?;
+        let actor = actor.clone();
+        let task_id = task_id.to_owned();
+        let cursor = cursor.map(decode_cursor).transpose()?;
+        let limit = page_limit(limit);
+        self.db.snapshot(move |connection| {
+            let actor = refresh_actor_connection(connection, &actor)?;
+            let project_id: String = connection.query_row(
+                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
+                [&task_id], |row| row.get(0),
+            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
+            let mut statement = connection.prepare(
+                "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
+                        c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
+                 FROM comments c JOIN users u ON u.id=c.author_id
+                 WHERE c.task_id=?1 AND (?2 IS NULL OR c.created_at<?2 OR (c.created_at=?2 AND c.id<?3))
+                 ORDER BY c.created_at DESC,c.id DESC LIMIT ?4",
+            )?;
+            let (cursor_time, cursor_id) = cursor.map(|value| (Some(value.time), value.id)).unwrap_or((None, String::new()));
+            let rows = statement.query_map(params![task_id, cursor_time, cursor_id, (limit + 1) as i64], comment_row)?;
+            let mut comments = rows.collect::<Result<Vec<_>, _>>()?;
+            let next_cursor = next_cursor(&mut comments, limit, |item| (item.created_at, &item.id));
+            comment_page_context(connection, comments, next_cursor)
+        }).await
+    }
+
+    /// Bounded context for an exact notification destination, independent of feed pagination.
+    pub async fn comment_context(
+        &self,
+        actor: &Actor,
+        task_id: &str,
+        comment_id: &str,
+    ) -> AppResult<CommentPage> {
+        actor.require_ready()?;
+        let actor = actor.clone();
+        let task_id = task_id.to_owned();
+        let comment_id = comment_id.to_owned();
+        self.db.snapshot(move |connection| {
+            let actor = refresh_actor_connection(connection, &actor)?;
+            let project_id: String = connection.query_row(
+                "SELECT project_id FROM tasks WHERE id=?1 AND deleted_at IS NULL",
+                [&task_id], |row| row.get(0),
+            ).optional()?.ok_or(AppError::NotFound { resource: "task" })?;
+            require_project(connection, &actor, &project_id, Need::Read, false)?;
+            let comment = connection.query_row(
+                "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
+                        c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
+                 FROM comments c JOIN users u ON u.id=c.author_id WHERE c.id=?1 AND c.task_id=?2",
+                params![comment_id, task_id], comment_row,
+            ).optional()?.ok_or(AppError::NotFound { resource: "comment" })?;
+            comment_page_context(connection, vec![comment], None)
+        }).await
+    }
+
+    /// Removes the text and mentions of comments deleted longer ago than the
+    /// Undo window, a batch at a time. Returns whether the batch was full,
+    /// so more may be waiting.
+    pub async fn purge_deleted_comments(&self, now: i64) -> AppResult<bool> {
+        self.db
+            .delivery_transaction(move |tx| {
+                let cutoff = now.saturating_sub(crate::domain::UNDO_WINDOW_SECONDS);
+                let mut statement = tx.prepare(DELETED_COMMENT_TEXT_SQL)?;
+                let ids = statement
+                    .query_map(params![cutoff, DELETED_COMMENT_BATCH as i64], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                drop(statement);
+                for id in &ids {
+                    tx.execute("DELETE FROM comment_mentions WHERE comment_id=?1", [id])?;
+                    tx.execute(
+                        "UPDATE comments SET content='',edited_at=NULL WHERE id=?1",
+                        [id],
+                    )?;
+                }
+                Ok(ids.len() == DELETED_COMMENT_BATCH)
+            })
+            .await
+    }
+}
 
 pub(super) fn create_comment(
     tx: &Transaction<'_>,
@@ -406,4 +504,160 @@ fn changeable_comment_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<Co
         });
     }
     Ok(comment)
+}
+
+pub(super) fn comment_view_tx(tx: &Transaction<'_>, comment_id: &str) -> AppResult<CommentView> {
+    let mut view = tx
+        .query_row(
+            "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
+                c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
+         FROM comments c JOIN users u ON u.id=c.author_id WHERE c.id=?1",
+            [comment_id],
+            comment_row,
+        )
+        .optional()?
+        .ok_or(AppError::NotFound {
+            resource: "comment",
+        })?;
+    // A deleted comment keeps its mentions only for a restore.
+    if view.deleted_at.is_none() {
+        view.mentions = mentions::load(tx, Mentioned::Comment(comment_id))?;
+    }
+    Ok(view)
+}
+
+fn comment_page_context(
+    connection: &rusqlite::Connection,
+    mut items: Vec<CommentView>,
+    next_cursor: Option<String>,
+) -> AppResult<CommentPage> {
+    let task_id = items
+        .first()
+        .map(|item| item.task_id.clone())
+        .unwrap_or_default();
+    let included = items
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<BTreeSet<_>>();
+    let roots = items
+        .iter()
+        .map(|item| item.root_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut missing = roots.clone();
+    missing.extend(items.iter().filter_map(|item| item.reply_to_id.clone()));
+    let mut context = Vec::new();
+    for id in missing.difference(&included) {
+        if let Some(view) = connection.query_row(
+            "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
+                    c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
+             FROM comments c JOIN users u ON u.id=c.author_id WHERE c.id=?1 AND c.task_id=?2",
+            params![id, task_id], comment_row,
+        ).optional()? {
+            context.push(view);
+        }
+    }
+    for item in items
+        .iter_mut()
+        .chain(context.iter_mut())
+        .filter(|item| item.deleted_at.is_none())
+    {
+        item.mentions = mentions::load(connection, Mentioned::Comment(&item.id))?;
+    }
+    let mut reply_counts = std::collections::BTreeMap::new();
+    for root in roots {
+        let count = connection.query_row(
+            "SELECT COUNT(*) FROM comments WHERE root_id=?1 AND id<>?1",
+            [&root],
+            |row| row.get(0),
+        )?;
+        reply_counts.insert(root, count);
+    }
+    Ok(CommentPage {
+        items,
+        context,
+        reply_counts,
+        next_cursor,
+    })
+}
+
+fn comment_row(row: &Row<'_>) -> rusqlite::Result<CommentView> {
+    let deleted_at: Option<i64> = row.get(10)?;
+    let content: String = row.get(7)?;
+    Ok(CommentView {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        task_id: row.get(2)?,
+        author_id: row.get(3)?,
+        author_name: row.get(4)?,
+        root_id: row.get(5)?,
+        reply_to_id: row.get(6)?,
+        content: deleted_at.is_none().then_some(content),
+        mentions: Vec::new(),
+        created_at: row.get(8)?,
+        edited_at: row.get(9)?,
+        deleted_at,
+        revision: row.get(11)?,
+    })
+}
+
+fn comment_fingerprint(content: &str, mentions: &[MentionToken]) -> AppResult<String> {
+    let value = json!({"content":content,"mentions":mentions});
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| AppError::internal(format!("serialize comment fingerprint: {error}")))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn truncate_excerpt(value: &str, max: usize) -> String {
+    let mut result: String = value.chars().take(max).collect();
+    if value.chars().count() > max {
+        result.push('…');
+    }
+    result
+}
+
+/// Connected apps manage comments only as their author: moderation is an
+/// account-administration power, which stays in the browser.
+pub(super) fn require_comment_owner_or_admin(actor: &Actor, author_id: &str) -> AppResult<()> {
+    if actor.user_id == author_id {
+        return Ok(());
+    }
+    actor.require_admin()
+}
+
+/// A retry of a comment's creation or edit shows the comment as it is now
+/// when it has been deleted since. Older databases may still hold a
+/// live-looking result from before deletion began updating stored results.
+pub(super) fn show_deleted_comment(
+    tx: &Transaction<'_>,
+    operation: CollaborationOperation,
+    replay: &mut CommandResult,
+) -> AppResult<()> {
+    if !matches!(
+        operation,
+        CollaborationOperation::CreateComment | CollaborationOperation::EditComment
+    ) {
+        return Ok(());
+    }
+    let Some(comment_id) = replay
+        .entities
+        .first()
+        .and_then(|entity| entity.get("id"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let current = comment_view_tx(tx, comment_id)?;
+    if current.deleted_at.is_some() {
+        tombstone_comment_replays(tx, &current)?;
+        replace_comment(replay, &current)?;
+    }
+    Ok(())
+}
+
+fn ensure_revision(actual: i64, expected: i64) -> AppResult<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(AppError::revision(expected, actual))
+    }
 }
