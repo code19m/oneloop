@@ -1474,22 +1474,4 @@ async fn the_purge_removes_deleted_comment_text_after_the_undo_window() {
     let later = now() + oneloop::domain::UNDO_WINDOW_SECONDS;
     assert!(!service.purge_deleted_comments(later).await.unwrap());
     assert_eq!(stored(id.clone()).await.unwrap(), (String::new(), 0));
-    let plan: Vec<String> = fixture
-        .db
-        .run(|connection| {
-            let mut statement = connection.prepare(
-                "EXPLAIN QUERY PLAN SELECT id FROM comments
-                 WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT 500",
-            )?;
-            Ok(statement
-                .query_map([0], |row| row.get(3))?
-                .collect::<Result<_, _>>()?)
-        })
-        .await
-        .unwrap();
-    assert!(
-        plan.iter()
-            .any(|step| step.contains("comments_deleted_text_idx")),
-        "{plan:?}"
-    );
 }

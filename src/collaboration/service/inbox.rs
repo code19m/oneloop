@@ -22,6 +22,14 @@ const INBOX_FILTER_SQL: &str = concat!(
         (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))"
 );
 
+/// Clears what Inbox items archived before `?1` still show.
+const PURGE_ARCHIVED_SQL: &str = "UPDATE notification_recipients
+    SET project_name_snapshot='',task_key_snapshot=NULL,task_title_snapshot=NULL,
+        actor_name_snapshot='',excerpt_snapshot=NULL
+    WHERE archived_at IS NOT NULL AND archived_at<=?1 AND
+      (project_name_snapshot<>'' OR actor_name_snapshot<>'' OR task_key_snapshot IS NOT NULL
+       OR task_title_snapshot IS NOT NULL OR excerpt_snapshot IS NOT NULL)";
+
 impl CollaborationService {
     pub async fn inbox(
         &self,
@@ -107,19 +115,13 @@ impl CollaborationService {
     }
 
     pub async fn purge_archived(&self, now: i64) -> AppResult<u64> {
-        self.db.delivery_transaction(move |connection| {
-            let cutoff = now.saturating_sub(ARCHIVE_RETENTION_SECONDS);
-            let changed = connection.execute(
-                "UPDATE notification_recipients
-                 SET project_name_snapshot='',task_key_snapshot=NULL,task_title_snapshot=NULL,
-                     actor_name_snapshot='',excerpt_snapshot=NULL
-                 WHERE archived_at IS NOT NULL AND archived_at<=?1 AND
-                   (project_name_snapshot<>'' OR actor_name_snapshot<>'' OR task_key_snapshot IS NOT NULL
-                    OR task_title_snapshot IS NOT NULL OR excerpt_snapshot IS NOT NULL)",
-                [cutoff],
-            )?;
-            Ok(changed as u64)
-        }).await
+        self.db
+            .delivery_transaction(move |connection| {
+                let cutoff = now.saturating_sub(ARCHIVE_RETENTION_SECONDS);
+                let changed = connection.execute(PURGE_ARCHIVED_SQL, [cutoff])?;
+                Ok(changed as u64)
+            })
+            .await
     }
 }
 
@@ -309,4 +311,17 @@ fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
         archived_at: row.get(13)?,
         created_at: row.get(6)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{query_plan, test_database};
+
+    #[test]
+    fn the_archive_purge_reads_only_archived_items() {
+        let (_root, connection) = test_database();
+        let plan = query_plan(&connection, PURGE_ARCHIVED_SQL);
+        assert!(plan.contains("notification_archived_idx"), "{plan}");
+    }
 }

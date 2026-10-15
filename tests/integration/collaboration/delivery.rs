@@ -1215,62 +1215,6 @@ async fn runtime_shutdown_notifies_long_lived_streams_immediately() {
 }
 
 #[tokio::test]
-async fn activity_pages_use_bounded_project_and_task_feed_indexes() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let plans = db
-        .run(|connection| {
-            let mut result = Vec::new();
-            for sql in [
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND is_hidden=0 AND visibility='public'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND task_id='task' AND is_hidden=0 AND visibility='public'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND private_owner_user_id='alice'
-                   AND is_hidden=0 AND visibility='owner'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-                "EXPLAIN QUERY PLAN SELECT id FROM activity_projection
-                 WHERE project_id='p1' AND task_id='task' AND private_owner_user_id='alice'
-                   AND is_hidden=0 AND visibility='owner'
-                 ORDER BY latest_at DESC,id DESC LIMIT 51",
-            ] {
-                let mut statement = connection.prepare(sql)?;
-                let lines = statement
-                    .query_map([], |row| row.get::<_, String>(3))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                result.push(lines.join(" "));
-            }
-            Ok(result)
-        })
-        .await
-        .unwrap();
-    assert!(
-        plans[0].contains("activity_projection_project_public_feed_idx"),
-        "{}",
-        plans[0]
-    );
-    assert!(
-        plans[1].contains("activity_projection_task_public_feed_idx"),
-        "{}",
-        plans[1]
-    );
-    assert!(
-        plans[2].contains("activity_projection_project_owner_feed_idx"),
-        "{}",
-        plans[2]
-    );
-    assert!(
-        plans[3].contains("activity_projection_task_owner_feed_idx"),
-        "{}",
-        plans[3]
-    );
-}
-
-#[tokio::test]
 async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() {
     let SeededProject {
         root: _root,

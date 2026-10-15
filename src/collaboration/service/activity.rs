@@ -146,7 +146,7 @@ impl CollaborationService {
 }
 
 /// A project's public feed, or the private feed of `owner`, optionally for
-/// one task. Each case matches one of the partial feed indexes.
+/// one task.
 fn project_feed(
     connection: &rusqlite::Connection,
     project_id: &str,
@@ -155,23 +155,29 @@ fn project_feed(
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> AppResult<Vec<ActivityEvent>> {
-    let mut filter = "project_id=?1 AND is_hidden=0".to_owned();
-    let mut values: Vec<rusqlite::types::Value> = vec![project_id.to_owned().into()];
-    if let Some(task_id) = task_id {
-        values.push(task_id.to_owned().into());
-        filter += &format!(" AND task_id=?{}", values.len());
-    }
-    match owner {
-        Some(owner) => {
-            values.push(owner.to_owned().into());
-            filter += &format!(
-                " AND visibility='owner' AND private_owner_user_id=?{}",
-                values.len()
-            );
-        }
-        None => filter += " AND visibility='public'",
-    }
+    let values = [Some(project_id), task_id, owner]
+        .into_iter()
+        .flatten()
+        .map(|value| value.to_owned().into())
+        .collect();
+    let filter = project_filter(task_id.is_some(), owner.is_some());
     feed(connection, &filter, values, cursor, limit)
+}
+
+/// The filter of a project's feed, with the project, then the task, then
+/// the owner as its parameters. Each case matches one partial feed index.
+fn project_filter(task: bool, owner: bool) -> String {
+    let mut filter = "project_id=?1 AND is_hidden=0".to_owned();
+    if task {
+        filter += " AND task_id=?2";
+    }
+    if owner {
+        let next = 2 + usize::from(task);
+        filter += &format!(" AND visibility='owner' AND private_owner_user_id=?{next}");
+    } else {
+        filter += " AND visibility='public'";
+    }
+    filter
 }
 
 /// The newest activity that `filter` selects, after `cursor`: at most
@@ -187,16 +193,22 @@ fn feed(
     let (time, id) = cursor.map_or((i64::MAX, "\u{10ffff}"), |cursor| {
         (cursor.time, cursor.id.as_str())
     });
-    let next = values.len() + 1;
+    let sql = feed_sql(filter, values.len() + 1);
     values.extend([time.into(), id.to_owned().into(), (limit as i64 + 1).into()]);
-    let mut statement = connection.prepare_cached(&format!(
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values), activity_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// A page of what `filter` selects, newest first, from a cursor. `next` is
+/// the number of the first parameter after the filter's own.
+fn feed_sql(filter: &str, next: usize) -> String {
+    format!(
         "SELECT {COLUMNS} FROM activity_projection WHERE {filter}
          AND (latest_at,id)<(?{next},?{}) ORDER BY latest_at DESC,id DESC LIMIT ?{}",
         next + 1,
         next + 2
-    ))?;
-    let rows = statement.query_map(rusqlite::params_from_iter(values), activity_row)?;
-    Ok(rows.collect::<Result<_, _>>()?)
+    )
 }
 
 fn activity_page(mut items: Vec<ActivityEvent>, limit: usize) -> ActivityPage {
@@ -243,4 +255,28 @@ fn activity_row(row: &Row<'_>) -> rusqlite::Result<ActivityEvent> {
         entity_revision: row.get(12)?,
         created_at: row.get(13)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{query_plan, test_database};
+
+    #[test]
+    fn project_feeds_read_their_partial_index_in_order() {
+        let (_root, connection) = test_database();
+        for (task, owner, index) in [
+            (false, false, "activity_projection_project_public_feed_idx"),
+            (true, false, "activity_projection_task_public_feed_idx"),
+            (false, true, "activity_projection_project_owner_feed_idx"),
+            (true, true, "activity_projection_task_owner_feed_idx"),
+        ] {
+            let next = 2 + usize::from(task) + usize::from(owner);
+            let plan = query_plan(&connection, &feed_sql(&project_filter(task, owner), next));
+            assert!(
+                plan.contains(index) && !plan.contains("TEMP B-TREE"),
+                "{plan}"
+            );
+        }
+    }
 }

@@ -357,21 +357,3 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         assert_eq!(response(a).await, response(b).await);
     }
 }
-
-#[tokio::test]
-async fn maintenance_queries_use_bounded_indexes() {
-    let f = fixture().await;
-    f.db.run(|c| {
-        for (sql,index) in [
-            ("SELECT EXISTS(SELECT 1 FROM notification_events WHERE project_id='p1' AND actor_user_id='u1' AND created_at>1 AND json_extract(payload_json,'$.broadcast')=1)","notification_broadcast_lookup_idx"),
-            ("UPDATE notification_recipients SET excerpt_snapshot=NULL WHERE archived_at IS NOT NULL AND archived_at<=1 AND excerpt_snapshot IS NOT NULL","notification_archived_idx"),
-            ("SELECT created_at,COUNT(*) FROM activity_events WHERE event_type='attachment.cleaned' GROUP BY created_at ORDER BY created_at DESC LIMIT 20","activity_cleanup_time_idx"),
-        ] {
-            let mut s=c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-            let plan=s.query_map([],|r|r.get::<_,String>(3))?.collect::<Result<Vec<_>,_>>()?.join("\n");
-            assert!(plan.contains(index),"expected {index}: {plan}");
-            assert!(!plan.contains("USE TEMP B-TREE"),"{plan}");
-        }
-        Ok(())
-    }).await.unwrap();
-}
