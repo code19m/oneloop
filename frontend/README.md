@@ -82,6 +82,23 @@ order, then imports the `app.js` module. The view bridge installs
 server-backed actions before the first application render; preview libraries
 load on demand.
 
+The page's parts reach each other through these `window` properties only.
+New code imports a module instead of adding one.
+
+| Global | Set by | Holds |
+| --- | --- | --- |
+| `DATA` | `boot.js` | The projection that the views draw |
+| `App` | `views/app.js` | The view actions and refresh methods |
+| `OneloopRuntime` | `boot.js` | The view bridge's server-backed functions and the server clock |
+| `OneloopTransport` | `boot.js` | The API, commands and live updates for the classic scripts |
+| `Recovery` | `boot.js` | Connection, conflict and unsaved-input handling |
+| `UIHTML`, `UIEscape`, `UIAction` | `boot.js` | The HTML helpers of the classic scripts |
+| `OneloopErrorMessage`, `OneloopRetryable` | `boot.js` | How a failure reads, and whether trying again can help |
+| `ONELOOP_BUILD`, `ONELOOP_DEFER_BOOT_RENDER` | `boot.js` | The server's version, and holding the first render until the bridge is in |
+| `OneloopCollaboration`, `OneloopKnowledge` | their controllers in `src/features/` | Comments, the Inbox and live updates; Knowledge |
+| `OneloopTime` | `views/app/format.js` | Times in the instance time zone |
+| `Theme`, `UIMotion`, `FileViews`, `Uploads`, `Collab` | the classic scripts in `views/` | Theme, motion, file previews, attachments, comments and the Inbox |
+
 ## Design
 
 The shipped app is the design reference. `styles/style.css` defines the tokens
