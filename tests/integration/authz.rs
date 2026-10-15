@@ -294,7 +294,6 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
     actor.source = ActorSource::McpGrant {
         grant_id: "g".into(),
     };
-    let auth = support::auth_service(&db);
     let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
@@ -348,15 +347,18 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
             missing != "roadmap_manage",
             "{missing}: roadmap"
         );
-        for (scope, name) in [
-            (oneloop::auth::McpScope::Discussion, "discussion"),
-            (oneloop::auth::McpScope::Destructive, "destructive"),
-            (oneloop::auth::McpScope::InboxPrivate, "inbox_private"),
-            (oneloop::auth::McpScope::MyPoolPrivate, "my_pool_private"),
-        ] {
+        // Real grants always hold project_read; only discussion gates comments.
+        if missing != "project_read" {
+            let comment = collaboration_command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"Hello"}),
+                &format!("comment-without-{missing}"),
+                None,
+            );
             assert_eq!(
-                auth.require_mcp_scope(&actor, scope).await.is_ok(),
-                missing != name
+                discussion.execute(&actor, comment).await.is_ok(),
+                missing != "discussion",
+                "{missing}: comment"
             );
         }
         db.transaction(move |tx| {

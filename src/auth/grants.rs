@@ -271,16 +271,6 @@ impl AuthService {
             })
             .await
     }
-
-    pub async fn require_mcp_scope(&self, actor: &Actor, scope: McpScope) -> AppResult<()> {
-        let actor = actor.clone();
-        self.db
-            .run(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                crate::access::require_scope(connection, &actor, scope.as_str(), None)
-            })
-            .await
-    }
 }
 
 /// Stores a grant with its first tokens and returns the grant's ID.
