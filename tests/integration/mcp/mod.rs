@@ -38,10 +38,32 @@ async fn fixture_with(
     let (dir, db) = support::database();
     let session = support::add_user(&db, "owner", false).await;
     let user = session.actor.user_id.clone();
-    let member = user.clone();
-    db.transaction(move |tx|{tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-1','Project','PRJ',1,1)",[])?;tx.execute("INSERT INTO project_sequences(project_id,next_task_number) VALUES('project-1',1)",[])?;tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,1,1,1,1)",[&member])?;Ok(())}).await.unwrap();
+    add_project(&db, "project-1", "Project", "PRJ", &user).await;
     let app = support::app(dir.path(), &db, "http://127.0.0.1:8080", settings).router;
     (dir, db, app, session.token, user)
+}
+
+/// Adds a project whose Board and Roadmap `member` manages.
+async fn add_project(db: &Db, id: &str, name: &str, prefix: &str, member: &str) {
+    let row = [id, name, prefix, member].map(str::to_owned);
+    db.transaction(move |tx| {
+        let [id, name, prefix, member] = &row;
+        tx.execute(
+            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,?2,?3,1,1)",
+            [id, name, prefix],
+        )?;
+        tx.execute(
+            "INSERT INTO project_sequences(project_id,next_task_number) VALUES(?1,1)",
+            [id],
+        )?;
+        tx.execute(
+            "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES(?1,?2,1,1,1,1)",
+            [id, member],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
 }
 
 async fn register_from(app: &Router, peer: &str, forwarded_for: Option<&str>) -> StatusCode {

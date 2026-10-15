@@ -1005,23 +1005,6 @@ async fn demoted_admin_loses_apps_for_projects_they_are_not_a_member_of() {
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// Adds a second project, "Old project", with the fixture's user as a member.
-async fn add_old_project(db: &Db, user: String) {
-    db.run(move |connection| {
-        connection.execute(
-            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Old project','OLD',1,1)",
-            [],
-        )?;
-        connection.execute(
-            "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-2',?1,1,1,1,1)",
-            [user],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-}
-
 /// Deletes "Old project" the way an administrator does in the browser.
 async fn delete_old_project(app: &Router, db: &Db) {
     let admin = support::add_user(db, "admin", true).await;
@@ -1036,7 +1019,7 @@ async fn delete_old_project(app: &Router, db: &Db) {
 #[tokio::test]
 async fn project_deletion_revokes_every_grant_that_selected_it() {
     let (_dir, db, app, session, user) = fixture().await;
-    add_old_project(&db, user).await;
+    add_project(&db, "project-2", "Old project", "OLD", &user).await;
     db.run(|connection| {
         connection.execute_batch(
             "INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('kept-track','project-1','Track',0,1,1);
@@ -1129,7 +1112,7 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
 #[tokio::test]
 async fn project_deletion_invalidates_unexchanged_codes_that_selected_it() {
     let (_dir, db, app, session, user) = fixture().await;
-    add_old_project(&db, user).await;
+    add_project(&db, "project-2", "Old project", "OLD", &user).await;
     let client = register(&app).await;
     let (code, verifier) = authorize_with(
         &app,
