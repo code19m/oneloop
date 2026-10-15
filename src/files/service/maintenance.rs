@@ -125,15 +125,15 @@ impl FileService {
         // Scan without blocking publication. Only apparent orphans need the gate;
         // their reference is rechecked under it before unlinking, so an upload
         // committed after the snapshot is never mistaken for an orphan.
-        for path in self
-            .unreferenced_files(self.store.layout().files(), referenced)
-            .await?
-        {
-            report.orphan_files_removed += u64::from(self.remove_if_unreferenced(&path).await?);
+        for path in self.unreferenced_files(referenced).await? {
+            let key = self.store.file_key(&path);
+            report.orphan_files_removed +=
+                u64::from(self.remove_unless_referenced(&path, key).await?);
         }
         for path in orphan_thumbnails {
+            let key = self.store.thumbnail_key(&path);
             report.orphan_files_removed +=
-                u64::from(self.remove_thumbnail_if_orphaned(&path).await?);
+                u64::from(self.remove_unless_referenced(&path, key).await?);
         }
         let active_staging: HashSet<String> = self
             .db
@@ -202,25 +202,25 @@ impl FileService {
         }
     }
 
-    async fn remove_if_unreferenced(&self, path: &Path) -> AppResult<bool> {
+    /// Removes an orphan from an older snapshot unless a stored file has its
+    /// `key` now, rechecked under the gate that publication and thumbnail
+    /// writes hold. A file without a key isn't one oneloop stored, and goes.
+    async fn remove_unless_referenced(&self, path: &Path, key: Option<String>) -> AppResult<bool> {
         let _maintenance_gate = self.acquire_file_maintenance_gate().await?;
-        let key = path
-            .strip_prefix(self.store.layout().files())
-            .map_err(|_| AppError::internal("file escaped storage root"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let referenced_now: bool = self
-            .db
-            .run(move |connection| {
-                Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM file_blobs WHERE storage_key=?1)",
-                    [key],
-                    |row| row.get(0),
-                )?)
-            })
-            .await?;
-        if referenced_now {
-            return Ok(false);
+        if let Some(key) = key {
+            let referenced_now: bool = self
+                .db
+                .run(move |connection| {
+                    Ok(connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM file_blobs WHERE storage_key=?1)",
+                        [key],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await?;
+            if referenced_now {
+                return Ok(false);
+            }
         }
         self.store.remove_file_if_present(path).await?;
         Ok(true)
@@ -239,21 +239,18 @@ impl FileService {
             .await?
     }
 
-    async fn unreferenced_files(
-        &self,
-        root: PathBuf,
-        referenced: HashSet<String>,
-    ) -> AppResult<Vec<PathBuf>> {
+    /// Stored files that no file in the `referenced` snapshot has, and files
+    /// in `files/` that aren't stored files at all.
+    async fn unreferenced_files(&self, referenced: HashSet<String>) -> AppResult<Vec<PathBuf>> {
+        let store = self.store.clone();
         self.scans
             .run(move || {
                 let mut orphans = Vec::new();
-                walk_regular_files_blocking(root.clone(), |path, _| {
-                    let key = path
-                        .strip_prefix(&root)
-                        .map_err(|_| AppError::internal("file escaped storage root"))?
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    if !referenced.contains(&key) {
+                walk_regular_files_blocking(store.layout().files(), |path, _| {
+                    if store
+                        .file_key(&path)
+                        .is_none_or(|key| !referenced.contains(&key))
+                    {
                         orphans.push(path);
                     }
                     Ok(())
@@ -373,10 +370,7 @@ mod tests {
         let key = service.store.new_storage_key().unwrap();
         let path = service.store.prepare_file_parent(&key).await.unwrap();
         std::fs::write(&path, b"x").unwrap();
-        let candidates = service
-            .unreferenced_files(service.store.layout().files(), HashSet::new())
-            .await
-            .unwrap();
+        let candidates = service.unreferenced_files(HashSet::new()).await.unwrap();
         assert_eq!(candidates, vec![path.clone()]);
         db.transaction(move |tx| {
             tx.execute("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
@@ -384,7 +378,10 @@ mod tests {
             Ok(())
         }).await.unwrap();
         assert!(
-            !service.remove_if_unreferenced(&path).await.unwrap(),
+            !service
+                .remove_unless_referenced(&path, service.store.file_key(&path))
+                .await
+                .unwrap(),
             "a stale snapshot cannot remove a published reference"
         );
         let gate = service.acquire_file_maintenance_gate().await.unwrap();

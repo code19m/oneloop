@@ -46,11 +46,12 @@ impl FileStore {
     /// The storage key of the original that `path` is the thumbnail of, if it
     /// is a thumbnail at all.
     pub(super) fn thumbnail_key(&self, path: &Path) -> Option<String> {
-        let relative = path.strip_prefix(self.previews()).ok()?.to_str()?;
-        let key = relative.replace('\\', "/");
-        let key = key.strip_suffix(THUMBNAIL_SUFFIX)?;
-        validate_storage_key(key).ok()?;
-        Some(key.to_owned())
+        key_of(&self.previews(), path, THUMBNAIL_SUFFIX)
+    }
+
+    /// The storage key of the stored file at `path`, if it is one at all.
+    pub(super) fn file_key(&self, path: &Path) -> Option<String> {
+        key_of(&self.layout.files(), path, "")
     }
 
     pub async fn ensure_directories(&self) -> AppResult<()> {
@@ -167,6 +168,14 @@ fn validate_leaf(value: &str) -> AppResult<()> {
         return Err(AppError::internal("invalid staging key"));
     }
     Ok(())
+}
+
+/// The storage key that `path` under `root` names, before `suffix`.
+fn key_of(root: &Path, path: &Path, suffix: &str) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?.to_str()?.replace('\\', "/");
+    let key = relative.strip_suffix(suffix)?;
+    validate_storage_key(key).ok()?;
+    Some(key.to_owned())
 }
 
 /// `relative`, a sharded key, under `root`. No level may be a link.

@@ -401,29 +401,6 @@ impl FileService {
             })
             .collect())
     }
-
-    /// Rechecks a candidate from an older snapshot under the gate that
-    /// thumbnail writes hold, then removes it.
-    pub(super) async fn remove_thumbnail_if_orphaned(&self, path: &Path) -> AppResult<bool> {
-        let _maintenance_gate = self.acquire_file_maintenance_gate().await?;
-        if let Some(key) = self.store.thumbnail_key(path) {
-            let referenced_now: bool = self
-                .db
-                .run(move |connection| {
-                    Ok(connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM file_blobs WHERE storage_key=?1)",
-                        [key],
-                        |row| row.get(0),
-                    )?)
-                })
-                .await?;
-            if referenced_now {
-                return Ok(false);
-            }
-        }
-        self.store.remove_file_if_present(path).await?;
-        Ok(true)
-    }
 }
 
 /// Decodes the original within the image limits, fits it in the thumbnail
