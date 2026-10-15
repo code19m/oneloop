@@ -55,33 +55,30 @@ pub(super) async fn authorize(
     query: Result<Query<Vec<(String, String)>>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let result = match query {
-        Ok(query) => match resource_parameters::<AuthorizationQuery>(&state, query.0) {
-            Ok(query) => authorize_inner(State(state), headers, Query(query)).await,
-            Err(error) => Err(error),
+        Ok(Query(pairs)) => match resource_parameters(&state, pairs) {
+            Ok(query) => authorize_inner(&state, &headers, query).await,
+            Err(error) => Err(error.into()),
         },
-        Err(_) => Err(AppError::validation(
-            "request",
-            "invalid authorization request",
-        )),
+        Err(_) => Err(OAuthError::invalid("invalid_request")),
     };
-    result.unwrap_or_else(|error| OAuthError::from_app(error, false).page())
+    result.unwrap_or_else(OAuthError::page)
 }
 
 async fn authorize_inner(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<AuthorizationQuery>,
-) -> AppResult<Response> {
-    validate_authorization_query(&state, &query).await?;
+    state: &AppState,
+    headers: &HeaderMap,
+    query: AuthorizationQuery,
+) -> Result<Response, OAuthError> {
+    validate_authorization_query(state, &query).await?;
     let scopes = parse_requested_scopes(&query.scope)?;
-    let actor = match authenticate_headers(&state, &headers, true).await {
+    let actor = match authenticate_headers(state, headers, true).await {
         Ok(actor) if !actor.must_change_password => actor,
         Ok(_) | Err(AppError::Unauthorized) => return Ok(authorization_login_redirect(&query)),
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     // Only someone signed in can make oneloop fetch a metadata document.
-    let document = described_client(&state, &actor, &query).await?;
-    let projects = accessible_projects(&state, &actor).await?;
+    let document = described_client(state, &actor, &query).await?;
+    let projects = accessible_projects(state, &actor).await?;
     let request_id = random_token(24)?;
     let stored_id = hash_token(&request_id);
     let user_id = actor.user_id.clone();
@@ -134,24 +131,21 @@ async fn authorize_inner(
             Ok(())
         })
         .await?;
-    let client_name = client_name(&state, &query.client_id).await?;
-    consent_response(
-        Html(consent_html(
-            &request_id,
-            &client_name,
-            &actor.display_name,
-            &actor.username,
-            &projects,
-            &scopes,
-            ConsentPresentation {
-                client_id: &query.client_id,
-                redirect: &query.redirect_uri,
-                retry: None,
-            },
-        ))
-        .into_response(),
-        &query.redirect_uri,
-    )
+    let client_name = client_name(state, &query.client_id).await?;
+    let page = Html(consent_html(
+        &request_id,
+        &client_name,
+        &actor.display_name,
+        &actor.username,
+        &projects,
+        &scopes,
+        ConsentPresentation {
+            client_id: &query.client_id,
+            redirect: &query.redirect_uri,
+            retry: None,
+        },
+    ));
+    Ok(consent_response(page.into_response(), &query.redirect_uri)?)
 }
 
 /// The metadata document of a client whose ID is the document's URL, with
@@ -540,40 +534,25 @@ fn parse_consent_form(raw: &[u8]) -> AppResult<ConsentForm> {
 async fn validate_authorization_query(
     state: &AppState,
     query: &AuthorizationQuery,
-) -> AppResult<()> {
-    if query.response_type != "code" {
-        return Err(AppError::validation(
-            "response_type",
-            "only code is supported",
-        ));
-    }
-    if query.code_challenge_method != "S256" {
-        return Err(AppError::validation(
-            "code_challenge_method",
-            "S256 is required",
-        ));
-    }
-    validate_challenge(&query.code_challenge)?;
-    if query
-        .state
-        .as_ref()
-        .is_some_and(|value| value.len() > MAX_STATE_BYTES)
+) -> Result<(), OAuthError> {
+    let invalid_request = Err(OAuthError::invalid("invalid_request"));
+    if query.response_type != "code"
+        || query.code_challenge_method != "S256"
+        || !is_challenge(&query.code_challenge)
+        || query
+            .state
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_STATE_BYTES)
     {
-        return Err(AppError::validation(
-            "state",
-            format!("must be at most {MAX_STATE_BYTES} bytes"),
-        ));
+        return invalid_request;
     }
     if query.resource != resource_url(state) {
-        return Err(AppError::validation(
-            "resource",
-            "must identify this oneloop MCP server",
-        ));
+        return Err(OAuthError::invalid("invalid_target"));
     }
     let redirect = validate_redirect_uri(&query.redirect_uri, &state.config.mcp_redirect_schemes)?;
     if client_metadata::is_document_client_id(&query.client_id) {
         if !state.client_documents.enabled() {
-            return Err(AppError::validation("client_id", "is not registered"));
+            return invalid_request;
         }
         // The callback is checked against the document after sign-in.
         client_metadata::document_url(&query.client_id)?;
@@ -599,15 +578,12 @@ async fn validate_authorization_query(
         })
         .await?;
     if !valid {
-        return Err(AppError::validation(
-            "redirect_uri",
-            "is not registered for this client",
-        ));
+        return invalid_request;
     }
     Ok(())
 }
 
-fn parse_requested_scopes(raw: &str) -> AppResult<Vec<String>> {
+fn parse_requested_scopes(raw: &str) -> Result<Vec<String>, OAuthError> {
     let mut set = raw
         .split_ascii_whitespace()
         .map(str::to_owned)
@@ -616,10 +592,7 @@ fn parse_requested_scopes(raw: &str) -> AppResult<Vec<String>> {
         set.insert("project_read".into());
     }
     if set.iter().any(|v| !SCOPES.contains(&v.as_str())) {
-        return Err(AppError::validation(
-            "scope",
-            "contains an unsupported capability",
-        ));
+        return Err(OAuthError::invalid("invalid_scope"));
     }
     set.insert("project_read".into());
     Ok(set.into_iter().collect())
@@ -687,18 +660,11 @@ async fn client_name(state: &AppState, id: &str) -> AppResult<String> {
         .await
 }
 
-fn validate_challenge(v: &str) -> AppResult<()> {
-    if v.len() != 43
-        || !v
-            .bytes()
+/// Whether `v` looks like a base64url SHA-256 challenge.
+fn is_challenge(v: &str) -> bool {
+    v.len() == 43
+        && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(AppError::validation(
-            "code_challenge",
-            "must be a base64url SHA-256 challenge",
-        ));
-    }
-    Ok(())
 }
 
 fn oauth_redirect<const N: usize>(
