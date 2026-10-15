@@ -353,13 +353,6 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .ferr { font-size: var(--text-sm); color: var(--err); margin-top: 2px; }
 .ctl.invalid { border-color: color-mix(in srgb, var(--err) 55.0%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 15.0%, transparent); }
 
-.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.dot.run { background: var(--run); animation: pulse 1.6s ease-in-out infinite; }
-.dot.ok { background: var(--ok); }
-.dot.err { background: var(--err); }
-.dot.review { background: var(--review); }
-.dot.queued { background: transparent; border: 1.5px solid var(--ink-faint); }
-
 /* ---------- roadmap ---------- */
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
 .rm-canvas { position: relative; min-width: 100%; }
@@ -546,9 +539,6 @@ div.ms-label {cursor:default}
 
 /* ---------- status chips ---------- */
 .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 5px; font-family: var(--font-sans); font-size: var(--text-xs); }
-.chip.run { background: color-mix(in srgb, var(--run) 10.0%, transparent); border: 1px solid color-mix(in srgb, var(--run) 28.0%, transparent); color: var(--run); }
-.chip.err { background: color-mix(in srgb, var(--err) 10.0%, transparent); border: 1px solid color-mix(in srgb, var(--err) 28.0%, transparent); color: var(--err); }
-.chip.ok { background: color-mix(in srgb, var(--ok) 10.0%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 28.0%, transparent); color: var(--ok); }
 .chip.idle { background: var(--glass-2); border: 1px solid var(--line); color: var(--ink-muted); }
 
 /* ---------- peek / modal / menu / toast ---------- */
@@ -574,8 +564,6 @@ div.ms-label {cursor:default}
 .task-row .tid { flex-shrink: 0; width: 58px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-faint); }
 .task-row .tt { flex: 1; font-size: var(--text-body); color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-row .tm { flex-shrink: 0; font-family: var(--font-mono); font-size: var(--text-xs); }
-.task-row.hot { margin: 0 -20px; padding-left: 20px; padding-right: 20px; background: color-mix(in srgb, var(--run) 6.0%, transparent); }
-.task-row.hot .tt { color: var(--ink); font-weight: 500; }
 
 .modal-wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 60; }
 .modal { width: min(460px, calc(100vw - 24px)); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; background: var(--surface-glass); backdrop-filter: blur(var(--glass-blur)) saturate(110%); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(110%); border: 1px solid var(--line-strong); border-radius: 20px; box-shadow: var(--shadow-modal); padding: 24px; animation: modal-in var(--motion-normal) var(--ease-out); }
