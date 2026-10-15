@@ -1,4 +1,3 @@
-use crate::clock::unix_now as unix_timestamp;
 use std::{
     fs::{self, File},
     io::{BufWriter, Read, Write},
@@ -18,8 +17,9 @@ use walkdir::WalkDir;
 
 use crate::{
     build_info,
+    clock::unix_now,
     config::normalize_path,
-    db::{DataLayout, integrity_check, migration, open_connection},
+    db::{DataLayout, integrity_check, migration, open_connection, sync_directory},
     error::{AppError, AppResult},
 };
 
@@ -33,6 +33,9 @@ const MANIFEST_FILE: &str = "manifest.json";
 /// A restore keeps the same record in its restore marker.
 const OWNER_FILE: &str = ".oneloop-owner";
 const MAX_OWNER_BYTES: u64 = 64 * 1024;
+/// Inside a restore's target: the folder the restore fills before it
+/// publishes, followed by a UUID.
+const RESTORE_WORKING_PREFIX: &str = ".oneloop-restore-";
 
 /// Who writes a backup's working folder or a restore's target. The writer
 /// holds an exclusive lock on the record until it publishes or removes its
@@ -60,7 +63,7 @@ impl WorkOwner {
             host: host_name(),
             pid: std::process::id(),
             data_dir: data_dir.display().to_string(),
-            started_at: unix_timestamp()?,
+            started_at: unix_now()?,
             working: None,
             publishes: Vec::new(),
         })
@@ -297,7 +300,7 @@ fn create_backup_inner(
             application_version: build_info::VERSION.to_owned(),
             application_revision: build_info::REVISION.to_owned(),
             schema_version: migration::inspect_schema_version(&snapshot)?,
-            created_at: unix_timestamp()?,
+            created_at: unix_now()?,
             files,
         };
         write_manifest(&partial, &manifest)?;
@@ -508,7 +511,7 @@ pub fn restore_backup(
     // Check again: creating directories can change where the path leads.
     ensure_restore_target(&target)?;
     let marker = target.join(super::RESTORE_MARKER);
-    let working = format!(".oneloop-restore-{}", Uuid::now_v7());
+    let working = format!("{RESTORE_WORKING_PREFIX}{}", Uuid::now_v7());
     let mut owner = WorkOwner::new("restore", &target)?;
     owner.working = Some(working.clone());
     let marker_lock = OwnerLock::create(&marker, &owner).map_err(|error| {
@@ -592,7 +595,7 @@ fn reclaim_partial_copies(parent: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with(".oneloop-restore-")
+        if !(name.starts_with(RESTORE_WORKING_PREFIX)
             || (name.starts_with('.') && name.contains(".partial-")))
             || !entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
@@ -679,7 +682,7 @@ fn reclaim_interrupted_restore(target: &Path) -> AppResult<()> {
         return Err(refused());
     };
     let working = owner.working.as_deref().filter(|name| {
-        name.strip_prefix(".oneloop-restore-")
+        name.strip_prefix(RESTORE_WORKING_PREFIX)
             .is_some_and(|id| Uuid::parse_str(id).is_ok())
     });
     let published = owner
@@ -1080,7 +1083,7 @@ fn write_manifest(root: &Path, manifest: &BackupManifest) -> AppResult<()> {
 
 fn invalidate_restored_credentials(database_path: &Path) -> AppResult<()> {
     let mut connection = open_connection(database_path)?;
-    let now = unix_timestamp()?;
+    let now = unix_now()?;
     let transaction = connection.transaction()?;
     transaction.execute(
         "UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?1)",
@@ -1245,12 +1248,6 @@ fn hash_file(path: &Path) -> AppResult<String> {
 }
 
 fn sync_file(path: &Path) -> AppResult<()> {
-    File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-fn sync_directory(path: &Path) -> AppResult<()> {
-    #[cfg(unix)]
     File::open(path)?.sync_all()?;
     Ok(())
 }

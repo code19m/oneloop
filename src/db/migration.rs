@@ -1,10 +1,10 @@
-use crate::clock::unix_now as unix_timestamp;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    clock::unix_now,
     db::{DataLayout, integrity_check, open_connection},
     error::{AppError, AppResult},
 };
@@ -127,7 +127,7 @@ pub fn migrate(
             &layout,
             &directory.join(format!(
                 "oneloop-pre-migration-v{previous_version}-{}",
-                unix_timestamp()?
+                unix_now()?
             )),
             &connection,
         )?)
@@ -205,7 +205,7 @@ fn apply_migration(connection: &mut Connection, migration: &Migration) -> AppRes
         }
         transaction.execute(
             "INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",
-            params![migration.version, migration.name, checksum(migration), unix_timestamp()?],
+            params![migration.version, migration.name, checksum(migration), unix_now()?],
         )?;
         transaction.pragma_update(None, "user_version", migration.version)?;
         transaction.commit()?;
@@ -380,7 +380,7 @@ fn convert_legacy(connection: &mut Connection, previous: i64) -> AppResult<()> {
         tx.execute("DELETE FROM schema_migrations", [])?;
         tx.execute(
             "INSERT INTO schema_migrations VALUES(1,'initial',?1,?2)",
-            params![checksum(&MIGRATIONS[0]), unix_timestamp()?],
+            params![checksum(&MIGRATIONS[0]), unix_now()?],
         )?;
         tx.pragma_update(None, "user_version", MIGRATIONS[0].version)?;
         tx.commit()?;
