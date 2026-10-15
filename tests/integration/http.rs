@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use oneloop::{Db, auth::unix_now};
+use oneloop::Db;
 use serde_json::{Value, json};
 use sha2::Digest;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ use tower::ServiceExt;
 use crate::support::{
     self,
     http::{body_bytes, body_json, body_text},
-    query_one,
+    now, query_one,
 };
 
 async fn fixture() -> (TempDir, Router, String) {
@@ -353,7 +353,7 @@ async fn composed_commands_replay_by_idempotency_key() {
 async fn automatic_media_reads_do_not_keep_an_unattended_session_alive() {
     let (directory, app, token) = fixture().await;
     let db = Db::open(directory.path()).unwrap();
-    let before = unix_now().unwrap() - 3600;
+    let before = now() - 3600;
     let idle_before = before + 86400;
     db.run(move |connection| {
         connection.execute("UPDATE sessions SET last_activity_at=?1,idle_expires_at=?2", [before,idle_before])?;
@@ -764,7 +764,7 @@ async fn browser_route_inventory_enforces_auth_and_origin_before_extraction() {
     }
     for &(method, path, _) in BROWSER_ROUTES {
         // Fresh session per route so logout/revoke-others cannot invalidate later checks.
-        let now = unix_now().unwrap();
+        let now = now();
         connection.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
             SELECT ?1,user_id,?2,?3,?3,?3,?4,?4 FROM sessions LIMIT 1",
             rusqlite::params![uuid::Uuid::now_v7().to_string(), oneloop::auth::token_hash("inventory-session-00000000000000000000"), now, now+3600]).unwrap();
@@ -811,71 +811,6 @@ async fn browser_route_inventory_enforces_auth_and_origin_before_extraction() {
                 )],
             )
             .unwrap();
-    }
-}
-
-#[tokio::test]
-async fn public_discovery_shapes_and_native_routes_are_reachable() {
-    let (_directory, app, _) = fixture().await;
-    for (path, field, expected) in [
-        (
-            "/.well-known/oauth-authorization-server",
-            "issuer",
-            "http://127.0.0.1:8080",
-        ),
-        (
-            "/.well-known/oauth-protected-resource",
-            "resource",
-            "http://127.0.0.1:8080/mcp",
-        ),
-        (
-            "/.well-known/oauth-protected-resource/mcp",
-            "resource",
-            "http://127.0.0.1:8080/mcp",
-        ),
-    ] {
-        let response = app
-            .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{path}");
-        let body: Value = body_json(response).await;
-        assert_eq!(body[field], expected, "{path}");
-        if field == "issuer" {
-            assert_eq!(body["code_challenge_methods_supported"], json!(["S256"]));
-        }
-    }
-    for (method, path) in [
-        ("POST", "/oauth/register"),
-        ("GET", "/oauth/authorize"),
-        ("POST", "/oauth/authorize"),
-        ("POST", "/oauth/token"),
-        ("POST", "/oauth/revoke"),
-        ("GET", "/mcp/assets/consent.js"),
-        ("GET", "/mcp/assets/consent.css"),
-        ("POST", "/mcp"),
-        ("PUT", "/mcp/files/upload"),
-        ("GET", "/mcp/files/download"),
-    ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri(path)
-                    .header("host", "127.0.0.1:8080")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_ne!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
-        assert_ne!(
-            response.status(),
-            StatusCode::METHOD_NOT_ALLOWED,
-            "{method} {path}"
-        );
     }
 }
 

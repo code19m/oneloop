@@ -132,14 +132,6 @@ impl Blocklist {
         Ok(Self::from_text(&String::from_utf8_lossy(&bytes)))
     }
 
-    pub fn len(&self) -> usize {
-        self.ends.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ends.is_empty()
-    }
-
     fn entry(&self, index: usize) -> &str {
         let start = index
             .checked_sub(1)
@@ -295,14 +287,14 @@ mod tests {
     #[test]
     fn a_blocklist_keeps_one_sorted_copy_without_letter_case() {
         let list = Blocklist::from_text("b\nA\r\n\na\nC\n");
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.ends.len(), 3);
         for present in ["a", "b", "c"] {
             assert!(list.contains(present), "{present}");
         }
         for absent in ["", "A", "d", "ab"] {
             assert!(!list.contains(absent), "{absent}");
         }
-        assert!(Blocklist::from_text("").is_empty());
+        assert!(Blocklist::from_text("").ends.is_empty());
     }
 
     #[test]

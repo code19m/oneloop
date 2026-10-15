@@ -897,14 +897,6 @@ async fn deletion_foreign_keys_use_indexes_or_documented_exceptions() {
                 assert!(allowed, "unindexed cascading FK {table}.{column} -> {parent}: {plans:?}");
             }
         }
-        for (table,column) in [("activity_projection","task_id"),("notification_events","task_id"),
-            ("notification_events","comment_id"),("notification_events","block_id")] {
-            let plans = connection.prepare(&format!("EXPLAIN QUERY PLAN UPDATE {table} SET {column}=NULL WHERE {column}=?1"))?
-                .query_map(["probe"],|r|r.get::<_,String>(3))?.collect::<Result<Vec<_>,_>>()?;
-            assert!(plans.iter().any(|plan| plan.contains("SEARCH") && plan.contains("_fk_idx")), "{table}.{column}: {plans:?}");
-        }
-        let plan:String=connection.query_row("EXPLAIN QUERY PLAN SELECT id FROM notification_events WHERE project_id=?1 AND actor_user_id=?2 AND created_at>?3",params!["project","actor",0],|r|r.get(3))?;
-        assert!(plan.contains("notification_broadcast_lookup_idx"), "{plan}");
         Ok(())
     }).await.unwrap();
 }

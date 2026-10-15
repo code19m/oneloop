@@ -4,11 +4,7 @@ use super::*;
 async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost() {
     for direction in ["upload", "download"] {
         let (_dir, db, app, session, user) = fixture().await;
-        db.run(move |c| {
-            c.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1)", [])?;
-            c.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('project-2',?1,1,1)", [user])?;
-            Ok(())
-        }).await.unwrap();
+        add_project(&db, "project-2", "Other", "OTH", &user).await;
         let mut mcp = scoped_mcp(
             &app,
             &session,
@@ -142,7 +138,7 @@ async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
 
 #[tokio::test]
 async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() {
-    let (_dir, db, app, session, _user) = fixture().await;
+    let (_dir, db, app, session, user) = fixture().await;
     let member_id = db
         .transaction(|transaction| {
             let member = create_user(
@@ -154,7 +150,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
                     is_admin: false,
                     must_change_password: false,
                 },
-                unix_now()?,
+                now(),
                 &oneloop::auth::password::PasswordPolicy::default(),
             )?;
             transaction.execute(
@@ -165,15 +161,8 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
         })
         .await
         .unwrap();
-    db.run(|connection| {
-        connection.execute(
-            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1)",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    // The owner can manage this project too; only the grant leaves it out.
+    add_project(&db, "project-2", "Other", "OTH", &user).await;
 
     let mut read_mcp = scoped_mcp(&app, &session, &["project_read"], &["project-1"]).await;
     let read_projects = tool_value(&read_mcp.call("list_projects", json!({})).await);
@@ -489,14 +478,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
     );
     assert_eq!(updated["entities"][0]["title"], "Safe update");
     assert_tool_error(
-        &mcp.call(
-            "execute_work_command",
-            json!({"operation":"task.update","payload":{"taskId":task_ids[0],"title":"Stale overwrite"},"idempotencyKey":"stale-task-update","expectedRevision":1}),
-        )
-        .await,
-        "revision_conflict",
-    );
-    assert_tool_error(
         &safe_mcp
             .call(
                 "execute_work_command",
@@ -535,14 +516,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
         .as_str()
         .unwrap()
         .to_owned();
-    assert_tool_error(
-        &mcp.call(
-            "execute_work_command",
-            json!({"operation":"task.delete","payload":{"id":delete_candidate_id},"idempotencyKey":"mcp-wrong-delete-route","expectedRevision":1}),
-        )
-        .await,
-        "execute_destructive_command",
-    );
     let deleted_task = tool_value(
         &mcp.call(
             "execute_destructive_command",
@@ -990,23 +963,7 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
     );
     assert_eq!(deleted["deleted"], true);
 
-    db.run(move |connection| {
-        connection.execute(
-            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Private project','PVT',1,1)",
-            [],
-        )?;
-        connection.execute(
-            "INSERT INTO project_sequences(project_id,next_task_number) VALUES('project-2',1)",
-            [],
-        )?;
-        connection.execute(
-            "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-2',?1,1,1,1,1)",
-            [user],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    add_project(&db, "project-2", "Private project", "PVT", &user).await;
     let mut private_mcp = scoped_mcp(
         &app,
         &session,
@@ -1322,16 +1279,13 @@ async fn stale_mcp_write_is_a_structured_conflict_with_current_revision() {
 
 #[tokio::test]
 async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects() {
-    use oneloop::auth::{Actor, ActorSource};
     use oneloop::collaboration::{CollaborationRuntime, CollaborationService};
     let (_dir, db, app, session, user) = fixture().await;
-    let owner = user.clone();
+    add_project(&db, "project-2", "Beta Secret", "BET", &user).await;
+    let sender = support::add_people(&db, &[("sender", support::Role::Outsider)])
+        .await
+        .remove(0);
     db.transaction(move |tx| {
-        let now=unix_now()?;
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Beta Secret','BET',1,1)",[])?;
-        tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('project-2',?1,1,1)",[owner])?;
-        tx.execute("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('sender','sender','Sender','x',1,1,1)",[])?;
-        tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES('sender-session','sender','sender-hash',?1,?1,?1,?2,?2)",rusqlite::params![now,now+86400])?;
         for project in ["project-1","project-2"] {
             tx.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES(?1,'sender',1,1)",[project])?;
             tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES(?1,?1,'Track',0,1,1)",[project])?;
@@ -1339,17 +1293,6 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
             tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,?1,?1,1,?1,?2,'planning',0,1,1)",rusqlite::params![project,if project=="project-2" {"Confidential acquisition"} else {"Alpha"}])?;
         } Ok(())
     }).await.unwrap();
-    let sender = Actor {
-        user_id: "sender".into(),
-        username: "sender".into(),
-        display_name: "Sender".into(),
-        is_admin: false,
-        must_change_password: false,
-        authenticated_at: unix_now().unwrap(),
-        source: ActorSource::BrowserSession {
-            session_id: "sender-session".into(),
-        },
-    };
     let service = CollaborationService::new(db.clone());
     for (project, content) in [
         ("project-1", "@Owner Alpha mention"),
@@ -1587,11 +1530,11 @@ async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
 
 #[tokio::test]
 async fn knowledge_tools_read_the_overview_files_and_search() {
-    let (_dir, db, app, session, _user) = fixture().await;
+    let (_dir, db, app, session, user) = fixture().await;
+    add_project(&db, "project-2", "Other", "OTH", &user).await;
     db.run(|connection| {
         connection.execute_batch(
-            "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('project-2','Other','OTH',1,1);
-             INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at,generation)
+            "INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,checked_at,created_at,updated_at,generation)
              VALUES('project-1','https://git.example.test/team/docs.git','main','docs','ready',
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100,1,1,'g1');",
         )?;

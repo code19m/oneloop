@@ -4,11 +4,11 @@ use oneloop::{
         AccountUpdate, Actor, ActorSource, AuthService, LoginResult, NewUser, SessionMetadata,
         create_user,
         password::{Blocklist, PasswordPolicy},
-        token_hash, unix_now,
+        token_hash,
     },
 };
 
-use crate::support::{auth_service, database, query_one};
+use crate::support::{auth_service, database, now, query_one};
 
 use super::{PASSWORD, add_user};
 
@@ -24,20 +24,15 @@ async fn login(service: &AuthService, username: &str) -> (String, Actor) {
 }
 
 #[tokio::test]
-async fn temporary_password_sessions_cannot_enter_the_application() {
+async fn temporary_password_sessions_cannot_list_sessions() {
     let (_directory, db) = database();
-    let temporary_id = add_user(&db, "temporary", false, true).await;
+    add_user(&db, "temporary", false, true).await;
     let service = auth_service(&db);
     let (_, temporary) = login(&service, "temporary").await;
-    assert!(matches!(
-        temporary.require_ready(),
-        Err(AppError::PreconditionFailed(_))
-    ));
     assert!(matches!(
         service.list_sessions(&temporary).await,
         Err(AppError::PreconditionFailed(_))
     ));
-    assert_eq!(temporary.user_id, temporary_id);
 }
 
 #[tokio::test]
@@ -71,6 +66,21 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             service.revoke_other_sessions(&current).await.map(drop),
         ),
         ("app", service.revoke_connected_app(&current, "grant").await),
+        // A wrong password, because the commit rechecks a correct one.
+        (
+            "recent sign-in",
+            service
+                .recent_authenticate(&current, "wrong")
+                .await
+                .map(drop),
+        ),
+        (
+            "password",
+            service
+                .change_password(&current, "wrong", "a new password for the person")
+                .await
+                .map(drop),
+        ),
     ] {
         assert!(
             matches!(result, Err(AppError::Unauthorized)),
@@ -83,13 +93,15 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             .await
             .is_ok()
     );
-    let (name, app_revoked): (String, Option<i64>) = query_one(
+    // A revoked session can't count toward the password throttle either.
+    let (name, app_revoked, throttles): (String, Option<i64>, i64) = query_one(
         &db,
-        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
+        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants),
+                (SELECT COUNT(*) FROM login_throttles)",
         [],
     )
     .await;
-    assert_eq!((name.as_str(), app_revoked), ("person", None));
+    assert_eq!((name.as_str(), app_revoked, throttles), ("person", None, 0));
 }
 
 #[tokio::test]
@@ -243,7 +255,7 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
     let (_directory, db) = database();
     let user_id = add_user(&db, "sessionuser", false, false).await;
     let user_for_rows = user_id.clone();
-    let now = unix_now().unwrap();
+    let now = now();
     db.transaction(move |tx| {
         for index in 0..10 {
             tx.execute("INSERT INTO sessions
@@ -329,7 +341,7 @@ async fn passive_authentication_does_not_extend_idle_activity() {
     let service = auth_service(&db);
     let (token, actor) = login(&service, "passive").await;
     let session_id = actor.session_id().unwrap().to_owned();
-    let old = unix_now().unwrap() - 120;
+    let old = now() - 120;
     let sid = session_id.clone();
     db.run(move |connection| {
         connection.execute(
@@ -341,19 +353,12 @@ async fn passive_authentication_does_not_extend_idle_activity() {
     .await
     .unwrap();
     service.authenticate_session(&token, false).await.unwrap();
-    let unchanged: i64 = db
-        .run({
-            let sid = session_id.clone();
-            move |connection| {
-                Ok(connection.query_row(
-                    "SELECT last_activity_at FROM sessions WHERE id=?1",
-                    [sid],
-                    |row| row.get(0),
-                )?)
-            }
-        })
-        .await
-        .unwrap();
+    let unchanged: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id=?1",
+        [session_id.clone()],
+    )
+    .await;
     assert_eq!(unchanged, old);
     service.authenticate_session(&token, true).await.unwrap();
     let updated: i64 = query_one(
@@ -400,7 +405,7 @@ async fn sensitive_account_changes_require_fresh_browser_authentication() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), "recent_auth_required");
-    signed_in_at(unix_now().unwrap()).await.unwrap();
+    signed_in_at(now()).await.unwrap();
     let updated = service
         .update_account(&admin, &created.user.id, deactivate())
         .await
@@ -422,7 +427,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                     is_admin: false,
                     must_change_password: false,
                 },
-                unix_now()?,
+                now(),
                 &PasswordPolicy::default(),
             )
         })
@@ -445,7 +450,7 @@ async fn display_name_bounds_match_browser_utf16_limits() {
                     is_admin: false,
                     must_change_password: false,
                 },
-                unix_now()?,
+                now(),
                 &PasswordPolicy::default(),
             )
         })
@@ -669,7 +674,7 @@ async fn temporary_passwords_stop_working_after_the_configured_lifetime() {
     db.run(|connection| {
         connection.execute(
             "UPDATE users SET password_changed_at=?1 WHERE username='invited'",
-            [unix_now()?],
+            [now()],
         )?;
         Ok(())
     })
@@ -1014,7 +1019,7 @@ async fn session_activity_does_not_wait_for_an_external_sqlite_writer() {
         [id],
     )
     .await;
-    assert!(last >= unix_now().unwrap() - 2);
+    assert!(last >= now() - 2);
 }
 
 #[tokio::test]

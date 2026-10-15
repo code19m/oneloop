@@ -12,6 +12,17 @@ use oneloop::{
 use super::initialize;
 use crate::support::{self, query_one};
 
+// The bundled SQLite must have the fix for the WAL reset bug (3.51.3), which
+// can corrupt a database in WAL mode.
+#[test]
+fn bundled_sqlite_has_the_wal_reset_fix() {
+    assert!(
+        rusqlite::version_number() >= 3_051_003,
+        "SQLite {} lacks the WAL reset fix",
+        rusqlite::version()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn initialization_creates_private_directories_without_changing_existing_parent() {
@@ -112,17 +123,13 @@ async fn connections_enable_durable_sync_and_collect_planner_statistics() {
     }).await.unwrap();
     drop(db);
     let reopened = Db::open(root.path()).unwrap();
-    reopened
-        .run(|connection| {
-            assert!(connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE idx='planner_owner')",
-                [],
-                |r| r.get::<_, bool>(0)
-            )?);
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let analyzed: bool = query_one(
+        &reopened,
+        "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE idx='planner_owner')",
+        [],
+    )
+    .await;
+    assert!(analyzed);
 }
 
 #[cfg(unix)]

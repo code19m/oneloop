@@ -202,7 +202,7 @@ fn password_settings_are_opt_in_and_checked() {
 
     let lists = crate::support::scratch_dir();
     let list = lists.path().join("common.txt");
-    std::fs::write(&list, "password\n123456\nPASSWORD\n").unwrap();
+    std::fs::write(&list, "password12\n1234567890\n").unwrap();
     let list = list.to_str().unwrap();
     let policy = password_policy_from_os_iter(environment(&[
         ("ONELOOP_PASSWORD_MIN_LENGTH", "10"),
@@ -213,7 +213,9 @@ fn password_settings_are_opt_in_and_checked() {
     .unwrap();
     assert_eq!((policy.min_length, policy.admin_min_length), (10, 16));
     assert_eq!(policy.temporary_lifetime_seconds, Some(36 * 60 * 60));
-    assert_eq!(policy.blocklist.as_ref().unwrap().len(), 2);
+    // Long enough for the minimum, so only the list can refuse it.
+    assert!(policy.check("Password12", "robin", false).is_err());
+    assert!(policy.check("Password13", "robin", false).is_ok());
     let policy = password_policy_from_os_iter(environment(&[
         ("ONELOOP_PASSWORD_MIN_LENGTH", "9"),
         ("ONELOOP_TEMPORARY_PASSWORD_LIFETIME", "7d"),

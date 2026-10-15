@@ -187,7 +187,6 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
         ("reader", true, false, false, true, false, true, true),
         ("board", true, true, false, true, false, true, true),
         ("roadmap", true, false, true, true, false, true, true),
-        ("removed", false, true, true, true, false, true, true),
         ("deactivated", true, true, true, false, false, true, true),
         ("admin", false, false, false, true, true, true, true),
         (

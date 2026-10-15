@@ -14,6 +14,7 @@ use oneloop::{
     collaboration::{ActivityInput, CollaborationService, record_activity_tx},
     domain::{
         BoardQuery, BoardViewQuery, BootstrapQuery, DomainOperation, DomainService, DoneOrder,
+        PoolQuery, PoolScope,
     },
 };
 use rusqlite::params;

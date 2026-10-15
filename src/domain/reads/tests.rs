@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::query_plan;
 use jiff::{Timestamp, civil::date};
 
 #[test]
@@ -34,18 +35,7 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
     let empty = result[1].summary.as_ref().unwrap();
     assert_eq!(empty.task_total, 0);
     assert_eq!(empty.weekly_completions, vec![0; 7]);
-    let mut explain = c
-        .prepare(&format!("EXPLAIN QUERY PLAN {EPIC_SUMMARY_SQL}"))
-        .unwrap();
-    let plan = explain
-        .query_map(
-            params!["p", "[[\"e\",0]]", 0, 0, 1, 2, 3, 4, 5, 6, 7],
-            |r| r.get::<_, String>(3),
-        )
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .join("\n");
+    let plan = query_plan(&c, EPIC_SUMMARY_SQL);
     assert!(
         !plan.contains("TEMP B-TREE") && plan.contains("COVERING INDEX tasks_project_summary_idx"),
         "{plan}"
@@ -55,32 +45,14 @@ fn epic_summary_uses_covering_index_and_preserves_local_day_boundaries() {
 #[test]
 fn newest_done_pages_read_the_partial_index_in_order() {
     let (_root, c) = crate::db::migrated_connection();
-    for (sql, values) in [
-        (NEWEST_DONE_SQL, params!["p", 51]),
-        (
-            NEWEST_DONE_AFTER_SQL,
-            params!["p", 1_800_000_000, 7, "t", 51],
-        ),
-        (UNDATED_DONE_SQL, params!["p", "t", 7, 51]),
-    ] {
-        let mut explain = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-        let plan = explain
-            .query_map(values, |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("\n");
+    for sql in [NEWEST_DONE_SQL, NEWEST_DONE_AFTER_SQL, UNDATED_DONE_SQL] {
+        let plan = query_plan(&c, sql);
         assert!(
             !plan.contains("TEMP B-TREE") && plan.contains("tasks_project_done_completed_idx"),
             "{sql}\n{plan}"
         );
     }
-    let mut explain = c
-        .prepare(&format!("EXPLAIN QUERY PLAN {NEWEST_DONE_AFTER_SQL}"))
-        .unwrap();
-    let plan: String = explain
-        .query_row(params!["p", 1_800_000_000, 7, "t", 51], |r| r.get(3))
-        .unwrap();
+    let plan = query_plan(&c, NEWEST_DONE_AFTER_SQL);
     assert!(
         plan.contains("(completed_at,completion_order,id)<(?,?,?)"),
         "{plan}"

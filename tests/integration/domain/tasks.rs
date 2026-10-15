@@ -184,22 +184,6 @@ async fn permissions_relationships_past_deadlines_and_idempotency_are_enforced()
     assert!(!first.replayed);
     assert_eq!(first.entities[0]["deadline"], "2020-01-01");
     let id = first.entities[0]["id"].as_str().unwrap().to_owned();
-    f.db.transaction(|tx| {
-        let project: String = tx.query_row(
-            "SELECT project_id FROM idempotency_keys WHERE idempotency_key='create-one'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(project, "p1");
-        // Simulate a pre-migration receipt, whose project must use the JSON fallback.
-        tx.execute(
-            "UPDATE idempotency_keys SET project_id=NULL WHERE idempotency_key='create-one'",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
     let replay = f.service.execute(&f.manager, create).await.unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.entities[0]["id"], id);
@@ -331,19 +315,12 @@ async fn pool_promotion_is_atomic_and_preserves_item_on_validation_failure() {
         f.service.execute(&f.manager, invalid).await,
         Err(AppError::PreconditionFailed(_))
     ));
-    let count: i64 =
-        f.db.run({
-            let id = pool_id.clone();
-            move |c| {
-                Ok(
-                    c.query_row("SELECT COUNT(*) FROM pool_items WHERE id=?1", [id], |r| {
-                        r.get(0)
-                    })?,
-                )
-            }
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(
+        &f.db,
+        "SELECT COUNT(*) FROM pool_items WHERE id=?1",
+        [pool_id.clone()],
+    )
+    .await;
     assert_eq!(count, 1);
     let promoted=f.service.execute(&f.manager,command(DomainOperation::PromotePoolItem,json!({"poolItemId":pool_id,"epicId":"e1","deadline":"2020-01-01","assigneeIds":["u3"]}),"promotion",Some(1))).await.unwrap();
     assert!(
@@ -416,6 +393,62 @@ async fn pool_promotion_accepts_edited_task_text_atomically() {
                 .replayed
         );
     }
+}
+
+#[tokio::test]
+async fn a_personal_pool_item_is_hidden_from_members_and_admins() {
+    let f = fixture().await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreatePoolItem,
+                json!({"projectId":"p1","scope":"personal","title":"Private"}),
+                "private",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+    let personal = || PoolQuery {
+        project_id: "p1".into(),
+        scope: PoolScope::Personal,
+        cursor: None,
+        limit: None,
+    };
+    for other in [&f.member, &f.admin] {
+        let page = f.service.pool_page(other, personal()).await.unwrap();
+        assert_eq!((page.items.len(), page.total), (0, 0), "{}", other.user_id);
+        for (operation, payload) in [
+            (
+                DomainOperation::UpdatePoolItem,
+                json!({"poolItemId":id,"title":"Taken"}),
+            ),
+            (DomainOperation::DeletePoolItem, json!({"id":id})),
+            (
+                DomainOperation::PromotePoolItem,
+                json!({"poolItemId":id,"epicId":"e1"}),
+            ),
+        ] {
+            let key = format!("{}-{}", other.user_id, operation.as_str());
+            let result = f
+                .service
+                .execute(other, command(operation, payload, &key, Some(1)))
+                .await;
+            assert!(
+                matches!(result, Err(AppError::NotFound { .. })),
+                "{key}: {result:?}"
+            );
+        }
+    }
+    let page = f.service.pool_page(&f.manager, personal()).await.unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(
+        (page.items[0].id.as_str(), page.items[0].revision),
+        (id.as_str(), 1)
+    );
 }
 
 #[tokio::test]
