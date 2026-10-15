@@ -39,7 +39,9 @@ const COMMENT_MAX: usize = 2_000;
 const DEFAULT_PAGE_SIZE: usize = 50;
 /// Deleted comments whose text the Undo window no longer needs.
 const DELETED_COMMENT_TEXT_SQL: &str = "SELECT id FROM comments
-    WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT 500";
+    WHERE deleted_at IS NOT NULL AND content<>'' AND deleted_at<=?1 ORDER BY deleted_at LIMIT ?2";
+/// Deleted comments emptied in one pass.
+const DELETED_COMMENT_BATCH: usize = 500;
 const MAX_PAGE_SIZE: usize = 100;
 const INBOX_FILTER_SQL: &str = concat!(
     "
@@ -290,14 +292,17 @@ impl CollaborationService {
     }
 
     /// Removes the text and mentions of comments deleted longer ago than the
-    /// Undo window, at most 500 at a time. Returns how many it emptied.
-    pub async fn purge_deleted_comments(&self, now: i64) -> AppResult<u64> {
+    /// Undo window, a batch at a time. Returns whether the batch was full,
+    /// so more may be waiting.
+    pub async fn purge_deleted_comments(&self, now: i64) -> AppResult<bool> {
         self.db
             .delivery_transaction(move |tx| {
                 let cutoff = now.saturating_sub(crate::domain::UNDO_WINDOW_SECONDS);
                 let mut statement = tx.prepare(DELETED_COMMENT_TEXT_SQL)?;
                 let ids = statement
-                    .query_map([cutoff], |row| row.get::<_, String>(0))?
+                    .query_map(params![cutoff, DELETED_COMMENT_BATCH as i64], |row| {
+                        row.get::<_, String>(0)
+                    })?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(statement);
                 for id in &ids {
@@ -307,7 +312,7 @@ impl CollaborationService {
                         [id],
                     )?;
                 }
-                Ok(ids.len() as u64)
+                Ok(ids.len() == DELETED_COMMENT_BATCH)
             })
             .await
     }

@@ -1,5 +1,3 @@
-const INBOX_PURGE_INTERVAL: Duration = Duration::from_secs(60 * 60);
-
 use crate::clock::unix_now;
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -11,7 +9,7 @@ use serde_json::Value;
 use tokio::{
     sync::{Semaphore, SemaphorePermit, broadcast, watch},
     task::JoinHandle,
-    time::{Duration, Instant, sleep},
+    time::{Duration, sleep},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -33,8 +31,6 @@ const BATCH_TIME: std::time::Duration = std::time::Duration::from_millis(10);
 const LONGEST_IDLE: Duration = Duration::from_secs(5);
 const SHORTEST_IDLE: Duration = Duration::from_secs(1);
 const FIRST_ERROR_PAUSE: Duration = Duration::from_millis(500);
-const MINUTE: Duration = Duration::from_secs(60);
-const HOUR: Duration = Duration::from_secs(60 * 60);
 const DELIVERABLE_TOPICS: &str =
     "'notification.created','domain.activity','inbox.state_changed','access.changed'";
 
@@ -119,133 +115,39 @@ pub struct OutboxWorker {
 impl OutboxWorker {
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> AppResult<()> {
         let mut runtime_shutdown = self.runtime.shutdown_receiver();
-        // Maintenance runs on the monotonic clock, so a step of the wall
-        // clock neither stops nor rushes it. The wall clock only decides what
-        // each pass removes.
-        let started = Instant::now();
-        let mut next_purge = started;
-        let mut next_comment_purge = started;
-        let mut next_optimize = started;
-        let mut next_retention = started;
-        let mut next_throttle_prune = started;
         let mut error_pause = FIRST_ERROR_PAUSE;
         loop {
             if *shutdown.borrow() || *runtime_shutdown.borrow() {
                 return Ok(());
             }
-            let now = match unix_now() {
-                Ok(now) => now,
-                Err(error) => {
-                    tracing::warn!(%error, "clock unavailable; retrying in one minute");
-                    tokio::select! {
-                        _ = sleep(Duration::from_secs(60)) => {},
-                        _ = shutdown.changed() => {},
-                        _ = runtime_shutdown.changed() => {},
-                    }
-                    continue;
-                }
-            };
-            let tick = Instant::now();
-            if tick >= next_throttle_prune {
-                if let Err(error) =
-                    crate::retention::prune_login_throttles(self.runtime.db(), now).await
-                {
-                    tracing::warn!(%error, "login throttle cleanup failed; retrying in one minute");
-                }
-                next_throttle_prune = tick + MINUTE;
-            }
-            if tick >= next_retention {
-                next_retention = match crate::retention::prune_transient_state(
-                    self.runtime.db(),
-                    now,
-                )
-                .await
-                {
-                    Ok(false) => tick + HOUR,
-                    Ok(true) => tick + MINUTE,
-                    Err(error) => {
-                        tracing::warn!(%error, "transient state cleanup failed; retrying in one minute");
-                        tick + MINUTE
-                    }
-                };
-            }
-            if tick >= next_optimize {
-                match self
-                    .runtime
-                    .db()
-                    .run(|connection| {
-                        connection.execute_batch("PRAGMA optimize;")?;
-                        Ok(())
-                    })
-                    .await
-                {
-                    Ok(()) => next_optimize = tick + HOUR,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "query planner maintenance failed; retrying in one minute");
-                        next_optimize = tick + MINUTE;
-                    }
-                }
-            }
-            if tick >= next_comment_purge {
-                next_comment_purge = match CollaborationService::new(self.runtime.db().clone())
-                    .purge_deleted_comments(now)
-                    .await
-                {
-                    // A full batch suggests more are waiting.
-                    Ok(500..) => tick,
-                    Ok(_) => tick + MINUTE,
-                    Err(error) => {
-                        tracing::warn!(%error, "deleted comment purge failed; retrying in one minute");
-                        tick + MINUTE
-                    }
-                };
-            }
-            if tick >= next_purge {
-                match CollaborationService::new(self.runtime.db().clone())
-                    .purge_archived(now)
-                    .await
-                {
-                    Ok(_) => next_purge = tick + INBOX_PURGE_INTERVAL,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "archive purge failed; retrying in one minute");
-                        next_purge = tick + MINUTE;
-                    }
-                }
-            }
-            match self.run_once().await {
+            let (idle, wait) = match self.run_once().await {
                 Ok(true) => {
                     error_pause = FIRST_ERROR_PAUSE;
                     continue;
                 }
                 Ok(false) => {
                     error_pause = FIRST_ERROR_PAUSE;
-                    let wait = match self.next_available().await {
-                        Ok(earliest) => idle_wait(earliest, unix_now().unwrap_or(now)),
-                        Err(_) => LONGEST_IDLE,
+                    let wait = match (self.next_available().await, unix_now()) {
+                        (Ok(earliest), Ok(now)) => idle_wait(earliest, now),
+                        _ => LONGEST_IDLE,
                     };
-                    tokio::select! {
-                        _ = self.runtime.db().wait_for_changes() => {},
-                        _ = sleep(wait) => {},
-                        result = shutdown.changed() => {
-                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
-                        },
-                        result = runtime_shutdown.changed() => {
-                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
-                        }
-                    }
+                    (true, wait)
                 }
                 Err(error) => {
                     tracing::error!(error = %error, "collaboration outbox delivery failed");
-                    tokio::select! {
-                        _ = sleep(error_pause) => {},
-                        result = shutdown.changed() => {
-                            if result.is_err() || *shutdown.borrow() { return Ok(()); }
-                        },
-                        result = runtime_shutdown.changed() => {
-                            if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
-                        }
-                    }
+                    let wait = error_pause;
                     error_pause = (error_pause * 2).min(LONGEST_IDLE);
+                    (false, wait)
+                }
+            };
+            tokio::select! {
+                _ = self.runtime.db().wait_for_changes(), if idle => {},
+                _ = sleep(wait) => {},
+                result = shutdown.changed() => {
+                    if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                },
+                result = runtime_shutdown.changed() => {
+                    if result.is_err() || *runtime_shutdown.borrow() { return Ok(()); }
                 }
             }
         }

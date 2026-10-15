@@ -202,7 +202,11 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     let (shutdown, signal) = tokio::sync::watch::channel(false);
     let worker = application.collaboration.spawn_worker(signal.clone());
     let knowledge_worker = application.knowledge.spawn_worker(signal.clone());
-    let files_worker = crate::runtime::spawn_file_maintenance(application.files, signal);
+    let maintenance = crate::runtime::spawn_maintenance(
+        application.files,
+        application.collaboration.db().clone(),
+        signal,
+    );
     tracing::info!(
         sqlite_version = rusqlite::version(),
         tzdb = timezone_database,
@@ -228,7 +232,7 @@ async fn serve(arguments: ServeArgs) -> AppResult<()> {
     tokio::pin!(server);
     let supervision = crate::runtime::supervise_workers(
         worker,
-        files_worker,
+        maintenance,
         knowledge_worker,
         shutdown.clone(),
         application.collaboration,

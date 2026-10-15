@@ -1384,7 +1384,7 @@ async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() 
 /// Paused Tokio time lets the five-second writer admission timeout elapse
 /// without waiting for it in real time.
 #[tokio::test(start_paused = true)]
-async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() {
+async fn a_writer_timeout_does_not_stop_notification_delivery() {
     let SeededProject {
         root: _root,
         db,
@@ -1411,7 +1411,7 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
     })
     .await
     .unwrap();
-    // Hold the single writer so the worker's first maintenance step times out.
+    // Hold the single writer so the worker's first delivery times out.
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let writer_db = db.clone();
@@ -1461,60 +1461,57 @@ async fn writer_timeouts_during_maintenance_do_not_stop_notification_delivery() 
     worker.await.unwrap().unwrap();
 }
 
-#[tokio::test]
-async fn worker_survives_failed_archive_purge_and_delivers_new_notifications() {
+#[tokio::test(start_paused = true)]
+async fn maintenance_retries_a_failed_job_a_minute_later() {
     let SeededProject {
         root: _root,
         db,
         alice,
-        bob,
+        ..
     } = seeded_project().await;
-    let actor = alice.clone();
     db.transaction(move |tx| {
-        snapshot_notification_tx(tx,&actor,NotificationInput {
+        snapshot_notification_tx(tx,&alice,NotificationInput {
             project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
             block_id:None,excerpt:Some("purge me"),broadcast: false},vec!["bob".into()],now())?;
         tx.execute("UPDATE notification_recipients SET archived_at=1,read_at=1,delivered_at=1",[])?;
         tx.execute_batch("CREATE TRIGGER fail_purge BEFORE UPDATE OF project_name_snapshot ON notification_recipients
             BEGIN SELECT RAISE(FAIL,'injected purge failure'); END;")?;
-        snapshot_notification_tx(tx,&actor,NotificationInput {
-            project_id:"p1",event_type:"test",task_id:Some("task"),comment_id:None,
-            block_id:None,excerpt:Some("new delivery"),broadcast: false},vec!["bob".into()],now())?;
         Ok(())
     }).await.unwrap();
-    let service = CollaborationService::new(db.clone());
-    assert!(service.purge_archived(now()).await.is_err());
-    let runtime = CollaborationRuntime::new(db.clone());
-    let (stop, stopped) = tokio::sync::watch::channel(false);
-    let worker = runtime.spawn_worker(stopped);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let inbox = service
-                .inbox(&bob, InboxFilter::default(), None, None)
-                .await
-                .unwrap();
-            if inbox
-                .items
-                .iter()
-                .any(|item| item.excerpt.as_deref() == Some("new delivery"))
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!worker.is_finished());
+    let excerpt = async || -> Option<String> {
+        db.run(|connection| {
+            Ok(connection.query_row(
+                "SELECT excerpt_snapshot FROM notification_recipients",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap()
+    };
+    let (stop, signal) = tokio::sync::watch::channel(false);
+    let maintenance = tokio::spawn(oneloop::runtime::database_maintenance(db.clone(), signal));
+    // The first pass fails, and the loop goes on.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     db.transaction(|tx| {
         tx.execute_batch("DROP TRIGGER fail_purge")?;
         Ok(())
     })
     .await
     .unwrap();
-    assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
+    tokio::time::sleep(std::time::Duration::from_secs(29)).await;
+    assert_eq!(excerpt().await.as_deref(), Some("purge me"));
+    assert!(!maintenance.is_finished());
+    // A minute after the failure, the job runs again.
+    tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+    let mut waited = 0;
+    while excerpt().await.is_some() && waited < 10 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        waited += 1;
+    }
+    assert_eq!(excerpt().await, None);
     stop.send(true).unwrap();
-    worker.await.unwrap().unwrap();
+    maintenance.await.unwrap();
 }
 
 #[tokio::test]
@@ -1537,10 +1534,10 @@ async fn supervisor_stops_other_workers_on_unexpected_exit_or_panic() {
                 }
             }
         };
-        let files = tokio::spawn(waiter(stopped.clone()));
+        let maintenance = tokio::spawn(waiter(stopped.clone()));
         let knowledge = tokio::spawn(waiter(stopped));
         assert!(
-            oneloop::runtime::supervise_workers(outbox, files, knowledge, stop, runtime)
+            oneloop::runtime::supervise_workers(outbox, maintenance, knowledge, stop, runtime)
                 .await
                 .is_err()
         );
@@ -1872,9 +1869,8 @@ async fn maintenance_runs_by_elapsed_time_whatever_the_wall_clock_says() {
         .unwrap()
     };
     delete("first").await;
-    let runtime = CollaborationRuntime::new(db.clone());
     let (stop, signal) = tokio::sync::watch::channel(false);
-    let worker = runtime.spawn_worker(signal);
+    let maintenance = tokio::spawn(oneloop::runtime::database_maintenance(db.clone(), signal));
     // The first pass runs at once.
     while kept("first").await {
         tokio::task::yield_now().await;
@@ -1890,5 +1886,5 @@ async fn maintenance_runs_by_elapsed_time_whatever_the_wall_clock_says() {
     }
     assert!(!kept("second").await);
     stop.send(true).unwrap();
-    worker.await.unwrap().unwrap();
+    maintenance.await.unwrap();
 }

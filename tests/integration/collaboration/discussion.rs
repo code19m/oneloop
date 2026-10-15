@@ -1468,12 +1468,12 @@ async fn the_purge_removes_deleted_comment_text_after_the_undo_window() {
             )?)
         })
     };
-    assert_eq!(service.purge_deleted_comments(now()).await.unwrap(), 0);
+    // One comment doesn't fill a batch, so neither pass leaves more waiting.
+    assert!(!service.purge_deleted_comments(now()).await.unwrap());
     assert_eq!(stored(id.clone()).await.unwrap(), ("Secret @Bob".into(), 1));
     let later = now() + oneloop::domain::UNDO_WINDOW_SECONDS;
-    assert_eq!(service.purge_deleted_comments(later).await.unwrap(), 1);
+    assert!(!service.purge_deleted_comments(later).await.unwrap());
     assert_eq!(stored(id.clone()).await.unwrap(), (String::new(), 0));
-    assert_eq!(service.purge_deleted_comments(later).await.unwrap(), 0);
     let plan: Vec<String> = fixture
         .db
         .run(|connection| {
