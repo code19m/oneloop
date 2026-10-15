@@ -6,8 +6,8 @@ use oneloop::{
     auth::Actor,
     db,
     files::{
-        AttachmentPatch, AttachmentReorder, AttachmentRestore, FileService, FileStore, ReadMode,
-        UploadStart,
+        AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentUpload, FileService,
+        FileStore, ReadMode,
     },
 };
 use tempfile::TempDir;
@@ -105,7 +105,7 @@ async fn upload(
     bytes: &[u8],
     temporary: bool,
 ) -> oneloop::files::AttachmentView {
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(actor, "task", name, bytes.len() as u64, temporary, key)
         .await
         .unwrap()
@@ -182,7 +182,7 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         false,
     )
     .await;
-    let replay = service
+    let mut replay = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -193,10 +193,12 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         )
         .await
         .unwrap();
-    let UploadStart::Replayed(replayed) = replay else {
-        panic!("expected idempotent replay")
-    };
-    assert_eq!(replayed.id, created.id);
+    replay.write_chunk(bytes).await.unwrap();
+    let (replayed, created_now) = replay.finish().await.unwrap();
+    assert_eq!(
+        (replayed.id.as_str(), created_now),
+        (created.id.as_str(), false)
+    );
     let mismatch = service
         .begin_attachment_upload(
             &fixture.manager,
@@ -231,7 +233,7 @@ async fn count_reservations_close_the_concurrent_twenty_fifth_slot() {
     let service = fixture.service(100 * 1024 * 1024);
     let mut pending = Vec::new();
     for index in 0..25 {
-        let UploadStart::Pending(upload) = service
+        let AttachmentUpload::Pending(upload) = service
             .begin_attachment_upload(
                 &fixture.manager,
                 "task",
@@ -946,7 +948,7 @@ async fn capacity_counts_reservations_without_double_counting_partial_staging() 
     let mut admin = fixture.manager.clone();
     admin.is_admin = true;
     let service = fixture.service(100);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&admin, "task", "partial.bin", 10, false, "partial")
         .await
         .unwrap()
@@ -1121,7 +1123,7 @@ async fn completed_reads_release_their_cleanup_and_deletion_lease() {
 async fn interrupted_uploads_release_their_slot_and_retry_identity() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1178,7 +1180,7 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
         )
         .await
         .unwrap();
-    let UploadStart::Pending(retry) = retry else {
+    let AttachmentUpload::Pending(retry) = retry else {
         panic!("an interrupted upload must be retryable")
     };
     retry.abort().await.unwrap();
@@ -1190,7 +1192,7 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     let service = fixture.service(100 * 1024 * 1024);
     let begin =
         || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
-    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut pending) = begin().await.unwrap() else {
         panic!("new upload must not replay")
     };
     pending.write_chunk(b"late").await.unwrap();
@@ -1211,7 +1213,7 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     );
     sleep(Duration::from_secs(10)).await;
     drop(backup);
-    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut retry) = begin().await.unwrap() else {
         panic!("a failed upload must not replay")
     };
     retry.write_chunk(b"late").await.unwrap();
@@ -1234,7 +1236,7 @@ async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
             .await
             .unwrap();
     };
-    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut pending) = begin().await.unwrap() else {
         panic!("new upload must not replay")
     };
     pending.write_chunk(b"la").await.unwrap();
@@ -1248,7 +1250,7 @@ async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
     );
     // After Undo, the same retry key uploads the file.
     deleted(None).await;
-    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut retry) = begin().await.unwrap() else {
         panic!("a failed upload must not replay")
     };
     retry.write_chunk(b"late").await.unwrap();
@@ -1260,7 +1262,7 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let bytes = b"cancellation-safe upload";
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1340,7 +1342,7 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         .unwrap();
     assert_eq!(report.orphan_files_removed, 0);
 
-    let replay = service
+    let mut replay = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1351,9 +1353,12 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         )
         .await
         .unwrap();
-    let UploadStart::Replayed(file) = replay else {
-        panic!("completed upload must replay after request cancellation")
-    };
+    replay.write_chunk(bytes).await.unwrap();
+    let (file, created) = replay.finish().await.unwrap();
+    assert!(
+        !created,
+        "completed upload must replay after request cancellation"
+    );
     let mut read = service
         .open_for_read(&fixture.manager, &file.id, ReadMode::Download)
         .await
@@ -1591,7 +1596,7 @@ async fn large_library_reconciliation_keeps_the_async_executor_responsive() {
     let constrained = f.service((count as u64) * 100 / 85);
     let started_uploads = Instant::now();
     for index in 0..4 {
-        let UploadStart::Pending(pending) = constrained
+        let AttachmentUpload::Pending(pending) = constrained
             .begin_attachment_upload(
                 &f.manager,
                 "task",
@@ -1643,7 +1648,7 @@ async fn stalled_upload_does_not_hold_back_a_complete_backup() {
         false,
     )
     .await;
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -2010,7 +2015,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
 async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
     let fixture = Fixture::new().await;
     let service = fixture.service(1024 * 1024);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -2099,7 +2104,7 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
             )
             .await
             .unwrap(),
-        UploadStart::Replayed(_)
+        AttachmentUpload::Replayed(_)
     ));
 }
 
@@ -2126,7 +2131,7 @@ async fn high_watermark_admission_does_not_walk_originals() {
             .orphan_files_removed,
         0
     );
-    let UploadStart::Pending(pending) = service
+    let AttachmentUpload::Pending(pending) = service
         .begin_attachment_upload(&f.manager, "task", "next.bin", 1, false, "next")
         .await
         .unwrap()
@@ -2357,7 +2362,7 @@ async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
 async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let f = Fixture::new().await;
     let service = f.service(1000000);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&f.manager, "task", "size.bin", 4, false, "chunk-limit")
         .await
         .unwrap()
@@ -2399,7 +2404,7 @@ async fn concurrent_upload_reservations_protect_the_disk_floor() {
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     for result in [a, b] {
         match result {
-            Ok(UploadStart::Pending(upload)) => upload.abort().await.unwrap(),
+            Ok(AttachmentUpload::Pending(upload)) => upload.abort().await.unwrap(),
             Err(AppError::Rule {
                 kind: oneloop::error::RuleKind::StorageFull,
                 ..
@@ -2432,7 +2437,7 @@ async fn download_buffer_measurement_under_cpu_load() {
     let f = Fixture::new().await;
     let service = f.service(100 * 1024 * 1024);
     let size = oneloop::files::MAX_ATTACHMENT_BYTES;
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &f.manager,
             "task",

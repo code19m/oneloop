@@ -12,8 +12,8 @@ pub(crate) use transfer::UploadDeadline;
 
 pub use models::*;
 pub use service::{
-    AvatarSlot, FileRead, FileRuntimeReport, FileService, LeasedFile, PendingAttachmentUpload,
-    ReadMode, UploadStart, sanitize_html_preview,
+    AttachmentUpload, AvatarSlot, FileRead, FileRuntimeReport, FileService, LeasedFile,
+    PendingAttachmentUpload, ReadMode, ReplayedUpload, sanitize_html_preview,
 };
 pub(crate) use service::{
     ConditionalRead, ThumbnailRead, classify_bytes, etag_matches, file_etag,

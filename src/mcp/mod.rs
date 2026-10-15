@@ -17,7 +17,6 @@ use axum::{
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, session::never::NeverSessionManager, tower::StreamableHttpService,
 };
-use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
@@ -25,7 +24,7 @@ use crate::{
     AppError, AppResult, AppState,
     auth::{Actor, ActorSource},
     clock::unix_now,
-    files::{ReadMode, UploadStart},
+    files::ReadMode,
 };
 
 pub use tools::OneloopMcp;
@@ -251,51 +250,15 @@ async fn upload_file(
             "does not match the reserved upload size",
         ));
     }
-    let service = state.files;
-    let start = service
+    let mut upload = state
+        .files
         .begin_attachment_upload(&actor, &task, &name, size, transfer.temporary, &key)
         .await?;
-    let mut upload = match start {
-        UploadStart::Pending(upload) => upload,
-        UploadStart::Replayed(attachment) => {
-            let mut stream = body.into_data_stream();
-            let mut received = 0_u64;
-            let mut checksum = Sha256::new();
-            while let Some(chunk) = deadline.read(stream.next()).await? {
-                let chunk = chunk.map_err(body_error)?;
-                received = received.saturating_add(chunk.len() as u64);
-                if received > size {
-                    return Err(AppError::validation(
-                        "file",
-                        "received more bytes than declared",
-                    ));
-                }
-                checksum.update(&chunk);
-            }
-            if received != size {
-                return Err(AppError::validation(
-                    "file",
-                    "upload size does not match declared size",
-                ));
-            }
-            if hex::encode(checksum.finalize()) != attachment.checksum {
-                return Err(AppError::rule(
-                    crate::error::RuleKind::IdempotencyKeyReused,
-                    "idempotency key was already used for different file bytes",
-                ));
-            }
-            return Ok(axum::Json(ValueResponse {
-                value: serde_json::to_value(attachment)
-                    .map_err(|e| AppError::internal(e.to_string()))?,
-            }));
-        }
-    };
     let mut stream = body.into_data_stream();
     while let Some(chunk) = deadline.read(stream.next()).await? {
-        let chunk = chunk.map_err(body_error)?;
-        upload.write_chunk(&chunk).await?;
+        upload.write_chunk(&chunk.map_err(body_error)?).await?;
     }
-    let attachment = upload.finish().await?;
+    let (attachment, _) = upload.finish().await?;
     Ok(axum::Json(ValueResponse {
         value: serde_json::to_value(attachment).map_err(|e| AppError::internal(e.to_string()))?,
     }))

@@ -10,7 +10,7 @@ impl FileService {
         claimed_size: u64,
         is_ephemeral: bool,
         idempotency_key: &str,
-    ) -> AppResult<UploadStart> {
+    ) -> AppResult<AttachmentUpload> {
         actor.require_ready()?;
         validate_original_name(original_name)?;
         validate_idempotency_key(idempotency_key)?;
@@ -49,7 +49,7 @@ impl FileService {
             })
             .await?
         {
-            return Ok(UploadStart::Replayed(Box::new(existing)));
+            return Ok(AttachmentUpload::replayed(existing, claimed_size));
         }
 
         let non_database_bytes = self.admit(claimed_size).await?;
@@ -135,7 +135,7 @@ impl FileService {
                 .await?;
 
             match outcome {
-                ReserveOutcome::Replay(value) => Ok(UploadStart::Replayed(value)),
+                ReserveOutcome::Replay(view) => Ok(AttachmentUpload::replayed(*view, claimed_size)),
                 ReserveOutcome::Reserved(project_id, idempotency_id) => {
                     let mut pending = PendingAttachmentUpload {
                         attempt: Some(UploadAttempt {
@@ -151,10 +151,8 @@ impl FileService {
                             storage_key,
                             disk,
                         }),
-                        claimed_size,
+                        received: Received::new(claimed_size),
                         file: None,
-                        written: 0,
-                        hasher: Sha256::new(),
                         inspection: Vec::with_capacity(
                             PREFIX_INSPECTION_BYTES.min(claimed_size as usize),
                         ),
@@ -167,7 +165,7 @@ impl FileService {
                     {
                         Ok(file) => {
                             pending.file = Some(file);
-                            Ok(UploadStart::Pending(Box::new(pending)))
+                            Ok(AttachmentUpload::Pending(Box::new(pending)))
                         }
                         Err(error) => {
                             pending.abort().await?;
@@ -182,6 +180,112 @@ impl FileService {
         })?
     }
 }
+
+enum ReserveOutcome {
+    Replay(Box<AttachmentView>),
+    Reserved(String, String),
+}
+
+/// An attachment upload whose bytes are arriving. A retry of an upload that
+/// finished sends its bytes again, and they must match the stored file.
+pub enum AttachmentUpload {
+    Pending(Box<PendingAttachmentUpload>),
+    Replayed(ReplayedUpload),
+}
+
+impl AttachmentUpload {
+    fn replayed(view: AttachmentView, claimed_size: u64) -> Self {
+        Self::Replayed(ReplayedUpload {
+            view: Box::new(view),
+            received: Received::new(claimed_size),
+        })
+    }
+
+    pub async fn write_chunk(&mut self, chunk: &[u8]) -> AppResult<()> {
+        match self {
+            Self::Pending(upload) => upload.write_chunk(chunk).await,
+            Self::Replayed(upload) => upload.received.add(chunk),
+        }
+    }
+
+    /// The attachment, and whether this upload created it.
+    pub async fn finish(self) -> AppResult<(AttachmentView, bool)> {
+        match self {
+            Self::Pending(upload) => Ok((upload.finish().await?, true)),
+            Self::Replayed(upload) => Ok((upload.finish()?, false)),
+        }
+    }
+
+    pub async fn abort(self) -> AppResult<()> {
+        match self {
+            Self::Pending(upload) => upload.abort().await,
+            Self::Replayed(_) => Ok(()),
+        }
+    }
+}
+
+/// A retry of an upload that finished. Its bytes are only counted and hashed.
+pub struct ReplayedUpload {
+    view: Box<AttachmentView>,
+    received: Received,
+}
+
+impl ReplayedUpload {
+    fn finish(self) -> AppResult<AttachmentView> {
+        if self.received.checksum()? != self.view.checksum {
+            return Err(AppError::rule(
+                crate::error::RuleKind::IdempotencyKeyReused,
+                "idempotency key was already used for different file bytes",
+            ));
+        }
+        Ok(*self.view)
+    }
+}
+
+/// The bytes of an upload so far, held to its declared size.
+#[derive(Default)]
+struct Received {
+    claimed: u64,
+    written: u64,
+    hasher: Sha256,
+}
+
+impl Received {
+    fn new(claimed: u64) -> Self {
+        Self {
+            claimed,
+            ..Self::default()
+        }
+    }
+
+    fn add(&mut self, chunk: &[u8]) -> AppResult<()> {
+        let next = self.written.saturating_add(chunk.len() as u64);
+        if next > self.claimed {
+            return Err(AppError::validation(
+                "file",
+                "received more bytes than declared",
+            ));
+        }
+        self.hasher.update(chunk);
+        self.written = next;
+        Ok(())
+    }
+
+    /// The checksum of the bytes, once all declared bytes arrived.
+    fn checksum(self) -> AppResult<String> {
+        if self.written != self.claimed {
+            return Err(AppError::validation(
+                "file",
+                format!(
+                    "declared {} bytes but received {}",
+                    self.claimed, self.written
+                ),
+            ));
+        }
+        Ok(hex::encode(self.hasher.finalize()))
+    }
+}
+
 /// What an upload attempt owns until its file is published or cleaned up.
 struct UploadAttempt {
     service: FileService,
@@ -202,10 +306,8 @@ struct UploadAttempt {
 pub struct PendingAttachmentUpload {
     /// Taken by `finish` and `abort`; still here on drop, it needs cleanup.
     attempt: Option<UploadAttempt>,
-    claimed_size: u64,
+    received: Received,
     file: Option<File>,
-    written: u64,
-    hasher: Sha256,
     inspection: Vec<u8>,
 }
 
@@ -376,13 +478,7 @@ impl UploadAttempt {
 
 impl PendingAttachmentUpload {
     pub async fn write_chunk(&mut self, chunk: &[u8]) -> AppResult<()> {
-        let next = self.written.saturating_add(chunk.len() as u64);
-        if next > self.claimed_size || next > MAX_ATTACHMENT_BYTES {
-            return Err(AppError::validation(
-                "file",
-                "received more bytes than declared",
-            ));
-        }
+        self.received.add(chunk)?;
         if self.inspection.len() < PREFIX_INSPECTION_BYTES {
             let remaining = PREFIX_INSPECTION_BYTES - self.inspection.len();
             self.inspection
@@ -393,21 +489,18 @@ impl PendingAttachmentUpload {
             .ok_or_else(|| AppError::internal("upload staging file is unavailable"))?
             .write_all(chunk)
             .await?;
-        self.hasher.update(chunk);
-        self.written = next;
         Ok(())
     }
 
     pub async fn finish(mut self) -> AppResult<AttachmentView> {
-        if self.written != self.claimed_size {
-            let got = self.written;
-            let expected = self.claimed_size;
-            log_cleanup_failure(self.abort().await);
-            return Err(AppError::validation(
-                "file",
-                format!("declared {expected} bytes but received {got}"),
-            ));
-        }
+        let size = self.received.claimed;
+        let checksum = match std::mem::take(&mut self.received).checksum() {
+            Ok(checksum) => checksum,
+            Err(error) => {
+                log_cleanup_failure(self.abort().await);
+                return Err(error);
+            }
+        };
         let file = self
             .file
             .take()
@@ -423,11 +516,10 @@ impl PendingAttachmentUpload {
                 return Err(error);
             }
         };
-        let checksum = hex::encode(std::mem::take(&mut self.hasher).finalize());
         let inspection = std::mem::take(&mut self.inspection);
         // A finalizer runs to its end even when the request is cancelled, so
         // it either records the file or cleans it up.
-        tokio::spawn(attempt.finalize(lease, file, self.written, checksum, inspection))
+        tokio::spawn(attempt.finalize(lease, file, size, checksum, inspection))
             .await
             .map_err(|error| AppError::internal(format!("upload finalizer failed: {error}")))?
     }

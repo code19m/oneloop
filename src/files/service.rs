@@ -14,7 +14,7 @@ pub use read::ReadMode;
 mod thumbnail;
 pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
-pub use upload::PendingAttachmentUpload;
+pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
 
 use super::BlobState;
 use crate::disk::{DiskAdmission, DiskReservation};
@@ -103,11 +103,6 @@ pub struct FileRuntimeReport {
     pub deletion_jobs_completed: u64,
     pub temporary_files_cleaned: u64,
     pub bytes_reclaimed: u64,
-}
-
-pub enum UploadStart {
-    Replayed(Box<AttachmentView>),
-    Pending(Box<PendingAttachmentUpload>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -675,11 +670,6 @@ impl FileService {
 struct DeletedAttachment {
     project_id: String,
     task_id: String,
-}
-
-enum ReserveOutcome {
-    Replay(Box<AttachmentView>),
-    Reserved(String, String),
 }
 
 fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<String> {
