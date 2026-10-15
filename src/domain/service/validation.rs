@@ -2,9 +2,12 @@
 use super::*;
 
 pub(super) fn date(value: &str, field: &'static str) -> AppResult<String> {
-    let parsed = NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map_err(|_| AppError::validation(field, "must be a valid date in YYYY-MM-DD format"))?;
-    if value.len() != 10 || parsed.format("%Y-%m-%d").to_string() != value {
+    // Only the exact form round-trips: no other ISO 8601 spelling.
+    let exact = value.len() == 10
+        && value
+            .parse::<jiff::civil::Date>()
+            .is_ok_and(|date| date.to_string() == value);
+    if !exact {
         return Err(AppError::validation(
             field,
             "must be a valid date in YYYY-MM-DD format",
