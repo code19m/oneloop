@@ -1,5 +1,7 @@
 //! Delays after failed sign-ins, counted per account, per address and per
-//! account and address together.
+//! account and address together, and the cleanup of their counters.
+use std::net::IpAddr;
+
 use super::*;
 
 /// Failures count toward a delay for 15 minutes after the first one.
@@ -76,7 +78,7 @@ impl AuthService {
             .transaction(move |tx| {
                 // Keep cleanup proportional to hostile traffic as well as running
                 // periodically: address rotation must not outrun the timer's batch.
-                crate::retention::prune_login_throttles_connection(tx, now, 100)?;
+                prune(tx, now, 100)?;
                 let existing = tx
                     .query_row(
                         "SELECT failure_count,window_started_at FROM login_throttles WHERE key=?1",
@@ -119,5 +121,53 @@ impl AuthService {
                 Ok(())
             })
             .await
+    }
+}
+
+/// The address a counter of abuse groups by: an IPv4 address, or the /64
+/// network of an IPv6 address, which one client usually holds whole. It is
+/// never session metadata.
+pub(crate) fn throttle_bucket(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!(
+            "{}/64",
+            std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))
+        ),
+    }
+}
+
+/// Removes a batch of counters whose window and delay have both ended, for
+/// database maintenance.
+pub async fn prune_login_throttles(db: &Db, now: i64) -> AppResult<()> {
+    db.transaction(move |tx| prune(tx, now, MAINTENANCE_BATCH))
+        .await
+}
+
+/// Counters one maintenance pass removes at most, so it never holds the
+/// writer long.
+const MAINTENANCE_BATCH: i64 = 500;
+
+/// The expiry index bounds the scan, so active windows and delays are never
+/// read.
+const PRUNE_SQL: &str = "DELETE FROM login_throttles WHERE rowid IN (SELECT rowid FROM login_throttles INDEXED BY login_throttles_expiry_idx WHERE blocked_until<=?1 AND window_started_at<=?2 LIMIT ?3)";
+
+fn prune(connection: &rusqlite::Connection, now: i64, batch: i64) -> AppResult<()> {
+    connection.execute(
+        PRUNE_SQL,
+        rusqlite::params![now, now - FAILURE_WINDOW_SECONDS, batch],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prune_skips_active_counters_through_its_index() {
+        let (_root, connection) = crate::db::migrated_connection();
+        let plan = crate::db::query_plan(&connection, PRUNE_SQL);
+        assert!(plan.contains("window_started_at<?"), "{plan}");
     }
 }

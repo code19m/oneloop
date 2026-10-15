@@ -406,17 +406,6 @@ fn warn_untrusted_forwarding() {
     }
 }
 
-/// Address aggregation is for abuse counters only, never session metadata.
-pub(crate) fn throttle_bucket(ip: IpAddr) -> String {
-    match ip.to_canonical() {
-        IpAddr::V4(ip) => ip.to_string(),
-        IpAddr::V6(ip) => format!(
-            "{}/64",
-            std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))
-        ),
-    }
-}
-
 pub(crate) fn is_trusted(address: IpAddr, trusted: &[IpNet]) -> bool {
     trusted.iter().any(|network| {
         network.contains(&address)

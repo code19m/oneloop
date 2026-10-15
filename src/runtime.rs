@@ -8,7 +8,7 @@ use tokio::{
 };
 
 use crate::{
-    AppResult, Db, clock::unix_now, collaboration::CollaborationService, files::FileService,
+    AppResult, Db, auth, clock::unix_now, collaboration::CollaborationService, files::FileService,
     retention,
 };
 
@@ -86,9 +86,7 @@ impl Job {
     /// Runs one pass. Returns whether a batch was full.
     async fn run(self, db: &Db, collaboration: &CollaborationService, now: i64) -> AppResult<bool> {
         match self {
-            Self::LoginThrottles => retention::prune_login_throttles(db, now)
-                .await
-                .map(|()| false),
+            Self::LoginThrottles => auth::prune_login_throttles(db, now).await.map(|()| false),
             Self::TransientState => retention::prune_transient_state(db, now).await,
             Self::QueryPlanner => {
                 db.run(|connection| {

@@ -85,7 +85,7 @@ async fn register_client_inner(
     let now = unix_now()?;
     let peer = peer.map(|Extension(ConnectInfo(address))| address);
     let caller = client_ip(peer, &headers, &state.config.trusted_proxies)
-        .map(crate::http::security::throttle_bucket)
+        .map(crate::auth::throttle_bucket)
         .unwrap_or_else(|| "unknown".to_owned());
     let caller_hash = Sha256::digest(format!("oauth-register-v1:{caller}").as_bytes()).to_vec();
     let allowed = state

@@ -33,6 +33,8 @@ use crate::{
 };
 
 use password::{PasswordPolicy, hash_password, verify_password};
+pub use throttle::prune_login_throttles;
+pub(crate) use throttle::throttle_bucket;
 use throttle::{ACCOUNT_RULE, ADDRESS_RULE, PAIR_RULE, PASSWORD_CONFIRMATION_RULE};
 
 const ACCOUNT_PAGE_SIZE: usize = 50;
@@ -459,7 +461,7 @@ pub fn security_event(
 fn login_address_bucket(client_ip: Option<&str>) -> Option<String> {
     client_ip
         .and_then(|ip| ip.parse().ok())
-        .map(crate::http::security::throttle_bucket)
+        .map(throttle_bucket)
 }
 
 fn login_throttle_key(username: &str, client_ip: Option<&str>) -> String {
