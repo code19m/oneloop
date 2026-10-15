@@ -6,14 +6,14 @@ import {
 } from './projection-store.js';
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
 import {mapActivity} from './activity-mapper.js';
+import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters} from './board-filters.js';
 import {savedDoneOrder} from './done-order.js';
 import {secondsToMilliseconds} from './time.js';
 
 const STATUSES=['planning','progress','review','done'];
 function boardFilters(filters={}){
-  return {limit:50,search:String(filters.search??'').trim()||undefined,trackIds:[...(filters.trackIds??[])].sort(),epicIds:[...(filters.epicIds??[])].sort(),assigneeIds:(filters.assigneeIds??[]).filter(id=>id!=='__unassigned__').sort(),noAssignee:(filters.assigneeIds??[]).includes('__unassigned__')||undefined,blocked:filters.blocked||undefined,
-    // The browser's Done order travels with every Board read; only Done uses it.
-    ...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
+  // The browser's Done order travels with every Board read; only Done uses it.
+  return {limit:50,...normalizeBoardFilters(filters),...(savedDoneOrder()==='completed'?{doneOrder:'completed'}:{})};
 }
 
 /** @typedef {{slot:string,target:string,background:boolean,epoch:number,projection:number,controller:AbortController,signal:AbortSignal,promise:Promise<any>|null,next:Token|null,done:boolean}} Token */
@@ -80,7 +80,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
 
   function adoptBoard(projectId,filters={}){
     if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
-    if(filters.search||filters.blocked||(filters.trackIds??[]).length||(filters.epicIds??[]).length||(filters.assigneeIds??[]).length)return false;
+    if(boardFiltered(filters))return false;
     if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
     supersedeBoard(boardTarget(projectId,boardFilters(filters)));
     remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});
@@ -133,7 +133,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     const ids=[...new Set(hints.map(hint=>hint.taskId??hint.entityId).filter(Boolean))];
     return read('board',target,true,async token=>{
       try{
-        const filtered=common.search||common.blocked||common.trackIds.length||common.epicIds.length||common.assigneeIds.length||common.noAssignee;
+        const filtered=boardFiltered(common);
         const [tasks,counts,head]=await Promise.all([
           Promise.all(ids.map(async id=>{try{return {id,view:await api.task(id,{signal:token.signal,background:true})};}catch(error){if(error?.status===404)return {id,view:null};throw error;}})),
           api.counts(projectId,{signal:token.signal,background:true}),
@@ -147,12 +147,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
           const loaded=data.tasks.filter(item=>item.projectId===projectId&&item.state===status);
           const edge=loaded.sort((left,right)=>compareTaskOrder(left,right,common.doneOrder)).at(-1);
           const parent=view&&data.epics.find(item=>item.id===view.epicId);
-          const matches=view&&view.projectId===projectId&&
-            (!common.search||view.title.toLowerCase().includes(common.search.toLowerCase())||view.taskKey.toLowerCase().includes(common.search.toLowerCase()))&&
-            (!common.trackIds.length||common.trackIds.includes(parent?.trackId))&&
-            (!common.epicIds.length||common.epicIds.includes(view.epicId))&&
-            (!(common.assigneeIds.length||common.noAssignee)||view.assigneeIds.some(id=>common.assigneeIds.includes(id))||common.noAssignee&&!view.assigneeIds.length)&&
-            (!common.blocked||!!view.activeBlock);
+          const matches=view&&view.projectId===projectId&&matchesBoardFilters({title:view.title,key:view.taskKey,epicId:view.epicId,trackId:parent?.trackId,assigneeIds:view.assigneeIds,blocked:!!view.activeBlock},common);
           if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
@@ -201,7 +196,7 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     }catch(error){
       if(replaced()||error?.code==='aborted')return {stale:true};
       // A write since the last read moved the cursor: read the Board again, one page deeper in this column.
-      if(error?.code==='cursor_stale'){state.depths[status]=(state.depths[status]??1)+1;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?['__unassigned__']:[])]});}
+      if(error?.code==='cursor_stale'){state.depths[status]=(state.depths[status]??1)+1;return board(state.projectId,{...state.filters,assigneeIds:[...state.filters.assigneeIds,...(state.filters.noAssignee?[NO_ASSIGNEE]:[])]});}
       onError(error);throw error;
     }
   }

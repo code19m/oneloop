@@ -2,6 +2,9 @@
 /* The Board: task columns, their filters, and moving tasks with optimistic
    saves that roll back when the server refuses. */
 
+import {
+  NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters,
+} from '../../src/data/board-filters.js';
 import { MULTI, multiHtml } from './controls.js';
 import { MOTION, animateLayout, fadeContent, motionRects, reducedMotion } from './effects.js';
 import {
@@ -13,8 +16,6 @@ import {
   state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { announce } from './toasts.js';
-
-const NO_ASSIGNEE = '__unassigned__';
 
 const COLS = [
   { key: 'planning', name: 'Planning' },
@@ -31,23 +32,20 @@ function taskBits(t) {
   return { right: '', cls: '' };
 }
 
+/** The filters the Board shows, as App.context().board names them. */
+const boardFilters = () => ({ search: state.boardQ, blocked: state.boardBlocked, trackIds: state.boardTracks, epicIds: state.boardEpics, assigneeIds: state.boardAssignees });
+
+/** The project's loaded tasks that pass the Board's filters. */
 function boardTasks() {
-  let ts = tasks();
-  if (state.boardTracks.length) { const eids = new Set(epics().filter((e) => state.boardTracks.includes(e.trackId)).map((e) => e.id)); ts = ts.filter((t) => eids.has(t.epicId)); }
-  if (state.boardEpics.length) ts = ts.filter((t) => state.boardEpics.includes(t.epicId));
-  if (state.boardAssignees.length) ts = ts.filter((t) => {
-    const assignees = t.assignees || [];
-    return (!assignees.length && state.boardAssignees.includes(NO_ASSIGNEE)) || assignees.some((a) => state.boardAssignees.includes(a));
-  });
-  if (state.boardBlocked) ts = ts.filter(t=>!!t.block && t.state!=='done');
-  if (state.boardQ) { const q = state.boardQ.toLowerCase(); ts = ts.filter((t) => t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)); }
-  return ts;
+  const filters = normalizeBoardFilters(boardFilters());
+  if (!boardFiltered(filters)) return tasks();
+  return tasks().filter((t) => matchesBoardFilters({ title: t.title, key: t.id, epicId: t.epicId, trackId: epicById(t.epicId)?.trackId, assigneeIds: t.assignees || [], blocked: !!t.block && t.state !== 'done' }, filters));
 }
 
 /** @param {{column?:string|null,excludeIds?:Set<string>|null}} [options] */
 export function renderBoard({column=null,excludeIds=null}={}) {
   const ts = boardTasks();
-  const filtered = state.boardBlocked || state.boardQ || state.boardTracks.length || state.boardEpics.length || state.boardAssignees.length;
+  const filtered = boardFiltered(boardFilters());
   if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
   const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
     const list = ts.filter((t) => t.state === c.key);
@@ -90,7 +88,7 @@ export function boardSnapshot() {
   // avatars and date boundaries can change independently of a task.
   return JSON.stringify([
     state.projectId, canBoard(), instanceTimeZone(), instanceDateKey(instanceNow()),
-    !!(state.boardQ || state.boardBlocked || state.boardTracks.length || state.boardEpics.length || state.boardAssignees.length),
+    boardFiltered(boardFilters()),
     state.boardLimits, D.boardPageInfo,
     boardTasks().map(t=>[t.id,t.state,t.title,t.epicId,t.created,t.deadline,t.assignees,t.block]),
     D.epics.map(e=>[e.id,e.title]), D.users.map(u=>[u.id,u.name,u.avatar]),

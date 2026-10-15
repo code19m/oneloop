@@ -2,6 +2,7 @@
 
 import { ApiError } from '../data/api-client.js';
 import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
+import { boardFiltered } from '../data/board-filters.js';
 import { toWireScope } from '../data/wire.js';
 
 /**
@@ -14,8 +15,7 @@ export function routeScope(hash, app) {
   if(route.startsWith('task/')){
     try{return {taskId:decodeURIComponent(route.slice(5)),view:'task'};}catch{return {view:'metadata'};}
   }
-  const filters=app?.context?.().board;
-  const filtered=filters&&(filters.search||filters.blocked||filters.trackIds?.length||filters.epicIds?.length||filters.assigneeIds?.length);
+  const filtered=boardFiltered(app?.context?.().board);
   return {view:route==='board'&&!filtered?'board':route==='roadmap'||!route?'roadmap':'metadata'};
 }
 

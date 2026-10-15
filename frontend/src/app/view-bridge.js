@@ -2,6 +2,7 @@
 
 import { ApiError } from '../data/api-client.js';
 import { clientField, mapUser, mergeAdminUsersPage } from '../data/projection-store.js';
+import { boardFiltered } from '../data/board-filters.js';
 import { toWireScope, toWireStatus } from '../data/wire.js';
 import { saveDoneOrder } from '../data/done-order.js';
 import {
@@ -899,8 +900,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     /** @param {{search?:string,blocked?:boolean,trackIds?:string[],epicIds?:string[],assigneeIds?:string[]}} filters */
     async filterBoard(filters){
       const result=await reads.board(context().projectId,filters,{skipUnchanged:true});
-      const empty=!filters.search&&!filters.blocked&&!(filters.trackIds||[]).length&&!(filters.epicIds||[]).length&&!(filters.assigneeIds||[]).length;
-      if(empty&&!result.stale)app.refresh();
+      if(!boardFiltered(filters)&&!result.stale)app.refresh();
       return result;
     },
     /** @param {string} status */
