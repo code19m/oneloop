@@ -6,7 +6,7 @@ const path = require('node:path');
 const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../../../support/dom.cjs');
 
 const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const scripts = ['theme', 'data', 'recovery', ...previewLibraries, ...markdownLibraries, 'collaboration', 'app'];
+const scripts = ['theme', 'data', 'recovery', ...previewLibraries, ...markdownLibraries, 'app'];
 // KaTeX refuses to render in quirks mode.
 const boot = options => { const t = bootApp({ route: 'task/BIR-079', scripts, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
 

@@ -3,7 +3,8 @@
    lookups and permissions. */
 
 export const D = window.DATA;
-export const collaboration=window.Collab;
+/** The collaboration controller from src/features/collaboration/, which boot.js installs before the views load. */
+export const collaborationController = window.OneloopCollaboration;
 /** The view bridge's server-backed functions, which boot.js installs once the views have loaded. */
 export const runtime = () => window.OneloopRuntime;
 /** Report a failed runtime call as a failed save is reported. */
@@ -40,7 +41,15 @@ export const milestones = () => D.milestones.filter((m) => m.projectId === state
 export const tasks = () => { const eids = new Set(epics().map((e) => e.id)); return D.tasks.filter((t) => eids.has(t.epicId)); };
 export const taskById = (id) => D.tasks.find((t) => t.id === id || t.internalId === id);
 export const poolItems = (scope) => D.pool.filter((p) => p.projectId === state.projectId && canReadProject(p.projectId) && (scope ? p.scope === scope : true) && (p.scope !== 'mine' || p.ownerId === (me() || {}).id));
-export const userById = (id) => collaboration?.userById ? collaboration.userById(id) : D.users.find((u) => u.id === id);
+// Each lookup by id would scan every user, so a map follows the projection's people.
+let usersSource = null, usersVersion = null, usersCount = -1, usersById = new Map();
+export const userById = (id) => {
+  if (usersSource !== D.users || usersVersion !== D.peopleVersion || usersCount !== D.users.length) {
+    usersSource = D.users; usersVersion = D.peopleVersion; usersCount = D.users.length;
+    usersById = new Map(D.users.map((user) => [user.id, user]));
+  }
+  return usersById.get(id);
+};
 export const userHandle = (user) => user?.username || user?.id || '';
 export const me = () => (D.session ? userById(D.session.userId) : null);
 export const isAdmin = () => !!(me() && me().admin);

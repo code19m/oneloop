@@ -9,6 +9,10 @@ import { UIMotion } from '../src/app/motion.js';
 import { checkPreviewAccess } from '../src/features/files/preview.js';
 import { attachmentsHtml, mountAttachments } from './app/attachments.js';
 import {
+  beforeCollaborationRender, blockText, composerHtml, feedHtml, inboxHtml, inboxNav, mountCollaboration, retryTaskPage,
+  taskFeedState,
+} from './app/collaboration.js';
+import {
   boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch,
   clearFilterMotion, renderBoard,
 } from './app/board.js';
@@ -17,19 +21,19 @@ import { renderModal } from './app/dialogs.js';
 import './app/drag.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, instanceDateKey, instanceToday,
-  iso, overdue, previousDate, setHTML, stIcon, today,
+  iso, overdue, setHTML, stIcon, today,
 } from './app/format.js';
 import {
   mountDescription, sizeDescription, sizeDescriptionEditors, sizeTaskTitle,
 } from './app/forms.js';
 import {
-  App, D, canBoard, canReadProject, canReadTask, collaboration, counts, epicById, epics,
+  App, D, canBoard, canReadProject, canReadTask, counts, epicById, epics,
   hasPermission, instanceNow, isAdmin, me, poolItems, project,
   projectMembers, report, runtime, state, taskById, tasks, trackById, userById,
   userHandle, visibleProjects,
 } from './app/model.js';
 import {
-  POP, askConfirmation, askToDiscard, closePop, dismissMenu, hideEpicTip, overlayKey,
+  POP, askToDiscard, closePop, dismissMenu, hideEpicTip, overlayKey,
   pendingConfirmation, placeMenu, placePop, rememberOpener, renderMenu, restoreOpener,
   showWaitingPassword, stampOverlays, syncOverlayFocus, syncSidebar,
 } from './app/overlays.js';
@@ -209,7 +213,7 @@ function awaitingServerTask() {
 
 // ---------- task page ----------
 function taskActivityHtml(task){
-  const feed=collaboration.feedHtml(task),state=collaboration.taskFeedState(task.id);
+  const feed=feedHtml(task),state=taskFeedState(task.id);
   const retry=`<button class="btn quiet" ${UIAction('retryTaskActivity', task.id)}>Retry</button>`;
   if(!feed)return state?.error?`<div class="access-note" role="alert">Could not load activity. ${retry}</div>`:state?.loaded===false?'<div class="access-note" role="status">Loading activity…</div>':'<div class="access-note">No activity yet</div>';
   return state?.error?`<div class="access-note" role="alert">Could not refresh activity. ${retry}</div>${feed}`:feed;
@@ -260,7 +264,7 @@ function renderTask() {
   const late = overdue(t);
   return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
       <div class="task-title-field"><textarea class="tp-title" name="title" aria-label="Task title" rows="1" placeholder="Fix payment validation" required aria-required="true" maxlength="140" data-autosave ${UIAction.on('input', 'sizeTaskTitle')} data-key="Enter" ${UIAction.on('keydown', 'leaveField', UIAction.event, UIAction.element)} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'title', UIAction.value) : lockedField(t, 'title')}>${esc(title)}</textarea>${taskDraftNote(t, 'title')}</div>
-    ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" ${UIAction('openModal', 'unblock', t.id)}>Unblock task</button>` : ''}</div><p>${collaboration?.blockText(t.block) || esc(t.block.reason)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" ${UIAction('openModal', 'block', t.id)}>Edit reason</button>` : ''}</div></section>` : ''}
+    ${t.block ? `<section class="task-block" data-block-id="${esc(t.block.id)}" tabindex="-1" aria-label="Task blocked"><div class="task-block-heading"><strong>${I.blocked}Blocked</strong>${canEdit ? `<button class="btn unblock-action" ${UIAction('openModal', 'unblock', t.id)}>Unblock task</button>` : ''}</div><p>${blockText(t.block)}</p><div class="task-block-footer"><small>${esc(userById(t.block.by)?.name || t.block.by)} · ${ago(t.block.at)}</small>${canEdit ? `<button class="btn block-edit-action" ${UIAction('openModal', 'block', t.id)}>Edit reason</button>` : ''}</div></section>` : ''}
     <aside class="tp-rail" aria-labelledby="task-properties-heading">
       ${taskPropertiesHeadingHtml(t, canEdit)}
       <dl class="task-properties">
@@ -278,7 +282,7 @@ function renderTask() {
       ${attachmentsHtml(t, canEdit)}
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
-        <div class="comment-composer-home">${collaboration?.composerHtml(t) || ''}</div></div>
+        <div class="comment-composer-home">${composerHtml(t)}</div></div>
     </div>
   </div></div>`;
 }
@@ -470,7 +474,7 @@ function renderOverlays(){
   if(!root||!D.session||!me()?.active){render();return;}
   const oldModalElement=root.querySelector('.modal'),oldPeekElement=root.querySelector('.peek'),oldFocus=document.activeElement;
   const focus={oldModal:!!oldModalElement,oldPeek:!!oldPeekElement,oldFocus,oldModalKey:oldModalElement?.dataset.motionKey,oldPeekKey:oldPeekElement?.dataset.motionKey,oldPanelFocus:(oldModalElement||oldPeekElement)?.contains(oldFocus)?rememberOpener(oldFocus):null};
-  collaboration?.beforeRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
+  beforeCollaborationRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
   const motion=prepareRenderMotion(true);hideEpicTip();closePop(true);
   const template=document.createElement('template');setHTML(template,`${state.peek?renderPeek():''}${renderModal()}${renderMenu()}`);
   // A modal over a drawer must retain that drawer's open editor and scroll.
@@ -480,7 +484,7 @@ function renderOverlays(){
   document.getElementById('app').classList.toggle('side-open',!!state.sideOpen);
   document.querySelector('.switcher-btn')?.setAttribute('aria-expanded',String(!!state.menu?.projectMenu));
   document.querySelector('.me-chip')?.setAttribute('aria-expanded',String(!!state.menu?.version));
-  mountDescription();collaboration?.mount();
+  mountDescription();mountCollaboration();
   finishRenderMotion(motion,true);stampOverlays();if(state.menu)placeMenu();syncOverlayFocus(focus);
   paintedScope=renderScope();
 }
@@ -500,7 +504,7 @@ function renderContent() {
   today.setTime(instanceToday().getTime());
   if (pendingConfirmation && (pendingConfirmation.session !== D.session?.id || pendingConfirmation.hash !== location.hash || !D.session)) pendingConfirmation.close(false, false);
   checkPreviewAccess();
-  collaboration?.beforeRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
+  beforeCollaborationRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
   const renderMotion = prepareRenderMotion();
   clearFilterMotion();
   hideEpicTip();
@@ -520,13 +524,13 @@ function renderContent() {
   const p = project() || {name:'No projects'};
   const u = me();
   const error = window.Recovery?.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? collaboration?.inboxHtml() || '' : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
+  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? window.Recovery?.errorHtml(error) || `<div class="page-error"><h2>${error === '403' ? 'Access denied' : 'Page not found'}</h2><button class="btn quiet" ${UIAction('nav', 'board')}>Back to Board</button></div>` : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? window.OneloopKnowledge?.render(state.projectId) || '' : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`
     <a class="skip-link" href="#main">Skip to content</a>
     <div class="side-scrim" ${UIAction('toggleSidebar', false)}></div>
     <nav class="sidebar" aria-label="Main navigation" ${window.innerWidth <= 900 && !state.sideOpen ? 'inert' : ''}>
-      <div class="sidebar-brand has-inbox"><div class="logo" role="img" aria-label="oneloop">${I.logo}<span class="lbl">${I.wordmark}</span></div>${collaboration?.inboxNav(state.view) || ''}</div>
+      <div class="sidebar-brand has-inbox"><div class="logo" role="img" aria-label="oneloop">${I.logo}<span class="lbl">${I.wordmark}</span></div>${inboxNav(state.view)}</div>
       <div class="switcher"><button class="switcher-btn btn" ${!project()&&!isAdmin()?'disabled':''} ${UIAction('projectMenu', UIAction.event)} title="${esc(p.name)}" aria-label="Project: ${esc(p.name)}" aria-expanded="${!!state.menu?.projectMenu}" aria-controls="project-switcher-menu">
         <span class="project-identity"><span class="avatar">${esc(p.name[0].toUpperCase())}</span><span class="lbl project-name">${esc(p.name)}</span></span><span class="lbl project-chevron">${I.chev}</span></button></div>
       <div class="nav">
@@ -579,7 +583,7 @@ function renderContent() {
   finishRenderMotion(renderMotion);
   stampOverlays();
   if (state.menu) placeMenu();
-  collaboration?.mount();
+  mountCollaboration();
   syncOverlayFocus({ oldModal, oldPeek, oldFocus, oldModalKey, oldPeekKey, oldPanelFocus });
 }
 
@@ -668,7 +672,7 @@ Object.assign(App, {
   },
   noteTaskSaving: taskSaving,
   clearTaskSaving,
-  retryTaskActivity(id){collaboration?.retryTaskPage?.(id);},
+  retryTaskActivity(id){retryTaskPage(id);},
   refreshTaskActivity,
   followAddress,
   selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){window.OneloopKnowledge?.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
@@ -882,9 +886,6 @@ window.addEventListener('resize', () => {
   }, 120);
 });
 
-collaboration?.bind(App,{task:taskById,projects:visibleProjects,view:()=>state.view,canBoard:task=>hasPermission('manage_board',trackById(epicById(task?.epicId)?.trackId)?.projectId),confirm:askConfirmation,refresh:render,refreshBackground,refreshActivity:refreshTaskActivity,multi:multiHtml,ago,instant:formatInstant,dateKey:instanceDateKey,previousDate,avatar:avatarHtml,
-  refreshComments:(id,composer=false)=>{if(state.view!=='task'||state.taskId!==id)return;const task=taskById(id),timeline=document.querySelector('.task-page .timeline'),before=timeline?.getBoundingClientRect().height,rows=UIMotion.rows(timeline,'[data-comment]','data-comment'),focused=document.activeElement?.dataset.replyRoot;if(timeline){setHTML(timeline,collaboration.feedHtml(task));UIMotion.height(timeline,before);UIMotion.reflow(timeline,'[data-comment]','data-comment',rows);if(focused)[...timeline.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===focused)?.focus({preventScroll:true});}if(composer){const home=document.querySelector('.comment-composer-home');if(home)setHTML(home,Collab.composerHtml(task));UIMotion.enter(document.querySelector('.collaboration-composer .reply-context'));}},
-});
 window.Recovery?.bind(App,{refresh:render});
 setInterval(()=>{
   const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));

@@ -77,8 +77,7 @@ test('a Knowledge read that arrives under a dialog repaints the page when the di
   const source = { repository: 'team/docs', url: 'https://git.example.com/team/docs.git', branch: 'main', folder: 'docs', state: 'pending', syncing: true, hasToken: false, revision: 1 };
   let knowledge = { state: 'pending', syncing: true, folder: 'docs', checkedAt: null, skippedFiles: 0, files: [], source };
   const listeners = new Set();
-  const t = bootApp({ route: 'knowledge', beforeScript: (name, w) => {
-    if (name !== 'app') return;
+  const t = bootApp({ route: 'knowledge', prepare: (D, w) => {
     installKnowledgeController({
       runtime: { api: { request: async () => JSON.parse(JSON.stringify(knowledge)) }, data: w.DATA, commands: {}, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); } },
       getApp: () => w.App, documentObject: w.document, windowObject: w, setTimer: () => 0, clearTimer: () => {},

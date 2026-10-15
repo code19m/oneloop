@@ -189,7 +189,7 @@ function typeComment(t,text){const input=t.d.getElementById('cmtIn');input.value
 function mention(t,query,option='everyone'){const input=typeComment(t,query);const items=[...t.d.querySelectorAll('[data-mention-index]')];const chosen=items.find(b=>b.textContent.includes(option));assert(chosen,'Mention option exists');chosen.click();return input;}
 test('canonical task refresh preserves the open property picker', () => {
  let facade;
- const t=boot((_D,w)=>{w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {};}};});
+ const t=boot((_D,w)=>{w.OneloopCollaboration={bind(_app,value){facade=value;return {beforeRender(){},mount(){}};}};});
  const trigger=t.d.querySelector('[aria-label="Assignees"]');t.A.popMulti({currentTarget:trigger,preventDefault(){},stopPropagation(){}},'tpAssign');const option=t.d.querySelector('.pop-opt.multi');option.focus();facade.canonicalTask();assert(t.d.querySelector('.pop'),'canonical refresh keeps the open assignee picker');
 });
 
@@ -298,7 +298,7 @@ test('long comments use the description reader while retaining mention markup', 
 
 test('comment readers disconnect when task scope is left', () => {
  const observers=[],t=boot((D,w)=>{w.ResizeObserver=class{constructor(callback){this.callback=callback;this.targets=[];observers.push(this);}observe(target){this.targets.push(target);}disconnect(){this.disconnected=true;}};D.tasks.find(x=>x.id==='BIR-079').comments=[{id:'observer-comment',who:'taylorwu',ts:Date.now(),text:'A comment'}];}),commentObserver=observers.findLast(observer=>observer.targets.some(target=>target.classList?.contains('comment-reading')));
- assert(commentObserver);assert(!commentObserver.disconnected);t.w.Collab.beforeRender({userId:null,projectId:null,view:'auth',taskId:null});assert(commentObserver.disconnected);
+ assert(commentObserver);assert(!commentObserver.disconnected);t.module('views/app/collaboration.js').beforeCollaborationRender({userId:null,projectId:null,view:'auth',taskId:null});assert(commentObserver.disconnected);
 });
 
 test('same-timestamp activity, root comments and replies use stable IDs for chronological order', () => {
@@ -329,7 +329,7 @@ test('Enter submits block, edit, unblock and completion, picks mentions first, a
 });
 
 test('the feed checks posting permission once and indexes people once', () => {
-  const { w, D } = bootApp({ route: 'task/BIR-079', media: () => false });
+  const { A, D, d, commands, module } = bootApp({ route: 'task/BIR-079', media: () => false });
   const task = D.tasks.find(item => item.id === 'BIR-079');
   task.comments = Array.from({ length: 150 }, (_, i) => ({ id: `perf-${i}`, who: D.session.userId, ts: Date.now() + i, text: 'Long comment '.repeat(50), mentions: [] }));
   const actor = D.users.find(user => user.id === D.session.userId); actor.admin = false; actor.active = true;
@@ -339,19 +339,23 @@ test('the feed checks posting permission once and indexes people once', () => {
   const membership = project.members.find(member => member.userId === actor.id); assert.ok(membership);
   let permissionScans = 0; const some = project.members.some;
   project.members.some = function (...args) { permissionScans++; return some.apply(this, args); };
-  w.Collab.feedHtml(task, 150);
+  module('views/app/collaboration.js').feedHtml(task);
   assert.equal(permissionScans, 1, 'posting permission is checked once per feed');
   assert.ok(idReads < 3000, 'people are indexed once, not scanned for each member/comment');
-  project.members.splice(project.members.indexOf(membership), 1); assert.equal(w.Collab.canComment(task), false);
-  project.members.push(membership); assert.equal(w.Collab.canComment(task), true);
-  actor.active = false; assert.equal(w.Collab.canComment(task), false);
+  project.members.some = some;
+  // Only an active member may comment; anyone else gets nothing sent.
+  const feedback = () => { assert.equal(A.addComment(task.id), false); return d.querySelector('.comment-feedback').textContent; };
+  project.members.splice(project.members.indexOf(membership), 1); assert.match(feedback(), /must be an active project member/);
+  project.members.push(membership); assert.equal(feedback(), 'Write a comment first.');
+  actor.active = false; assert.match(feedback(), /must be an active project member/);
+  assert.equal(commands.length, 0);
 });
 
 /** The task page with production comments whose sends wait for the test. */
 function sendingComments(){
  const sends=[];let facade;
  const t=bootApp({route:'task/BIR-079',prepare(_D,w){
-  w.OneloopCollaboration={bind(_app,_hooks,value){facade=value;return {saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
+  w.OneloopCollaboration={bind(_app,value){facade=value;return {beforeRender(){},mount(){},saveComment(input){return new Promise(resolve=>sends.push({input,resolve}));}};}};
  }});
  const task=t.D.tasks.find(item=>item.id==='BIR-079');
  return {...t,task,sends,

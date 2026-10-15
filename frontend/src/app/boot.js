@@ -19,19 +19,12 @@ import { installCollaborationController } from '../features/collaboration/contro
 import { installKnowledgeController } from '../features/knowledge/controller.js';
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
-import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
-import { UIAction, escapeHtml } from './markup.js';
+import { installTrustedTypes } from './trusted-types.js';
 import { installTooltips } from './tooltips.js';
-import { UIMotion, installDisclosures } from './motion.js';
+import { installDisclosures } from './motion.js';
 import { installPreviews } from '../features/files/preview.js';
 
 installTrustedTypes();
-// The classic view scripts build HTML with UIEscape and UIAction and write it
-// with UIHTML, their one HTML sink, through the oneloop policy.
-globalThis.UIHTML = setTrustedHTML;
-globalThis.UIEscape = escapeHtml;
-globalThis.UIAction = UIAction;
-globalThis.UIMotion = UIMotion;
 // First, so actions run before the document's other listeners, as inline handlers did.
 installViewActions(document);
 
@@ -67,7 +60,6 @@ const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=
 const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
-globalThis.OneloopTransport = runtimeHooks;
 installCollaborationController({transport:runtimeHooks});
 installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
@@ -110,7 +102,7 @@ runtimeHooks.subscribe(change=>{
 
 try {
   void buildMonitor.check();
-  await Promise.all([auth.initialize(),loadViewDependencies()]);
+  await auth.initialize();
   globalThis.ONELOOP_DEFER_BOOT_RENDER=true;
   ({ App: app } = await import('../../views/app.js'));
   bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope=routeScope())=>bootstrap.load({...routeScope(),...scope})});
@@ -123,19 +115,3 @@ try {
   showStartupError(error);
 }
 
-async function loadViewDependencies() {
-  await Promise.all([
-    '/views/collaboration.js',
-  ].map(loadClassic));
-}
-
-function loadClassic(source) {
-  return new Promise((resolve,reject)=>{
-    const script=document.createElement('script');script.src=trustedScriptURL(new URL(`../../${source.replace(/^\//,'')}`,import.meta.url).href);script.async=false;
-    const fail=()=>{clearTimeout(timer);script.remove();reject(new Error(`Could not load ${source}`));};
-    const timer=setTimeout(fail,30_000);
-    script.addEventListener('load',()=>{clearTimeout(timer);resolve();},{once:true});
-    script.addEventListener('error',fail,{once:true});
-    document.head.append(script);
-  });
-}

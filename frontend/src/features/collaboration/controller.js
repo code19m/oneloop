@@ -33,11 +33,12 @@ function mapComment(comment) {
 function replace(array, items) { array.splice(0, array.length, ...items); }
 
 /**
- * Installs the production implementation before collaboration.js is evaluated.
- * The classic module still owns markup, focus, keyboard and transient editor state.
+ * Install the controller that loads and saves comments, the Inbox and live
+ * updates. views/app/collaboration.js keeps their markup, focus, keys and
+ * the text being typed, and binds itself as the facade.
  */
 export function installCollaborationController({ transport, eventSourceFactory = (url) => new EventSource(url), visibility = globalThis.document }) {
-  if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected OneloopTransport');
+  if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected the runtime transport');
   const data=transport.data;
   let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
   let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
@@ -465,8 +466,7 @@ export function installCollaborationController({ transport, eventSourceFactory =
   }
 
   const controller={
-    production:true,
-    bind(nextApp,nextHooks,nextFacade){
+    bind(nextApp,nextFacade){
       app=nextApp;facade=nextFacade;sessionKey=currentSession();
       if(Number.isFinite(data.inboxUnreadCount))facade?.unreadCount?.(data.inboxUnreadCount);
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
@@ -500,8 +500,6 @@ export function installCollaborationController({ transport, eventSourceFactory =
     setArchived:(id,currentlyArchived)=>changeInbox(currentlyArchived?'inbox.restore':'inbox.archive',id),
     bulk:(action,filter)=>bulkInbox(action==='read'?'inbox.bulkMarkRead':'inbox.bulkArchive',filter),
     openNotification,
-    // collaboration.js, a classic script, maps mentions with these.
-    mentionsToWire,mentionFromWire,
     dispose(){disposed=true;stopWaitingForUse();visibility?.removeEventListener?.('visibilitychange',visibilityChanged);unsubscribe?.();source?.close?.();source=null;taskController?.abort();inboxController?.abort();clearProjectReconcile();clearLiveReads();sessionCheck=null;},
   };
   globalThis.OneloopCollaboration=controller;

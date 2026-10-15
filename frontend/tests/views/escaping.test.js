@@ -28,7 +28,7 @@ test('templates encode URLs and data attributes',()=>{
   for(const file of files){
     const source=readFileSync(new URL(file,frontend),'utf8');
     for(const [attribute] of source.matchAll(/\b(?:src|href|data-[\w-]+)="[^"\n]*"/g)){
-      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:UIEscape|escapeHtml|esc|escape|html)\(/,`${file}: unescaped attribute ${expression}`);
+      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:escapeHtml|esc|escape|html)\(/,`${file}: unescaped attribute ${expression}`);
     }
   }
 });

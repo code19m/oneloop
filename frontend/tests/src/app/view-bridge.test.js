@@ -11,7 +11,7 @@ class FieldsFormData {constructor(form){this.fields=form.fields;}get(name){retur
 
 function fixture(context,overrides={}){
   const opened=[],calls=[],paints=[],toasts=[],saved=[];let closed=0;
-  const app={context:()=>context,openPeek(){},openModal(){},openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
+  const app={context:()=>context,openPeek(){},openModal(){},prepareBlock:()=>({mentions:[]}),openTask(id){opened.push(id);},moveTaskOrder(){},refresh(){paints.push('all');},refreshBoard(){paints.push('board');},refreshProfileAccess(options){if(!options)paints.push('profile-access');},acceptMoreUsers(){},acceptMoreBoard(){},closeOverlays(){closed++;},selectProject(){},nav(){},toast(...args){toasts.push(args);},noteTaskSaved(id){saved.push(id);},confirm(){},showTemporaryPassword(){},offerUndo(text,restore,{kind='success'}={}){toasts.push([text,kind,{action:{label:'Undo',run:()=>restore(message=>this.offerUndo(message,restore,{kind:'error'}))}}]);},...overrides.app};
   const data={session:{id:'s1',userId:'u1'},users:[],projects:[{id:'p1',members:[]}],tracks:[],epics:[],milestones:[],tasks:[],pool:[],browserSessions:[],appGrants:[],adminUsers:{loaded:false,ids:[],nextCursor:null}};
   const reads={
     async task(id){calls.push(['task',id]);const task={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1};data.tasks.push(task);return {stale:false,task};},
@@ -682,7 +682,6 @@ test('a block reason conflict shows the saved reason in the reason field',async(
   useGlobals(t,{FormData:FieldsFormData});
   const control={value:'My reason'};let target;
   const recovery={isRevisionConflict:error=>error.code==='revision_conflict',handleCommandFailure:async()=>{},resolveConflict:async(input)=>{target=input.target;return {handled:true,saved:false};}};
-  useGlobals(t,{Collab:{prepareBlock:()=>({mentions:[]})}});
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{recovery,gateway:{execute:async()=>{throw changedElsewhere();}}});
   const block={id:'b1',reason:'Their reason',revision:2};state.data.tasks.push({id:'ONE-1',internalId:'t1',projectId:'p1',epicId:'e1',revision:1,block});
   state.app.saveBlock({preventDefault(){},target:dialogForm({reason:'My reason'},{'[name="reason"]':control})},'ONE-1','block');await settle();await settle();

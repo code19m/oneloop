@@ -14,11 +14,8 @@ const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
 const { createLegacyData, sessionKey } = require('../../src/data/projection-store.js');
-const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
-const { setTrustedHTML } = require('../../src/app/trusted-types.js');
 const { settle, waitFor, deferred, tick } = require('./helpers.cjs');
-const { UIAction, escapeHtml } = require('../../src/app/markup.js');
 const { installViewActions } = require('../../src/app/view-actions.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
@@ -36,8 +33,6 @@ class JSDOM extends jsdom.JSDOM {
     super(html, { ...options, virtualConsole });
     this.errors = errors;
     this.window.TestApiError = ApiError;
-    // The HTML helpers of the classic view scripts, as src/app/boot.js sets them.
-    Object.assign(this.window, { UIHTML: setTrustedHTML, UIEscape: escapeHtml, UIAction });
     open.add(this);
   }
 }
@@ -45,7 +40,7 @@ class JSDOM extends jsdom.JSDOM {
 // The src modules run in Node and reach the page through these globals, so
 // while a booted window is open they name that window's. A test may still
 // assign one; the harness puts every global back after the test.
-const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement', 'Collab', 'Recovery'];
+const WINDOW_GLOBALS = ['document', 'location', 'FormData', 'Event', 'HTMLElement', 'Recovery'];
 const replacedGlobals = new Map();
 function useWindowGlobals(w) {
   for (const name of WINDOW_GLOBALS) {
@@ -162,7 +157,7 @@ function load(dom, name) {
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
 /** The scripts the application loads, in order, with preview libraries already present. */
-const appScripts = ['theme', 'data', 'recovery', ...previewLibraries, 'collaboration', 'app'];
+const appScripts = ['theme', 'data', 'recovery', ...previewLibraries, 'app'];
 
 /** A stand-in for the browser's EventSource that the test drives with `emit`. */
 function fakeEventSource(url) {
@@ -221,9 +216,6 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
     onPending: (key, pending) => w.Recovery?.interactionPending(key, pending),
   });
   runtime = createRuntimeHooks({ api, gateway, data, reload: reloadBootstrap });
-  w.OneloopTransport = runtime;
-  w.OneloopErrorMessage = (error, fallback = 'The request could not be completed.') => { const feedback = actionErrorFeedback(error); return feedback.silent ? '' : feedback.message || fallback; };
-  w.OneloopRetryable = retryableFailure;
   w.OneloopCollaboration = installCollaborationController({ transport: runtime, visibility: w.document, eventSourceFactory: url => { const source = fakeEventSource(url); events.push(source); return source; } });
   w.TestWiring = { api, gateway, getAuth: () => auth, reload: reloadBootstrap };
   w.ONELOOP_DEFER_BOOT_RENDER = true;
@@ -262,13 +254,11 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {Record<string,object>} [options.modules] exports that stand in for modules, by their path in frontend/
  * @param {(window: any) => void} [options.setup] runs before any script
  * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
- * @param {(window: any) => void} [options.collaboration] runs just before collaboration.js, to replace its controller
- * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
  */
 function bootApp({
   route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
   media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
-  api, reads, auth, reloadBootstrap, layout = false, modules, setup, prepare, collaboration, beforeScript,
+  api, reads, auth, reloadBootstrap, layout = false, modules, setup, prepare,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
   dom.stubs = modules;
@@ -285,12 +275,9 @@ function bootApp({
   const motion = importModule(dom, path.join(frontend, 'src/app/motion.js'));
   motion.installDisclosures(w.document);
   importModule(dom, 'src/features/files/preview.js').installPreviews(w.document);
-  w.UIMotion = motion.UIMotion;
   setup?.(w);
   let wiring = null;
   for (const name of scripts) {
-    beforeScript?.(name, w);
-    if (name === 'collaboration') collaboration?.(w);
     load(dom, name);
     if (name !== 'data') continue;
     wiring = wire(w, { api, reads, auth, reloadBootstrap });

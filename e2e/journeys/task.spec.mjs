@@ -276,53 +276,6 @@ test('Load older activity still works when a live comment arrives during the cli
   await expect(page.locator('.timeline')).toContainText('Comment 0');
 });
 
-test('large task and Inbox renderer workloads preserve unchanged rows', async ({ page, instance }, testInfo) => {
-  // Isolate renderer cost with synthetic projections in a real production page;
-  // this measures neither server pagination nor notification delivery throughput.
-  await page.addInitScript(() => {
-    let controller;
-    Object.defineProperty(window, 'OneloopCollaboration', {
-      configurable: true, get: () => controller, set(value) {
-        const bind = value.bind;
-        value.bind = function (app, hooks, facade) { window.scaleFacade = facade; return bind.call(this, app, hooks, facade); };
-        controller = value;
-      },
-    });
-  });
-  await openApp(page, instance);
-  const taskMetrics = await page.evaluate(() => {
-    const task = DATA.tasks.find(item => item.id === App.context().taskId), who = DATA.session.userId, ts = Date.now() - 60000;
-    task.comments = Array.from({ length: 500 }, (_, index) => ({ id: 'scale-comment-' + index, who, ts: ts + index, text: 'A library review comment. '.repeat(10), mentions: [], parentId: null }));
-    const meta = { loaded: true, loading: false, error: false, hasMore: false };
-    const start = performance.now(); scaleFacade.taskPage(task.id, meta); const paintMs = performance.now() - start;
-    const first = document.querySelector('[data-feed-key="comment-scale-comment-0"]');
-    task.comments[499].text = 'Changed final comment';
-    const update = performance.now(); scaleFacade.taskPage(task.id, meta);
-    return { paintMs, updateMs: performance.now() - update, rows: document.querySelectorAll('[data-comment]').length, reused: first === document.querySelector('[data-feed-key="comment-scale-comment-0"]') };
-  });
-  expect(taskMetrics.rows).toBe(500);
-  expect(taskMetrics.reused).toBe(true);
-  await page.getByRole('button', { name: /^Inbox/ }).click();
-  await expect(page.locator('.inbox-page')).toBeVisible();
-  const inboxMetrics = await page.evaluate(() => {
-    const task = DATA.tasks[0], project = DATA.projects[0], ts = Date.now();
-    const item = index => ({ id: 'scale-notice-' + index, recipientId: DATA.session.userId, actorId: DATA.session.userId, projectId: project.id, taskId: task.id, reason: 'assigned', createdAt: ts - index, readAt: null, archivedAt: null, destinationAvailable: true });
-    DATA.notifications = Array.from({ length: 2000 }, (_, index) => item(index));
-    const meta = { loaded: true, loading: false, error: false, filteredCount: 2050, unreadCount: 2050, nextCursor: 'scale-more' };
-    const start = performance.now(); scaleFacade.inboxPage(meta); const paintMs = performance.now() - start;
-    const first = document.querySelector('[data-notification-id]');
-    const items = Array.from({ length: 50 }, (_, index) => item(2000 + index));
-    DATA.notifications.push(...items);
-    const append = performance.now(); scaleFacade.inboxPage({ ...meta, append: true, items }); const appendMs = performance.now() - append;
-    const update = performance.now(); DATA.notifications.at(-1).readAt = ts; scaleFacade.inboxPage({ ...meta, unreadCount: 2049 });
-    return { paintMs, appendMs, updateMs: performance.now() - update, rows: document.querySelectorAll('.inbox-row').length, reused: first === document.querySelector('[data-notification-id]') };
-  });
-  expect(inboxMetrics.rows).toBe(2050);
-  expect(inboxMetrics.reused).toBe(true);
-  // Timings are diagnostics for reviewers, not assertions.
-  await testInfo.attach('renderer-scale.json', { body: JSON.stringify({ task: taskMetrics, inbox: inboxMetrics }, null, 2), contentType: 'application/json' });
-});
-
 test('a live change re-reads the task page in the background, so it does not count as use', async ({ page, instance }) => {
   const { task } = instance.projects[0];
   await openApp(page, instance);

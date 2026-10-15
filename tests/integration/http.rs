@@ -93,7 +93,7 @@ async fn serves_frontend_tree_and_excludes_development_files() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     for path in [
         "/views/app.js",
-        "/views/collaboration.js",
+        "/views/app/collaboration.js",
         "/vendor/pdfjs/pdf.mjs",
         "/vendor/pdfjs/pdf.worker.mjs",
         "/vendor/pdfjs/cmaps/RKSJ-H.bcmap",

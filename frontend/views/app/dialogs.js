@@ -1,6 +1,7 @@
 // @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
 /* The body of each dialog that the views open. */
 
+import { blockReasonHtml } from './collaboration.js';
 import { dateHtml, dateValue, field, selectHtml } from './controls.js';
 import { UIAction, esc, iso, today } from './format.js';
 import { descriptionEditorHtml, taskModalHtml } from './forms.js';
@@ -19,7 +20,7 @@ export function renderModal() {
     body=`<h2>${blocking ? task.block ? 'Edit block reason' : 'Block task' : complete ? 'Unblock and complete task?' : 'Unblock task'}</h2>
       ${!blocking ? `<p class="sub">${esc(task.block?.reason || '')}</p>` : ''}
       <form novalidate data-block-action ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
-        ${field(blocking?'Reason':'Resolution',blocking ? Collab.blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
+        ${field(blocking?'Reason':'Resolution',blocking ? blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
         <div class="modal-actions"><button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
       </form>`;
   } else if (m.type === 'epic') {

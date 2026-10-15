@@ -17,13 +17,11 @@ test('Roadmap geometry, skipped calendar dates, server Today and rollover ignore
       let now = Date.parse('2026-06-15T12:00:00Z'), rollover;
       const { w, d } = bootApp({
         route: 'roadmap', html: '<!doctype html><meta name="theme-color"><div id="app"></div>', media: () => true,
-        scripts: ['theme', 'data', 'collaboration', 'app'],
         api: { serverNow: () => now },
         setup: w => { w.setInterval = callback => { rollover = callback; return 0; }; },
-        beforeScript: (name, w) => {
-          if (name !== 'app') return;
-          w.DATA.timeZone = 'UTC'; w.DATA.tasks.find(task => task.id === 'BIR-079').deadline = '2026-06-15';
-          w.DATA.epics[0].start = '2026-03-01'; w.DATA.epics[0].end = '2026-11-30'; w.DATA.milestones[0].date = '2026-03-31';
+        prepare: D => {
+          D.timeZone = 'UTC'; D.tasks.find(task => task.id === 'BIR-079').deadline = '2026-06-15';
+          D.epics[0].start = '2026-03-01'; D.epics[0].end = '2026-11-30'; D.milestones[0].date = '2026-03-31';
         },
       });
       // Zoom applies once per frame; the pause that ends the gesture applies it at once, so drive it with the mocked clock.

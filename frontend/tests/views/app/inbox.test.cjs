@@ -18,8 +18,8 @@ test('Inbox rows keep the actor, time and read state of their read through later
  }
 });
 
-/** Boot with a fixed layout; `collaboration` runs just before collaboration.js, to replace its controller. */
-const boot = (route = 'inbox', collaboration, options) => bootApp({ route, media: () => true, layout: true, collaboration, ...options });
+/** Boot with a fixed layout; `prepare(window)` can replace the collaboration controller before the views load. */
+const boot = (route = 'inbox', prepare, options) => bootApp({ route, media: () => true, layout: true, prepare: (_D, w) => prepare?.(w), ...options });
 
 const seconds = milliseconds => Math.floor(milliseconds / 1000);
 /** A notification as the server lists it. */
@@ -96,7 +96,7 @@ test('Inbox actions keep focus on the acted-on row or bulk control', async () =>
 
 test('the Inbox page shows load states and updates in place without losing focus', () => {
   const fixtureNow=Date.now();
-  const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};});
+  const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};});
   assert(t.d.querySelector('.inbox-empty')?.textContent.includes('Loading notifications'));
   t.w.testFacade.inboxPage({loaded:false,loading:false,error:true,filteredCount:0,unreadCount:0,nextCursor:null});assert(t.d.querySelector('.inbox-empty')?.textContent.includes('Could not load notifications'));
   const loaded={loaded:true,loading:false,error:false,filteredCount:0,unreadCount:0,nextCursor:null};t.w.testFacade.inboxPage(loaded);
@@ -113,7 +113,7 @@ test('Inbox appends retain rows/focus without clones or row layout; reconciliati
   // Noon in the fixture's Asia/Tashkent zone keeps all notices, one a second, on one day. 25 rows are
   // enough: cloning or measuring each row would break the counts below as it would with 1,000.
   const fixtureNow=Date.UTC(2026,0,15,7);
-  const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopCollaboration={bind(_app,_hooks,facade){w.testFacade=facade;return {mount(){}};}};});
+  const t=boot('inbox',w=>{w.Date.now=()=>fixtureNow;w.OneloopCollaboration={bind(_app,facade){w.testFacade=facade;return {beforeRender(){},mount(){}};}};});
   const notice=(index)=>({id:'scale-'+index,actorId:'robin',projectId:'p1',taskId:'BIR-079',reason:'assigned',createdAt:fixtureNow-index*1000,readAt:null,archivedAt:null,destinationAvailable:true});
   t.D.notifications=Array.from({length:20},(_,index)=>notice(index));
   t.w.testFacade.inboxPage({loaded:true,loading:false,nextCursor:'more',filteredCount:25,unreadCount:25});

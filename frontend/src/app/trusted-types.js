@@ -11,7 +11,7 @@
 
 const SCRIPT_FOLDER = /^\/(?:v\/[^/]+\/)?(?:src|views|vendor)\//;
 
-/** @type {{createHTML(source:string):unknown,createScriptURL(url:string):unknown}|null} */
+/** @type {{createHTML(source:string):unknown}|null} */
 let policy = null;
 
 /** @param {string} value @param {string} base */
@@ -26,10 +26,7 @@ export function installTrustedTypes(win = globalThis) {
   const factory = win.trustedTypes;
   if (policy || typeof factory?.createPolicy !== 'function') return;
   const base = () => win.location.href;
-  policy = factory.createPolicy('oneloop', {
-    createHTML: (/** @type {string} */ source) => source,
-    createScriptURL: (/** @type {string} */ value) => appScriptURL(value, base()),
-  });
+  policy = factory.createPolicy('oneloop', { createHTML: (/** @type {string} */ source) => source });
   factory.createPolicy('default', { createScriptURL: (/** @type {string} */ value) => appScriptURL(value, base()) });
 }
 
@@ -41,16 +38,10 @@ function trustedHTML(source) {
 /**
  * Write the app's own markup into `element`, or into a template's content:
  * parsed through the `oneloop` policy in an inert template, then moved in.
- * The views reach it as `UIHTML`.
  * @param {Element} element @param {string} source
  */
 export function setTrustedHTML(element, source) {
   const template = element.ownerDocument.createElement('template');
   template.innerHTML = trustedHTML(source);
   (element.tagName === 'TEMPLATE' ? /** @type {HTMLTemplateElement} */ (element).content : element).replaceChildren(template.content);
-}
-
-/** A script URL inside the app's own folders, ready for a script sink. @param {string} url */
-export function trustedScriptURL(url) {
-  return /** @type {string} */ (policy ? policy.createScriptURL(url) : url);
 }

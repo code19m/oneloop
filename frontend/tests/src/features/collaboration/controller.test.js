@@ -35,7 +35,7 @@ function fixture(overrides={}){
   const facade={filter:()=>({projects:[],unread:false,archived:false}),taskPage:(...args)=>pages.push(args),commentSaved:(...args)=>saved.push(args),commentDeleted(){},inboxPage:(value)=>inboxes.push(value),feedback(){},target(){},unreadCount(){},...overrides.facade};
   const events={listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};
   const controller=installCollaborationController({transport,eventSourceFactory:overrides.eventSourceFactory??(()=>events),visibility:overrides.visibility});
-  controller.bind(app,{view:()=>app.context().view},facade);
+  controller.bind(app,facade);
   return {controller,data,transport,app,facade,events,pages,saved,inboxes,commandCalls,apiCalls,listeners,published};
 }
 

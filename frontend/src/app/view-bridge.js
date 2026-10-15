@@ -710,7 +710,7 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
     const form=event.target,values=formValues(event),item=task(id);if(!item)return false;const reason=text(values.get('reason'),500);
     if(mode==='block'&&!reason)return fieldError(form,'reason','Explain what is preventing progress.');
     let operation,payload;
-    const prepared=mode==='block'&&globalThis.Collab?.prepareBlock?.(item,String(values.get('reason')||''),reason);
+    const prepared=mode==='block'&&app.prepareBlock(item,String(values.get('reason')||''),reason);
     if(mode==='block'&&!prepared)return false;
     if(mode==='block'&&item.block){operation='task.block.update';payload={blockId:item.block.id,reason,mentions:prepared.mentions||[]};}
     else if(mode==='block'){operation='task.block';payload={taskId:item.internalId,reason,mentions:prepared.mentions||[]};}
