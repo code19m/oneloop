@@ -1,22 +1,4 @@
 /* Shared, interruptible presentation effects. Data changes never wait for motion. */
-/** Escape text and quoted HTML attributes. @param {unknown} value */
-function UIEscape(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-/**
- * Attributes that run `App[method](...args)` on a click (src/app/view-actions.js).
- * UIAction.on(type, method, ...args) runs one for another event. UIAction.event,
- * .element, .value and .checked stand for the event, the element, and its value and checked state.
- * @param {string} method @param {...unknown} args
- */
-function UIAction(method, ...args) { return UIAction.on('click', method, ...args); }
-/** @param {string} type @param {string} method @param {...unknown} args */
-UIAction.on = (type, method, ...args) => {
-  const suffix = type === 'click' ? '' : '-' + type;
-  return `data-action${suffix}="${UIEscape(method)}"${args.length ? ` data-args${suffix}="${UIEscape(JSON.stringify(args))}"` : ''}`;
-};
-for (const name of ['event', 'element', 'value', 'checked']) UIAction[name] = Object.freeze({ $: name });
-globalThis.UIEscape=UIEscape;
-globalThis.UIAction=UIAction;
-window.UIHTML=(element,source)=>window.OneloopSetHTML(element,source);
 (() => {
   const running=new WeakMap(),disclosures=new WeakMap();
   const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;

@@ -3,7 +3,7 @@
    labels, and the cleaning of typed and pasted text. */
 
 import { fadeContent } from './effects.js';
-import { I, d, esc, humanFull, iso, setHTML, today } from './format.js';
+import { I, UIAction, d, esc, humanFull, iso, setHTML, today } from './format.js';
 import { App } from './model.js';
 import { POP, closePop, openPop, placePop, rememberOpener, restoreOpener } from './overlays.js';
 
@@ -49,7 +49,7 @@ export function selectHtml(key, def) {
   const cur = def.options.find((o) => o.v === def.value);
   return `<div class="sel"${def.width ? ` style="width:${def.width}px"` : ''}>
     ${def.name ? `<input type="hidden" name="${def.name}" value="${esc(def.value ?? '')}">` : ''}
-    <button type="button" id="select-${UIEscape(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${UIEscape(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${UIEscape(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
+    <button type="button" id="select-${esc(key)}" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${def.label ? `select-${key}-name ` : ''}select-${key}-value" class="ctl sel-btn${def.cls ? ' ' + def.cls : ''}${cur ? '' : ' empty'}" data-tip="${esc(cur ? cur.l : (def.placeholder || 'Select'))}" data-tip-overflow ${def.disabled ? 'disabled' : UIAction('popSelect', UIAction.event, key)}>${def.label ? `<span class="sr-only" id="select-${esc(key)}-name">${esc(def.label)}</span>` : ''}${def.icon || ''}<span id="select-${esc(key)}-value" class="sel-label">${esc(cur ? cur.l : (def.placeholder || 'Select'))}</span>${def.cls ? '' : I.chev}</button>
   </div>`;
 }
 export const MULTI = {};
@@ -178,12 +178,12 @@ function dateFieldError(wrap, message, focus = false) {
 }
 
 export function dateValue(key) {
-  const input = document.querySelector(`[data-date-key="${UIEscape(key)}"] .date-text`);
+  const input = document.querySelector(`[data-date-key="${esc(key)}"] .date-text`);
   return input ? parseDateInput(input.value) : '';
 }
 
 function commitDate(key, raw, focusError = false) {
-  const def = DPS[key], wrap = document.querySelector(`[data-date-key="${UIEscape(key)}"]`);
+  const def = DPS[key], wrap = document.querySelector(`[data-date-key="${esc(key)}"]`);
   if (!def || def.disabled || !wrap) return false;
   const value = parseDateInput(raw), error = dateError(def, value);
   if (error) return dateFieldError(wrap, error, focusError);
@@ -198,7 +198,7 @@ function commitDate(key, raw, focusError = false) {
   // again, also once focus leaves it, and the next Enter or Tab sends it again.
   if (def.autosave) {
     const settled = (saved) => {
-      const current = document.querySelector(`[data-date-key="${UIEscape(key)}"]`), input = current?.querySelector('.date-text'), shown = !!input && parseDateInput(input.value) === value;
+      const current = document.querySelector(`[data-date-key="${esc(key)}"]`), input = current?.querySelector('.date-text'), shown = !!input && parseDateInput(input.value) === value;
       if (saved !== false) { if (shown) { window.Recovery?.markSaved?.(input); input.removeAttribute('data-unsaved'); } return; }
       if (DPS[key] !== def || def.value !== value) return;
       def.value = previous;
@@ -233,9 +233,9 @@ export function dateHtml(key, def) {
   DPS[key] = def;
   const label = def.label || ({ start: 'Start date', end: 'End date', date: 'Date', _start: 'Start date', _dl: 'Deadline' }[def.name]) || 'Date';
   const placeholder = def.disabled ? 'Not set' : def.placeholder || (label === 'Date' ? 'Select date' : 'Set ' + label.toLowerCase());
-  return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${UIEscape(key)}">
+  return `<div class="sel date-field${def.cls ? ' ' + def.cls : ''}" data-date-key="${esc(key)}">
     <input type="hidden" name="${def.name}" value="${esc(def.value || '')}">
-    ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${UIEscape(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `${UIAction.on('input', 'dateTyping', key)} ${UIAction.on('blur', 'dateBlur', UIAction.event, key)} ${UIAction.on('keydown', 'dateKey', UIAction.event, key)}`}>
+    ${def.cls && !def.hideLabel ? `<div class="date-inline-label">${label}${def.clearable ? optionalMark : ''}</div>` : ''}<div class="date-control"><input type="text" class="ctl date-text" id="${esc(key)}-input" ${def.autosave ? 'data-autosave ' : ''}${def.clearable ? 'aria-required="false"' : 'required aria-required="true"'} aria-label="${label}" value="${esc(def.value || '')}" placeholder="${esc(placeholder)}" aria-description="Type a date in YYYY-MM-DD format or use the calendar." maxlength="10" inputmode="numeric" autocomplete="off" spellcheck="false" ${def.disabled ? 'disabled' : `${UIAction.on('input', 'dateTyping', key)} ${UIAction.on('blur', 'dateBlur', UIAction.event, key)} ${UIAction.on('keydown', 'dateKey', UIAction.event, key)}`}>
     <button type="button" class="date-trigger sel-btn" aria-label="Open ${label.toLowerCase()} calendar" aria-haspopup="dialog" aria-expanded="false" ${def.disabled ? 'disabled' : UIAction('popDate', UIAction.event, key)}>${def.icon || I.cal}</button></div>
   </div>`;
 }
@@ -249,7 +249,7 @@ function calHtml(view, selected, focusDate, def) {
     const dt = new Date(gridStart); dt.setUTCDate(gridStart.getUTCDate() + i);
     const ds = iso(dt);
     const cls = ['cal-d', dt.getUTCMonth() !== mo - 1 ? 'out' : '', ds === iso(today) ? 'today' : '', ds === selected ? 'sel' : '', ds === focusDate ? 'focus' : ''].join(' ');
-    cells += `<button type="button" class="${cls}" data-d="${UIEscape(ds)}" aria-label="${humanFull(ds)}" aria-pressed="${ds === selected}" tabindex="${ds === focusDate ? 0 : -1}" ${dateError(def, parseDateInput(ds)) ? 'disabled' : ''}>${dt.getUTCDate()}</button>`;
+    cells += `<button type="button" class="${cls}" data-d="${esc(ds)}" aria-label="${humanFull(ds)}" aria-pressed="${ds === selected}" tabindex="${ds === focusDate ? 0 : -1}" ${dateError(def, parseDateInput(ds)) ? 'disabled' : ''}>${dt.getUTCDate()}</button>`;
   }
   return `<div class="cal">
     <div class="cal-head">
@@ -295,9 +295,9 @@ export function field(label, inner, optional = false) {
       const valueId=/id="([^"]+)" class="sel-label"/.exec(inner)?.[1];
       attrs=attrs.replace(/\saria-labelledby="[^"]*"/,'')+` aria-labelledby="${targetId}-label${valueId?' '+valueId:''}"`;
     }
-    return `<${tag}${/\bid=/.test(attrs) ? attrs : `${attrs} id="${UIEscape(targetId)}"`}>`;
+    return `<${tag}${/\bid=/.test(attrs) ? attrs : `${attrs} id="${esc(targetId)}"`}>`;
   });
-  return `<div class="field" data-required="${UIEscape(!optional)}"><label${targetId ? ` id="${esc(targetId)}-label" for="${esc(targetId)}"` : ''}>${label}${optional ? optionalMark : ''}</label>${inner}</div>`;
+  return `<div class="field" data-required="${esc(!optional)}"><label${targetId ? ` id="${esc(targetId)}-label" for="${esc(targetId)}"` : ''}>${label}${optional ? optionalMark : ''}</label>${inner}</div>`;
 }
 
 // ---------- input cleaning and required fields ----------
@@ -448,7 +448,7 @@ Object.assign(App, {
     const paintList = () => {
       filtered = q ? def.options.filter((o) => o.l.toLowerCase().includes(q)) : def.options;
       setHTML(listEl,filtered.length
-        ? filtered.map((o,i) => `<button type="button" role="option" tabindex="-1" id="select-${UIEscape(key)}-option-${UIEscape(i)}" aria-selected="${o.v === cur}" class="pop-opt${o.v === cur ? ' on' : ''}"><span class="option-label">${o.icon || ''}<span>${esc(o.l)}</span></span>${o.v === cur ? I.tick : ''}</button>`).join('')
+        ? filtered.map((o,i) => `<button type="button" role="option" tabindex="-1" id="select-${esc(key)}-option-${esc(i)}" aria-selected="${o.v === cur}" class="pop-opt${o.v === cur ? ' on' : ''}"><span class="option-label">${o.icon || ''}<span>${esc(o.l)}</span></span>${o.v === cur ? I.tick : ''}</button>`).join('')
         : '<div class="pop-empty">No matches</div>');
       [...listEl.querySelectorAll('.pop-opt')].forEach((oel, i) => {
         oel.addEventListener('click', () => pick(filtered[i]));
@@ -475,7 +475,7 @@ Object.assign(App, {
     document.addEventListener('keydown', POP.onKey, true);
   },
   dateTyping(key) {
-    const wrap = document.querySelector(`[data-date-key="${UIEscape(key)}"]`);
+    const wrap = document.querySelector(`[data-date-key="${esc(key)}"]`);
     if (wrap) { normalizeInput(wrap.querySelector('.date-text')); dateFieldError(wrap, ''); }
   },
   dateBlur(ev, key) {
@@ -528,7 +528,7 @@ Object.assign(App, {
       }));
       el.querySelector('[data-today]').addEventListener('click', () => pick(iso(today)));
       const clear = el.querySelector('[data-clear]'); if (clear) clear.addEventListener('click', () => pick(''));
-      if (focus) (el.querySelector(`.cal-d[data-d="${UIEscape(focusDate)}"]:not(:disabled)`) || el.querySelector('.cal-d:not(:disabled)') || el.querySelector('[data-nav]')).focus();
+      if (focus) (el.querySelector(`.cal-d[data-d="${esc(focusDate)}"]:not(:disabled)`) || el.querySelector('.cal-d:not(:disabled)') || el.querySelector('[data-nav]')).focus();
     };
     paint(true);
     POP.onKey = (e) => {

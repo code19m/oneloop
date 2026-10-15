@@ -21,11 +21,15 @@ import { installKnowledgeController } from '../features/knowledge/controller.js'
 import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
 import { installTrustedTypes, setTrustedHTML, trustedScriptURL } from './trusted-types.js';
+import { UIAction, escapeHtml } from './markup.js';
 import { installTooltips } from './tooltips.js';
 
 installTrustedTypes();
-// The views' one HTML sink, UIHTML, writes through the oneloop policy.
-globalThis.OneloopSetHTML = setTrustedHTML;
+// The classic view scripts build HTML with UIEscape and UIAction and write it
+// with UIHTML, their one HTML sink, through the oneloop policy.
+globalThis.UIHTML = setTrustedHTML;
+globalThis.UIEscape = escapeHtml;
+globalThis.UIAction = UIAction;
 // First, so actions run before the document's other listeners, as inline handlers did.
 installViewActions(document);
 

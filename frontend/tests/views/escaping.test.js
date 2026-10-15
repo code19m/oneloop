@@ -1,20 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import vm from 'node:vm';
+import {readFileSync,readdirSync} from 'node:fs';
 import {createRequire} from 'node:module';
+import {UIAction,escapeHtml} from '../../src/app/markup.js';
 import {installViewActions} from '../../src/app/view-actions.js';
 import {installViewBridge} from '../../src/app/view-bridge.js';
 
 const {JSDOM,bootApp,settle}=createRequire(import.meta.url)('../support/dom.cjs');
 
-const source=readFileSync(new URL('../../views/motion.js',import.meta.url),'utf8');
-const context=vm.createContext({});
-vm.runInContext(source.slice(source.indexOf('/** Escape'),source.indexOf('window.UIHTML=')),context);
-const {UIEscape,UIAction}=context;
-
 test('HTML and action escaping keep hostile values whole without adding attributes or actions',()=>{
-  assert.equal(UIEscape(`'"<&>`),'&#39;&quot;&lt;&amp;&gt;');
+  assert.equal(escapeHtml(`'"<&>`),'&#39;&quot;&lt;&amp;&gt;');
   const value="opaque'\\\n\r\"<>& data-action=\"logout\" ']",calls=[];
   const dom=new JSDOM(`<button id="b" ${UIAction('openTask',value,UIAction.event)} ${UIAction.on('keydown','epicKey',value)}>Open</button>`);
   const button=dom.window.document.getElementById('b');
@@ -25,11 +20,15 @@ test('HTML and action escaping keep hostile values whole without adding attribut
   assert.deepEqual(calls,[[value,'click']]);
 });
 
-test('shared templates encode URLs and data attributes',()=>{
-  for(const name of ['app','collaboration','uploads']){
-    const source=readFileSync(new URL(`../../views/${name}.js`,import.meta.url),'utf8');
+test('templates encode URLs and data attributes',()=>{
+  const frontend=new URL('../../',import.meta.url);
+  // The templates that show user data; file-views.js only numbers its placeholders.
+  const files=['views/','src/'].flatMap(folder=>readdirSync(new URL(folder,frontend),{recursive:true}).filter(name=>name.endsWith('.js')).map(name=>folder+name)).filter(file=>file!=='views/file-views.js');
+  assert.ok(files.includes('views/app/board.js'));
+  for(const file of files){
+    const source=readFileSync(new URL(file,frontend),'utf8');
     for(const [attribute] of source.matchAll(/\b(?:src|href|data-[\w-]+)="[^"\n]*"/g)){
-      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:UIEscape|esc|escape|html)\(/,`${name}: unescaped attribute ${expression}`);
+      for(const [,expression] of attribute.matchAll(/\$\{([^{}]+)\}/g))assert.match(expression,/^(?:UIEscape|escapeHtml|esc|escape|html)\(/,`${file}: unescaped attribute ${expression}`);
     }
   }
 });

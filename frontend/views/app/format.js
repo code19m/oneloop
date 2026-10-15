@@ -2,10 +2,13 @@
 /* Text, dates and icons for the views' markup. Dates and times show in the
    instance time zone. */
 
+import { UIAction, escapeHtml } from '../../src/app/markup.js';
+import { setTrustedHTML } from '../../src/app/trusted-types.js';
 import { App, D, instanceNow, userById } from './model.js';
 
-export const setHTML=UIHTML;
-export const esc = UIEscape;
+export { UIAction };
+export const setHTML = setTrustedHTML;
+export const esc = escapeHtml;
 export const cleanStr = (v, max) => String(v ?? '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, max || 500);
 
 export const DAY = 86400000;
@@ -70,7 +73,7 @@ export const ago = (ts) => {
 
 export const avatarHtml = (uid, size) => {
   const u = userById(uid), sz = size || 18;
-  if (u && u.avatar) return `<img class="avatar" src="${UIEscape(u.avatar)}" style="width:${sz}px;height:${sz}px;object-fit:cover" alt="">`;
+  if (u && u.avatar) return `<img class="avatar" src="${esc(u.avatar)}" style="width:${sz}px;height:${sz}px;object-fit:cover" alt="">`;
   const initial=(u?.name||u?.username||uid||'?').trim()[0]||'?';
   return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.55)}px">${esc(initial.toUpperCase())}</span>`;
 };

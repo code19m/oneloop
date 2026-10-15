@@ -3,7 +3,7 @@
    them or clears entered text. */
 
 import { MOTION, uiAnimate } from './effects.js';
-import { I, cleanStr, setHTML } from './format.js';
+import { I, cleanStr, esc, setHTML } from './format.js';
 import { App, state } from './model.js';
 import { POP, pendingConfirmation } from './overlays.js';
 
@@ -42,7 +42,7 @@ export function ensureToastRegion() {
 const announcements = { polite: [], assertive: [] };
 
 export function announce(text, kind = 'polite') {
-  const node = ensureToastRegion().querySelector(`[data-announce="${UIEscape(kind)}"]`);
+  const node = ensureToastRegion().querySelector(`[data-announce="${esc(kind)}"]`);
   const queue = announcements[kind]; queue.push(text);
   if (queue.length > 1) return;
   const next = () => {

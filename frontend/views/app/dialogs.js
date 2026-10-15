@@ -2,7 +2,7 @@
 /* The body of each dialog that the views open. */
 
 import { dateHtml, dateValue, field, selectHtml } from './controls.js';
-import { esc, iso, today } from './format.js';
+import { UIAction, esc, iso, today } from './format.js';
 import { descriptionEditorHtml, taskModalHtml } from './forms.js';
 import {
   D, activeAdmins, epicById, state, taskById, trackById, tracks, userById, userHandle,

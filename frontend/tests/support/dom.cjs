@@ -18,6 +18,7 @@ const { createLegacyData } = require('../../src/data/projection-store.js');
 const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
 const { setTrustedHTML } = require('../../src/app/trusted-types.js');
+const { UIAction, escapeHtml } = require('../../src/app/markup.js');
 const { installViewActions } = require('../../src/app/view-actions.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
 const { installCollaborationController } = require('../../src/features/collaboration/controller.js');
@@ -35,8 +36,8 @@ class JSDOM extends jsdom.JSDOM {
     super(html, { ...options, virtualConsole });
     this.errors = errors;
     this.window.TestApiError = ApiError;
-    // The views' one HTML sink, as src/app/boot.js sets it.
-    this.window.OneloopSetHTML = setTrustedHTML;
+    // The HTML helpers of the classic view scripts, as src/app/boot.js sets them.
+    Object.assign(this.window, { UIHTML: setTrustedHTML, UIEscape: escapeHtml, UIAction });
     open.add(this);
   }
 }
@@ -89,27 +90,21 @@ function dataScript() {
 }
 
 /**
- * The production recovery controller, adapted from its ES module into a
- * classic script, with the API, gateway and auth that the harness wired.
- */
-function recoveryScript() {
-  return '(function(){' + read(path.join(frontend, 'src/features/recovery/controller.js')).replace(/^import .*;$/mg, 'const ApiError=window.TestApiError;').replaceAll('export ', '')
-    + '\nwindow.Recovery=createRecoveryController({data:DATA,...window.TestWiring,getApp:()=>window.App,windowObject:window,documentObject:document,setTimer:window.setTimeout.bind(window),clearTimer:window.clearTimeout.bind(window)});})();';
-}
-
-/**
- * Source for one script: `data` (the sample projection), `recovery`,
- * `vendor/...` or a file in frontend/views, named without its extension.
+ * Source for one classic script: `data` (the sample projection), `vendor/...`
+ * or a file in frontend/views, named without its extension.
  */
 function source(name) {
   name = name.replace(/^\//, '').replace(/\.js$/, '');
   if (name === 'data') return dataScript();
-  if (name === 'recovery') return recoveryScript();
   return read(path.join(frontend, name.startsWith('vendor/') ? `${name}.js` : `views/${name}.js`));
 }
 
 /** The views that are ES modules, which `load` imports; the others are classic scripts. */
 const viewModules = new Set(['app']);
+
+// Modules the window shares with the harness instead of loading its own, so
+// that an error the harness makes is an instance of the window's ApiError.
+const sharedModules = new Map([[path.join(frontend, 'src/data/api-client.js'), require('../../src/data/api-client.js')]]);
 
 /**
  * Import `file`, an ES module, and the modules it imports into the window of
@@ -119,8 +114,12 @@ function importModule(dom, file) {
   const context = dom.getInternalVMContext(), loaded = new Map();
   const link = file => {
     if (loaded.has(file)) return loaded.get(file);
-    const module = new vm.SourceTextModule(read(file), { context, identifier: pathToFileURL(file).href });
+    const shared = sharedModules.get(file), identifier = pathToFileURL(file).href;
+    const module = shared
+      ? new vm.SyntheticModule(Object.keys(shared), function () { for (const name of Object.keys(shared)) this.setExport(name, shared[name]); }, { context, identifier })
+      : new vm.SourceTextModule(read(file), { context, identifier });
     loaded.set(file, module);
+    if (shared) return module;
     module.linkRequests(module.moduleRequests.map(({ specifier }) => link(path.resolve(path.dirname(file), specifier))));
     return module;
   };
@@ -132,10 +131,17 @@ function importModule(dom, file) {
   return module.namespace;
 }
 
-/** Run one script in the window of `dom`, by its `source` name, as the app loads it. */
+/**
+ * Run one script in the window of `dom`, by its `source` name, as the app
+ * loads it. `recovery` is the production recovery controller, with the API,
+ * gateway and auth that the harness wired.
+ */
 function load(dom, name) {
+  const w = dom.window;
   if (viewModules.has(name)) return importModule(dom, path.join(frontend, `views/${name}.js`));
-  dom.window.eval(source(name));
+  if (name !== 'recovery') return void w.eval(source(name));
+  const { createRecoveryController } = importModule(dom, path.join(frontend, 'src/features/recovery/controller.js'));
+  w.Recovery = createRecoveryController({ data: w.DATA, ...w.TestWiring, getApp: () => w.App, windowObject: w, documentObject: w.document, setTimer: w.setTimeout.bind(w), clearTimer: w.clearTimeout.bind(w) });
 }
 
 const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];

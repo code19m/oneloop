@@ -3,7 +3,7 @@
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 
 import { exitVisual } from './effects.js';
-import { I, esc, setHTML } from './format.js';
+import { I, UIAction, esc, setHTML } from './format.js';
 import {
   App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,
 } from './model.js';
@@ -172,7 +172,7 @@ export function mountRoadmapTip(anchor, id, html) {
 export function renderMenu() {
   const m = state.menu;
   if (!m) return '';
-  const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${UIEscape(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" ${UIAction('setTheme', theme)}><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
+  const themeControl = () => `<div class="seg theme-options" role="group" aria-label="Theme">${[['light', 'Light', I.sun], ['dark', 'Dark', I.moon], ['system', 'System', I.device]].map(([theme, label, icon]) => `<button type="button" data-theme-option="${esc(theme)}" class="${window.Theme.choice === theme ? 'on' : ''}" aria-pressed="${window.Theme.choice === theme}" ${UIAction('setTheme', theme)}><span class="menu-icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}</div>`;
   const autoReload = window.Recovery?.autoReload;
   // A choice for this browser, like the theme, so it keeps the menu open.
   const autoReloadControl = () => `<button type="button" data-auto-reload aria-pressed="${!!autoReload}" ${UIAction('toggleAutoReload')}><span class="menu-icon" aria-hidden="true">${I.reload}</span>Reload after updates<span class="menu-check" aria-hidden="true">${autoReload ? I.tick : ''}</span></button>`;

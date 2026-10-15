@@ -4,7 +4,7 @@
 
 import { dateHtml, field, multiHtml, selectHtml } from './controls.js';
 import { animateHeight, uiAnimations } from './effects.js';
-import { I, d, esc, setHTML } from './format.js';
+import { I, UIAction, d, esc, setHTML } from './format.js';
 import { App, canRoadmap, epics, projectMembers, userById, userHandle } from './model.js';
 
 // ---------- descriptions ----------

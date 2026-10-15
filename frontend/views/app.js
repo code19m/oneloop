@@ -14,8 +14,8 @@ import { renderModal } from './app/dialogs.js';
 import './app/drag.js';
 import { exitVisual, exitVisuals, fadeContent, uiAnimations } from './app/effects.js';
 import {
-  I, STATUS, ago, avatarHtml, d, esc, formatInstant, instanceDateKey, instanceToday, iso, overdue,
-  previousDate, setHTML, stIcon, today,
+  I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, instanceDateKey, instanceToday,
+  iso, overdue, previousDate, setHTML, stIcon, today,
 } from './app/format.js';
 import {
   mountDescription, sizeDescription, sizeDescriptionEditors, sizeTaskTitle,
@@ -64,11 +64,11 @@ function finishRenderMotion(before,overlaysOnly=false) {
     page.dataset.pageKey = key;
     if (before.pageKey && before.pageKey !== key) {
       fadeContent(page);
-      if(state.view==='board')for(const [col,left,top] of boardScrollMemory.get(`${D.session?.userId}:${key}`)||[]){const el=document.querySelector(col?`[data-col="${UIEscape(col)}"] .col-cards`:'.board');if(el){el.scrollLeft=left;el.scrollTop=top;}}
+      if(state.view==='board')for(const [col,left,top] of boardScrollMemory.get(`${D.session?.userId}:${key}`)||[]){const el=document.querySelector(col?`[data-col="${esc(col)}"] .col-cards`:'.board');if(el){el.scrollLeft=left;el.scrollTop=top;}}
     }
     else if (before.pageKey === key) before.scrolls.forEach(([classes, col, left, top]) => {
       const selector = '.' + classes.trim().split(/\s+/).join('.');
-      const el = document.querySelector(col ? `[data-col="${UIEscape(col)}"] ${selector}` : selector);
+      const el = document.querySelector(col ? `[data-col="${esc(col)}"] ${selector}` : selector);
       if (el) { el.scrollLeft = left; el.scrollTop = top; }
     });
   }
@@ -239,8 +239,8 @@ function refreshTaskActivity(id,preserveComments=true) {
 const taskDraft = (t, field) => runtime()?.taskDraft?.(t.internalId, field) || null;
 function taskDraftNote(t, field) {
   if (!taskDraft(t, field)?.unsaved) return '';
-  if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
-  return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
+  if (!canBoard()) return `<p class="save-feedback" data-draft-note="${esc(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
+  return `<p class="save-feedback" data-draft-note="${esc(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
 }
 // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
 const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
@@ -334,7 +334,7 @@ function renderSettings() {
     <div class="section">
       <h2>Project access <span class="mono" style="font-size:var(--text-sm);color:var(--ink-ghost)">${members.length}</span></h2>
       <input id="member-search" class="ctl" type="search" aria-label="Search project members" placeholder="Search members" value="${esc(memberWindow.query)}" data-member-search>
-      <div class="member-access-list" aria-busy="${UIEscape(!!D.adminUsers?.loading)}">
+      <div class="member-access-list" aria-busy="${esc(!!D.adminUsers?.loading)}">
         ${matching.slice(0,memberWindow.limit).map(({ user: u, record: m }) => `
           <div class="member-access-row ${u.active ? '' : 'off'}">
             <div class="member-person">${avatarHtml(u.id, 24)}<span><b data-tip="${esc(u.name)}" data-tip-overflow>${esc(u.name)}</b><small class="mono">${esc(userHandle(u))}</small></span>${u.active ? '' : '<span class="tag-off">deactivated</span>'}</div>

@@ -5,8 +5,8 @@
 import { MULTI, multiHtml } from './controls.js';
 import { MOTION, animateLayout, fadeContent, motionRects, reducedMotion } from './effects.js';
 import {
-  I, STATUS, avatarHtml, d, esc, formatInstant, humanInstant, humanShort, instanceDateKey,
-  instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
+  I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort,
+  instanceDateKey, instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
   App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, report, runtime,
@@ -57,7 +57,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
       const b = taskBits(t);
       const av = (t.assignees || []).filter(userById);
       const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
-      return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${UIEscape(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
+      return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${esc(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
         <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
         <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
         <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
@@ -68,8 +68,8 @@ export function renderBoard({column=null,excludeIds=null}={}) {
           <span class="avs">${avs}</span>
         </div></div>`;
     }).join('');
-    return `<section class="col" aria-labelledby="col-${c.key}" data-col="${UIEscape(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${UIEscape(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
+    return `<section class="col" aria-labelledby="col-${c.key}" data-col="${esc(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
+      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
       </div>
       <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
   }).join('');
@@ -161,7 +161,7 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
   }
   [...board.querySelectorAll('.col')].forEach((column) => {
     const list = column.querySelector('.col-cards');
-    const next = template.content.querySelector(`[data-col="${UIEscape(column.dataset.col)}"]`);
+    const next = template.content.querySelector(`[data-col="${esc(column.dataset.col)}"]`);
     const desired = [...next.querySelector('.col-cards').children];
     const ids = new Set(desired.map((card) => card.dataset.task).filter(Boolean));
     const viewport = list.getBoundingClientRect();
@@ -426,7 +426,7 @@ Object.assign(App, {
   refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
   acceptMoreBoard(col) {
     state.boardLimits[col]=(state.boardLimits[col]||50)+50;
-    const board=document.querySelector('.board'),column=board?.querySelector(`[data-col="${UIEscape(col)}"]`),list=column?.querySelector('.col-cards');
+    const board=document.querySelector('.board'),column=board?.querySelector(`[data-col="${esc(col)}"]`),list=column?.querySelector('.col-cards');
     if(!list||state.view!=='board')return;
     const ids=new Set([...list.querySelectorAll(/** @type {'div'} */('[data-task]'))].map(card=>card.dataset.task));
     const template=document.createElement('template');setHTML(template,renderBoard({column:col,excludeIds:ids}));
@@ -508,8 +508,8 @@ Object.assign(App, {
     const boardLeft=document.querySelector('.board').scrollLeft,change=applyTaskMove(t,col,beforeId);
     App.dragEnd(false);if(!change)return;
     App.refreshBoard({animate:false});document.querySelector('.board').scrollLeft=boardLeft;
-    scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${UIEscape(key)}"] .col-cards`);if(list)list.scrollTop=top;});
-    animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
+    scrolls.forEach(([key,top])=>{const list=document.querySelector(`[data-col="${esc(key)}"] .col-cards`);if(list)list.scrollTop=top;});
+    animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');}});
   },
   clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},

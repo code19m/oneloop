@@ -36,9 +36,10 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the
   `App` method that its click runs in `data-action`, or that another event runs
-  in `data-action-<event>`, with JSON arguments in `data-args`. In `views/`,
-  write these with `UIAction`, such as `UIAction('openTask', id)` or
-  `UIAction.on('keydown', 'epicKey', UIAction.event, id)`.
+  in `data-action-<event>`, with JSON arguments in `data-args`. Write these
+  with `UIAction` from `src/app/markup.js`, such as `UIAction('openTask', id)`
+  or `UIAction.on('keydown', 'epicKey', UIAction.event, id)`, and escape text
+  with its `escapeHtml`.
   `src/app/view-actions.js` runs them from listeners on the document, but never
   inside rendered Markdown or file previews, and only for the names in its
   `ACTIONS` list. A new action goes into that list; a test checks that the list
@@ -63,7 +64,7 @@ DOM contracts in `views/`. Whole-app browser journeys live in
 The page's Content-Security-Policy enforces Trusted Types and refuses inline
 `<style>` elements:
 
-- Write HTML with `UIHTML` (`setHTML` in `views/app/format.js`), which goes
+- Write HTML with `setTrustedHTML` from `src/app/trusted-types.js`, which goes
   through the app's `oneloop` policy. A plain string passed to `innerHTML`,
   `srcdoc` or `DOMParser` is refused.
 - Load scripts only from `src/`, `views/` and `vendor/`.
