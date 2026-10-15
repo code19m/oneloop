@@ -18,21 +18,21 @@ use crate::auth::password::{
 use crate::error::{AppError, AppResult};
 use crate::timezone::TimeZone;
 
-pub const PUBLIC_URL_ENV: &str = "ONELOOP_PUBLIC_URL";
-pub const LISTEN_ENV: &str = "ONELOOP_LISTEN";
-pub const DATA_DIR_ENV: &str = "ONELOOP_DATA_DIR";
-pub const TIMEZONE_ENV: &str = "ONELOOP_TIMEZONE";
-pub const STORAGE_LIMIT_ENV: &str = "ONELOOP_STORAGE_LIMIT";
-pub const DISK_MIN_FREE_ENV: &str = "ONELOOP_DISK_MIN_FREE";
-pub const TRUSTED_PROXIES_ENV: &str = "ONELOOP_TRUSTED_PROXIES";
-pub const LOG_LEVEL_ENV: &str = "ONELOOP_LOG_LEVEL";
-pub const PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_PASSWORD_MIN_LENGTH";
-pub const ADMIN_PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_ADMIN_PASSWORD_MIN_LENGTH";
-pub const PASSWORD_BLOCKLIST_ENV: &str = "ONELOOP_PASSWORD_BLOCKLIST";
-pub const TEMPORARY_PASSWORD_LIFETIME_ENV: &str = "ONELOOP_TEMPORARY_PASSWORD_LIFETIME";
-pub const MCP_REDIRECT_SCHEMES_ENV: &str = "ONELOOP_MCP_REDIRECT_SCHEMES";
-pub const MCP_ALLOWED_ORIGINS_ENV: &str = "ONELOOP_MCP_ALLOWED_ORIGINS";
-pub const MCP_CLIENT_METADATA_ENV: &str = "ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS";
+pub(crate) const PUBLIC_URL_ENV: &str = "ONELOOP_PUBLIC_URL";
+pub(crate) const LISTEN_ENV: &str = "ONELOOP_LISTEN";
+pub(crate) const DATA_DIR_ENV: &str = "ONELOOP_DATA_DIR";
+pub(crate) const TIMEZONE_ENV: &str = "ONELOOP_TIMEZONE";
+pub(crate) const STORAGE_LIMIT_ENV: &str = "ONELOOP_STORAGE_LIMIT";
+pub(crate) const DISK_MIN_FREE_ENV: &str = "ONELOOP_DISK_MIN_FREE";
+pub(crate) const TRUSTED_PROXIES_ENV: &str = "ONELOOP_TRUSTED_PROXIES";
+pub(crate) const LOG_LEVEL_ENV: &str = "ONELOOP_LOG_LEVEL";
+pub(crate) const PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_PASSWORD_MIN_LENGTH";
+pub(crate) const ADMIN_PASSWORD_MIN_LENGTH_ENV: &str = "ONELOOP_ADMIN_PASSWORD_MIN_LENGTH";
+pub(crate) const PASSWORD_BLOCKLIST_ENV: &str = "ONELOOP_PASSWORD_BLOCKLIST";
+pub(crate) const TEMPORARY_PASSWORD_LIFETIME_ENV: &str = "ONELOOP_TEMPORARY_PASSWORD_LIFETIME";
+pub(crate) const MCP_REDIRECT_SCHEMES_ENV: &str = "ONELOOP_MCP_REDIRECT_SCHEMES";
+pub(crate) const MCP_ALLOWED_ORIGINS_ENV: &str = "ONELOOP_MCP_ALLOWED_ORIGINS";
+pub(crate) const MCP_CLIENT_METADATA_ENV: &str = "ONELOOP_MCP_CLIENT_METADATA_DOCUMENTS";
 
 const KNOWN_ENV: [&str; 15] = [
     PUBLIC_URL_ENV,
@@ -618,8 +618,26 @@ fn invalid_env(variable: &'static str, message: impl Into<String>) -> AppError {
 }
 
 #[cfg(test)]
-mod generated_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn the_reference_documents_exactly_the_known_variables() {
+        let reference = include_str!("../docs/src/reference.md");
+        let documented = reference
+            .match_indices("ONELOOP_")
+            .filter_map(|(start, _)| {
+                let name = &reference[start..];
+                let end = name
+                    .find(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+                    .unwrap_or(name.len());
+                // Skip mentions of the prefix itself, such as "`ONELOOP_`".
+                (end > "ONELOOP_".len()).then(|| &name[..end])
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(documented, BTreeSet::from(KNOWN_ENV));
+    }
+
     proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
         #[test]

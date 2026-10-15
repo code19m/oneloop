@@ -1,5 +1,5 @@
-//! The documentation site names every configuration variable, command and MCP
-//! tool the binary offers.
+//! The documentation site names every command and MCP tool the binary
+//! offers. A unit test in src/config.rs checks the environment variables.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -14,31 +14,6 @@ fn read(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
-}
-
-/// Environment variable names declared as `const NAME: &str = "ONELOOP_..."`
-/// in src/config.rs.
-fn configuration_variables() -> Vec<String> {
-    let variables = read("src/config.rs")
-        .lines()
-        .filter_map(|line| {
-            let (declaration, value) = line.trim().split_once(": &str = \"")?;
-            let name = value.strip_suffix("\";")?;
-            (declaration.contains("const ") && name.starts_with("ONELOOP_"))
-                .then(|| name.to_owned())
-        })
-        .collect::<Vec<_>>();
-    for known in [
-        oneloop::config::PUBLIC_URL_ENV,
-        oneloop::config::DATA_DIR_ENV,
-        oneloop::config::LOG_LEVEL_ENV,
-    ] {
-        assert!(
-            variables.iter().any(|name| name == known),
-            "src/config.rs parsing missed {known}"
-        );
-    }
-    variables
 }
 
 /// Every command path, such as `serve`, `user` and `user add`.
@@ -63,19 +38,6 @@ fn table_rows<'a>(docs: &'a str, heading: &str) -> Vec<Vec<&'a str>> {
         .skip(2)
         .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
         .collect()
-}
-
-#[test]
-fn configuration_reference_names_every_environment_variable() {
-    let docs = read("docs/src/reference.md");
-    let missing = configuration_variables()
-        .into_iter()
-        .filter(|name| !docs.contains(&format!("`{name}`")))
-        .collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "docs/src/reference.md does not mention {missing:?}"
-    );
 }
 
 #[test]
