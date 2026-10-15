@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode, header},
 };
 use image::{ImageEncoder, codecs::jpeg::JpegEncoder};
-use oneloop::files::AttachmentView;
+use oneloop::files::{AttachmentView, FileStore};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
@@ -111,16 +111,16 @@ impl Fixture {
 
     fn thumbnail_file(&self, attachment: &AttachmentView) -> PathBuf {
         let key = self.storage_key(attachment);
-        self.files.store().thumbnail_path(&key).unwrap()
+        FileStore::new(self.db.layout().clone())
+            .thumbnail_path(&key)
+            .unwrap()
     }
 
     /// Replaces the stored original with a named pipe: a decode then waits
     /// to open it until `release` opens the other end.
     #[cfg(unix)]
     fn pipe_original(&self, attachment: &AttachmentView) -> PathBuf {
-        let path = self
-            .files
-            .store()
+        let path = FileStore::new(self.db.layout().clone())
             .file_path(&self.storage_key(attachment))
             .unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -427,7 +427,7 @@ async fn reconciliation_removes_thumbnails_without_an_original() {
         .await;
     fixture.files.make_queued_thumbnails().await;
     let kept = fixture.thumbnail_file(&attachment);
-    let store = fixture.files.store();
+    let store = FileStore::new(fixture.db.layout().clone());
     let orphan = store
         .prepare_thumbnail_parent(&store.new_storage_key().unwrap())
         .await

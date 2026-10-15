@@ -2,7 +2,7 @@
 //! file, and section text for Markdown and other text files. A query matches
 //! when every word appears, ignoring case.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -27,6 +27,8 @@ pub(crate) struct Index {
     outlines: HashMap<String, Outline>,
     /// Approximate memory held by the index.
     bytes: usize,
+    /// Some files' text didn't fit, so they are found by name only.
+    partial: bool,
 }
 
 /// A Markdown file's title and level-two headings.
@@ -61,6 +63,8 @@ struct Entry {
 pub(crate) enum Content<'a> {
     Markdown(&'a str),
     Text(&'a str),
+    /// Text that the budget would not hold, so it wasn't even read.
+    LeftOut,
     None,
 }
 
@@ -75,28 +79,48 @@ fn held(value: &str, capacity: usize) -> usize {
 
 impl Index {
     pub(crate) fn build<'a>(files: impl IntoIterator<Item = (&'a str, Content<'a>)>) -> Self {
-        let mut folders = BTreeSet::new();
+        let files: Vec<_> = files.into_iter().collect();
         let mut index = Self {
             names: Vec::new(),
             documents: Vec::new(),
             outlines: HashMap::new(),
             bytes: 0,
+            partial: false,
         };
+        // Every file can be found by name, however full the index is. Names
+        // come first, so text gets what they leave of the budget.
+        for (path, _) in &files {
+            index.add_name(Name::new(path, false));
+        }
+        // Folders as far as the budget goes. Only folders synced before the
+        // subfolder limit can be that many.
+        let mut folders = HashSet::new();
+        'folders: for (path, _) in &files {
+            let mut rest = *path;
+            while let Some((folder, _)) = rest.rsplit_once('/') {
+                if !folders.insert(folder) {
+                    break;
+                }
+                let name = Name::new(folder, true);
+                if index.bytes + name.bytes() > INDEX_BYTES_MAX {
+                    break 'folders;
+                }
+                index.add_name(name);
+                rest = folder;
+            }
+        }
         let mut full = false;
         for (path, content) in files {
-            let mut parts: Vec<&str> = path.split('/').collect();
-            parts.pop();
-            for depth in 1..=parts.len() {
-                folders.insert(parts[..depth].join("/"));
-            }
-            index.add_name(path, false);
             if full {
-                continue;
+                break;
             }
             let file_name = path.rsplit('/').next().unwrap_or(path);
+            // A document's own cost is due with its first entry.
+            let document =
+                std::mem::size_of::<Document>() + held(path, path.len()) + ALLOCATION_BYTES;
             let mut entries = Vec::new();
             let mut add = |index: &mut Self, entry: Entry| {
-                let cost = entry.bytes();
+                let cost = entry.bytes() + if entries.is_empty() { document } else { 0 };
                 if index.bytes + cost > INDEX_BYTES_MAX {
                     return false;
                 }
@@ -152,33 +176,25 @@ impl Index {
                         }
                     }
                 }
+                Content::LeftOut => index.partial = true,
                 Content::None => {}
             }
             if !entries.is_empty() {
                 entries.shrink_to_fit();
-                index.bytes +=
-                    std::mem::size_of::<Document>() + held(path, path.len()) + ALLOCATION_BYTES;
                 index.documents.push(Document {
                     path: path.to_owned(),
                     entries,
                 });
             }
         }
-        for folder in &folders {
-            index.add_name(folder, true);
-        }
+        index.partial |= full;
         index.names.shrink_to_fit();
         index.documents.shrink_to_fit();
         index
     }
 
-    /// Every file and folder can be found by name, however full the index is.
-    fn add_name(&mut self, path: &str, folder: bool) {
-        let name = Name::new(path, folder);
-        self.bytes += std::mem::size_of::<Name>()
-            + held(&name.path, name.path.capacity())
-            + held(&name.lower, name.lower.capacity())
-            + held(&name.base_lower, name.base_lower.capacity());
+    fn add_name(&mut self, name: Name) {
+        self.bytes += name.bytes();
         self.names.push(name);
     }
 
@@ -189,6 +205,10 @@ impl Index {
 
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    pub(crate) fn partial(&self) -> bool {
+        self.partial
     }
 
     pub(crate) fn search(&self, query: &str) -> Results {
@@ -290,6 +310,7 @@ impl Index {
                 .collect(),
             file_count,
             hit_count,
+            partial: self.partial,
         }
     }
 }
@@ -303,6 +324,15 @@ impl Name {
             path: path.to_owned(),
             folder,
         }
+    }
+
+    /// The memory the name holds, its strings included.
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + [&self.path, &self.lower, &self.base_lower]
+                .into_iter()
+                .map(|value| held(value, value.capacity()))
+                .sum::<usize>()
     }
 }
 
@@ -358,6 +388,10 @@ pub struct Results {
     pub file_count: usize,
     /// All matching sections, including those beyond `documents`.
     pub hit_count: usize,
+    /// Some files' text didn't fit in the index, so they are found by name
+    /// only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -593,9 +627,12 @@ mod tests {
     fn the_index_keeps_to_its_budget_and_reports_the_memory_it_holds() {
         use crate::test_memory::{live_heap, peak_heap};
         assert_eq!(Index::build([]).bytes(), 0);
-        // 2,000 files of 5,000 one-character lines: 20 MB, 10 million lines.
+        // 2,000 files of 5,000 one-character lines: 20 MB, 10 million lines,
+        // each file three folders deep.
         let lines = "a\n".repeat(5_000);
-        let paths: Vec<String> = (0..2_000).map(|n| format!("notes/n{n:04}.txt")).collect();
+        let paths: Vec<String> = (0..2_000)
+            .map(|n| format!("notes/{n:04}/a/b/n{n:04}.txt"))
+            .collect();
         let before = live_heap();
         let (index, peak) = peak_heap(|| {
             Index::build(
@@ -607,11 +644,18 @@ mod tests {
         let held = live_heap() - before;
         assert!(peak < INDEX_BYTES_MAX, "{peak} bytes at the peak");
         let bytes = index.bytes();
+        assert!(bytes <= INDEX_BYTES_MAX, "{bytes} bytes");
         assert!(held / 2 <= bytes && bytes <= held * 2, "{bytes} for {held}");
-        // Files past the budget are found by name only.
-        assert_eq!(index.search("n1999").files.len(), 1);
+        // Files past the budget are found by name only, and so are folders.
+        let results = index.search("n1999");
+        assert_eq!(results.files.len(), 1);
+        assert!(results.partial, "the results say text was left out");
+        assert_eq!(index.search("1999/a/b").files.len(), 2);
         let indexed = index.documents.len();
         assert!((1..2_000).contains(&indexed), "{indexed}");
+        // Text left out before it was read counts too.
+        assert!(!Index::build([("a.md", Content::Markdown("# A\n"))]).partial());
+        assert!(Index::build([("a.md", Content::LeftOut)]).partial());
     }
 
     #[test]

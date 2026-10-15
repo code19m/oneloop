@@ -19,22 +19,14 @@ impl FileService {
                 ),
             ));
         }
-        let permit = avatar_decode_permit().await?;
-        let normalized = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            normalize_avatar(&bytes)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("avatar worker failed: {error}")))??;
-        self.store.ensure_directories().await?;
-        let mut capacity = self.prepare_capacity().await?;
+        let normalized = self
+            .decodes
+            .turn_within(AVATAR_DECODE_WAIT)
+            .await?
+            .run(move || normalize_avatar(&bytes))
+            .await??;
         let normalized_size = normalized.len() as u64;
-        let deficit = self.disk.deficit(normalized_size)?;
-        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
-            capacity = self.capacity_usage().await?;
-        }
-
-        let non_database_bytes = capacity.non_database_bytes();
+        let non_database_bytes = self.admit(normalized_size).await?;
         let _lease = self.db.acquire_data_lease().await?;
         let maintenance_gate = self.acquire_file_maintenance_gate().await?;
         let disk = self.disk.reserve(normalized_size)?;
@@ -48,20 +40,12 @@ impl FileService {
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                require_actor_identity_raw(tx, &actor_tx, now)?;
-                let used: i64 = tx.query_row(SELECT_FILE_BLOBS_3_SQL, [now], |row| row.get(0))?;
-                if (used.max(0) as u64)
-                    .saturating_add(non_database_bytes)
-                    .saturating_add(normalized_size)
-                    > storage_limit
-                {
-                    return Err(AppError::rule(
-                        crate::error::RuleKind::StorageFull,
-                        "attachment storage capacity is exhausted",
-                    ));
-                }
+                refresh_actor_connection(tx, &actor_tx)?;
+                require_capacity(tx, now, non_database_bytes, normalized_size, storage_limit)?;
                 tx.execute(
-                    INSERT_FILE_BLOBS_SQL,
+                    "INSERT INTO file_blobs
+                     (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+                     VALUES(?1,?2,?3,?4,'image/png','pending',?5)",
                     params![
                         blob_id_tx,
                         storage_key_tx,
@@ -116,7 +100,7 @@ impl FileService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                require_actor_identity_raw(tx, &actor_tx, now)?;
+                refresh_actor_connection(tx, &actor_tx)?;
                 let old: Option<String> = tx
                     .query_row(
                         "SELECT avatar_blob_id FROM users WHERE id=?1",
@@ -125,13 +109,19 @@ impl FileService {
                     )
                     .optional()?
                     .flatten();
-                let changed = tx.execute(UPDATE_FILE_BLOBS_SQL, [&blob_id_tx])?;
+                let changed = tx.execute(
+                    "UPDATE file_blobs SET state='available' WHERE id=?1 AND state='pending'",
+                    [&blob_id_tx],
+                )?;
                 if changed != 1 {
                     return Err(AppError::Conflict(
                         "avatar upload reservation is unavailable".into(),
                     ));
                 }
-                tx.execute(UPDATE_USERS_SQL, params![blob_id_tx, now, user_id])?;
+                tx.execute(
+                    "UPDATE users SET avatar_blob_id=?1,updated_at=?2,revision=revision+1 WHERE id=?3",
+                    params![blob_id_tx, now, user_id],
+                )?;
                 Ok(old)
             })
             .await;
@@ -159,7 +149,7 @@ impl FileService {
         let old = self
             .db
             .transaction(move |tx| {
-                require_actor_identity_raw(tx, &actor_tx, unix_now()?)?;
+                refresh_actor_connection(tx, &actor_tx)?;
                 let old: Option<String> = tx
                     .query_row(
                         "SELECT avatar_blob_id FROM users WHERE id=?1 AND is_active=1",
@@ -168,7 +158,11 @@ impl FileService {
                     )
                     .optional()?
                     .flatten();
-                tx.execute(UPDATE_USERS_2_SQL, [&user_id])?;
+                tx.execute(
+                    "UPDATE users SET avatar_blob_id=NULL,updated_at=unixepoch(),revision=revision+1
+                     WHERE id=?1",
+                    [&user_id],
+                )?;
                 Ok(old)
             })
             .await?;
@@ -182,13 +176,6 @@ impl FileService {
     /// reconciliation deletes files that nothing refers to.
     async fn forget_old_avatar(&self, blob_id: &str) {
         log_cleanup_failure(self.schedule_blob_deletion(blob_id, "rollback").await);
-    }
-
-    pub async fn open_avatar(&self, actor: &Actor, user_id: &str) -> AppResult<FileRead> {
-        match self.open_avatar_conditional(actor, user_id, None).await? {
-            ConditionalRead::Modified(read) => Ok(*read),
-            ConditionalRead::NotModified(_) => unreachable!("unconditional read"),
-        }
     }
 
     pub(crate) async fn open_avatar_conditional(
@@ -208,11 +195,14 @@ impl FileService {
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let current_admin = require_actor_identity_raw(tx, &actor, now)?;
+                let current_admin = refresh_actor_connection(tx, &actor)?.is_admin;
                 let visible: bool = actor.user_id == user_id_tx
                     || current_admin
                     || tx.query_row(
-                        SELECT_PROJECT_MEMBERSHIPS_SQL,
+                        "SELECT EXISTS(SELECT 1 FROM project_memberships a
+                         JOIN project_memberships b ON b.project_id=a.project_id
+                         JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
+                         WHERE a.user_id=?1 AND b.user_id=?2)",
                         params![actor.user_id, user_id_tx],
                         |r| r.get(0),
                     )?;
@@ -220,14 +210,20 @@ impl FileService {
                     return Err(AppError::NotFound { resource: "avatar" });
                 }
                 let row = tx
-                    .query_row(SELECT_USERS_SQL, [&user_id_tx], |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, i64>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, String>(3)?,
-                        ))
-                    })
+                    .query_row(
+                        "SELECT b.storage_key,b.size_bytes,b.checksum_sha256,b.id FROM users u
+                         JOIN file_blobs b ON b.id=u.avatar_blob_id
+                         WHERE u.id=?1 AND u.is_active=1 AND b.state='available'",
+                        [&user_id_tx],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, i64>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
                     .optional()?
                     .ok_or(AppError::NotFound { resource: "avatar" })?;
                 let etag = file_etag(&row.2, false);
@@ -235,7 +231,8 @@ impl FileService {
                     return Ok((row, Some(etag)));
                 }
                 tx.execute(
-                    INSERT_FILE_LEASES_SQL,
+                    "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
+                     VALUES(?1,?2,'preview',?3,?4,?5)",
                     params![
                         lease_id_tx,
                         row.3,

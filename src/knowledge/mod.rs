@@ -25,6 +25,9 @@ pub use service::{
 /// Folder limits. A sync fails when a limit is exceeded, except that single
 /// files over the size limit are left out and counted.
 pub const MAX_FILES: usize = 5_000;
+/// Folders inside the synced folder. Each one costs a search entry and a
+/// directory in the working copy, however small the files in it are.
+pub const MAX_FOLDERS: usize = 5_000;
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 /// Disk one sync may use for its working copy. It holds the folder twice, as

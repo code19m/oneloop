@@ -20,12 +20,13 @@ use crate::{
     AppError, AppResult, Db,
     access::{Need, require_project},
     auth::{Actor, ActorSource, refresh_actor_connection, unix_now},
+    blocking::Lane,
     collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
     files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
 };
 
 use super::{
-    MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
+    MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_FOLDERS, MAX_TOTAL_BYTES,
     content::FileBody,
     git::{Git, Limits},
     markdown,
@@ -47,7 +48,6 @@ const OVERVIEW_SECTIONS_MAX: usize = 12;
 const README_CHARS_MAX: usize = 20_000;
 const FILE_TEXT_CHARS_MAX: usize = 100_000;
 const FILE_HEADINGS_MAX: usize = 60;
-const PATH_QUERY_MAX: usize = 1_024;
 /// Bytes that always hold `chars` characters, whatever the script.
 const fn text_bytes(chars: usize) -> u64 {
     4 * chars as u64
@@ -69,8 +69,7 @@ pub(super) struct Inner {
     pub(super) git: Git,
     pub(super) keys: PathBuf,
     pub(super) allow_file: bool,
-    pub(super) disk_min_free_bytes: u64,
-    pub(super) disk: crate::files::disk::DiskAdmission,
+    pub(super) disk: crate::disk::DiskAdmission,
     pub(super) limits: Limits,
     pub(super) wake: Notify,
     /// Projects whose sync is running in this process, each with the token
@@ -85,9 +84,9 @@ pub(super) struct Inner {
     builds: tokio::sync::Mutex<()>,
     /// MCP reads one file's text at a time, so the memory of large files
     /// never adds up.
-    readers: Arc<tokio::sync::Semaphore>,
+    readers: Lane,
     /// Searches run one at a time.
-    searches: Arc<tokio::sync::Semaphore>,
+    searches: Lane,
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
     searchers: Mutex<HashSet<String>>,
@@ -234,6 +233,10 @@ pub struct KnowledgeOverview {
     pub file_count: usize,
     #[serde(skip_serializing_if = "Not::not")]
     pub truncated: bool,
+    /// Some files' text didn't fit in the search index. They have no title
+    /// or sections here, and search finds them by name only.
+    #[serde(skip_serializing_if = "Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -369,18 +372,18 @@ impl KnowledgeService {
         Self::build(db, disk_min_free_bytes, false)
     }
 
-    /// The same service that also accepts `file://` repositories. For tests.
+    /// A service that also accepts `file://` repositories. For tests.
     #[doc(hidden)]
-    pub fn allowing_local_repositories(&self) -> Self {
-        Self::build(self.inner.db.clone(), self.inner.disk_min_free_bytes, true)
+    pub fn with_local_repositories(db: Db, disk_min_free_bytes: u64) -> Self {
+        Self::build(db, disk_min_free_bytes, true)
     }
 
     fn build(db: Db, disk_min_free_bytes: u64, allow_file: bool) -> Self {
         let keys = db.layout().keys();
-        let disk = crate::files::disk::DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
+        let disk = db.disk_admission(disk_min_free_bytes);
         let git = Git::new(
-            db.layout().root().join("knowledge"),
-            keys.join("knowledge_known_hosts"),
+            db.layout().knowledge_work(),
+            db.layout().knowledge_known_hosts(),
             allow_file,
         );
         Self {
@@ -389,10 +392,10 @@ impl KnowledgeService {
                 git,
                 keys,
                 allow_file,
-                disk_min_free_bytes,
                 disk,
                 limits: Limits {
                     max_files: MAX_FILES,
+                    max_folders: MAX_FOLDERS,
                     max_file_bytes: MAX_FILE_BYTES,
                     max_total_bytes: MAX_TOTAL_BYTES,
                     max_download_bytes: MAX_DOWNLOAD_BYTES,
@@ -402,22 +405,15 @@ impl KnowledgeService {
                 waiting: Mutex::new(HashMap::new()),
                 catalogs: Mutex::new(Vec::new()),
                 builds: tokio::sync::Mutex::new(()),
-                readers: Arc::new(tokio::sync::Semaphore::new(1)),
-                searches: Arc::new(tokio::sync::Semaphore::new(1)),
+                readers: Lane::new("knowledge reader", 1),
+                searches: Lane::new("knowledge search", 1),
                 searchers: Mutex::new(HashSet::new()),
             }),
         }
     }
 
     pub fn supports(operation: &str) -> bool {
-        matches!(
-            operation,
-            "knowledge.connect"
-                | "knowledge.update"
-                | "knowledge.disconnect"
-                | "knowledge.sync"
-                | "knowledge.deploy-key.create"
-        )
+        Operation::parse(operation).is_some()
     }
 
     pub async fn execute(
@@ -426,17 +422,10 @@ impl KnowledgeService {
         command: KnowledgeCommand,
     ) -> AppResult<KnowledgeCommandResult> {
         actor.require_ready()?;
-        if !Self::supports(&command.operation) {
-            return Err(AppError::validation(
-                "operation",
-                "unsupported knowledge operation",
-            ));
-        }
+        let operation = Operation::parse(&command.operation)
+            .ok_or_else(|| AppError::validation("operation", "unsupported knowledge operation"))?;
         crate::idempotency::validate_key(&command.idempotency_key)?;
-        let needs_revision = matches!(
-            command.operation.as_str(),
-            "knowledge.update" | "knowledge.disconnect"
-        );
+        let needs_revision = operation.needs_revision();
         if needs_revision != command.expected_revision.is_some() {
             return Err(AppError::validation(
                 "expectedRevision",
@@ -481,12 +470,9 @@ impl KnowledgeService {
                     &hash,
                     now,
                 )?;
-                let (project_id, entity, events) = dispatch(tx, &inner, &current, &command, now)?;
-                let changed = matches!(
-                    command.operation.as_str(),
-                    "knowledge.update" | "knowledge.disconnect"
-                )
-                .then(|| project_id.clone());
+                let (project_id, entity, events) =
+                    dispatch(tx, &inner, &current, operation, &command, now)?;
+                let changed = operation.replaces_source().then(|| project_id.clone());
                 let result = KnowledgeCommandResult {
                     entities: vec![entity],
                     events,
@@ -614,13 +600,8 @@ impl KnowledgeService {
                     .ok_or(AppError::NotFound { resource: "file" })?;
                 let kind = preview_kind(kind.as_deref(), &media_type);
                 let allowed = match mode {
-                    FileMode::Content => {
-                        matches!(kind, Some(PreviewKind::Image | PreviewKind::Pdf))
-                    }
-                    FileMode::Text => matches!(
-                        kind,
-                        Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)
-                    ),
+                    FileMode::Content => kind.is_some_and(PreviewKind::is_inline_media),
+                    FileMode::Text => kind.is_some_and(PreviewKind::has_source),
                     FileMode::Download => true,
                 };
                 if !allowed {
@@ -640,11 +621,7 @@ impl KnowledgeService {
                     Some(limit) => format!("\"{checksum}-text-{limit}\""),
                     None => format!("\"{checksum}\""),
                 };
-                let current = validator.as_deref().is_some_and(|value| {
-                    value
-                        .split(',')
-                        .any(|tag| tag.trim().trim_start_matches("W/") == etag)
-                });
+                let current = crate::files::etag_matches(validator.as_deref(), &etag);
                 let length = limit.map_or(size as u64, |limit| (size as u64).min(limit));
                 let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
                 Ok(FileRead {
@@ -689,19 +666,9 @@ impl KnowledgeService {
         // folder. It runs off the async workers, one at a time, so searches
         // can't slow other requests down; a search that waits too long is
         // told to try again.
-        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.searches.clone().acquire_owned())
-            .await
-            .map_err(|_| {
-                AppError::Unavailable("knowledge search is busy; try again shortly".into())
-            })?
-            .map_err(|_| AppError::Unavailable("knowledge search is shutting down".into()))?;
+        let turn = self.inner.searches.turn_within(QUEUE_WAIT).await?;
         let query = query.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            catalog.index.search(&query)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("knowledge search failed: {error}")))
+        turn.run(move || catalog.index.search(&query)).await
     }
 
     /// For MCP clients: the README of `folder` and a compact file index.
@@ -712,17 +679,10 @@ impl KnowledgeService {
         folder: Option<&str>,
     ) -> AppResult<KnowledgeOverview> {
         actor.require_ready()?;
-        let folder = match folder.map(str::trim).filter(|value| !value.is_empty()) {
-            Some(value) => source::folder(value)?,
-            None => String::new(),
-        };
+        let folder = source::folder(folder.unwrap_or_default())?;
         let view = self.view(actor, project_id).await?;
         let catalog = self.catalog(actor, project_id).await?;
-        let prefix = if folder.is_empty() {
-            String::new()
-        } else {
-            format!("{folder}/")
-        };
+        let prefix = source::folder_prefix(&folder);
         let inside: Vec<&KnowledgeFile> = view
             .files
             .iter()
@@ -786,6 +746,9 @@ impl KnowledgeService {
             files,
             file_count: inside.len(),
             truncated: inside.len() > OVERVIEW_FILES_MAX,
+            partial: catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.index.partial()),
         })
     }
 
@@ -817,11 +780,7 @@ impl KnowledgeService {
             truncated: false,
             note: None,
         };
-        let readable = matches!(
-            file.kind,
-            Some(PreviewKind::Markdown | PreviewKind::Text | PreviewKind::Html)
-        );
-        if !readable {
+        if !file.kind.is_some_and(PreviewKind::has_source) {
             if section.is_some() {
                 return Err(AppError::validation(
                     "section",
@@ -846,20 +805,14 @@ impl KnowledgeService {
         // is read. One file at a time is read and parsed, off the async
         // workers, so many calls at once can't use up the memory; a read
         // that waits too long is told to try again.
-        let permit = tokio::time::timeout(QUEUE_WAIT, self.inner.readers.clone().acquire_owned())
-            .await
-            .map_err(|_| {
-                AppError::Unavailable("knowledge reader is busy; try again shortly".into())
-            })?
-            .map_err(|_| AppError::Unavailable("knowledge reader is shutting down".into()))?;
+        let turn = self.inner.readers.turn_within(QUEUE_WAIT).await?;
         let limit = if markdown_file {
             MARKDOWN_SOURCE_BYTES
         } else {
             text_bytes(FILE_TEXT_CHARS_MAX)
         };
         let (text, longer) = self.text(actor, project_id, &file.path, limit).await?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        turn.run(move || {
             let mut content = text.as_str();
             if markdown_file {
                 let sections = markdown::outline(&text);
@@ -888,8 +841,7 @@ impl KnowledgeService {
             result.truncated = truncated || unfinished;
             Ok(result)
         })
-        .await
-        .map_err(|error| AppError::internal(format!("knowledge reader failed: {error}")))?
+        .await?
     }
 
     /// The first `limit` bytes of a text file as text, read after the caller
@@ -937,20 +889,14 @@ impl KnowledgeService {
         };
         let project_id = project_id.to_owned();
         let catalog = tokio::task::spawn_blocking(move || {
-            let texts: Vec<(String, Option<PreviewKind>, Option<String>)> = files
-                .into_iter()
-                .map(|(path, kind, bytes)| {
-                    let text = bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-                    (path, kind, text)
-                })
-                .collect();
-            let index = Index::build(texts.iter().map(|(path, kind, text)| {
-                let content = match (kind, text) {
-                    (Some(PreviewKind::Markdown), Some(text)) => Content::Markdown(text),
-                    (Some(PreviewKind::Text), Some(text)) => Content::Text(text),
+            let index = Index::build(files.iter().map(|file| {
+                let content = match (&file.text, file.kind) {
+                    (Text::Read(text), Some(PreviewKind::Markdown)) => Content::Markdown(text),
+                    (Text::Read(text), Some(PreviewKind::Text)) => Content::Text(text),
+                    (Text::LeftOut, _) => Content::LeftOut,
                     _ => Content::None,
                 };
-                (path.as_str(), content)
+                (file.path.as_str(), content)
             }));
             Arc::new(Catalog {
                 project_id,
@@ -1017,13 +963,19 @@ impl KnowledgeService {
                 let mut read = 0;
                 let mut files = Vec::with_capacity(listed.len());
                 for (rowid, path, kind, size, indexed) in listed {
-                    let text = if indexed && read + size <= CATALOG_TEXT_BYTES {
+                    let text = if !indexed {
+                        Text::None
+                    } else if read + size <= CATALOG_TEXT_BYTES {
                         read += size;
-                        Some(content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?)
+                        let bytes = content.query_row([rowid], |row| row.get::<_, Vec<u8>>(0))?;
+                        // Valid text is not copied.
+                        Text::Read(String::from_utf8(bytes).unwrap_or_else(|error| {
+                            String::from_utf8_lossy(error.as_bytes()).into_owned()
+                        }))
                     } else {
-                        None
+                        Text::LeftOut
                     };
-                    files.push((path, kind, text));
+                    files.push(CatalogFile { path, kind, text });
                 }
                 Ok(Loaded::Files(key, files))
             })
@@ -1036,7 +988,22 @@ enum Loaded {
     Cached(Arc<Catalog>),
     /// Not cached, and the files were not requested.
     Missing,
-    Files(String, Vec<(String, Option<PreviewKind>, Option<Vec<u8>>)>),
+    Files(String, Vec<CatalogFile>),
+}
+
+/// A file as a catalog is built from it.
+struct CatalogFile {
+    path: String,
+    kind: Option<PreviewKind>,
+    text: Text,
+}
+
+enum Text {
+    Read(String),
+    /// Searchable text that the index has no room for.
+    LeftOut,
+    /// The file is found by name only, by rule.
+    None,
 }
 
 impl Inner {
@@ -1079,16 +1046,49 @@ impl Inner {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Operation {
+    Connect,
+    Update,
+    Disconnect,
+    Sync,
+    CreateDeployKey,
+}
+
+impl Operation {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "knowledge.connect" => Self::Connect,
+            "knowledge.update" => Self::Update,
+            "knowledge.disconnect" => Self::Disconnect,
+            "knowledge.sync" => Self::Sync,
+            "knowledge.deploy-key.create" => Self::CreateDeployKey,
+            _ => return None,
+        })
+    }
+
+    /// Changes to a connected source name the revision they were based on.
+    fn needs_revision(self) -> bool {
+        matches!(self, Self::Update | Self::Disconnect)
+    }
+
+    /// The source changes or goes, so a running sync works for the old one.
+    fn replaces_source(self) -> bool {
+        matches!(self, Self::Update | Self::Disconnect)
+    }
+}
+
 fn dispatch(
     tx: &Transaction<'_>,
     inner: &Inner,
     actor: &Actor,
+    operation: Operation,
     command: &KnowledgeCommand,
     now: i64,
 ) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
-    match command.operation.as_str() {
-        "knowledge.connect" => connect(tx, inner, actor, payload(command)?, now),
-        "knowledge.update" => update(
+    match operation {
+        Operation::Connect => connect(tx, inner, actor, payload(command)?, now),
+        Operation::Update => update(
             tx,
             inner,
             actor,
@@ -1096,7 +1096,7 @@ fn dispatch(
             command.expected_revision.expect("checked revision"),
             now,
         ),
-        "knowledge.disconnect" => disconnect(
+        Operation::Disconnect => disconnect(
             tx,
             inner,
             actor,
@@ -1104,14 +1104,8 @@ fn dispatch(
             command.expected_revision.expect("checked revision"),
             now,
         ),
-        "knowledge.sync" => request_sync(tx, actor, payload(command)?, now),
-        "knowledge.deploy-key.create" => {
-            create_deploy_key(tx, inner, actor, payload(command)?, now)
-        }
-        _ => Err(AppError::validation(
-            "operation",
-            "unsupported knowledge operation",
-        )),
+        Operation::Sync => request_sync(tx, actor, payload(command)?, now),
+        Operation::CreateDeployKey => create_deploy_key(tx, inner, actor, payload(command)?, now),
     }
 }
 
@@ -1198,22 +1192,13 @@ fn connect(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.connected",
-            field_key: None,
-            before: None,
             after: Some(described(&place.url, &place.branch, &place.folder)),
-            metadata: json!({}),
             entity_revision: Some(revision),
+            ..source_activity(&input.project_id, "knowledge.connected")
         },
         now,
     )?);
-    let row = load_source(tx, &input.project_id)?.expect("inserted source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, events))
 }
 
@@ -1313,22 +1298,15 @@ fn update(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.updated",
-            field_key: None,
             before: Some(described(&previous_url, &before.branch, &before.folder)),
             after: Some(described(&place.url, &place.branch, &place.folder)),
             metadata: json!({"credentialsChanged": credentials_changed}),
             entity_revision: Some(before.revision + 1),
+            ..source_activity(&input.project_id, "knowledge.updated")
         },
         now,
     )?);
-    let row = load_source(tx, &input.project_id)?.expect("updated source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, events))
 }
 
@@ -1363,16 +1341,9 @@ fn disconnect(
         tx,
         actor,
         ActivityInput {
-            project_id: Some(&input.project_id),
-            entity_type: "knowledge_source",
-            entity_id: &input.project_id,
-            task_id: None,
-            event_type: "knowledge.disconnected",
-            field_key: None,
             before: Some(described(&url, &before.branch, &before.folder)),
-            after: None,
-            metadata: json!({}),
             entity_revision: Some(before.revision + 1),
+            ..source_activity(&input.project_id, "knowledge.disconnected")
         },
         now,
     )?;
@@ -1402,9 +1373,7 @@ fn request_sync(
         "UPDATE knowledge_sources SET requested_at=?2 WHERE project_id=?1",
         params![input.project_id, now],
     )?;
-    let row = load_source(tx, &input.project_id)?.expect("existing source");
-    let entity = serde_json::to_value(source_view(tx, &input.project_id, &row)?)
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let entity = source_entity(tx, &input.project_id)?;
     Ok((input.project_id, entity, Vec::new()))
 }
 
@@ -1461,20 +1430,33 @@ fn ensure_deploy_key(
     Ok(Some(record_activity_tx(
         tx,
         actor,
-        ActivityInput {
-            project_id: Some(project_id),
-            entity_type: "knowledge_source",
-            entity_id: project_id,
-            task_id: None,
-            event_type: "knowledge.deploy_key.created",
-            field_key: None,
-            before: None,
-            after: None,
-            metadata: json!({}),
-            entity_revision: None,
-        },
+        source_activity(project_id, "knowledge.deploy_key.created"),
         now,
     )?))
+}
+
+/// Activity on a project's Knowledge source. Callers add what changed.
+pub(super) fn source_activity<'a>(project_id: &'a str, event_type: &'a str) -> ActivityInput<'a> {
+    ActivityInput {
+        project_id: Some(project_id),
+        entity_type: "knowledge_source",
+        entity_id: project_id,
+        task_id: None,
+        event_type,
+        field_key: None,
+        before: None,
+        after: None,
+        metadata: json!({}),
+        entity_revision: None,
+    }
+}
+
+/// The source as a command returns it.
+fn source_entity(connection: &Connection, project_id: &str) -> AppResult<Value> {
+    let row = load_source(connection, project_id)?
+        .ok_or_else(|| AppError::internal("the knowledge source is missing"))?;
+    serde_json::to_value(source_view(connection, project_id, &row)?)
+        .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// The repository as activity records it: never a credential.
@@ -1567,23 +1549,14 @@ fn html_preview_bytes(connection: &Connection, project_id: &str, path: &str) -> 
 }
 
 fn preview_kind(value: Option<&str>, media_type: &str) -> Option<PreviewKind> {
+    let kind = PreviewKind::from_stored(value?)?;
     // Older snapshots could label binary .md files as Markdown. Every read,
     // listing and catalog must reject that persisted classification.
-    if matches!(value, Some("markdown" | "text" | "html")) && !media_type.starts_with("text/") {
-        return None;
-    }
-    match value? {
-        "image" => Some(PreviewKind::Image),
-        "pdf" => Some(PreviewKind::Pdf),
-        "html" => Some(PreviewKind::Html),
-        "markdown" => Some(PreviewKind::Markdown),
-        "text" => Some(PreviewKind::Text),
-        _ => None,
-    }
+    (!kind.has_source() || media_type.starts_with("text/")).then_some(kind)
 }
 
 fn requested_path(path: &str) -> AppResult<String> {
-    if path.len() > PATH_QUERY_MAX || !super::git::valid_relative_path(path) {
+    if !super::git::valid_relative_path(path) {
         return Err(AppError::NotFound { resource: "file" });
     }
     Ok(path.to_owned())
@@ -1704,13 +1677,7 @@ mod tests {
             searchers.contains(&actor.user_id)
         };
         // A long search holds the one slot, and Alice's search waits for it.
-        let held = service
-            .inner
-            .searches
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
+        let held = service.inner.searches.turn().await;
         let first = search(alice);
         while !searching(alice) {
             tokio::task::yield_now().await;
@@ -1731,13 +1698,7 @@ mod tests {
         first.await.unwrap().unwrap();
         other.await.unwrap().unwrap();
         // A search whose request ends lets its person search again at once.
-        let held = service
-            .inner
-            .searches
-            .clone()
-            .acquire_owned()
-            .await
-            .unwrap();
+        let held = service.inner.searches.turn().await;
         let cancelled = search(alice);
         while !searching(alice) {
             tokio::task::yield_now().await;
@@ -1790,7 +1751,7 @@ mod tests {
         let (_root, service, people) = synced_project(files, &["alice"]).await;
         tokio::time::pause();
         // Another read holds the one reader.
-        let held = service.inner.readers.clone().acquire_owned().await.unwrap();
+        let held = service.inner.readers.turn().await;
         let read = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             service.read_text(&people[0], "p", "note.md", None),

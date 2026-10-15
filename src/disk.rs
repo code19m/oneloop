@@ -4,7 +4,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex},
 };
 
 use crate::{AppError, AppResult, error::RuleKind};
@@ -15,6 +15,11 @@ pub(crate) struct DiskAdmission {
     floor: u64,
     usage: Arc<Mutex<Usage>>,
 }
+
+/// What a data directory has reserved. `Db` keeps one, which all its
+/// admissions share.
+#[derive(Clone, Default)]
+pub(crate) struct Reservations(Arc<Mutex<Usage>>);
 
 #[derive(Default)]
 struct Usage {
@@ -34,24 +39,13 @@ struct Lease {
 }
 
 impl DiskAdmission {
-    pub(crate) fn new(root: &Path, floor: u64) -> Self {
-        type Budgets = HashMap<PathBuf, Weak<Mutex<Usage>>>;
-        static BUDGETS: OnceLock<Mutex<Budgets>> = OnceLock::new();
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let mut budgets = BUDGETS
-            .get_or_init(Mutex::default)
-            .lock()
-            .expect("disk budgets lock");
-        budgets.retain(|_, budget| budget.strong_count() > 0);
-        let usage = budgets
-            .get(&root)
-            .and_then(Weak::upgrade)
-            .unwrap_or_else(|| {
-                let usage = Arc::new(Mutex::new(Usage::default()));
-                budgets.insert(root.clone(), Arc::downgrade(&usage));
-                usage
-            });
-        Self { root, floor, usage }
+    /// Admission with its own free-space floor that counts `reservations`.
+    pub(crate) fn new(root: &Path, floor: u64, reservations: Reservations) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            floor,
+            usage: reservations.0,
+        }
     }
 
     pub(crate) fn deficit(&self, bytes: u64) -> AppResult<u64> {
@@ -168,8 +162,9 @@ mod tests {
     #[test]
     fn cleanup_keeps_the_reservation_until_all_owners_and_temporary_bytes_are_gone() {
         let root = tempfile::tempdir_in("target").unwrap();
-        let disk = DiskAdmission::new(root.path(), 0);
-        let other = DiskAdmission::new(root.path(), 0);
+        let reservations = Reservations::default();
+        let disk = DiskAdmission::new(root.path(), 0, reservations.clone());
+        let other = DiskAdmission::new(root.path(), 0, reservations);
         let bytes = fs4::available_space(root.path()).unwrap() / 4 * 3;
         let reservation = disk.reserve(bytes).unwrap();
         let path = root.path().join("unfinished");

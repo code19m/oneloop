@@ -158,7 +158,7 @@ These limits are fixed. Only the [storage](#storage) limits are settings.
 | Text and Markdown previews | The first 200 KiB |
 | HTML previews | Files up to 1 MiB |
 | Image thumbnails | PNG, JPEG and WebP images within the decode limits below; at most 256 × 256 px |
-| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px |
+| Avatar | 5 MiB, and within the decode limits below; stored as 256 × 256 px. One upload at a time per person |
 | Upload in progress | Fails if it stalls for 60 seconds, or takes over an hour |
 
 Text and Markdown previews need the whole file to be valid UTF-8 text.
@@ -191,7 +191,7 @@ thumbnail a moment after the upload.
 
 | Limit | Value |
 | --- | --- |
-| Folder | 5,000 files and 100 MiB of files to show; a larger folder doesn't sync |
+| Folder | 5,000 files, 5,000 subfolders and 100 MiB of files to show; a larger folder doesn't sync |
 | File | Files over 10 MiB are left out |
 | Sync disk use | 300 MiB for the folder's files and Git's copy of them, files left out included; a larger folder doesn't sync |
 | Free disk space | A download reserves 400 MiB on top of `ONELOOP_DISK_MIN_FREE`; a check that finds no new commit needs none |
@@ -203,7 +203,9 @@ thumbnail a moment after the upload.
 
 All query words must occur in the same file or folder path, Markdown section,
 or plain-text line. Matching ignores letter case. Files outside the searchable
-text limits can still be found by name.
+text limits can still be found by name. When some files' text doesn't fit in
+the search index, the search says that some files are searched by name only,
+and MCP replies include `"partial": true`.
 
 **Text**
 

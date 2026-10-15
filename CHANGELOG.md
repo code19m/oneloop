@@ -11,6 +11,18 @@ All notable changes to oneloop are recorded here. The format follows
 - `oneloop serve` no longer crashes when nothing reads its standard error and
   it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
   line like the others.
+- A Knowledge folder with more than 5,000 subfolders no longer syncs, and
+  shows that it is too large. Before, a folder with many deep subfolders
+  could make search use gigabytes of memory, and a sync could fill the disk
+  with folders.
+- Knowledge search now says when some files are searched by name only,
+  because their text doesn't fit in the search index. Before, a word in such
+  a file gave "No results" without a reason. In MCP, `search_knowledge` and
+  `read_knowledge_overview` replies then include `"partial": true`.
+- One person's slow avatar uploads can no longer hold up avatar changes for
+  everyone. Each person now has one avatar upload at a time; another one
+  gets "try again" at once. When the server is busy, a refused avatar upload
+  now gets that answer instead of a network error.
 
 ### Security
 

@@ -34,18 +34,18 @@ impl FileService {
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access_tx(tx, &actor, &stored.attachment.project_id, false, false, now)?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, false, false)?;
                 if stored.attachment.state != BlobState::Available || stored.storage_key.is_none() {
                     return Err(AppError::NotFound { resource: "attachment" });
                 }
                 match mode {
                     ReadMode::Content => {
-                        if !matches!(stored.attachment.preview_kind, Some(PreviewKind::Image | PreviewKind::Pdf)) {
+                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::is_inline_media) {
                             return Err(AppError::NotFound { resource: "preview" });
                         }
                     }
                     ReadMode::Source => {
-                        if !matches!(stored.attachment.preview_kind, Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)) {
+                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::has_source) {
                             return Err(AppError::NotFound { resource: "source" });
                         }
                     }

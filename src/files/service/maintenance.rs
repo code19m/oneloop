@@ -1,4 +1,5 @@
-//! Crash recovery, capacity admission and idempotent leased deletion; full reconciliation remains supported.
+//! Upkeep of stored files: recovery after a crash, room for new files, and
+//! deletion jobs that are safe to run twice.
 use super::*;
 
 impl FileService {
@@ -115,7 +116,10 @@ impl FileService {
         // Scan without blocking publication. Only apparent orphans need the gate;
         // their reference is rechecked under it before unlinking, so an upload
         // committed after the snapshot is never mistaken for an orphan.
-        for path in unreferenced_files(self.store.layout().files(), referenced).await? {
+        for path in self
+            .unreferenced_files(self.store.layout().files(), referenced)
+            .await?
+        {
             report.orphan_files_removed += u64::from(self.remove_if_unreferenced(&path).await?);
         }
         for path in orphan_thumbnails {
@@ -135,7 +139,7 @@ impl FileService {
                     .collect::<Result<_, _>>()?)
             })
             .await?;
-        for (path, _) in regular_files(self.store.layout().staging()).await? {
+        for (path, _) in self.regular_files(self.store.layout().staging()).await? {
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 self.store.remove_file_if_present(&path).await?;
                 report.orphan_files_removed += 1;
@@ -213,18 +217,34 @@ impl FileService {
         Ok(true)
     }
 
-    pub(super) async fn prepare_capacity(&self) -> AppResult<CapacityUsage> {
-        let usage = self.capacity_usage().await?;
-        let report = self.cleanup_for_usage(&usage).await?;
-        if report.bytes_reclaimed > 0 {
-            self.capacity_usage().await
-        } else {
-            Ok(usage)
+    /// Makes room before `size` new bytes are written: cleanup runs when
+    /// usage passed the high watermark, or when the disk is short of space.
+    /// Returns the bytes outside the database, for `require_capacity`.
+    pub(super) async fn admit(&self, size: u64) -> AppResult<u64> {
+        self.store.ensure_directories().await?;
+        let mut usage = self.capacity_usage().await?;
+        if self.cleanup_for_usage(&usage).await?.bytes_reclaimed > 0 {
+            usage = self.capacity_usage().await?;
         }
+        let deficit = self.disk.deficit(size)?;
+        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
+            usage = self.capacity_usage().await?;
+        }
+        Ok(usage.non_database_bytes())
     }
 
     pub async fn cleanup_if_needed(&self) -> AppResult<FileRuntimeReport> {
         self.cleanup_for_usage(&self.capacity_usage().await?).await
+    }
+
+    /// Storage cleanup that an administrator asked for.
+    pub async fn cleanup_for(&self, actor: &Actor) -> AppResult<FileRuntimeReport> {
+        actor.require_admin()?;
+        let actor = actor.clone();
+        self.db
+            .run(move |connection| refresh_actor_connection(connection, &actor)?.require_admin())
+            .await?;
+        self.cleanup_if_needed().await
     }
 
     pub(super) async fn cleanup_for_usage(
@@ -260,24 +280,28 @@ impl FileService {
 
     pub async fn storage_usage(&self, actor: &Actor) -> AppResult<StorageUsage> {
         actor.require_admin()?;
-        let check_actor = actor.clone();
-        self.db
-            .run(move |connection| {
-                let is_admin = require_actor_identity_raw(connection, &check_actor, unix_now()?)?;
-                if !is_admin {
-                    return Err(AppError::Forbidden);
-                }
-                Ok(())
-            })
-            .await?;
+        let actor = actor.clone();
         let limit = self.storage_limit_bytes;
         let (permanent, temporary, pending_deletion, cleaned, projects, recent_cleanup) = self
             .db
             .run(move |connection| {
-                let permanent: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_SQL, [], |r| r.get(0))?;
-                let temporary: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_2_SQL, [], |r| r.get(0))?;
+                refresh_actor_connection(connection, &actor)?.require_admin()?;
+                let permanent: i64 = connection.query_row(
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
+                     JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                     WHERE a.is_ephemeral=0 AND b.state='available'
+                       AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let temporary: i64 = connection.query_row(
+                    "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a
+                     JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                     WHERE a.is_ephemeral=1 AND b.state='available'
+                       AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
                 // Deleted attachments, and the files of deleted tasks, keep
                 // their bytes for the Undo window.
                 let pending_deletion: i64 = connection.query_row(
@@ -289,10 +313,20 @@ impl FileService {
                     [],
                     |r| r.get(0),
                 )?;
-                let cleaned: i64 =
-                    connection.query_row(SELECT_TASK_ATTACHMENTS_3_SQL, [], |r| r.get(0))?;
+                let cleaned: i64 = connection.query_row(
+                    "SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+                     WHERE b.state='cleaned' AND a.deleted_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
                 let projects = {
-                    let mut statement = connection.prepare(SELECT_PROJECTS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT p.id,p.name,count(b.id),coalesce(sum(b.size_bytes),0) FROM projects p
+                         LEFT JOIN task_attachments a ON a.project_id=p.id
+                         LEFT JOIN file_blobs b ON b.id=a.blob_id AND b.state IN ('available','deleting')
+                         WHERE p.deleted_at IS NULL GROUP BY p.id,p.name
+                         HAVING count(b.id)>0 ORDER BY sum(b.size_bytes) DESC,p.name,p.id",
+                    )?;
                     statement
                         .query_map([], |row| {
                             Ok(StorageProjectUsage {
@@ -305,7 +339,10 @@ impl FileService {
                         .collect::<Result<Vec<_>, _>>()?
                 };
                 let recent_cleanup = {
-                    let mut statement = connection.prepare(SELECT_CLEANUP_RUNS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT started_at,files,bytes FROM storage_cleanup_runs
+                         WHERE files > 0 OR bytes > 0 ORDER BY started_at DESC,id DESC LIMIT 5",
+                    )?;
                     statement
                         .query_map([], |row| {
                             Ok(StorageCleanupRun {
@@ -345,11 +382,7 @@ impl FileService {
     }
 
     pub async fn cleanup_to_low_watermark(&self) -> AppResult<FileRuntimeReport> {
-        self.cleanup_to_target(self.storage_limit_bytes.saturating_mul(CLEANUP_LOW_PERCENT) / 100)
-            .await
-    }
-
-    pub(super) async fn cleanup_to_target(&self, target: u64) -> AppResult<FileRuntimeReport> {
+        let target = self.storage_limit_bytes.saturating_mul(CLEANUP_LOW_PERCENT) / 100;
         self.cleanup_files(Some(target), 0).await
     }
 
@@ -364,33 +397,15 @@ impl FileService {
     ) -> AppResult<FileRuntimeReport> {
         // The data lease comes before any gate, as on every other file path.
         let _lease = self.db.acquire_data_lease().await?;
-        // A per-directory cross-process gate also covers separately constructed services.
-        let path = self.store.layout().root().join(".oneloop-cleanup.lock");
-        let gate =
-            tokio::task::spawn_blocking(move || -> AppResult<Option<FileMaintenanceGate>> {
-                let mut options = std::fs::OpenOptions::new();
-                options.create(true).truncate(false).read(true).write(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let file = options.open(path)?;
-                match file.try_lock() {
-                    Ok(()) => Ok(Some(FileMaintenanceGate { _lock: file })),
-                    Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-                    Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-                }
-            })
-            .await
-            .map_err(|error| AppError::internal(format!("cleanup gate failed: {error}")))??;
-        let Some(_gate) = gate else {
+        // A lock per data directory also covers separately constructed services.
+        let cleanup = self.take_lock(DataLayout::try_cleanup_lock).await?;
+        let Some(_cleanup) = cleanup else {
             return Ok(FileRuntimeReport::default());
         };
         let mut report = FileRuntimeReport::default();
         let usage = self.capacity_usage().await?.total();
         let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
-        let previews = regular_files(self.store.previews()).await?;
+        let previews = self.regular_files(self.store.previews()).await?;
         let now = unix_now()?;
         let candidates = self.db.run(move |connection| {
             let mut statement = connection.prepare(
@@ -480,47 +495,13 @@ impl FileService {
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?3)",
                         params![blob, now-ACCESS_GRACE_SECONDS, now, revision])?;
                     if changed == 0 { continue; }
-                    let id = Uuid::now_v7().to_string();
-                    tx.execute(
-                        "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
-                         VALUES(?1,?2,?3,'cleanup',?4,?4,?5)", params![id,blob,key,now,run_tx])?;
+                    let id = insert_deletion_job(tx, &blob, &key, "cleanup", Some(&run_tx), now)?;
                     jobs.push((DeletionJob { id, blob_id: blob, storage_key: key }, size));
                     claimed = claimed.saturating_add(size);
                 }
                 Ok(jobs)
             }).await?;
-            let mut removed = Vec::new();
-            let mut parents = HashMap::new();
-            for (job, size) in jobs {
-                let path = self.store.file_path(&job.storage_key)?;
-                match self.store.remove_file_if_present(&path).await {
-                    Ok(()) => {
-                        self.remove_thumbnail(&job.storage_key).await;
-                        parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
-                        removed.push((job, size));
-                    }
-                    Err(error) => {
-                        self.record_deletion_failure(&job.id, &error.to_string())
-                            .await?
-                    }
-                }
-            }
-            for path in parents.into_values() {
-                FileStore::sync_deletion_parent(path).await?;
-            }
-            let (count, bytes) = self
-                .db
-                .transaction(move |tx| {
-                    let mut count = 0;
-                    let mut bytes = 0_u64;
-                    for (job, size) in removed {
-                        // Count physical progress even if another reconciler completed it.
-                        bytes = bytes.saturating_add(size);
-                        count += u64::from(finish_deletion_job(tx, &job)?);
-                    }
-                    Ok((count, bytes))
-                })
-                .await?;
+            let (count, bytes) = self.complete_deletion_jobs(jobs).await?;
             report.temporary_files_cleaned += count;
             report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
             needed = needed.saturating_sub(bytes);
@@ -633,7 +614,13 @@ impl FileService {
         let error = error.chars().take(500).collect::<String>();
         self.db
             .transaction(move |connection| {
-                connection.execute(UPDATE_FILE_DELETION_JOBS_SQL, params![error, job_id])?;
+                // A failed job waits longer after each attempt, up to an hour.
+                connection.execute(
+                    "UPDATE file_deletion_jobs SET attempt_count=attempt_count+1,
+                     available_at=unixepoch()+min(3600,30*(1<<min(attempt_count,7))),last_error=?1
+                     WHERE id=?2",
+                    params![error, job_id],
+                )?;
                 Ok(())
             })
             .await
@@ -661,10 +648,7 @@ impl FileService {
                         "UPDATE file_blobs SET state='deleting' WHERE id=?1",
                         [&blob_id],
                     )?;
-                    tx.execute(
-                        INSERT_FILE_DELETION_JOBS_SQL,
-                        params![Uuid::now_v7().to_string(), blob_id, key, reason, now],
-                    )?;
+                    insert_deletion_job(tx, &blob_id, &key, &reason, None, now)?;
                 }
                 Ok(())
             })
@@ -779,10 +763,7 @@ impl FileService {
                          AND NOT EXISTS(SELECT 1 FROM file_leases WHERE blob_id=?1 AND expires_at>?2)",
                         params![blob,now,now-UNDO_WINDOW_SECONDS])?;
                     if changed == 1 {
-                        tx.execute(
-                            "INSERT INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,available_at)
-                             VALUES(?1,?2,?3,?4,?5,?5)",
-                            params![Uuid::now_v7().to_string(),blob,key,reason,now])?;
+                        insert_deletion_job(tx, &blob, &key, &reason, None, now)?;
                     }
                 }
                 Ok(())
@@ -802,7 +783,11 @@ impl FileService {
             let jobs = self
                 .db
                 .run(move |connection| {
-                    let mut statement = connection.prepare(SELECT_FILE_DELETION_JOBS_SQL)?;
+                    let mut statement = connection.prepare(
+                        "SELECT id,blob_id,storage_key FROM file_deletion_jobs
+                         WHERE available_at<=?1 AND locked_at IS NULL
+                         ORDER BY available_at,id LIMIT 200",
+                    )?;
                     Ok(statement
                         .query_map([now], |r| {
                             Ok(DeletionJob {
@@ -818,34 +803,43 @@ impl FileService {
                 break;
             }
             attempted += jobs.len();
-            let mut removed = Vec::new();
-            let mut parents = HashMap::new();
-            for job in jobs {
-                let path = self.store.file_path(&job.storage_key)?;
-                if let Err(error) = self.store.remove_file_if_present(&path).await {
-                    self.record_deletion_failure(&job.id, &error.to_string())
-                        .await?;
-                    continue;
-                }
-                self.remove_thumbnail(&job.storage_key).await;
-                parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
-                removed.push(job);
-            }
-            for path in parents.into_values() {
-                FileStore::sync_deletion_parent(path).await?;
-            }
-            completed += self
-                .db
-                .transaction(move |tx| {
-                    let mut count = 0;
-                    for job in removed {
-                        count += u64::from(finish_deletion_job(tx, &job)?);
-                    }
-                    Ok(count)
-                })
-                .await?;
+            let jobs = jobs.into_iter().map(|job| (job, 0)).collect();
+            completed += self.complete_deletion_jobs(jobs).await?.0;
         }
         Ok(completed)
+    }
+
+    /// Removes each job's file and thumbnail, syncs each folder once, and
+    /// finishes the jobs whose file is gone in one transaction. A job comes
+    /// with the bytes it frees. Returns how many jobs this call finished, and
+    /// the bytes freed, which count even when another worker finished a job.
+    async fn complete_deletion_jobs(&self, jobs: Vec<(DeletionJob, u64)>) -> AppResult<(u64, u64)> {
+        let mut removed = Vec::new();
+        let mut parents = HashMap::new();
+        for (job, size) in jobs {
+            let path = self.store.file_path(&job.storage_key)?;
+            if let Err(error) = self.store.remove_file_if_present(&path).await {
+                self.record_deletion_failure(&job.id, &error.to_string())
+                    .await?;
+                continue;
+            }
+            self.remove_thumbnail(&job.storage_key).await;
+            parents.insert(path.parent().expect("managed shard").to_path_buf(), path);
+            removed.push((job, size));
+        }
+        for path in parents.into_values() {
+            FileStore::sync_parent(path).await?;
+        }
+        self.db
+            .transaction(move |tx| {
+                let (mut count, mut bytes) = (0, 0_u64);
+                for (job, size) in removed {
+                    bytes = bytes.saturating_add(size);
+                    count += u64::from(finish_deletion_job(tx, &job)?);
+                }
+                Ok((count, bytes))
+            })
+            .await
     }
 
     pub(super) async fn capacity_usage(&self) -> AppResult<CapacityUsage> {
@@ -853,8 +847,16 @@ impl FileService {
         let (blob_bytes, reserved_bytes, staging_keys) = self
             .db
             .run(move |connection| {
-                let blob: i64 = connection.query_row(SELECT_FILE_BLOBS_2_SQL, [], |r| r.get(0))?;
-                let mut statement = connection.prepare(SELECT_UPLOAD_RESERVATIONS_2_SQL)?;
+                let blob: i64 = connection.query_row(
+                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
+                     WHERE state IN ('pending','available','deleting')",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let mut statement = connection.prepare(
+                    "SELECT staging_key,size_bytes FROM upload_reservations
+                     WHERE committed_at IS NULL AND expires_at>?1",
+                )?;
                 let rows = statement
                     .query_map([now], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -880,7 +882,7 @@ impl FileService {
             .await?;
         let mut staging_bytes = 0_u64;
         let mut unreserved_staging_bytes = 0_u64;
-        for (path, size) in regular_files(self.store.layout().staging()).await? {
+        for (path, size) in self.regular_files(self.store.layout().staging()).await? {
             staging_bytes = staging_bytes.saturating_add(size);
             if path
                 .file_name()
@@ -894,10 +896,60 @@ impl FileService {
             blob_bytes,
             reserved_bytes,
             staging_bytes,
-            preview_bytes: tree_bytes(self.store.previews()).await?,
+            preview_bytes: self.tree_bytes(self.store.previews()).await?,
             unreserved_staging_bytes,
         })
     }
+}
+
+/// Queues the removal of a blob's bytes. The caller has just marked the blob
+/// `deleting`, so it has no job yet.
+fn insert_deletion_job(
+    tx: &Transaction<'_>,
+    blob_id: &str,
+    storage_key: &str,
+    reason: &str,
+    cleanup_run_id: Option<&str>,
+    now: i64,
+) -> AppResult<String> {
+    let id = Uuid::now_v7().to_string();
+    tx.execute(
+        "INSERT INTO file_deletion_jobs
+         (id,blob_id,storage_key,reason,scheduled_at,available_at,cleanup_run_id)
+         VALUES(?1,?2,?3,?4,?5,?5,?6)",
+        params![id, blob_id, storage_key, reason, now, cleanup_run_id],
+    )?;
+    Ok(id)
+}
+
+/// Fails when `size` more bytes would take file storage past `limit`.
+pub(super) fn require_capacity(
+    tx: &Transaction<'_>,
+    now: i64,
+    non_database_bytes: u64,
+    size: u64,
+    limit: u64,
+) -> AppResult<()> {
+    let used: i64 = tx.query_row(
+        "SELECT
+           coalesce((SELECT sum(size_bytes) FROM file_blobs
+                     WHERE state IN ('pending','available','deleting')),0) +
+           coalesce((SELECT sum(size_bytes) FROM upload_reservations
+                     WHERE committed_at IS NULL AND expires_at>?1),0)",
+        [now],
+        |row| row.get(0),
+    )?;
+    if (used.max(0) as u64)
+        .saturating_add(non_database_bytes)
+        .saturating_add(size)
+        > limit
+    {
+        return Err(AppError::rule(
+            crate::error::RuleKind::StorageFull,
+            "attachment storage capacity is exhausted",
+        ));
+    }
+    Ok(())
 }
 
 fn release_upload_rows(

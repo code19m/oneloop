@@ -4,11 +4,13 @@
 
 mod access;
 pub mod auth;
+mod blocking;
 pub mod cli;
 mod clock;
 pub mod collaboration;
 pub mod config;
 pub mod db;
+mod disk;
 pub mod domain;
 pub mod error;
 pub mod files;

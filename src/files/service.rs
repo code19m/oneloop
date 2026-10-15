@@ -1,4 +1,6 @@
-//! File lifecycle coordination. Authentication, DB metadata and leases protect every byte path; durable jobs make filesystem changes recoverable.
+//! The file service: commands, reads and upkeep of attachments and avatars.
+//! Each file operation checks access and metadata in SQLite first, and
+//! durable jobs make the changes on disk recoverable.
 
 mod detect;
 use detect::preview_kind_from_metadata;
@@ -6,14 +8,16 @@ pub(crate) use detect::validate_original_name;
 mod avatar;
 mod decode;
 mod maintenance;
+use maintenance::require_capacity;
 mod read;
 pub use read::ReadMode;
 mod thumbnail;
 pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
+pub use upload::PendingAttachmentUpload;
 
 use super::BlobState;
-use super::disk::{DiskAdmission, DiskReservation};
+use crate::disk::{DiskAdmission, DiskReservation};
 use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
 use std::{
     collections::{HashMap, HashSet},
@@ -36,9 +40,10 @@ use uuid::Uuid;
 
 use crate::{
     AppError, AppResult, Db,
-    auth::{Actor, ActorSource},
+    auth::{Actor, ActorSource, refresh_actor_connection},
+    blocking::Lane,
     collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
-    db::DataLease,
+    db::{DataLayout, DataLease},
     domain::UNDO_WINDOW_SECONDS,
 };
 
@@ -54,7 +59,6 @@ const CLEANUP_LOW_PERCENT: u64 = 70;
 
 const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
 const AVATAR_SIDE: u32 = 256;
-const FILE_MAINTENANCE_LOCK_FILE: &str = ".oneloop-files.lock";
 
 #[derive(Clone)]
 pub struct FileService {
@@ -63,13 +67,29 @@ pub struct FileService {
     storage_limit_bytes: u64,
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
-    avatar_uploads: std::sync::Arc<tokio::sync::Semaphore>,
+    /// People with an avatar upload under way, one upload each.
+    avatar_uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    scans: Lane,
+    /// One image decode at a time, for avatar uploads and thumbnails together,
+    /// so their memory never adds up.
+    decodes: Lane,
+    inspections: Lane,
 }
 
 /// A place for one avatar upload, kept from its first byte through its
 /// decode, while the upload keeps its image in memory.
 pub struct AvatarSlot {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    user_id: String,
+}
+
+impl Drop for AvatarSlot {
+    fn drop(&mut self) {
+        self.uploaders
+            .lock()
+            .expect("avatar uploads lock")
+            .remove(&self.user_id);
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -87,53 +107,10 @@ pub enum UploadStart {
     Pending(Box<PendingAttachmentUpload>),
 }
 
-pub struct PendingAttachmentUpload {
-    disk: Option<DiskReservation>,
-    service: FileService,
-    actor: Actor,
-    reservation_id: String,
-    idempotency_id: String,
-    task_id: String,
-    project_id: String,
-    original_name: String,
-    is_ephemeral: bool,
-    claimed_size: u64,
-    staging_path: PathBuf,
-    storage_key: String,
-    file: Option<File>,
-    written: u64,
-    hasher: Sha256,
-    inspection: Vec<u8>,
-    finished: bool,
-}
-
-struct FinalizeAttachmentUpload {
-    disk: Option<DiskReservation>,
-    service: FileService,
-    actor: Actor,
-    data_lease: DataLease,
-    reservation_id: String,
-    idempotency_id: String,
-    task_id: String,
-    project_id: String,
-    original_name: String,
-    is_ephemeral: bool,
-    staging_path: PathBuf,
-    storage_key: String,
-    file: Option<File>,
-    written: u64,
-    hasher: Sha256,
-    inspection: Vec<u8>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UploadCleanupDecision {
     PreserveCommitted,
     RemoveUncommitted,
-}
-
-struct FileMaintenanceGate {
-    _lock: std::fs::File,
 }
 
 pub struct FileRead {
@@ -255,49 +232,53 @@ impl CapacityUsage {
 impl FileService {
     pub fn new(db: Db, storage_limit_bytes: u64, disk_min_free_bytes: u64) -> Self {
         let store = FileStore::new(db.layout().clone());
-        let disk = DiskAdmission::new(db.layout().root(), disk_min_free_bytes);
+        let disk = db.disk_admission(disk_min_free_bytes);
         Self {
             db,
             store,
             storage_limit_bytes,
             disk,
             thumbnails: Default::default(),
-            avatar_uploads: std::sync::Arc::new(tokio::sync::Semaphore::new(AVATAR_UPLOADS)),
+            avatar_uploaders: Default::default(),
+            scans: Lane::new("file scanner", 2),
+            decodes: Lane::new("image decoder", 1),
+            inspections: Lane::new("text inspection", 2),
         }
     }
 
-    /// A place for an avatar upload, taken before its bytes arrive. When all
+    /// A place for an avatar upload, taken before its bytes arrive. A
+    /// person has one place at most, so no one can take them all. When all
     /// are taken, the upload is told to retry at once.
-    pub fn avatar_slot(&self) -> AppResult<AvatarSlot> {
-        self.avatar_uploads
-            .clone()
-            .try_acquire_owned()
-            .map(|permit| AvatarSlot { _permit: permit })
-            .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))
-    }
-
-    pub fn store(&self) -> &FileStore {
-        &self.store
-    }
-
-    async fn acquire_file_maintenance_gate(&self) -> AppResult<FileMaintenanceGate> {
-        let path = self.db.layout().root().join(FILE_MAINTENANCE_LOCK_FILE);
-        tokio::task::spawn_blocking(move || {
-            let mut options = std::fs::OpenOptions::new();
-            options.create(true).truncate(false).read(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let file = options.open(&path)?;
-            file.lock().map_err(|error| {
-                AppError::Io(format!("lock file maintenance {}: {error}", path.display()))
-            })?;
-            Ok(FileMaintenanceGate { _lock: file })
+    pub fn avatar_slot(&self, actor: &Actor) -> AppResult<AvatarSlot> {
+        let mut uploaders = self.avatar_uploaders.lock().expect("avatar uploads lock");
+        if uploaders.contains(&actor.user_id) {
+            return Err(AppError::RateLimited { retry_after: 1 });
+        }
+        if uploaders.len() >= AVATAR_UPLOADS {
+            return Err(AppError::Unavailable(
+                "avatar processing is busy; retry shortly".into(),
+            ));
+        }
+        uploaders.insert(actor.user_id.clone());
+        Ok(AvatarSlot {
+            uploaders: self.avatar_uploaders.clone(),
+            user_id: actor.user_id.clone(),
         })
-        .await
-        .map_err(|error| AppError::internal(format!("file maintenance worker failed: {error}")))?
+    }
+
+    async fn acquire_file_maintenance_gate(&self) -> AppResult<std::fs::File> {
+        self.take_lock(DataLayout::file_maintenance_lock).await
+    }
+
+    /// Takes a lock of the data directory off the async workers.
+    async fn take_lock<T: Send + 'static>(
+        &self,
+        take: fn(&DataLayout) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let layout = self.db.layout().clone();
+        tokio::task::spawn_blocking(move || take(&layout))
+            .await
+            .map_err(|error| AppError::internal(format!("file lock worker failed: {error}")))?
     }
 
     pub async fn list_attachments(
@@ -311,7 +292,7 @@ impl FileService {
             .db
             .run(move |connection| {
                 let project_id = task_project(connection, &task_id)?;
-                require_file_access_connection(connection, &actor, &project_id, false, false)?;
+                require_file_access(connection, &actor, &project_id, false, false)?;
                 attachment_views(connection, &task_id)
             })
             .await?;
@@ -333,14 +314,7 @@ impl FileService {
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access_tx(
-                    tx,
-                    &actor,
-                    &stored.attachment.project_id,
-                    true,
-                    false,
-                    now,
-                )?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, false)?;
                 // Already set: a retry of an applied change succeeds, while a
                 // stale request for the other value still conflicts below.
                 if stored.attachment.is_ephemeral == patch.is_ephemeral {
@@ -403,29 +377,30 @@ impl FileService {
         }
         let actor = actor.clone();
         let task_id = task_id.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&json!({
-                "taskId": task_id,
-                "attachmentId": input.attachment_id,
-                "targetId": input.target_id,
-                "after": input.after,
-                "expectedRevision": input.expected_revision,
-            }))
-            .expect("serializable reorder hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(&json!({
+            "taskId": task_id,
+            "attachmentId": input.attachment_id,
+            "targetId": input.target_id,
+            "after": input.after,
+            "expectedRevision": input.expected_revision,
+        }))?;
         let idempotency_id = Uuid::now_v7().to_string();
         let list = self
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let project_id = task_project(tx, &task_id)?;
-                require_file_access_tx(tx, &actor, &project_id, true, false, now)?;
-                if let Some(existing) =
-                    reorder_idempotency_replay(tx, &actor, &input.idempotency_key, &request_hash)?
-                {
+                require_file_access(tx, &actor, &project_id, true, false)?;
+                if let Some(existing) = crate::idempotency::replay(
+                    tx,
+                    &actor,
+                    &input.idempotency_key,
+                    "attachment.reorder",
+                    &request_hash,
+                )? {
                     return Ok(existing);
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -549,22 +524,29 @@ impl FileService {
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         let key = idempotency_key.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(
-                &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
-            )
-            .expect("serializable delete hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(
+            &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
+        )?;
         let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(replay) = delete_idempotency_replay(tx, &actor, &key, &request_hash)? {
-                    require_file_access_tx(tx, &actor, &replay.0, false, true, now)?;
+                let replay: Option<serde_json::Value> = crate::idempotency::replay(
+                    tx,
+                    &actor,
+                    &key,
+                    "attachment.delete",
+                    &request_hash,
+                )?;
+                if let Some(replay) = replay {
+                    let project_id = replay["projectId"]
+                        .as_str()
+                        .ok_or_else(|| AppError::internal("deletion replay lacks project"))?;
+                    require_file_access(tx, &actor, project_id, false, true)?;
                     return Ok(());
                 }
                 let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
                 if stored.attachment.revision != expected_revision {
                     return Err(AppError::revision(expected_revision, stored.attachment.revision));
                 }
@@ -574,7 +556,7 @@ impl FileService {
                         "the attachment is being removed; try again shortly".into(),
                     ));
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -632,28 +614,25 @@ impl FileService {
         }
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
-        let request_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(
-                &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
-            )
-            .expect("serializable restore hash"),
-        ));
+        let request_hash = crate::idempotency::request_hash(
+            &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
+        )?;
         let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(view) = idempotency_replay(
+                if let Some(view) = crate::idempotency::replay::<AttachmentView>(
                     tx,
                     &actor,
                     &input.idempotency_key,
                     "attachment.restore",
                     &request_hash,
                 )? {
-                    require_file_access_tx(tx, &actor, &view.project_id, false, true, now)?;
+                    require_file_access(tx, &actor, &view.project_id, false, true)?;
                     return Ok(view);
                 }
                 let (stored, deleted_at) = attachment_with_deletion(tx, &attachment_id)?;
-                require_file_access_tx(tx, &actor, &stored.attachment.project_id, true, true, now)?;
+                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
                 let Some(deleted_at) = deleted_at else {
                     return Err(AppError::Conflict("the attachment is not deleted".into()));
                 };
@@ -669,23 +648,15 @@ impl FileService {
                         "the attachment is being removed and can no longer be restored".into(),
                     ));
                 }
-                let occupied: i64 = tx.query_row(
-                    "SELECT
-                       (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-                        WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
-                       (SELECT count(*) FROM upload_reservations
-                        WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
-                    params![stored.attachment.task_id, now],
-                    |row| row.get(0),
-                )?;
                 if stored.attachment.state == BlobState::Available
-                    && occupied >= MAX_ATTACHMENTS_PER_TASK
+                    && occupied_slots(tx, &stored.attachment.task_id, now)?
+                        >= MAX_ATTACHMENTS_PER_TASK
                 {
                     return Err(AppError::Conflict(format!(
                         "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
                     )));
                 }
-                let actual_id = upsert_running_idempotency(
+                let actual_id = crate::idempotency::start(
                     tx,
                     &actor,
                     &idempotency_id,
@@ -718,8 +689,9 @@ impl FileService {
                     now,
                 )?;
                 let view = attachment_by_id(tx, &attachment_id)?.attachment;
-                let response = serde_json::to_string(&view)
-                    .map_err(|error| AppError::internal(format!("serialize attachment: {error}")))?;
+                let response = serde_json::to_string(&view).map_err(|error| {
+                    AppError::internal(format!("serialize attachment: {error}"))
+                })?;
                 crate::idempotency::succeed(
                     tx,
                     &actual_id,
@@ -754,39 +726,14 @@ fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<S
         .ok_or(AppError::NotFound { resource: "task" })
 }
 
-fn require_file_access_connection(
+/// Attachment access to `project_id`. A reader without access is told the
+/// attachment doesn't exist.
+fn require_file_access(
     connection: &rusqlite::Connection,
     actor: &Actor,
     project_id: &str,
     write: bool,
     destructive: bool,
-) -> AppResult<()> {
-    require_file_access_raw(
-        connection,
-        actor,
-        project_id,
-        write,
-        destructive,
-        unix_now()?,
-    )
-}
-fn require_file_access_tx(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    project_id: &str,
-    write: bool,
-    destructive: bool,
-    now: i64,
-) -> AppResult<()> {
-    require_file_access_raw(tx, actor, project_id, write, destructive, now)
-}
-fn require_file_access_raw(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    project_id: &str,
-    write: bool,
-    destructive: bool,
-    _now: i64,
 ) -> AppResult<()> {
     crate::access::require_project(
         connection,
@@ -806,17 +753,36 @@ fn require_file_access_raw(
     })
 }
 
-fn require_actor_identity_raw(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    _now: i64,
-) -> AppResult<bool> {
-    Ok(crate::auth::refresh_actor_connection(connection, actor)?.is_admin)
+/// Attachments that count against a task's limit: available files, files
+/// being removed, and uploads under way.
+fn occupied_slots(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<i64> {
+    Ok(tx.query_row(
+        "SELECT
+           (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+            WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
+           (SELECT count(*) FROM upload_reservations
+            WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
+        params![task_id, now],
+        |row| row.get(0),
+    )?)
 }
+
+/// The columns `stored_file_row` reads, in its order.
+const ATTACHMENT_COLUMNS: &str = "a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,\
+     b.media_type,b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,\
+     a.last_accessed_at,b.state,a.revision,b.id,b.storage_key";
 
 fn attachment_by_id(connection: &rusqlite::Connection, id: &str) -> AppResult<StoredFile> {
     connection
-        .query_row(SELECT_TASK_ATTACHMENTS_4_SQL, [id], stored_file_row)
+        .query_row(
+            &format!(
+                "SELECT {ATTACHMENT_COLUMNS} FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                 WHERE a.id=?1 AND t.deleted_at IS NULL AND a.deleted_at IS NULL"
+            ),
+            [id],
+            stored_file_row,
+        )
         .optional()?
         .ok_or(AppError::NotFound {
             resource: "attachment",
@@ -830,9 +796,15 @@ fn attachment_with_deletion(
     id: &str,
 ) -> AppResult<(StoredFile, Option<i64>)> {
     connection
-        .query_row(SELECT_TASK_ATTACHMENTS_6_SQL, [id], |row| {
-            Ok((stored_file_row(row)?, row.get(16)?))
-        })
+        .query_row(
+            &format!(
+                "SELECT {ATTACHMENT_COLUMNS},a.deleted_at FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id JOIN tasks t ON t.id=a.task_id
+                 WHERE a.id=?1 AND t.deleted_at IS NULL"
+            ),
+            [id],
+            |row| Ok((stored_file_row(row)?, row.get(16)?)),
+        )
         .optional()?
         .ok_or(AppError::NotFound {
             resource: "attachment",
@@ -842,11 +814,12 @@ fn attachment_views(
     connection: &rusqlite::Connection,
     task_id: &str,
 ) -> AppResult<Vec<AttachmentView>> {
-    let mut s=connection.prepare("SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
-                     b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
-                     b.state,a.revision,b.id,b.storage_key FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id WHERE a.task_id=?1 AND a.deleted_at IS NULL ORDER BY a.position,a.id")?;
-    Ok(s.query_map([task_id], stored_file_row)?
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ATTACHMENT_COLUMNS} FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
+         WHERE a.task_id=?1 AND a.deleted_at IS NULL ORDER BY a.position,a.id"
+    ))?;
+    Ok(statement
+        .query_map([task_id], stored_file_row)?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .map(|x| x.attachment)
@@ -880,70 +853,17 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
             revision: row.get(13)?,
             preview_kind: preview,
             download_url: available.then(|| format!("/api/attachments/{id}/download")),
-            content_url: (available
-                && matches!(preview, Some(PreviewKind::Image | PreviewKind::Pdf)))
-            .then(|| format!("/api/attachments/{id}/content")),
+            content_url: (available && preview.is_some_and(PreviewKind::is_inline_media))
+                .then(|| format!("/api/attachments/{id}/content")),
             thumbnail_url: thumbnail.then(|| format!("/api/attachments/{id}/thumbnail")),
-            source_url: (available
-                && matches!(
-                    preview,
-                    Some(PreviewKind::Text | PreviewKind::Markdown | PreviewKind::Html)
-                ))
-            .then(|| format!("/api/attachments/{id}/source")),
+            source_url: (available && preview.is_some_and(PreviewKind::has_source))
+                .then(|| format!("/api/attachments/{id}/source")),
             html_preview_url: (available && preview == Some(PreviewKind::Html))
                 .then(|| format!("/api/attachments/{id}/preview/html")),
         },
         blob_id: row.get(14)?,
         storage_key: row.get(15)?,
     })
-}
-
-fn upload_request_hash(task: &str, name: &str, size: u64, ephemeral: bool) -> String {
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(&json!({"taskId":task,"name":name,"size":size,"ephemeral":ephemeral}))
-            .expect("serializable upload hash"),
-    ))
-}
-fn idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    operation: &str,
-    hash: &str,
-) -> AppResult<Option<AttachmentView>> {
-    crate::idempotency::replay(tx, actor, key, operation, hash)
-}
-fn delete_idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    hash: &str,
-) -> AppResult<Option<(String, String)>> {
-    let value: Option<serde_json::Value> =
-        crate::idempotency::replay(tx, actor, key, "attachment.delete", hash)?;
-    value
-        .map(|value| {
-            Ok((
-                value["projectId"]
-                    .as_str()
-                    .ok_or_else(|| AppError::internal("deletion replay lacks project"))?
-                    .to_owned(),
-                value["taskId"]
-                    .as_str()
-                    .ok_or_else(|| AppError::internal("deletion replay lacks task"))?
-                    .to_owned(),
-            ))
-        })
-        .transpose()
-}
-
-fn reorder_idempotency_replay(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    key: &str,
-    hash: &str,
-) -> AppResult<Option<AttachmentList>> {
-    crate::idempotency::replay(tx, actor, key, "attachment.reorder", hash)
 }
 
 fn finish_reorder_idempotency(
@@ -969,18 +889,6 @@ fn finish_reorder_idempotency(
     )?;
     Ok(())
 }
-fn upsert_running_idempotency(
-    tx: &Transaction<'_>,
-    actor: &Actor,
-    id: &str,
-    key: &str,
-    operation: &str,
-    hash: &str,
-    now: i64,
-) -> AppResult<String> {
-    crate::idempotency::start(tx, actor, id, key, operation, hash, now)
-}
-
 fn record_attachment_deletion(
     tx: &Transaction<'_>,
     attachment: &DeleteActivityContext,
@@ -1083,53 +991,56 @@ fn record_system_cleanup(
     Ok(())
 }
 
-static FILE_SCAN_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+impl FileService {
+    async fn regular_files(&self, root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
+        self.scans
+            .run(move || {
+                let mut files = Vec::new();
+                walk_regular_files_blocking(root, |path, size| {
+                    files.push((path, size));
+                    Ok(())
+                })?;
+                Ok(files)
+            })
+            .await?
+    }
 
-async fn regular_files(root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        regular_files_blocking(root)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
-}
+    async fn unreferenced_files(
+        &self,
+        root: PathBuf,
+        referenced: HashSet<String>,
+    ) -> AppResult<Vec<PathBuf>> {
+        self.scans
+            .run(move || {
+                let mut orphans = Vec::new();
+                walk_regular_files_blocking(root.clone(), |path, _| {
+                    let key = path
+                        .strip_prefix(&root)
+                        .map_err(|_| AppError::internal("file escaped storage root"))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !referenced.contains(&key) {
+                        orphans.push(path);
+                    }
+                    Ok(())
+                })?;
+                Ok(orphans)
+            })
+            .await?
+    }
 
-fn regular_files_blocking(root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
-    let mut files = Vec::new();
-    walk_regular_files_blocking(root, |path, size| {
-        files.push((path, size));
-        Ok(())
-    })?;
-    Ok(files)
-}
-
-async fn unreferenced_files(root: PathBuf, referenced: HashSet<String>) -> AppResult<Vec<PathBuf>> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let mut orphans = Vec::new();
-        walk_regular_files_blocking(root.clone(), |path, _| {
-            let key = path
-                .strip_prefix(&root)
-                .map_err(|_| AppError::internal("file escaped storage root"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if !referenced.contains(&key) {
-                orphans.push(path);
-            }
-            Ok(())
-        })?;
-        Ok(orphans)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
+    async fn tree_bytes(&self, root: PathBuf) -> AppResult<u64> {
+        self.scans
+            .run(move || {
+                let mut total = 0_u64;
+                walk_regular_files_blocking(root, |_, size| {
+                    total = total.saturating_add(size);
+                    Ok(())
+                })?;
+                Ok(total)
+            })
+            .await?
+    }
 }
 
 fn walk_regular_files_blocking(
@@ -1174,24 +1085,6 @@ fn walk_regular_files_blocking(
     }
     Ok(())
 }
-async fn tree_bytes(root: PathBuf) -> AppResult<u64> {
-    let permit = FILE_SCAN_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("file scanner is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let mut total = 0_u64;
-        walk_regular_files_blocking(root, |_, size| {
-            total = total.saturating_add(size);
-            Ok(())
-        })?;
-        Ok(total)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("file scanner failed: {error}")))?
-}
-
 fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
     let format = image::guess_format(bytes)
         .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
@@ -1317,20 +1210,12 @@ fn find_tag_end(
     None
 }
 
-static HTML_PREVIEW_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-
-/// Sanitize HTML for the sandboxed preview frame, at most two files at once.
+/// Sanitize HTML for the sandboxed preview frame, at most two files at once,
+/// attachments and Knowledge files together.
 pub(crate) async fn sanitized_html_preview(bytes: Vec<u8>) -> AppResult<Vec<u8>> {
-    let permit = HTML_PREVIEW_PERMITS
-        .acquire()
-        .await
-        .map_err(|_| AppError::Unavailable("preview worker is shutting down".into()))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        sanitize_html_preview(&bytes)
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("preview worker failed: {error}")))
+    static PREVIEWS: std::sync::LazyLock<Lane> =
+        std::sync::LazyLock::new(|| Lane::new("HTML preview", 2));
+    PREVIEWS.run(move || sanitize_html_preview(&bytes)).await
 }
 
 /// The media type and preview kind of complete file contents, decided as for
@@ -1341,9 +1226,6 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
 }
-/// One image decode at a time, for avatar uploads and the thumbnail worker
-/// together, so their memory never adds up.
-static IMAGE_DECODE_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 /// Avatar uploads under way at once; each keeps its image in memory until it
 /// is decoded. More are told to retry.
 const AVATAR_UPLOADS: usize = 4;
@@ -1351,13 +1233,6 @@ const AVATAR_UPLOADS: usize = 4;
 /// included. The slowest decode the limits allow takes about a second on a
 /// laptop, and a few seconds on a small server.
 const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-async fn avatar_decode_permit() -> AppResult<tokio::sync::SemaphorePermit<'static>> {
-    tokio::time::timeout(AVATAR_DECODE_WAIT, IMAGE_DECODE_PERMITS.acquire())
-        .await
-        .map_err(|_| AppError::Unavailable("avatar processing is busy; retry shortly".into()))?
-        .map_err(|_| AppError::Unavailable("avatar worker is shutting down".into()))
-}
 
 struct DeletionJob {
     id: String,
@@ -1392,9 +1267,12 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
     let now = unix_now()?;
     if reason == "cleanup" {
         let attachment: Option<(String, u64)> = tx
-            .query_row(SELECT_TASK_ATTACHMENTS_5_SQL, [&blob], |r| {
-                Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64))
-            })
+            .query_row(
+                "SELECT a.id,b.size_bytes FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id WHERE a.blob_id=?1",
+                [&blob],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64)),
+            )
             .optional()?;
         tx.execute(
             "UPDATE file_blobs SET state='cleaned',storage_key=NULL,cleaned_at=?1 WHERE id=?2",
@@ -1408,6 +1286,10 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
             record_system_cleanup(tx, &attachment, size, now)?;
         }
     } else if let Some((attachment, actor)) = completion.activity {
+        // Only jobs that 0.1.0-rc.2 or earlier queued name an attachment:
+        // migration 0003 filled it in, and since Undo the deletion itself
+        // records the activity. Remove this branch when upgrades from rc.2
+        // end.
         record_attachment_deletion(tx, &attachment, actor.as_ref(), now)?;
         tx.execute("UPDATE idempotency_keys SET state='succeeded',response_status=204,updated_at=?1 WHERE \
                      operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",params![now,attachment.id])?;
@@ -1419,77 +1301,6 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
     }
     Ok(true)
 }
-
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
-const SELECT_FILE_BLOBS_SQL: &str = "SELECT
-                       coalesce((SELECT sum(size_bytes) FROM file_blobs WHERE state IN ('pending','available','deleting')),0) +
-                       coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                                 WHERE committed_at IS NULL AND expires_at>?1),0)";
-const SELECT_PROJECT_MEMBERSHIPS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM project_memberships a JOIN project_memberships b ON \
-                     b.project_id=a.project_id JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL \
-                     WHERE a.user_id=?1 AND b.user_id=?2)";
-const SELECT_USERS_SQL: &str = "SELECT b.storage_key,b.size_bytes,b.checksum_sha256,b.id FROM users u JOIN file_blobs b \
-                     ON b.id=u.avatar_blob_id WHERE u.id=?1 AND u.is_active=1 AND b.state='available'";
-const INSERT_FILE_LEASES_SQL: &str = "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at) VALUES(?1,?2,\
-                     'preview',?3,?4,?5)";
-const SELECT_TASK_ATTACHMENTS_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=0 AND b.state='available' \
-                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
-const SELECT_TASK_ATTACHMENTS_2_SQL: &str = "SELECT coalesce(sum(b.size_bytes),0) FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.is_ephemeral=1 AND b.state='available' \
-                     AND a.deleted_at IS NULL AND t.deleted_at IS NULL";
-const SELECT_TASK_ATTACHMENTS_3_SQL: &str = "SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE \
-                     b.state='cleaned' AND a.deleted_at IS NULL";
-const UPDATE_FILE_DELETION_JOBS_SQL: &str = "UPDATE file_deletion_jobs SET attempt_count=attempt_count+1,\
-                     available_at=unixepoch()+min(3600,30*(1<<min(attempt_count,7))),last_error=?1 WHERE id=?2";
-const INSERT_FILE_DELETION_JOBS_SQL: &str = "INSERT OR IGNORE INTO file_deletion_jobs(id,blob_id,storage_key,reason,scheduled_at,\
-                     available_at) VALUES(?1,?2,?3,?4,?5,?5)";
-const SELECT_FILE_DELETION_JOBS_SQL: &str = "SELECT id,blob_id,storage_key FROM file_deletion_jobs WHERE available_at<=?1 AND \
-                     locked_at IS NULL ORDER BY available_at,id LIMIT 200";
-const SELECT_FILE_BLOBS_2_SQL: &str = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available',\
-                     'deleting')";
-const SELECT_UPLOAD_RESERVATIONS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM upload_reservations WHERE id=?1 AND committed_at IS NULL AND \
-                     expires_at>?2)";
-const INSERT_TASK_ATTACHMENTS_SQL: &str = "INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,\
-                     is_ephemeral,position,created_at,last_accessed_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,\
-                     ?8,?9,?9,?9)";
-const SELECT_TASK_ATTACHMENTS_4_SQL: &str = "SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
-                     b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
-                     b.state,a.revision,b.id,b.storage_key FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.id=?1 AND t.deleted_at IS NULL \
-                     AND a.deleted_at IS NULL";
-const SELECT_TASK_ATTACHMENTS_6_SQL: &str = "SELECT a.id,a.project_id,a.task_id,a.original_name,b.size_bytes,b.media_type,\
-                     b.checksum_sha256,a.is_ephemeral,a.position,a.uploaded_by,a.created_at,a.last_accessed_at,\
-                     b.state,a.revision,b.id,b.storage_key,a.deleted_at FROM task_attachments a JOIN file_blobs b ON \
-                     b.id=a.blob_id JOIN tasks t ON t.id=a.task_id WHERE a.id=?1 AND t.deleted_at IS NULL";
-const SELECT_TASK_ATTACHMENTS_5_SQL: &str = "SELECT a.id,b.size_bytes FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id \
-                     WHERE a.blob_id=?1";
-
-const INSERT_ATTACHMENT_BLOB_SQL: &str = "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,\
-                     created_at) VALUES(?1,?2,?3,?4,?5,'available',?6)";
-
-const SELECT_FILE_BLOBS_3_SQL: &str = "SELECT
-                       coalesce((SELECT sum(size_bytes) FROM file_blobs
-                                 WHERE state IN ('pending','available','deleting')),0) +
-                       coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                                 WHERE committed_at IS NULL AND expires_at>?1),0)";
-const INSERT_FILE_BLOBS_SQL: &str = "INSERT INTO file_blobs
-                     (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
-                     VALUES(?1,?2,?3,?4,'image/png','pending',?5)";
-const UPDATE_FILE_BLOBS_SQL: &str =
-    "UPDATE file_blobs SET state='available' WHERE id=?1 AND state='pending'";
-const UPDATE_USERS_SQL: &str =
-    "UPDATE users SET avatar_blob_id=?1,updated_at=?2,revision=revision+1 WHERE id=?3";
-const UPDATE_USERS_2_SQL: &str =
-    "UPDATE users SET avatar_blob_id=NULL,updated_at=unixepoch(),revision=revision+1 WHERE id=?1";
-const SELECT_PROJECTS_SQL: &str = "SELECT p.id,p.name,count(b.id),coalesce(sum(b.size_bytes),0) FROM projects p LEFT JOIN \
-                     task_attachments a ON a.project_id=p.id LEFT JOIN file_blobs b ON b.id=a.blob_id AND \
-                     b.state IN ('available','deleting') WHERE p.deleted_at IS NULL GROUP BY p.id,p.name \
-                     HAVING count(b.id)>0 ORDER BY sum(b.size_bytes) DESC,p.name,p.id";
-const SELECT_CLEANUP_RUNS_SQL: &str = "SELECT started_at,files,bytes FROM storage_cleanup_runs
-    WHERE files > 0 OR bytes > 0 ORDER BY started_at DESC,id DESC LIMIT 5";
-const SELECT_UPLOAD_RESERVATIONS_2_SQL: &str = "SELECT staging_key,size_bytes FROM upload_reservations WHERE committed_at IS NULL AND \
-                     expires_at>?1";
 
 #[cfg(test)]
 mod tests;

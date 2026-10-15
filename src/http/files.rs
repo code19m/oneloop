@@ -436,8 +436,18 @@ async fn upload_avatar(
 ) -> AppResult<Json<serde_json::Value>> {
     // The image stays in memory until it is decoded, so only a few uploads may
     // read theirs at once.
-    let slot = state.files.avatar_slot()?;
     let deadline = UploadDeadline::new();
+    let slot = match state.files.avatar_slot(&actor) {
+        Ok(slot) => slot,
+        Err(error) => {
+            // Left unread, the body ends the connection, and browsers then
+            // report a network error instead of this answer.
+            while let Ok(Ok(Some(mut field))) = deadline.read(multipart.next_field()).await {
+                while let Ok(Ok(Some(_))) = deadline.read(field.chunk()).await {}
+            }
+            return Err(error);
+        }
+    };
     let mut bytes = None;
     while let Some(mut field) = deadline
         .read(multipart.next_field())
@@ -507,8 +517,7 @@ async fn storage_cleanup(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<crate::files::FileRuntimeReport>> {
-    actor.require_admin()?;
-    state.files.cleanup_if_needed().await.map(Json)
+    state.files.cleanup_for(&actor).await.map(Json)
 }
 
 pub(super) fn validator(headers: &HeaderMap) -> Option<String> {

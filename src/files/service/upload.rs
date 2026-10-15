@@ -23,7 +23,12 @@ impl FileService {
                 ),
             ));
         }
-        let request_hash = upload_request_hash(task_id, original_name, claimed_size, is_ephemeral);
+        let request_hash = crate::idempotency::request_hash(&json!({
+            "taskId": task_id,
+            "name": original_name,
+            "size": claimed_size,
+            "ephemeral": is_ephemeral,
+        }))?;
         let replay_task = task_id.to_owned();
         let replay_key = idempotency_key.to_owned();
         let replay_actor = actor.clone();
@@ -31,10 +36,9 @@ impl FileService {
         if let Some(existing) = self
             .db
             .transaction(move |tx| {
-                let now = unix_now()?;
                 let project_id = task_project(tx, &replay_task)?;
-                require_file_access_tx(tx, &replay_actor, &project_id, true, false, now)?;
-                idempotency_replay(
+                require_file_access(tx, &replay_actor, &project_id, true, false)?;
+                crate::idempotency::replay(
                     tx,
                     &replay_actor,
                     &replay_key,
@@ -47,14 +51,7 @@ impl FileService {
             return Ok(UploadStart::Replayed(Box::new(existing)));
         }
 
-        self.store.ensure_directories().await?;
-        let mut capacity = self.prepare_capacity().await?;
-        let deficit = self.disk.deficit(claimed_size)?;
-        if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
-            capacity = self.capacity_usage().await?;
-        }
-
-        let non_database_bytes = capacity.non_database_bytes();
+        let non_database_bytes = self.admit(claimed_size).await?;
         let reservation_id = Uuid::now_v7().to_string();
         let idempotency_id = Uuid::now_v7().to_string();
         let staging_key = self.store.new_staging_key()?;
@@ -82,9 +79,9 @@ impl FileService {
                 .transaction(move |tx| {
                     let now = unix_now()?;
                     let project_id = task_project(tx, &task_id_owned)?;
-                    require_file_access_tx(tx, &actor_owned, &project_id, true, false, now)?;
+                    require_file_access(tx, &actor_owned, &project_id, true, false)?;
 
-                    if let Some(existing) = idempotency_replay(
+                    if let Some(existing) = crate::idempotency::replay(
                         tx,
                         &actor_owned,
                         &key_owned,
@@ -94,34 +91,15 @@ impl FileService {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
 
-                    let occupied: i64 = tx.query_row(
-                        "SELECT
-                       (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-                        WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
-                       (SELECT count(*) FROM upload_reservations
-                        WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
-                        params![task_id_owned, now],
-                        |row| row.get(0),
-                    )?;
-                    if occupied >= MAX_ATTACHMENTS_PER_TASK {
+                    if occupied_slots(tx, &task_id_owned, now)? >= MAX_ATTACHMENTS_PER_TASK {
                         return Err(AppError::Conflict(
                             format!("a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"),
                         ));
                     }
 
-                    let used: i64 = tx.query_row(SELECT_FILE_BLOBS_SQL, [now], |row| row.get(0))?;
-                    if (used.max(0) as u64)
-                        .saturating_add(non_database_bytes)
-                        .saturating_add(claimed_size)
-                        > limit
-                    {
-                        return Err(AppError::rule(
-                            crate::error::RuleKind::StorageFull,
-                            "attachment storage capacity is exhausted",
-                        ));
-                    }
+                    require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
-                    let actual_idempotency_id = upsert_running_idempotency(
+                    let actual_idempotency_id = crate::idempotency::start(
                         tx,
                         &actor_owned,
                         &idempotency_id_tx,
@@ -158,30 +136,31 @@ impl FileService {
                 ReserveOutcome::Replay(value) => Ok(UploadStart::Replayed(value)),
                 ReserveOutcome::Reserved(project_id, idempotency_id) => {
                     let mut pending = PendingAttachmentUpload {
-                        disk: Some(disk),
-                        service: service.clone(),
-                        actor: pending_actor,
-                        reservation_id,
-                        idempotency_id,
-                        task_id: pending_task_id,
-                        project_id,
-                        original_name: pending_original_name,
-                        is_ephemeral,
+                        attempt: Some(UploadAttempt {
+                            service: service.clone(),
+                            actor: pending_actor,
+                            reservation_id,
+                            idempotency_id,
+                            task_id: pending_task_id,
+                            project_id,
+                            original_name: pending_original_name,
+                            is_ephemeral,
+                            staging_path: staging_path.clone(),
+                            storage_key,
+                            disk,
+                        }),
                         claimed_size,
-                        staging_path,
-                        storage_key,
                         file: None,
                         written: 0,
                         hasher: Sha256::new(),
                         inspection: Vec::with_capacity(
                             PREFIX_INSPECTION_BYTES.min(claimed_size as usize),
                         ),
-                        finished: false,
                     };
                     match OpenOptions::new()
                         .create_new(true)
                         .write(true)
-                        .open(&pending.staging_path)
+                        .open(&staging_path)
                         .await
                     {
                         Ok(file) => {
@@ -201,6 +180,199 @@ impl FileService {
         })?
     }
 }
+/// What an upload attempt owns until its file is published or cleaned up.
+struct UploadAttempt {
+    service: FileService,
+    actor: Actor,
+    reservation_id: String,
+    idempotency_id: String,
+    task_id: String,
+    project_id: String,
+    original_name: String,
+    is_ephemeral: bool,
+    staging_path: PathBuf,
+    storage_key: String,
+    disk: DiskReservation,
+}
+
+/// An attachment upload whose bytes are arriving. Dropped unfinished, it
+/// cleans up after itself.
+pub struct PendingAttachmentUpload {
+    /// Taken by `finish` and `abort`; still here on drop, it needs cleanup.
+    attempt: Option<UploadAttempt>,
+    claimed_size: u64,
+    file: Option<File>,
+    written: u64,
+    hasher: Sha256,
+    inspection: Vec<u8>,
+}
+
+impl UploadAttempt {
+    /// Frees the attempt's task slot and retry key and removes its bytes,
+    /// unless its file was published. Without the data lease, for example
+    /// during a backup, the bytes stay for reconciliation to remove.
+    async fn cleanup(&self, lease: Option<&DataLease>) -> AppResult<()> {
+        match lease {
+            Some(lease) => {
+                self.service
+                    .cleanup_upload_attempt(
+                        &self.reservation_id,
+                        &self.idempotency_id,
+                        &self.storage_key,
+                        &self.staging_path,
+                        lease,
+                    )
+                    .await
+            }
+            None => {
+                self.service
+                    .release_upload_reservation(&self.reservation_id, &self.idempotency_id)
+                    .await
+            }
+        }
+    }
+
+    /// Publishes the staged file as an attachment, or cleans up.
+    async fn finalize(
+        self,
+        lease: DataLease,
+        mut file: File,
+        size: u64,
+        checksum: String,
+        inspection: Vec<u8>,
+    ) -> AppResult<AttachmentView> {
+        let result: AppResult<AttachmentView> = async {
+            file.flush().await?;
+            file.sync_all().await?;
+            drop(file);
+            let (name, path) = (self.original_name.clone(), self.staging_path.clone());
+            let media = self
+                .service
+                .inspections
+                .run(move || detect::inspect_file_media(&name, &path, &inspection))
+                .await??;
+            let _gate = self.service.acquire_file_maintenance_gate().await?;
+            let destination = self
+                .service
+                .store
+                .prepare_file_parent(&self.storage_key)
+                .await?;
+            fs::rename(&self.staging_path, &destination).await?;
+            FileStore::sync_parent(destination).await?;
+
+            let actor = self.actor.clone();
+            let attachment_id = Uuid::now_v7().to_string();
+            let blob_id = Uuid::now_v7().to_string();
+            let reservation_id = self.reservation_id.clone();
+            let idempotency_id = self.idempotency_id.clone();
+            let task_id = self.task_id.clone();
+            let project_id = self.project_id.clone();
+            let name = self.original_name.clone();
+            let storage_key = self.storage_key.clone();
+            let is_ephemeral = self.is_ephemeral;
+            self.service
+                .db
+                .transaction(move |tx| {
+                    let now = unix_now()?;
+                    require_file_access(tx, &actor, &project_id, true, false)?;
+                    // Someone may have deleted the task while the bytes arrived.
+                    if task_project(tx, &task_id)? != project_id {
+                        return Err(AppError::NotFound { resource: "task" });
+                    }
+                    let active: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM upload_reservations
+                         WHERE id=?1 AND committed_at IS NULL AND expires_at>?2)",
+                        params![reservation_id, now],
+                        |r| r.get(0),
+                    )?;
+                    if !active {
+                        return Err(AppError::Conflict("upload reservation expired".into()));
+                    }
+                    let position: i64 = tx.query_row(
+                        "SELECT coalesce(max(position)+1,0) FROM task_attachments WHERE task_id=?1",
+                        [&task_id],
+                        |r| r.get(0),
+                    )?;
+                    tx.execute(
+                        "INSERT INTO file_blobs
+                         (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+                         VALUES(?1,?2,?3,?4,?5,'available',?6)",
+                        params![blob_id, storage_key, checksum, size as i64, media, now],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO task_attachments
+                         (id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,
+                          position,created_at,last_accessed_at,updated_at)
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?9)",
+                        params![
+                            attachment_id,
+                            project_id,
+                            task_id,
+                            blob_id,
+                            name,
+                            actor.user_id,
+                            is_ephemeral,
+                            position,
+                            now
+                        ],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM upload_reservations WHERE id=?1",
+                        [reservation_id],
+                    )?;
+                    let view = attachment_by_id(tx, &attachment_id)?.attachment;
+                    crate::idempotency::succeed(
+                        tx,
+                        &idempotency_id,
+                        crate::idempotency::Receipt {
+                            status: 201,
+                            response: &serde_json::to_string(&view)
+                                .map_err(|e| AppError::internal(e.to_string()))?,
+                            resource_type: Some("attachment"),
+                            resource_id: Some(&attachment_id),
+                            project_id: Some(&project_id),
+                        },
+                        now,
+                    )?;
+                    record_activity_tx(
+                        tx,
+                        &actor,
+                        ActivityInput {
+                            project_id: Some(&project_id),
+                            entity_type: "attachment",
+                            entity_id: &attachment_id,
+                            task_id: Some(&task_id),
+                            event_type: "attachment.created",
+                            field_key: None,
+                            before: None,
+                            after: Some(json!({"name":name,"size":size,"temporary":is_ephemeral})),
+                            metadata: json!({"name":name,"size":size,"temporary":is_ephemeral}),
+                            entity_revision: Some(1),
+                        },
+                        now,
+                    )?;
+                    Ok(view)
+                })
+                .await
+        }
+        .await;
+        // The maintenance gate ended with the block, before any cleanup.
+        match result {
+            Ok(view) => {
+                self.disk.published();
+                if view.thumbnail_url.is_some() {
+                    self.service.queue_thumbnail(&self.storage_key);
+                }
+                Ok(view)
+            }
+            Err(error) => {
+                log_cleanup_failure(self.cleanup(Some(&lease)).await);
+                Err(error)
+            }
+        }
+    }
+}
+
 impl PendingAttachmentUpload {
     pub async fn write_chunk(&mut self, chunk: &[u8]) -> AppResult<()> {
         let next = self.written.saturating_add(chunk.len() as u64);
@@ -239,343 +411,69 @@ impl PendingAttachmentUpload {
             .file
             .take()
             .ok_or_else(|| AppError::internal("upload staging file is unavailable"))?;
-        let data_lease = match self.service.db.acquire_data_lease().await {
-            Ok(data_lease) => data_lease,
+        // Until the attempt is taken, a cancelled request still cleans up.
+        let lease = self.db().acquire_data_lease().await;
+        let attempt = self.attempt.take().expect("an unfinished upload");
+        let lease = match lease {
+            Ok(lease) => lease,
             Err(error) => {
-                self.finished = true;
                 drop(file);
-                self.release_without_data_lease().await;
+                log_cleanup_failure(attempt.cleanup(None).await);
                 return Err(error);
             }
         };
-        let finalizer = FinalizeAttachmentUpload {
-            disk: self.disk.take(),
-            service: self.service.clone(),
-            actor: self.actor.clone(),
-            data_lease,
-            reservation_id: self.reservation_id.clone(),
-            idempotency_id: self.idempotency_id.clone(),
-            task_id: self.task_id.clone(),
-            project_id: self.project_id.clone(),
-            original_name: self.original_name.clone(),
-            is_ephemeral: self.is_ephemeral,
-            staging_path: self.staging_path.clone(),
-            storage_key: self.storage_key.clone(),
-            file: Some(file),
-            written: self.written,
-            hasher: self.hasher.clone(),
-            inspection: self.inspection.clone(),
-        };
-        self.finished = true;
-        tokio::spawn(finalize_attachment_upload(finalizer))
+        let checksum = hex::encode(std::mem::take(&mut self.hasher).finalize());
+        let inspection = std::mem::take(&mut self.inspection);
+        // A finalizer runs to its end even when the request is cancelled, so
+        // it either records the file or cleans it up.
+        tokio::spawn(attempt.finalize(lease, file, self.written, checksum, inspection))
             .await
             .map_err(|error| AppError::internal(format!("upload finalizer failed: {error}")))?
     }
 
     pub async fn abort(mut self) -> AppResult<()> {
-        let data_lease = match self.service.db.acquire_data_lease().await {
-            Ok(data_lease) => data_lease,
+        let lease = self.db().acquire_data_lease().await;
+        let attempt = self.attempt.take().expect("an unfinished upload");
+        let lease = match lease {
+            Ok(lease) => lease,
             Err(error) => {
-                self.finished = true;
-                self.release_without_data_lease().await;
+                log_cleanup_failure(attempt.cleanup(None).await);
                 return Err(error);
             }
         };
         let file = self.file.take();
-        let service = self.service.clone();
-        let reservation_id = self.reservation_id.clone();
-        let idempotency_id = self.idempotency_id.clone();
-        let storage_key = self.storage_key.clone();
-        let staging_path = self.staging_path.clone();
-        let disk = self.disk.take();
-        self.finished = true;
         tokio::spawn(async move {
-            let _disk = disk;
             if let Some(mut file) = file {
                 // Tokio may still be writing on a blocking worker. Finish that
                 // write before unlinking and releasing its disk reservation.
                 let _ = file.flush().await;
             }
-            service
-                .cleanup_upload_attempt(
-                    &reservation_id,
-                    &idempotency_id,
-                    &storage_key,
-                    &staging_path,
-                    &data_lease,
-                )
-                .await
+            attempt.cleanup(Some(&lease)).await
         })
         .await
         .map_err(|error| AppError::internal(format!("upload cleanup failed: {error}")))?
     }
 
-    /// Without the data lease, for example during a backup, the attempt still
-    /// frees its task slot and retry key at once.
-    async fn release_without_data_lease(&self) {
-        log_cleanup_failure(
-            self.service
-                .release_upload_reservation(&self.reservation_id, &self.idempotency_id)
-                .await,
-        );
+    fn db(&self) -> Db {
+        let attempt = self.attempt.as_ref().expect("an unfinished upload");
+        attempt.service.db.clone()
     }
 }
 
 impl Drop for PendingAttachmentUpload {
     fn drop(&mut self) {
-        if self.finished {
+        let Some(attempt) = self.attempt.take() else {
             return;
-        }
-        let service = self.service.clone();
-        let reservation_id = self.reservation_id.clone();
-        let idempotency_id = self.idempotency_id.clone();
-        let storage_key = self.storage_key.clone();
-        let staging_path = self.staging_path.clone();
-        let disk = self.disk.take();
+        };
         let file = self.file.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                let _disk = disk;
                 if let Some(mut file) = file {
                     let _ = file.flush().await;
                 }
-                let result = match service.db.acquire_data_lease().await {
-                    Ok(data_lease) => {
-                        service
-                            .cleanup_upload_attempt(
-                                &reservation_id,
-                                &idempotency_id,
-                                &storage_key,
-                                &staging_path,
-                                &data_lease,
-                            )
-                            .await
-                    }
-                    Err(_) => {
-                        service
-                            .release_upload_reservation(&reservation_id, &idempotency_id)
-                            .await
-                    }
-                };
-                log_cleanup_failure(result);
+                let lease = attempt.service.db.acquire_data_lease().await.ok();
+                log_cleanup_failure(attempt.cleanup(lease.as_ref()).await);
             });
         }
     }
 }
-
-async fn finalize_attachment_upload(
-    mut upload: FinalizeAttachmentUpload,
-) -> AppResult<AttachmentView> {
-    let prepared: AppResult<(String, String)> = async {
-        let mut file = upload
-            .file
-            .take()
-            .ok_or_else(|| AppError::internal("upload staging file is unavailable"))?;
-        file.flush().await?;
-        file.sync_all().await?;
-        drop(file);
-        let name = upload.original_name.clone();
-        let path = upload.staging_path.clone();
-        let prefix = std::mem::take(&mut upload.inspection);
-        let permit = TEXT_INSPECTION_PERMITS
-            .acquire()
-            .await
-            .map_err(|_| AppError::internal("text inspection worker is shutting down"))?;
-        let media = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            detect::inspect_file_media(&name, &path, &prefix)
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("text inspection worker failed: {error}")))??;
-        let checksum = hex::encode(upload.hasher.finalize());
-        Ok((media, checksum))
-    }
-    .await;
-    let (media, checksum) = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            log_cleanup_failure(
-                upload
-                    .service
-                    .cleanup_upload_attempt(
-                        &upload.reservation_id,
-                        &upload.idempotency_id,
-                        &upload.storage_key,
-                        &upload.staging_path,
-                        &upload.data_lease,
-                    )
-                    .await,
-            );
-            return Err(error);
-        }
-    };
-    let maintenance_gate = match upload.service.acquire_file_maintenance_gate().await {
-        Ok(gate) => gate,
-        Err(error) => {
-            log_cleanup_failure(
-                upload
-                    .service
-                    .cleanup_upload_attempt(
-                        &upload.reservation_id,
-                        &upload.idempotency_id,
-                        &upload.storage_key,
-                        &upload.staging_path,
-                        &upload.data_lease,
-                    )
-                    .await,
-            );
-            return Err(error);
-        }
-    };
-    let destination = match upload
-        .service
-        .store
-        .prepare_file_parent(&upload.storage_key)
-        .await
-    {
-        Ok(destination) => destination,
-        Err(error) => {
-            drop(maintenance_gate);
-            log_cleanup_failure(
-                upload
-                    .service
-                    .cleanup_upload_attempt(
-                        &upload.reservation_id,
-                        &upload.idempotency_id,
-                        &upload.storage_key,
-                        &upload.staging_path,
-                        &upload.data_lease,
-                    )
-                    .await,
-            );
-            return Err(error);
-        }
-    };
-    let result: AppResult<AttachmentView> = async {
-        fs::rename(&upload.staging_path, &destination).await?;
-        FileStore::sync_parent(destination.clone()).await?;
-
-        let actor = upload.actor.clone();
-        let attachment_id = Uuid::now_v7().to_string();
-        let blob_id = Uuid::now_v7().to_string();
-        let attachment_id_tx = attachment_id.clone();
-        let blob_id_tx = blob_id.clone();
-        let reservation_id = upload.reservation_id.clone();
-        let idempotency_id = upload.idempotency_id.clone();
-        let task_id = upload.task_id.clone();
-        let project_id = upload.project_id.clone();
-        let name = upload.original_name.clone();
-        let storage_key = upload.storage_key.clone();
-        let is_ephemeral = upload.is_ephemeral;
-        let size = upload.written;
-        upload
-            .service
-            .db
-            .transaction(move |tx| {
-                let now = unix_now()?;
-                require_file_access_tx(tx, &actor, &project_id, true, false, now)?;
-                // Someone may have deleted the task while the bytes arrived.
-                if task_project(tx, &task_id)? != project_id {
-                    return Err(AppError::NotFound { resource: "task" });
-                }
-                let active: bool = tx.query_row(
-                    SELECT_UPLOAD_RESERVATIONS_SQL,
-                    params![reservation_id, now],
-                    |r| r.get(0),
-                )?;
-                if !active {
-                    return Err(AppError::Conflict("upload reservation expired".into()));
-                }
-                let position: i64 = tx.query_row(
-                    "SELECT coalesce(max(position)+1,0) FROM task_attachments WHERE task_id=?1",
-                    [&task_id],
-                    |r| r.get(0),
-                )?;
-                tx.execute(
-                    INSERT_ATTACHMENT_BLOB_SQL,
-                    params![blob_id_tx, storage_key, checksum, size as i64, media, now],
-                )?;
-                tx.execute(
-                    INSERT_TASK_ATTACHMENTS_SQL,
-                    params![
-                        attachment_id_tx,
-                        project_id,
-                        task_id,
-                        blob_id_tx,
-                        name,
-                        actor.user_id,
-                        is_ephemeral,
-                        position,
-                        now
-                    ],
-                )?;
-                tx.execute(
-                    "DELETE FROM upload_reservations WHERE id=?1",
-                    [reservation_id],
-                )?;
-                let view = attachment_by_id(tx, &attachment_id_tx)?.attachment;
-                crate::idempotency::succeed(
-                    tx,
-                    &idempotency_id,
-                    crate::idempotency::Receipt {
-                        status: 201,
-                        response: &serde_json::to_string(&view)
-                            .map_err(|e| AppError::internal(e.to_string()))?,
-                        resource_type: Some("attachment"),
-                        resource_id: Some(&attachment_id_tx),
-                        project_id: Some(&project_id),
-                    },
-                    now,
-                )?;
-                record_activity_tx(
-                    tx,
-                    &actor,
-                    ActivityInput {
-                        project_id: Some(&project_id),
-                        entity_type: "attachment",
-                        entity_id: &attachment_id_tx,
-                        task_id: Some(&task_id),
-                        event_type: "attachment.created",
-                        field_key: None,
-                        before: None,
-                        after: Some(json!({"name":name,"size":size,"temporary":is_ephemeral})),
-                        metadata: json!({"name":name,"size":size,"temporary":is_ephemeral}),
-                        entity_revision: Some(1),
-                    },
-                    now,
-                )?;
-                Ok(view)
-            })
-            .await
-    }
-    .await;
-    drop(maintenance_gate);
-    match result {
-        Ok(view) => {
-            if let Some(disk) = upload.disk.take() {
-                disk.published();
-            }
-            if view.thumbnail_url.is_some() {
-                upload.service.queue_thumbnail(&upload.storage_key);
-            }
-            Ok(view)
-        }
-        Err(error) => {
-            log_cleanup_failure(
-                upload
-                    .service
-                    .cleanup_upload_attempt(
-                        &upload.reservation_id,
-                        &upload.idempotency_id,
-                        &upload.storage_key,
-                        &upload.staging_path,
-                        &upload.data_lease,
-                    )
-                    .await,
-            );
-            Err(error)
-        }
-    }
-}
-
-static TEXT_INSPECTION_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);

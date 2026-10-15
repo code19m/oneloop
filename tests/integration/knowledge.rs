@@ -14,7 +14,7 @@ use axum::{
     response::Response,
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now};
+use oneloop::{AppState, Db, application, auth::unix_now, knowledge::KnowledgeService};
 use rusqlite::params;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -160,7 +160,10 @@ fn handbook() -> Repository {
     );
     repository.write("docs/diagram.png", PNG);
     repository.write("docs/run.sh", b"#!/bin/sh\necho ready\n");
-    repository.write("docs/page.html", b"<!doctype html><p>Hello</p>");
+    repository.write(
+        "docs/page.html",
+        br#"<!doctype html><meta http-equiv="refresh" content="0;url=https://example.com"><base href="https://example.com"><iframe src="https://example.com"></iframe><p>Hello</p>"#,
+    );
     repository.write("other/secret.md", b"# Not shared\n");
     #[cfg(unix)]
     {
@@ -207,7 +210,7 @@ impl Fixture {
         let mut config = support::config(directory.path(), ORIGIN, &[]);
         config.disk_min_free_bytes = 0;
         let mut state = AppState::new(config, db.clone());
-        state.knowledge = state.knowledge.allowing_local_repositories();
+        state.knowledge = KnowledgeService::with_local_repositories(db.clone(), 0);
         Self {
             _directory: directory,
             app: application(state.clone()).router,
@@ -684,6 +687,12 @@ async fn files_follow_the_attachment_safety_rules() {
         preview.headers()["content-security-policy"],
         crate::files::http::PREVIEW_POLICY
     );
+    // The sanitizer backs up the policy: navigation and frames are gone.
+    let html = String::from_utf8(body_bytes(preview).await.to_vec()).unwrap();
+    assert!(html.contains("<p>Hello</p>"), "{html}");
+    for removed in ["http-equiv", "<base", "<iframe"] {
+        assert!(!html.contains(removed), "{removed} in {html}");
+    }
 
     let script = fixture
         .app
@@ -796,6 +805,7 @@ async fn search_finds_names_and_section_text() {
     assert_eq!(results["hitCount"], 1);
     assert_eq!(results["documents"][0]["path"], "README.md");
     assert_eq!(results["documents"][0]["hits"][0]["heading"], "Setup");
+    assert!(results.get("partial").is_none(), "all text fits");
 
     let names = body_json(
         fixture

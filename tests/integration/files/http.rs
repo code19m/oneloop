@@ -10,7 +10,7 @@ use axum::{
 use http_body_util::BodyExt;
 use oneloop::{
     AppState, Db, application,
-    auth::unix_now,
+    auth::{Actor, unix_now},
     files::{AttachmentView, FileService},
 };
 use rusqlite::params;
@@ -104,6 +104,33 @@ impl Fixture {
         body.extend_from_slice(bytes);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         self.upload_body(key, bytes.len(), body).await
+    }
+
+    async fn actor(&self, cookie: &str) -> Actor {
+        oneloop::auth::AuthService::new(self.db.clone())
+            .authenticate_session(cookie.split_once('=').unwrap().1, false)
+            .await
+            .unwrap()
+    }
+
+    async fn put_avatar(&self, cookie: &str, body: Body) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/auth/avatar")
+                    .header(header::ORIGIN, "https://tasks.example.test")
+                    .header(header::COOKIE, cookie)
+                    .header(
+                        header::CONTENT_TYPE,
+                        "multipart/form-data; boundary=oneloop-test-boundary",
+                    )
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     }
 
     async fn upload_body(&self, key: &str, size: usize, body: Vec<u8>) -> (StatusCode, Vec<u8>) {
@@ -578,17 +605,14 @@ async fn conditional_sources_recheck_access_without_allocating_read_leases() {
 async fn avatars_revalidate_versioned_and_unversioned_urls_and_reject_lost_access() {
     use image::ImageEncoder;
     let f = Fixture::new().await;
-    let manager = oneloop::auth::AuthService::new(f.db.clone())
-        .authenticate_session(f.manager_cookie.split_once('=').unwrap().1, false)
-        .await
-        .unwrap();
+    let manager = f.actor(&f.manager_cookie).await;
     let service = oneloop::files::FileService::new(f.db.clone(), 1000000, 0);
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .unwrap();
     let url = service
-        .upload_avatar(&manager, service.avatar_slot().unwrap(), png)
+        .upload_avatar(&manager, service.avatar_slot(&manager).unwrap(), png)
         .await
         .unwrap();
     for url in [
@@ -711,32 +735,112 @@ async fn upload_declarations_are_checked_without_reading_the_body() {
 }
 
 #[tokio::test]
-async fn an_avatar_upload_is_refused_before_its_body_when_all_slots_are_taken() {
+async fn an_uploaded_avatar_is_served_as_a_256_pixel_png() {
     let f = Fixture::new().await;
-    let _taken: Vec<_> = (0..4).map(|_| f.files.avatar_slot().unwrap()).collect();
-    // The body never arrives, so the answer can't wait for it.
-    let body = Body::from_stream(tokio_stream::pending::<Result<Vec<u8>, std::io::Error>>());
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        f.app.clone().oneshot(
+    let response = f
+        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let url = body_json(response).await["avatarUrl"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(url.starts_with("/api/users/"), "{url}");
+    let response = f
+        .app
+        .clone()
+        .oneshot(
             Request::builder()
-                .method("PUT")
-                .uri("/api/auth/avatar")
-                .header(header::ORIGIN, "https://tasks.example.test")
+                .uri(&url)
                 .header(header::COOKIE, &f.manager_cookie)
-                .header(
-                    header::CONTENT_TYPE,
-                    "multipart/form-data; boundary=oneloop-test-boundary",
-                )
-                .body(body)
+                .body(Body::empty())
                 .unwrap(),
-        ),
-    )
-    .await
-    .expect("an answer before the body")
-    .unwrap();
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let avatar = image::load_from_memory(&body_bytes(response).await).unwrap();
+    assert_eq!((avatar.width(), avatar.height()), (256, 256));
+    let refused = f
+        .put_avatar(&f.manager_cookie, avatar_envelope(b"not an image"))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn one_person_uploads_one_avatar_at_a_time() {
+    let f = Fixture::new().await;
+    let slot = f
+        .files
+        .avatar_slot(&f.actor(&f.manager_cookie).await)
+        .unwrap();
+    let response = f
+        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Someone else's upload goes ahead meanwhile.
+    let response = f
+        .put_avatar(&f.outsider_cookie, avatar_envelope(&red_pixel()))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(slot);
+    let response = f
+        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let f = Fixture::new().await;
+    let manager = f.actor(&f.manager_cookie).await;
+    let people = ["a", "b", "c", "d"].map(|name| Actor {
+        user_id: name.into(),
+        ..manager.clone()
+    });
+    let _taken: Vec<_> = people
+        .iter()
+        .map(|person| f.files.avatar_slot(person).unwrap())
+        .collect();
+    // The closing boundary comes in the last chunk, so the flag shows that
+    // the whole body was read.
+    let read = Arc::new(AtomicBool::new(false));
+    let envelope = file_envelope(&red_pixel());
+    let mut chunks = vec![
+        envelope[..envelope.len() / 2].to_vec(),
+        envelope[envelope.len() / 2..].to_vec(),
+    ]
+    .into_iter();
+    let last = read.clone();
+    let body = Body::from_stream(tokio_stream::iter(std::iter::from_fn(move || {
+        let chunk = chunks.next()?;
+        if chunks.len() == 0 {
+            last.store(true, Ordering::SeqCst);
+        }
+        Some(Ok::<_, std::io::Error>(chunk))
+    })));
+    let response = f.put_avatar(&f.manager_cookie, body).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    assert!(read.load(Ordering::SeqCst), "the body was read");
+}
+
+/// A 1x1 red PNG.
+fn red_pixel() -> Vec<u8> {
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    png
+}
+
+fn avatar_envelope(bytes: &[u8]) -> Body {
+    Body::from(file_envelope(bytes))
 }
 
 #[tokio::test]

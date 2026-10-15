@@ -935,7 +935,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_knowledge_overview",
-        description = "Read the project's knowledge base, synced read-only from a Git folder: sync state, the README of the top level or of `folder`, and an index of its files with Markdown titles and section headings. Lists at most 200 files; read a subfolder or use search_knowledge for more.",
+        description = "Read the project's knowledge base, synced read-only from a Git folder: sync state, the README of the top level or of `folder`, and an index of its files with Markdown titles and section headings. Lists at most 200 files; read a subfolder or use search_knowledge for more. `partial` is true when some files' text did not fit in the search index: they have no title or headings here, and search finds them by name only.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -986,7 +986,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "search_knowledge",
-        description = "Search knowledge base file names, paths and text. Every word must match. Returns matching files and folders, and matching sections grouped by document, each with a short excerpt.",
+        description = "Search knowledge base file names, paths and text. Every word must match. Returns matching files and folders, and matching sections grouped by document, each with a short excerpt. `partial` is true when some files' text did not fit in the search index, so only their names were searched.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

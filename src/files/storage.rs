@@ -1,5 +1,8 @@
+//! Where file bytes live in the data directory. Paths come from generated
+//! keys, never from file names, and no level of them may be a link.
+
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -24,36 +27,19 @@ impl FileStore {
     }
 
     pub fn previews(&self) -> PathBuf {
-        self.layout.root().join("previews")
+        self.layout.previews()
     }
 
     /// An original's thumbnail, `previews/aa/bb/<key>.thumb`. Its path comes
     /// from the original's storage key, so it needs no metadata of its own.
     pub fn thumbnail_path(&self, key: &str) -> AppResult<PathBuf> {
         validate_storage_key(key)?;
-        let previews = self.previews();
-        let path = previews.join(format!("{key}{THUMBNAIL_SUFFIX}"));
-        reject_symlink(&previews)?;
-        if let Some(parent) = path.parent() {
-            reject_symlink(parent)?;
-            if let Some(shard) = parent.parent() {
-                reject_symlink(shard)?;
-            }
-        }
-        reject_symlink(&path)?;
-        Ok(path)
+        sharded(&self.previews(), &format!("{key}{THUMBNAIL_SUFFIX}"))
     }
 
     pub async fn prepare_thumbnail_parent(&self, key: &str) -> AppResult<PathBuf> {
-        let destination = self.thumbnail_path(key)?;
-        let parent = destination
-            .parent()
-            .ok_or_else(|| AppError::internal("generated thumbnail path has no parent"))?
-            .to_path_buf();
-        let directory = parent.clone();
-        tokio::task::spawn_blocking(move || crate::db::create_private_directories(&directory))
-            .await
-            .map_err(|error| AppError::internal(format!("directory worker failed: {error}")))??;
+        create_parent(self.thumbnail_path(key)?).await?;
+        // A folder made meanwhile may be a link.
         self.thumbnail_path(key)
     }
 
@@ -93,32 +79,13 @@ impl FileStore {
 
     pub fn file_path(&self, key: &str) -> AppResult<PathBuf> {
         validate_storage_key(key)?;
-        let path = self.layout.files().join(key);
-        reject_symlink(&self.layout.files())?;
-        if let Some(parent) = path.parent() {
-            reject_symlink(parent)?;
-            if let Some(shard) = parent.parent() {
-                reject_symlink(shard)?;
-            }
-        }
-        reject_symlink(&path)?;
-        Ok(path)
+        sharded(&self.layout.files(), key)
     }
 
     pub async fn prepare_file_parent(&self, key: &str) -> AppResult<PathBuf> {
-        let destination = self.file_path(key)?;
-        let parent = destination
-            .parent()
-            .ok_or_else(|| AppError::internal("generated file path has no parent"))?;
-        let directory = parent.to_path_buf();
-        tokio::task::spawn_blocking(move || crate::db::create_private_directories(&directory))
-            .await
-            .map_err(|error| AppError::internal(format!("directory worker failed: {error}")))??;
-        reject_symlink(parent)?;
-        if let Some(grandparent) = parent.parent() {
-            reject_symlink(grandparent)?;
-        }
-        Ok(destination)
+        create_parent(self.file_path(key)?).await?;
+        // A folder made meanwhile may be a link.
+        self.file_path(key)
     }
 
     pub async fn remove_file_if_present(&self, path: &Path) -> AppResult<()> {
@@ -129,29 +96,17 @@ impl FileStore {
         }
     }
 
+    /// Makes a change in the folder that holds `path` durable. A missing
+    /// folder holds no change: a restored backup may lack the shard of a file
+    /// that was being deleted.
     pub async fn sync_parent(path: PathBuf) -> AppResult<()> {
         tokio::task::spawn_blocking(move || {
             let parent = path
                 .parent()
                 .ok_or_else(|| AppError::internal("file path has no parent"))?;
-            let directory = OpenOptions::new().read(true).open(parent)?;
-            directory.sync_all()?;
-            Ok(())
-        })
-        .await
-        .map_err(|error| AppError::internal(format!("directory sync worker failed: {error}")))?
-    }
-
-    pub(crate) async fn sync_deletion_parent(path: PathBuf) -> AppResult<()> {
-        tokio::task::spawn_blocking(move || {
-            let parent = path
-                .parent()
-                .ok_or_else(|| AppError::internal("file path has no parent"))?;
-            match OpenOptions::new().read(true).open(parent) {
-                Ok(directory) => directory.sync_all().map_err(Into::into),
-                // Backups omit already-deleting bytes and may omit the shard.
+            match crate::db::sync_directory(parent) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error.into()),
+                result => result.map_err(Into::into),
             }
         })
         .await
@@ -211,6 +166,27 @@ fn validate_leaf(value: &str) -> AppResult<()> {
     {
         return Err(AppError::internal("invalid staging key"));
     }
+    Ok(())
+}
+
+/// `relative`, a sharded key, under `root`. No level may be a link.
+fn sharded(root: &Path, relative: &str) -> AppResult<PathBuf> {
+    let path = root.join(relative);
+    reject_symlink(root)?;
+    for level in path.ancestors().skip(1).take(2) {
+        reject_symlink(level)?;
+    }
+    reject_symlink(&path)?;
+    Ok(path)
+}
+
+async fn create_parent(path: PathBuf) -> AppResult<()> {
+    tokio::task::spawn_blocking(move || match path.parent() {
+        Some(parent) => crate::db::create_private_directories(parent),
+        None => Ok(()),
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("directory worker failed: {error}")))??;
     Ok(())
 }
 
