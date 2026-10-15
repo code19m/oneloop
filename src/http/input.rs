@@ -79,21 +79,9 @@ pub(crate) fn parse_json<T: DeserializeOwned>(bytes: &[u8]) -> AppResult<T> {
 
 /// The IDs in a query value separated by commas, such as `trackIds=a,b`,
 /// read like a list in the settings.
-pub(crate) fn id_list(field: &str, raw: Option<&str>) -> AppResult<Vec<String>> {
-    let raw = raw.unwrap_or_default();
-    if raw.len() > 4_096 {
-        return Err(AppError::validation(field, "is too long"));
-    }
-    crate::config::comma_list(raw)
-        .map(|id| {
-            if id.len() > 128 {
-                return Err(AppError::validation(
-                    field,
-                    "must contain comma-separated IDs",
-                ));
-            }
-            Ok(id.to_owned())
-        })
+pub(crate) fn id_list(raw: Option<&str>) -> Vec<String> {
+    crate::config::comma_list(raw.unwrap_or_default())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -106,20 +94,4 @@ pub(crate) struct CommandInput {
     pub payload: Box<serde_json::value::RawValue>,
     pub idempotency_key: String,
     pub expected_revision: Option<i64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn id_lists_skip_empty_items_like_settings_and_stay_bounded() {
-        assert_eq!(
-            id_list("projectIds", Some(" project-a,,project-b ,")).unwrap(),
-            ["project-a", "project-b"]
-        );
-        assert!(id_list("projectIds", None).unwrap().is_empty());
-        assert!(id_list("projectIds", Some(&"a".repeat(129))).is_err());
-        assert!(id_list("projectIds", Some(&"a,".repeat(2_049))).is_err());
-    }
 }

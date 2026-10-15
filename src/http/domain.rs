@@ -57,16 +57,16 @@ struct BoardParams {
 }
 
 impl BoardParams {
-    fn filter(&self) -> AppResult<TaskFilter> {
-        Ok(TaskFilter {
+    fn filter(&self) -> TaskFilter {
+        TaskFilter {
             search: self.search.clone(),
-            track_ids: id_list("trackIds", self.track_ids.as_deref())?,
-            epic_ids: id_list("epicIds", self.epic_ids.as_deref())?,
-            assignee_ids: id_list("assigneeIds", self.assignee_ids.as_deref())?,
+            track_ids: id_list(self.track_ids.as_deref()),
+            epic_ids: id_list(self.epic_ids.as_deref()),
+            assignee_ids: id_list(self.assignee_ids.as_deref()),
             no_assignee: self.no_assignee,
             blocked: self.blocked,
             done_order: self.done_order,
-        })
+        }
     }
 }
 
@@ -98,7 +98,7 @@ async fn board_view(
     let query = BoardViewQuery {
         project_id,
         limit: query.limit,
-        filter: query.filter()?,
+        filter: query.filter(),
     };
     state.domain.board_view(&actor, query).await.map(Json)
 }
@@ -122,7 +122,7 @@ async fn board(
         status: query
             .status
             .ok_or_else(|| AppError::validation("status", "is required"))?,
-        filter: query.filter()?,
+        filter: query.filter(),
         cursor: query.cursor,
         limit: query.limit,
     };

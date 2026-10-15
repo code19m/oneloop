@@ -1,7 +1,7 @@
 //! Read routes for comments, activity and the Inbox, and the live-update
 //! stream.
 use super::input::{ApiQuery, id_list};
-use std::convert::Infallible;
+use std::{collections::BTreeSet, convert::Infallible};
 
 use axum::{
     Extension, Json, Router,
@@ -123,9 +123,7 @@ async fn inbox(
     ApiQuery(query): ApiQuery<InboxQuery>,
 ) -> AppResult<Json<InboxPage>> {
     let filter = InboxFilter {
-        project_ids: id_list("projectIds", query.project_ids.as_deref())?
-            .into_iter()
-            .collect(),
+        project_ids: inbox_projects(query.project_ids.as_deref())?,
         unread_only: query.unread_only,
         archived: query.archived,
     };
@@ -217,4 +215,36 @@ async fn events(
         ],
         Sse::new(events).keep_alive(KeepAlive::default()),
     ))
+}
+
+/// The Inbox filter's projects. Each one costs an access check, so the list
+/// is bounded.
+fn inbox_projects(raw: Option<&str>) -> AppResult<BTreeSet<String>> {
+    if raw.is_some_and(|raw| raw.len() > 4_096) {
+        return Err(AppError::validation("projectIds", "is too long"));
+    }
+    let ids = id_list(raw);
+    if ids.iter().any(|id| id.len() > 128) {
+        return Err(AppError::validation(
+            "projectIds",
+            "must contain comma-separated project IDs",
+        ));
+    }
+    Ok(ids.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inbox_project_filter_uses_one_comma_separated_query_value() {
+        let ids = inbox_projects(Some("project-a,,project-b,project-a,")).unwrap();
+        assert_eq!(
+            ids.into_iter().collect::<Vec<_>>(),
+            ["project-a", "project-b"]
+        );
+        assert!(inbox_projects(Some(&"a".repeat(129))).is_err());
+        assert!(inbox_projects(Some(&"a,".repeat(2_049))).is_err());
+    }
 }
