@@ -269,7 +269,7 @@ impl CollaborationService {
                     cursor.as_ref(),
                     limit + 1,
                 )?;
-                if crate::auth::can_read_private_pool(connection, &actor)? {
+                if crate::access::can_read_private_pool(connection, &actor)? {
                     visible.extend(activity_projection_stream(
                         connection,
                         &project_id,

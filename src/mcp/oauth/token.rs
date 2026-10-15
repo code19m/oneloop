@@ -52,11 +52,8 @@ pub(super) async fn token(
     State(state): State<AppState>,
     form: Result<Form<Vec<(String, String)>>, axum::extract::rejection::FormRejection>,
 ) -> Result<impl IntoResponse, OAuthError> {
-    let form = form.map_err(|_| OAuthError::invalid("invalid_request"))?;
-    let form = Form(
-        resource_parameters::<TokenForm>(&state, form.0)
-            .map_err(|e| OAuthError::from_app(e, false))?,
-    );
+    let Form(pairs) = form.map_err(|_| OAuthError::invalid("invalid_request"))?;
+    let form: TokenForm = resource_parameters(&state, pairs)?;
     let client = form.client_id.clone();
     let known = state
         .db
@@ -67,32 +64,19 @@ pub(super) async fn token(
                 |row| row.get::<_, bool>(0),
             )?)
         })
-        .await
-        .map_err(|e| OAuthError::from_app(e, false))?;
+        .await?;
     if !known {
         let mut error = OAuthError::invalid("invalid_client");
         error.status = StatusCode::UNAUTHORIZED;
         return Err(error);
     }
-    token_inner(State(state), form)
-        .await
-        .map_err(|e| OAuthError::from_app(e, false))
-}
-
-async fn token_inner(
-    State(state): State<AppState>,
-    Form(form): Form<TokenForm>,
-) -> AppResult<Json<TokenResponse>> {
     if form.resource != resource_url(&state) {
-        return Err(AppError::validation(
-            "resource",
-            "must identify this oneloop MCP server",
-        ));
+        return Err(OAuthError::invalid("invalid_target"));
     }
     let response = match form.grant_type.as_str() {
         "authorization_code" => exchange_code(&state, form).await?,
         "refresh_token" => exchange_refresh(&state, form).await?,
-        _ => return Err(AppError::validation("grant_type", "unsupported grant type")),
+        _ => return Err(OAuthError::invalid("unsupported_grant_type")),
     };
     Ok(Json(response))
 }
@@ -107,17 +91,8 @@ pub(super) struct RevokeForm {
 pub(super) async fn revoke(
     State(state): State<AppState>,
     form: Result<Form<RevokeForm>, axum::extract::rejection::FormRejection>,
-) -> Result<impl IntoResponse, OAuthError> {
-    let form = form.map_err(|_| OAuthError::invalid("invalid_request"))?;
-    revoke_inner(State(state), form)
-        .await
-        .map_err(|e| OAuthError::from_app(e, false))
-}
-
-async fn revoke_inner(
-    State(state): State<AppState>,
-    Form(form): Form<RevokeForm>,
-) -> AppResult<StatusCode> {
+) -> Result<StatusCode, OAuthError> {
+    let Form(form) = form.map_err(|_| OAuthError::invalid("invalid_request"))?;
     state
         .auth
         .revoke_app_token(&form.token, form.client_id)
@@ -125,17 +100,15 @@ async fn revoke_inner(
     Ok(StatusCode::OK)
 }
 
-async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResponse> {
-    let code = form
-        .code
-        .ok_or_else(|| AppError::validation("code", "is required"))?;
-    let redirect_uri = form
-        .redirect_uri
-        .ok_or_else(|| AppError::validation("redirect_uri", "is required"))?;
+async fn exchange_code(state: &AppState, form: TokenForm) -> Result<TokenResponse, OAuthError> {
+    let (Some(code), Some(redirect_uri)) = (form.code, form.redirect_uri) else {
+        return Err(OAuthError::invalid("invalid_request"));
+    };
+    // A missing or malformed verifier can't match the code's challenge.
     let verifier = form
         .code_verifier
-        .ok_or_else(|| AppError::validation("code_verifier", "is required"))?;
-    validate_pkce_verifier(&verifier)?;
+        .filter(|verifier| is_pkce_verifier(verifier))
+        .ok_or_else(|| OAuthError::invalid("invalid_grant"))?;
     let code_hash = hash_token(&code);
     let client_id = form.client_id;
     let resource = form.resource;
@@ -168,7 +141,7 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
         })
         .await?;
     if !valid {
-        return Err(AppError::Unauthorized);
+        return Err(OAuthError::invalid("invalid_grant"));
     }
     let tokens = state
         .db
@@ -243,7 +216,7 @@ async fn exchange_code(state: &AppState, form: TokenForm) -> AppResult<TokenResp
             Ok(Some(tokens))
         })
         .await?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| OAuthError::invalid("invalid_grant"))?;
     Ok(tokens.into())
 }
 
@@ -259,30 +232,22 @@ struct StoredCode {
     challenge: String,
 }
 
-async fn exchange_refresh(state: &AppState, form: TokenForm) -> AppResult<TokenResponse> {
+async fn exchange_refresh(state: &AppState, form: TokenForm) -> Result<TokenResponse, OAuthError> {
     let refresh = form
         .refresh_token
-        .ok_or_else(|| AppError::validation("refresh_token", "is required"))?;
+        .ok_or_else(|| OAuthError::invalid("invalid_request"))?;
     let tokens = state
         .auth
         .refresh_app_tokens(&refresh, &form.client_id)
         .await?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| OAuthError::invalid("invalid_grant"))?;
     Ok(tokens.into())
 }
 
-fn validate_pkce_verifier(v: &str) -> AppResult<()> {
-    if !(43..=128).contains(&v.len())
-        || !v
-            .bytes()
+fn is_pkce_verifier(v: &str) -> bool {
+    (43..=128).contains(&v.len())
+        && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
-    {
-        return Err(AppError::validation(
-            "code_verifier",
-            "must be a valid PKCE verifier",
-        ));
-    }
-    Ok(())
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

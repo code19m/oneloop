@@ -166,13 +166,13 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
         )
         .await
         .unwrap();
-    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
-    let app = oneloop::http::domain::read_router()
-        .layer(Extension(f.manager.clone()))
-        .with_state(AppState::new(config, f.db.clone()));
-    let response = app.oneshot(axum::http::Request::builder()
-        .uri("/api/projects/p1/board?status=planning&trackIds=tr1,missing&epicIds=e1&assigneeIds=u2,u3&blocked=true&limit=50")
-        .body(Body::empty()).unwrap()).await.unwrap();
+    let response = router(&f)
+        .oneshot(signed_in_get(
+            "u1",
+            "/api/projects/p1/board?status=planning&trackIds=tr1,missing&epicIds=e1&assigneeIds=u2,u3&blocked=true&limit=50",
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let body = body_bytes(response).await;
     let value: Value = serde_json::from_slice(&body).unwrap();
@@ -1186,18 +1186,8 @@ async fn done_order_cursors_and_parameters_belong_to_their_order() {
         [0, 1, 2]
     );
 
-    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
-    let app = oneloop::http::domain::read_router()
-        .layer(Extension(f.member.clone()))
-        .with_state(AppState::new(config, f.db.clone()));
-    let get = |uri: &str| {
-        app.clone().oneshot(
-            axum::http::Request::builder()
-                .uri(uri)
-                .body(Body::empty())
-                .unwrap(),
-        )
-    };
+    let app = router(&f);
+    let get = |uri: &str| app.clone().oneshot(signed_in_get("u2", uri));
     let response = get("/api/projects/p1/board?status=done&doneOrder=completed&limit=2")
         .await
         .unwrap();

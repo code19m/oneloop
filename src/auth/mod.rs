@@ -17,14 +17,17 @@ pub use token::hash as token_hash;
 pub mod password;
 pub(crate) mod token;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{LazyLock, OnceLock},
+    time::Duration,
+};
 
 use rusqlite::{OptionalExtension, Transaction};
 use serde::Serialize;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::{
+    blocking::{Lane, Turn},
     db::Db,
     error::{AppError, AppResult},
 };
@@ -121,12 +124,6 @@ impl Actor {
             ActorSource::BrowserSession { .. } => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectPermission {
-    Board,
-    Roadmap,
 }
 
 /// Revalidate an operation's actor against current credentials and account state.
@@ -289,22 +286,12 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    /// With the default password rules.
-    pub fn new(db: Db) -> Self {
-        Self::with_password_policy(db, PasswordPolicy::default())
-    }
-
-    pub fn with_password_policy(db: Db, policy: PasswordPolicy) -> Self {
+    pub fn new(db: Db, policy: PasswordPolicy) -> Self {
         Self { db, policy }
     }
 }
 
-/// Creates an account under the default password rules.
-pub fn create_user(tx: &Transaction<'_>, input: NewUser, now: i64) -> AppResult<User> {
-    create_user_with_policy(tx, input, now, &PasswordPolicy::default())
-}
-
-pub fn create_user_with_policy(
+pub fn create_user(
     tx: &Transaction<'_>,
     input: NewUser,
     now: i64,
@@ -377,17 +364,9 @@ fn insert_user(
     Ok(user)
 }
 
-/// Sets a temporary password under the default password rules.
-pub fn reset_password(
-    tx: &Transaction<'_>,
-    username: &str,
-    password: &str,
-    now: i64,
-) -> AppResult<()> {
-    reset_password_with_policy(tx, username, password, now, &PasswordPolicy::default())
-}
-
-pub fn reset_password_with_policy(
+/// Gives an account a new temporary password and ends its sessions and app
+/// access, for `oneloop user passwd`.
+pub(crate) fn reset_password(
     tx: &Transaction<'_>,
     username: &str,
     password: &str,
@@ -524,36 +503,15 @@ fn login_ip_throttle_key(client_ip: Option<&str>) -> Option<String> {
     login_address_bucket(client_ip).map(|bucket| token_hash(&format!("ip\0{bucket}")))
 }
 
-// Shared across AuthService instances/routes. Waiting requests do not enqueue
-// Argon2 jobs in Tokio's blocking pool. Four workers may overshoot a newly set
-// account delay by at most three in-flight attempts; this is not an exact cap.
-async fn password_work_permit() -> AppResult<Arc<OwnedSemaphorePermit>> {
-    static PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        PERMITS
-            .get_or_init(|| Arc::new(Semaphore::new(4)))
-            .clone()
-            .acquire_owned(),
-    )
-    .await
-    .map_err(|_| AppError::Unavailable("password workers are busy; try again shortly".into()))?
-    .map(Arc::new)
-    .map_err(|_| AppError::internal("password worker admission closed"))
-}
+// Shared across AuthService instances and routes. Waiting requests do not
+// queue Argon2 jobs on Tokio's blocking threads. Four jobs may overshoot a
+// newly set account delay by at most three attempts; this is not an exact cap.
+static PASSWORD_WORK: LazyLock<Lane> = LazyLock::new(|| Lane::new("password work", 4));
 
-async fn password_work<T: Send + 'static>(
-    permit: &Arc<OwnedSemaphorePermit>,
-    work: impl FnOnce() -> AppResult<T> + Send + 'static,
-) -> AppResult<T> {
-    let permit = permit.clone();
-    tokio::task::spawn_blocking(move || {
-        // Cancellation cannot release admission while non-cancellable hash work runs.
-        let _permit = permit;
-        work()
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("password worker stopped: {error}")))?
+/// A turn for password hashing and checks. Callers keep it through their
+/// sign-in bookkeeping, so that waiting attempts see the delays it records.
+async fn password_turn() -> AppResult<Turn> {
+    PASSWORD_WORK.turn_within(Duration::from_secs(10)).await
 }
 
 fn dummy_password_hash() -> String {
@@ -609,7 +567,7 @@ fn account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountSummary>
 }
 
 /// The address of a person's avatar; the blob ID keeps a cached copy current.
-fn avatar_url(user_id: &str, blob_id: &str) -> String {
+pub(crate) fn avatar_url(user_id: &str, blob_id: &str) -> String {
     format!("/api/users/{user_id}/avatar?v={blob_id}")
 }
 
@@ -713,57 +671,4 @@ struct McpAuthentication {
     must_change_password: bool,
     token_last_used: Option<i64>,
     grant_last_used: Option<i64>,
-}
-
-/// Shared capability gate for owner-private Pool content, including activity.
-/// Callers still enforce current actor and project access separately.
-pub(crate) fn can_read_private_pool(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-) -> AppResult<bool> {
-    match &actor.source {
-        ActorSource::BrowserSession { .. } => Ok(true),
-        ActorSource::McpGrant { grant_id } => Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM mcp_grant_scopes
-             WHERE grant_id=?1 AND scope='my_pool_private')",
-            [grant_id],
-            |row| row.get(0),
-        )?),
-    }
-}
-
-fn project_access_bool(result: AppResult<()>) -> AppResult<bool> {
-    match result {
-        Ok(()) => Ok(true),
-        Err(AppError::Forbidden | AppError::NotFound { .. } | AppError::Unauthorized) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(test)]
-mod password_work_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn cancelled_request_keeps_its_permit_until_hash_work_stops() {
-        let semaphore = Arc::new(Semaphore::new(1));
-        let permit = Arc::new(semaphore.clone().acquire_owned().await.unwrap());
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-        let request = tokio::spawn(async move {
-            password_work(&permit, move || {
-                started_tx.send(()).unwrap();
-                finish_rx.recv().unwrap();
-                Ok(())
-            })
-            .await
-        });
-        started_rx.await.unwrap();
-        request.abort();
-        assert!(request.await.unwrap_err().is_cancelled());
-        assert!(semaphore.clone().try_acquire_owned().is_err());
-        finish_tx.send(()).unwrap();
-        // Completion, rather than request cancellation, makes room for new work.
-        let _available = semaphore.acquire_owned().await.unwrap();
-    }
 }

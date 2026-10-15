@@ -96,14 +96,11 @@ async fn repeated_resources_bind_every_value_and_singletons_remain_unique() {
 #[tokio::test]
 async fn bearer_scheme_is_case_insensitive_but_credentials_are_exact() {
     let (_dir, _db, app, session, _user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap();
     for scheme in ["Bearer", "bearer", "BEARER", "Basic"] {
         let mut request = mcp_request(
             access,
-            None,
             json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
         );
         request.headers_mut().insert(
@@ -128,7 +125,6 @@ async fn bearer_scheme_is_case_insensitive_but_credentials_are_exact() {
     ] {
         let mut request = mcp_request(
             access,
-            None,
             json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
         );
         request
@@ -281,9 +277,7 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
         .unwrap();
     assert!(challenge.contains("resource_metadata="));
     assert!(!challenge.contains("invalid_token"));
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap();
     let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}});
     let response = app
@@ -582,12 +576,13 @@ async fn authorization_login_return_is_internal_validated_and_preserved() {
                 must_change_password: true,
             },
             unix_now()?,
+            &oneloop::auth::password::PasswordPolicy::default(),
         )?;
         Ok(())
     })
     .await
     .unwrap();
-    let LoginResult::Authenticated(temporary) = AuthService::new(db.clone())
+    let LoginResult::Authenticated(temporary) = support::auth_service(&db)
         .login(
             "temporary",
             "temporary-test-password-012345",
@@ -741,15 +736,7 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
     let old_refresh = tokens["refresh_token"].as_str().unwrap();
     let refreshed = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &client),
-                ("refresh_token", old_refresh),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(refresh_request(&client, old_refresh))
         .await
         .unwrap();
     assert_eq!(refreshed.status(), StatusCode::OK);
@@ -766,21 +753,13 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
     .unwrap();
     let replay = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &client),
-                ("refresh_token", old_refresh),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(refresh_request(&client, old_refresh))
         .await
         .unwrap();
     assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(replay).await["error"], "invalid_grant");
     assert!(
-        AuthService::new(db.clone())
+        support::auth_service(&db)
             .authenticate_mcp_access_token(&new_access)
             .await
             .is_err(),
@@ -805,14 +784,11 @@ async fn redirect_validation_refresh_rotation_replay_and_revocation_fail_closed(
 #[tokio::test]
 async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
     let (_dir, db, app, session, user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap().to_owned();
     let _connected = McpClient::connect(&app, access.clone()).await;
-    let refresh_client = register(&app).await;
-    let (refresh_code, refresh_verifier) = authorize(&app, &session, &refresh_client).await;
-    let refresh_tokens = issue(&app, &refresh_client, &refresh_code, &refresh_verifier).await;
+    let (refresh_client, refresh_tokens) =
+        connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let refresh = refresh_tokens["refresh_token"].as_str().unwrap().to_owned();
 
     db.run(move |connection| {
@@ -828,7 +804,6 @@ async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
         .clone()
         .oneshot(mcp_request(
             &access,
-            None,
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         ))
         .await
@@ -836,15 +811,7 @@ async fn membership_loss_immediately_revokes_access_and_refresh_credentials() {
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
     let refresh_denied = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &refresh_client),
-                ("refresh_token", &refresh),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(refresh_request(&refresh_client, &refresh))
         .await
         .unwrap();
     assert_eq!(refresh_denied.status(), StatusCode::BAD_REQUEST);
@@ -956,7 +923,6 @@ async fn member_removal_revokes_grants_even_if_re_added_before_next_request() {
         .clone()
         .oneshot(mcp_request(
             tokens["access_token"].as_str().unwrap(),
-            None,
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         ))
         .await
@@ -1007,9 +973,7 @@ async fn admin_removed_as_member_keeps_their_app() {
     })
     .await
     .unwrap();
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let admin = support::add_user(&db, "admin", true).await;
 
     browser_command(
@@ -1041,11 +1005,9 @@ async fn demoted_admin_loses_apps_for_projects_they_are_not_a_member_of() {
         .await
         .unwrap();
     // The admin connects an app to a project that only the admin role opens.
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let admin = support::add_user(&db, "admin", true).await;
-    let accounts = AuthService::new(db.clone());
+    let accounts = support::auth_service(&db);
     // Demoted, then promoted again before the app's next request.
     for (is_admin, expected_revision) in [(false, revision), (true, revision + 1)] {
         accounts
@@ -1066,7 +1028,6 @@ async fn demoted_admin_loses_apps_for_projects_they_are_not_a_member_of() {
         .clone()
         .oneshot(mcp_request(
             tokens["access_token"].as_str().unwrap(),
-            None,
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         ))
         .await
@@ -1136,16 +1097,7 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
         )
         .await,
     );
-    let kept_client = register(&app).await;
-    let (code, verifier) = authorize_with(
-        &app,
-        &session,
-        &kept_client,
-        &["project_read"],
-        &["project-1"],
-    )
-    .await;
-    let kept = issue(&app, &kept_client, &code, &verifier).await;
+    let (kept_client, kept) = connect_app(&app, &session, &["project_read"], &["project-1"]).await;
 
     delete_old_project(&app, &db).await;
 
@@ -1175,7 +1127,6 @@ async fn project_deletion_revokes_every_grant_that_selected_it() {
         .clone()
         .oneshot(mcp_request(
             &both_access,
-            None,
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         ))
         .await
@@ -1243,9 +1194,7 @@ async fn project_deletion_invalidates_unexchanged_codes_that_selected_it() {
 #[tokio::test]
 async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
     let (_dir, db, app, session, _user) = fixture().await;
-    let idle_client = register(&app).await;
-    let (idle_code, idle_verifier) = authorize(&app, &session, &idle_client).await;
-    let idle_tokens = issue(&app, &idle_client, &idle_code, &idle_verifier).await;
+    let (idle_client, idle_tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let idle_refresh = idle_tokens["refresh_token"].as_str().unwrap().to_owned();
     let idle_client_for_db = idle_client.clone();
     db.run(move |connection| {
@@ -1259,23 +1208,14 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
     .unwrap();
     let idle_denied = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &idle_client),
-                ("refresh_token", &idle_refresh),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(refresh_request(&idle_client, &idle_refresh))
         .await
         .unwrap();
     assert_eq!(idle_denied.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(idle_denied).await["error"], "invalid_grant");
 
-    let revoke_client = register(&app).await;
-    let (revoke_code, revoke_verifier) = authorize(&app, &session, &revoke_client).await;
-    let revoke_tokens = issue(&app, &revoke_client, &revoke_code, &revoke_verifier).await;
+    let (revoke_client, revoke_tokens) =
+        connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let revoke_access = revoke_tokens["access_token"].as_str().unwrap().to_owned();
     let revoke_refresh = revoke_tokens["refresh_token"].as_str().unwrap();
     let revoked = app
@@ -1288,7 +1228,7 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
         .unwrap();
     assert_eq!(revoked.status(), StatusCode::OK);
     assert!(
-        AuthService::new(db)
+        support::auth_service(&db)
             .authenticate_mcp_access_token(&revoke_access)
             .await
             .is_err()
@@ -1298,9 +1238,7 @@ async fn refresh_idle_expiration_and_revocation_endpoint_fail_closed() {
 #[tokio::test]
 async fn disconnecting_an_app_in_the_profile_ends_its_tokens() {
     let (_dir, _db, app, session, _user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let apps = |method: &str, path: String| {
         Request::builder()
             .method(method)
@@ -1331,7 +1269,6 @@ async fn disconnecting_an_app_in_the_profile_ends_its_tokens() {
         .clone()
         .oneshot(mcp_request(
             access,
-            None,
             json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
         ))
         .await
@@ -1339,14 +1276,9 @@ async fn disconnecting_an_app_in_the_profile_ends_its_tokens() {
     assert_eq!(call.status(), StatusCode::UNAUTHORIZED);
     let refreshed = app
         .clone()
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("client_id", &client),
-                ("refresh_token", tokens["refresh_token"].as_str().unwrap()),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
+        .oneshot(refresh_request(
+            &client,
+            tokens["refresh_token"].as_str().unwrap(),
         ))
         .await
         .unwrap();
@@ -1402,17 +1334,7 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
 
         let redemption = app
             .clone()
-            .oneshot(form(
-                "/oauth/token",
-                &[
-                    ("grant_type", "authorization_code"),
-                    ("client_id", &client),
-                    ("code", &code),
-                    ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                    ("code_verifier", &verifier),
-                    ("resource", "http://127.0.0.1:8080/mcp"),
-                ],
-            ))
+            .oneshot(code_request(&client, &code, &verifier))
             .await
             .unwrap();
         assert_eq!(
@@ -1433,7 +1355,7 @@ async fn password_changes_and_resets_invalidate_pending_oauth_authorizations() {
         assert_eq!(pending, 0, "admin reset={reset}");
 
         let other_tokens = issue(&app, &client, &other_code, &other_verifier).await;
-        let actor = AuthService::new(db)
+        let actor = support::auth_service(&db)
             .authenticate_mcp_access_token(other_tokens["access_token"].as_str().unwrap())
             .await
             .unwrap();
@@ -1495,7 +1417,7 @@ async fn deactivation_ends_connections_until_the_app_connects_again() {
     let tokens = issue(&app, &client, &code, &verifier).await;
     let access = tokens["access_token"].as_str().unwrap();
     let (pending, pending_verifier) = authorize(&app, &session, &client).await;
-    let auth = AuthService::new(db);
+    let auth = support::auth_service(&db);
     let set_active = |is_active, expected_revision| {
         auth.update_account(
             &admin.actor,
@@ -1528,7 +1450,7 @@ async fn deactivation_ends_connections_until_the_app_connects_again() {
     let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     let old = app
         .clone()
-        .oneshot(mcp_request(access, None, list))
+        .oneshot(mcp_request(access, list))
         .await
         .unwrap();
     assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
@@ -1588,17 +1510,7 @@ async fn restored_pending_authorization_code_cannot_mint_credentials() {
         .unwrap();
     assert_eq!(restored_pending, 0);
     let redemption = restored_app
-        .oneshot(form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client),
-                ("code", &code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                ("code_verifier", &verifier),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        ))
+        .oneshot(code_request(&client, &code, &verifier))
         .await
         .unwrap();
     assert_eq!(redemption.status(), StatusCode::BAD_REQUEST);
@@ -1945,8 +1857,6 @@ async fn redirects_support_normalization_and_loopback_ports_without_widening_oth
 
 #[tokio::test]
 async fn code_exchange_binds_exact_authorized_redirect_after_loopback_port_matching() {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use sha2::{Digest, Sha256};
     let (_dir, _, app, session, _) = fixture().await;
     let registered = registration(
         &app,
@@ -1957,10 +1867,9 @@ async fn code_exchange_binds_exact_authorized_redirect_after_loopback_port_match
         .as_str()
         .unwrap()
         .to_owned();
-    let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let (verifier, challenge) = pkce();
     let redirect = "http://LOCALHOST:49153/callback";
-    let path = authorization_path(&client, redirect).replace(verifier, &challenge);
+    let path = authorization_path(&client, redirect).replace(UNCHECKED_CHALLENGE, &challenge);
     let (status, html) = consent_page(&app, &session, &path).await;
     assert_eq!(status, StatusCode::OK);
     let response = app
@@ -2010,9 +1919,7 @@ async fn code_exchange_binds_exact_authorized_redirect_after_loopback_port_match
 #[tokio::test]
 async fn concurrent_refreshes_keep_the_grant_active_without_extending_grace() {
     let (_dir, db, app, session, _) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let old = tokens["refresh_token"].as_str().unwrap();
     let (left, right) = tokio::join!(
         app.clone().oneshot(refresh_request(&client, old)),
@@ -2028,7 +1935,7 @@ async fn concurrent_refreshes_keep_the_grant_active_without_extending_grace() {
     for result in [&left, &right] {
         let access = result["access_token"].as_str().unwrap();
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(&db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_ok()
@@ -2095,19 +2002,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
     let (code, verifier) = authorize(&app, &session, &client).await;
     let tokens = issue(&app, &client, &code, &verifier).await;
     let access = tokens["access_token"].as_str().unwrap();
-    let request = |verifier: &str| {
-        form(
-            "/oauth/token",
-            &[
-                ("grant_type", "authorization_code"),
-                ("client_id", &client),
-                ("code", &code),
-                ("redirect_uri", "http://127.0.0.1:49152/callback"),
-                ("code_verifier", verifier),
-                ("resource", "http://127.0.0.1:8080/mcp"),
-            ],
-        )
-    };
+    let request = |verifier: &str| code_request(&client, &code, verifier);
     assert_eq!(
         app.clone()
             .oneshot(request(
@@ -2119,7 +2014,7 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
         StatusCode::BAD_REQUEST
     );
     assert!(
-        AuthService::new(db.clone())
+        support::auth_service(&db)
             .authenticate_mcp_access_token(access)
             .await
             .is_ok(),
@@ -2142,7 +2037,6 @@ async fn authorization_code_replay_revokes_issued_tokens_after_maintenance() {
         .clone()
         .oneshot(mcp_request(
             access,
-            None,
             json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         ))
         .await
@@ -2416,7 +2310,7 @@ async fn listed_pages_may_register_and_call_mcp_from_a_browser() {
         ("https://inspector.example:8443", false),
         ("https://foreign.example", false),
     ] {
-        let mut request = mcp_request(&access, None, initialize.clone());
+        let mut request = mcp_request(&access, initialize.clone());
         request
             .headers_mut()
             .insert(header::ORIGIN, origin.parse().unwrap());
@@ -2440,8 +2334,6 @@ async fn listed_pages_may_register_and_call_mcp_from_a_browser() {
 
 #[tokio::test]
 async fn app_schemes_need_listing_and_still_match_exactly() {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use sha2::{Digest, Sha256};
     const CURSOR: &str = "cursor://anysphere.cursor-mcp/oauth/callback";
     let (_dir, _db, app, _, _) = fixture().await;
     let response = registration(&app, json!({"redirect_uris": [CURSOR]})).await;
@@ -2480,10 +2372,8 @@ async fn app_schemes_need_listing_and_still_match_exactly() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{other}");
     }
 
-    let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let path = authorization_path(&client, CURSOR)
-        .replace("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", &challenge);
+    let (verifier, challenge) = pkce();
+    let path = authorization_path(&client, CURSOR).replace(UNCHECKED_CHALLENGE, &challenge);
     let response = app
         .clone()
         .oneshot(

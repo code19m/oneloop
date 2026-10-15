@@ -48,7 +48,14 @@ pub(super) async fn register_client(
     })?;
     register_client_inner(State(state), peer, headers, request)
         .await
-        .map_err(|e| OAuthError::from_app(e, true))
+        .map_err(|error| match &error {
+            // The fields are RFC 7591's metadata names, which pick the code.
+            AppError::Validation { field, .. } if field == "redirect_uris" => {
+                OAuthError::invalid("invalid_redirect_uri")
+            }
+            AppError::Validation { .. } => OAuthError::invalid("invalid_client_metadata"),
+            _ => error.into(),
+        })
 }
 
 async fn register_client_inner(

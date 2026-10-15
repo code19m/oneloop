@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
-    auth::{Actor, McpScope, ProjectPermission},
+    auth::{Actor, McpScope},
     collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
         BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
@@ -700,12 +700,11 @@ impl OneloopMcp {
         let operation = CollaborationOperation::parse(&input.operation)
             .ok_or_else(|| ToolError::invalid_arguments(UNSUPPORTED))?;
         require_route(McpTool::Discussion, operation.mcp_route(), UNSUPPORTED)?;
-        let actor = actor(&parts)?;
         let result = self
             .state
             .collaboration
             .execute(
-                &actor,
+                &actor(&parts)?,
                 CollaborationCommand {
                     operation: input.operation,
                     payload: input.payload,
@@ -713,9 +712,8 @@ impl OneloopMcp {
                     expected_revision: input.expected_revision,
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -734,14 +732,9 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<DestructiveCommandInput>,
     ) -> Result<Json<Value>, ToolError> {
-        let actor = actor(&parts)?;
-        self.state
-            .auth
-            .require_mcp_scope(&actor, McpScope::Destructive)
-            .await
-            .map_err(tool_error)?;
-
+        // The services check the destructive scope for the project.
         const UNSUPPORTED: &str = "unsupported destructive operation";
+        let actor = actor(&parts)?;
         if let Some(operation) = CollaborationOperation::parse(&input.operation) {
             require_route(McpTool::Destructive, operation.mcp_route(), UNSUPPORTED)?;
             let result = self
@@ -756,9 +749,8 @@ impl OneloopMcp {
                         expected_revision: Some(input.expected_revision),
                     },
                 )
-                .await
-                .map_err(tool_error)?;
-            return Ok(Json(serde_json::to_value(result).map_err(internal_error)?));
+                .await?;
+            return json(result);
         }
 
         let operation = DomainOperation::parse(&input.operation)
@@ -776,9 +768,8 @@ impl OneloopMcp {
                     expected_revision: Some(input.expected_revision),
                 },
             )
-            .await
-            .map_err(tool_error)?;
-        Ok(Json(serde_json::to_value(result).map_err(internal_error)?))
+            .await?;
+        json(result)
     }
 
     #[tool(
@@ -1075,15 +1066,11 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<DeleteAttachmentInput>,
     ) -> Result<Json<Value>, ToolError> {
-        let actor = actor(&parts)?;
-        self.state
-            .auth
-            .require_mcp_scope(&actor, McpScope::Destructive)
-            .await?;
+        // The service checks the destructive scope for the project.
         self.state
             .files
             .delete_attachment(
-                &actor,
+                &actor(&parts)?,
                 &input.attachment_id,
                 input.expected_revision,
                 &input.idempotency_key,
@@ -1525,7 +1512,7 @@ async fn create_transfer(
     let task = state.domain.task(actor, input.task_id.clone()).await?;
     state
         .auth
-        .require_project_management(actor, &task.project_id, ProjectPermission::Board)
+        .require_board_management(actor, &task.project_id)
         .await?;
     if input.size_bytes == 0 || input.size_bytes > crate::files::MAX_ATTACHMENT_BYTES {
         return Err(AppError::validation(
@@ -1702,7 +1689,7 @@ mod error_tests {
             (AppError::RateLimited { retry_after: 60 }, 60),
         ] {
             let rmcp::model::CallToolResponse::Complete(result) =
-                tool_error(error).into_call_tool_result().unwrap()
+                ToolError::from(error).into_call_tool_result().unwrap()
             else {
                 panic!("expected completed result")
             };
@@ -1714,7 +1701,7 @@ mod error_tests {
 
     #[test]
     fn mcp_server_faults_have_safe_messages_and_correlatable_references() {
-        let error = tool_error(AppError::Database("private database path/cause".into()));
+        let error = ToolError::from(AppError::Database("private database path/cause".into()));
         use rmcp::handler::server::tool::IntoCallToolResult;
         let wire = serde_json::to_value(error.into_call_tool_result().unwrap_err()).unwrap();
         assert_eq!(wire["code"], -32603);
@@ -1731,7 +1718,7 @@ mod storage_error_tests {
 
     #[test]
     fn full_storage_preserves_safe_machine_readable_tool_error() {
-        let result = tool_error(AppError::StorageFull("private disk path".into()))
+        let result = ToolError::from(AppError::StorageFull("private disk path".into()))
             .into_call_tool_result()
             .unwrap();
         let rmcp::model::CallToolResponse::Complete(result) = result else {

@@ -1199,7 +1199,7 @@ async fn display_text_rejects_spoofing_without_changing_multiline_unicode() {
         )
         .await;
     assert!(matches!(error,Err(AppError::Validation{ref field,..}) if field=="fileName"));
-    let auth = AuthService::new(f.db.clone());
+    let auth = support::auth_service(&f.db);
     assert!(matches!(
         auth.update_profile(&f.member, "\u{200b}").await,
         Err(AppError::Validation { .. })

@@ -247,7 +247,7 @@ async fn admin_accounts_return_an_explicit_fifty_row_cursor() {
         })
         .await
         .unwrap();
-    let service = AuthService::new(fixture.db.clone());
+    let service = support::auth_service(&fixture.db);
     let (first, cursor) = service.list_accounts(&fixture.admin, None).await.unwrap();
     assert_eq!(first.len(), 50);
     let cursor = cursor.expect("more than fifty users must expose a cursor");

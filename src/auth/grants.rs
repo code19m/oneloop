@@ -7,7 +7,7 @@ pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
 /// A refresh token unused for 30 days stops working, and so does its grant.
 /// `src/retention.rs` repeats the value as a literal, because its index
 /// expression must match.
-pub(crate) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub(super) const REFRESH_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// A grant stops working 90 days after consent, however often it is used.
 const GRANT_ABSOLUTE_SECONDS: i64 = 90 * 24 * 60 * 60;
 /// How long a rotated refresh token still works, for an app that lost the
@@ -264,7 +264,7 @@ impl AuthService {
         let project_id = project_id.to_owned();
         self.db
             .run(move |connection| {
-                project_access_bool(crate::access::require_project(
+                crate::access::allowed(crate::access::require_project(
                     connection,
                     &actor,
                     &project_id,
@@ -285,41 +285,27 @@ impl AuthService {
         }
     }
 
-    pub async fn can_manage_project(
+    /// For MCP upload tickets, which are issued before the upload checks.
+    pub(crate) async fn require_board_management(
         &self,
         actor: &Actor,
         project_id: &str,
-        permission: ProjectPermission,
-    ) -> AppResult<bool> {
+    ) -> AppResult<()> {
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let need = match permission {
-            ProjectPermission::Board => crate::access::Need::Board,
-            ProjectPermission::Roadmap => crate::access::Need::Roadmap,
-        };
-        self.db
+        let allowed = self
+            .db
             .run(move |connection| {
-                project_access_bool(crate::access::require_project(
+                crate::access::allowed(crate::access::require_project(
                     connection,
                     &actor,
                     &project_id,
-                    need,
+                    crate::access::Need::Board,
                     false,
                 ))
             })
-            .await
-    }
-
-    pub async fn require_project_management(
-        &self,
-        actor: &Actor,
-        project_id: &str,
-        permission: ProjectPermission,
-    ) -> AppResult<()> {
-        if self
-            .can_manage_project(actor, project_id, permission)
-            .await?
-        {
+            .await?;
+        if allowed {
             Ok(())
         } else {
             Err(AppError::Forbidden)
@@ -573,7 +559,7 @@ pub(crate) fn revoke_unless_current(
     Ok(false)
 }
 
-/// Revokes every grant that `grants` selects; its one parameter is `?1`.
+/// Revokes every grant whose ID the query `grants` selects with `parameters`.
 fn revoke_grants(
     tx: &Transaction<'_>,
     grants: &str,

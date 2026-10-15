@@ -273,10 +273,7 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         .await
         .unwrap();
     let id = task.entities[0]["id"].as_str().unwrap();
-    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
-    let app = oneloop::http::domain::read_router()
-        .layer(Extension(f.member.clone()))
-        .with_state(AppState::new(config, f.db.clone()));
+    let app = router(&f);
     for (hidden, missing) in [
         ("/api/tasks/TWO-001".into(), "/api/tasks/TWO-999".into()),
         (
@@ -292,12 +289,7 @@ async fn hidden_and_missing_resources_have_identical_http_errors() {
         for url in [hidden, missing] {
             let response = app
                 .clone()
-                .oneshot(
-                    axum::http::Request::builder()
-                        .uri(url)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(signed_in_get("u2", &url))
                 .await
                 .unwrap();
             assert_eq!(response.status(), 404);

@@ -16,10 +16,12 @@ pub(crate) struct Lane {
 }
 
 /// A job's place in its lane. It lasts until the job ends, even when the
-/// request that started the job ends first.
+/// request that started the job ends first. Clones share the place, so a
+/// caller can keep it across several jobs; it ends with the last clone.
+#[derive(Clone)]
 pub(crate) struct Turn {
     name: &'static str,
-    _permit: OwnedSemaphorePermit,
+    _permit: Arc<OwnedSemaphorePermit>,
 }
 
 impl Lane {
@@ -35,7 +37,7 @@ impl Lane {
         let permit = self.turns.clone().acquire_owned().await;
         Turn {
             name: self.name,
-            _permit: permit.expect("a lane is never closed"),
+            _permit: Arc::new(permit.expect("a lane is never closed")),
         }
     }
 
@@ -82,11 +84,14 @@ mod tests {
         let request = tokio::spawn({
             let lane = lane.clone();
             async move {
-                lane.run(move || {
-                    started_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                })
-                .await
+                // The request keeps a clone, as sign-in keeps its turn.
+                let turn = lane.turn().await;
+                turn.clone()
+                    .run(move || {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    })
+                    .await
             }
         });
         started_rx.await.unwrap();

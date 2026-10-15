@@ -9,11 +9,9 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
             c.execute("INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('project-2',?1,1,1)", [user])?;
             Ok(())
         }).await.unwrap();
-        let client = register(&app).await;
-        let (code, verifier) = authorize_with(
+        let mut mcp = scoped_mcp(
             &app,
             &session,
-            &client,
             &[
                 "project_read",
                 "board_manage",
@@ -23,8 +21,6 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
             &["project-1", "project-2"],
         )
         .await;
-        let tokens = issue(&app, &client, &code, &verifier).await;
-        let mut mcp = McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
         let task = create_protocol_task(&mut mcp, "project-1", direction).await;
         let upload = tool_value(&mcp.call("create_attachment_upload", json!({"taskId":task, "fileName":"data.txt", "sizeBytes":4,"idempotencyKey":"transfer"})).await);
         let ticket = if direction == "download" {
@@ -167,6 +163,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
                     must_change_password: false,
                 },
                 unix_now()?,
+                &oneloop::auth::password::PasswordPolicy::default(),
             )?;
             transaction.execute(
                 "INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project-1',?1,0,0,1,1)",
@@ -186,21 +183,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
     .await
     .unwrap();
 
-    let read_client = register(&app).await;
-    let (code, verifier) = authorize_with(
-        &app,
-        &session,
-        &read_client,
-        &["project_read"],
-        &["project-1"],
-    )
-    .await;
-    let read_tokens = issue(&app, &read_client, &code, &verifier).await;
-    let mut read_mcp = McpClient::connect(
-        &app,
-        read_tokens["access_token"].as_str().unwrap().to_owned(),
-    )
-    .await;
+    let mut read_mcp = scoped_mcp(&app, &session, &["project_read"], &["project-1"]).await;
     let read_projects = tool_value(&read_mcp.call("list_projects", json!({})).await);
     assert_eq!(read_projects["projects"].as_array().unwrap().len(), 1);
     assert_eq!(read_projects["projects"][0]["id"], "project-1");
@@ -243,11 +226,7 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
         "not_found",
     );
 
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
 
     let listed = mcp.request("tools/list", json!({})).await;
     let names = listed["result"]["tools"]
@@ -524,11 +503,9 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
     let inbox = tool_value(&mcp.call("read_inbox", json!({})).await);
     assert_eq!(inbox["filteredCount"], 0);
 
-    let safe_client = register(&app).await;
-    let (safe_code, safe_verifier) = authorize_with(
+    let mut safe_mcp = scoped_mcp(
         &app,
         &session,
-        &safe_client,
         &[
             "project_read",
             "discussion",
@@ -536,12 +513,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
             "roadmap_manage",
         ],
         &["project-1"],
-    )
-    .await;
-    let safe_tokens = issue(&app, &safe_client, &safe_code, &safe_verifier).await;
-    let mut safe_mcp = McpClient::connect(
-        &app,
-        safe_tokens["access_token"].as_str().unwrap().to_owned(),
     )
     .await;
     let updated = tool_value(
@@ -749,13 +720,78 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
 }
 
 #[tokio::test]
+async fn deleting_an_attachment_needs_the_destructive_scope_also_on_retry() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
+    let mut mcp = McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
+    let mut managing = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "attachments"],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "kept-file").await;
+    let ticket = tool_value(
+        &mcp.call(
+            "create_attachment_upload",
+            json!({"taskId":task,"fileName":"kept.txt","sizeBytes":4,"idempotencyKey":"kept-file"}),
+        )
+        .await,
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from("kept"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let attachment = body_json(response).await["value"].clone();
+    let deletion = json!({
+        "attachmentId": attachment["id"],
+        "expectedRevision": attachment["revision"],
+        "idempotencyKey": "delete-kept-file",
+    });
+
+    assert_tool_error(
+        &managing.call("delete_attachment", deletion.clone()).await,
+        "forbidden",
+    );
+    let listed = tool_value(
+        &managing
+            .call("list_attachments", json!({"taskId":task}))
+            .await,
+    );
+    assert_eq!(listed["items"][0]["id"], attachment["id"]);
+
+    // A retry of a deletion checks the scope again.
+    tool_value(&mcp.call("delete_attachment", deletion.clone()).await);
+    db.run(move |connection| {
+        connection.execute(
+            "DELETE FROM mcp_grant_scopes WHERE scope='destructive'
+             AND grant_id=(SELECT id FROM mcp_grants WHERE client_id=?1)",
+            [client],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_tool_error(&mcp.call("delete_attachment", deletion).await, "not_found");
+}
+
+#[tokio::test]
 async fn an_upload_body_that_breaks_off_is_a_client_error() {
     let (_dir, _db, app, session, _user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let task_id = create_protocol_task(&mut mcp, "project-1", "broken-body").await;
     let ticket = tool_value(
         &mcp.call(
@@ -793,11 +829,8 @@ async fn an_upload_body_that_breaks_off_is_a_client_error() {
 #[tokio::test]
 async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
     let (_dir, db, app, session, user) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let (client, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
+    let mut mcp = McpClient::connect(&app, tokens["access_token"].as_str().unwrap()).await;
     let task_id = create_protocol_task(&mut mcp, "project-1", "files").await;
 
     assert_tool_error(
@@ -1005,11 +1038,9 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
     })
     .await
     .unwrap();
-    let private_client = register(&app).await;
-    let (private_code, private_verifier) = authorize_with(
+    let mut private_mcp = scoped_mcp(
         &app,
         &session,
-        &private_client,
         &[
             "project_read",
             "board_manage",
@@ -1018,12 +1049,6 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
             "destructive",
         ],
         &["project-2"],
-    )
-    .await;
-    let private_tokens = issue(&app, &private_client, &private_code, &private_verifier).await;
-    let mut private_mcp = McpClient::connect(
-        &app,
-        private_tokens["access_token"].as_str().unwrap().to_owned(),
     )
     .await;
     let private_task = create_protocol_task(&mut private_mcp, "project-2", "private-files").await;
@@ -1123,7 +1148,6 @@ async fn protocol_file_tickets_transfer_real_bytes_and_enforce_limits() {
         .clone()
         .oneshot(mcp_request(
             &mcp.access,
-            mcp.session_id.as_ref(),
             json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"create_attachment_download","arguments":{"attachmentId":attachment_id}}}),
         ))
         .await
@@ -1183,7 +1207,6 @@ async fn mcp_reads_and_unknown_oauth_tokens_do_not_wait_for_the_writer() {
     )
     .await
     .unwrap();
-    assert!(mcp.session_id.is_none());
     assert!(tool_value(&mcp.call("get_identity", json!({})).await).is_object());
     for method in ["GET", "DELETE"] {
         let response = app
@@ -1257,7 +1280,7 @@ fn refresh_token_revocation_during_writer_contention_is_retryable() {
             "temporarily_unavailable"
         );
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_ok()
@@ -1272,7 +1295,7 @@ fn refresh_token_revocation_during_writer_contention_is_retryable() {
             StatusCode::OK
         );
         assert!(
-            AuthService::new(db.clone())
+            support::auth_service(db)
                 .authenticate_mcp_access_token(access)
                 .await
                 .is_err()
@@ -1298,7 +1321,6 @@ fn lost_membership_during_writer_contention_is_retryable_not_a_new_login() {
             .clone()
             .oneshot(mcp_request(
                 access,
-                None,
                 json!({"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}),
             ))
             .await
@@ -1386,18 +1408,13 @@ async fn inbox_grants_limit_reads_counts_and_all_mutations_to_selected_projects(
         })
         .await
         .unwrap();
-    let client = register(&app).await;
-    let (code, verifier) = authorize_with(
+    let mut mcp = scoped_mcp(
         &app,
         &session,
-        &client,
         &["project_read", "inbox_private"],
         &["project-1"],
     )
     .await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
     let inbox = tool_value(&mcp.call("read_inbox", json!({})).await);
     assert_eq!(inbox["filteredCount"], 1);
     assert_eq!(inbox["unreadCount"], 1);
@@ -1521,13 +1538,11 @@ async fn dates_and_hidden_resources_have_matching_browser_and_mcp_contracts() {
 async fn comment_service_requires_destructive_scope_for_delete_and_replay() {
     use oneloop::collaboration::{CollaborationCommand, CollaborationService};
     let (_dir, db, app, session, _) = fixture().await;
-    let client = register(&app).await;
-    let (code, verifier) = authorize(&app, &session, &client).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
+    let (_, tokens) = connect_app(&app, &session, ALL_SCOPES, &["project-1"]).await;
     let access = tokens["access_token"].as_str().unwrap();
     let mut mcp = McpClient::connect(&app, access).await;
     let task = create_protocol_task(&mut mcp, "project-1", "service-destructive").await;
-    let actor = AuthService::new(db.clone())
+    let actor = support::auth_service(&db)
         .authenticate_mcp_access_token(access)
         .await
         .unwrap();
@@ -1641,12 +1656,7 @@ async fn knowledge_tools_read_the_overview_files_and_search() {
     })
     .await
     .unwrap();
-    let client = register(&app).await;
-    let (code, verifier) =
-        authorize_with(&app, &session, &client, &["project_read"], &["project-1"]).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut mcp = scoped_mcp(&app, &session, &["project_read"], &["project-1"]).await;
 
     let overview = tool_value(
         &mcp.call("read_knowledge_overview", json!({"projectId": "project-1"}))
@@ -1793,12 +1803,7 @@ async fn knowledge_file_reads_take_headings_and_sections_from_the_first_mebibyte
     })
     .await
     .unwrap();
-    let client = register(&app).await;
-    let (code, verifier) =
-        authorize_with(&app, &session, &client, &["project_read"], &["project-1"]).await;
-    let tokens = issue(&app, &client, &code, &verifier).await;
-    let mut mcp =
-        McpClient::connect(&app, tokens["access_token"].as_str().unwrap().to_owned()).await;
+    let mut mcp = scoped_mcp(&app, &session, &["project_read"], &["project-1"]).await;
     let mut read = async |path: &str, section: Option<&str>| {
         let mut input = json!({"projectId": "project-1", "path": path});
         if let Some(section) = section {

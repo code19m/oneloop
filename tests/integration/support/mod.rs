@@ -25,7 +25,10 @@ use std::{
 
 use oneloop::{
     Config, Db,
-    auth::{Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user},
+    auth::{
+        Actor, ActorSource, AuthService, IssuedSession, LoginResult, NewUser, create_user,
+        password::PasswordPolicy,
+    },
     db::{DataLayout, migrate},
     timezone::TimeZone,
 };
@@ -225,6 +228,11 @@ pub fn browser_actor(
     }
 }
 
+/// The account service with the default password rules.
+pub fn auth_service(db: &Db) -> AuthService {
+    AuthService::new(db.clone(), PasswordPolicy::default())
+}
+
 /// Creates an account whose display name is its username, then signs it in.
 ///
 /// The account gets the real rules and password hash. Then the hash is
@@ -242,7 +250,7 @@ pub async fn add_user(db: &Db, username: &str, admin: bool) -> IssuedSession {
         must_change_password: false,
     };
     db.transaction(move |tx| {
-        let user = create_user(tx, input, now())?;
+        let user = create_user(tx, input, now(), &PasswordPolicy::default())?;
         tx.execute(
             "UPDATE users SET password_hash=?1 WHERE id=?2",
             rusqlite::params![low_cost_hash(PASSWORD), user.id],
@@ -251,7 +259,7 @@ pub async fn add_user(db: &Db, username: &str, admin: bool) -> IssuedSession {
     })
     .await
     .unwrap();
-    match AuthService::new(db.clone())
+    match auth_service(db)
         .login(username, PASSWORD, Default::default(), None)
         .await
         .unwrap()

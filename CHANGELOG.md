@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `ONELOOP_TRUSTED_PROXIES` now ignores empty items, such as a trailing
+  comma, like the other lists. Before, oneloop refused to start.
+
 ### Fixed
 
 - `oneloop serve` no longer crashes when nothing reads its standard error and

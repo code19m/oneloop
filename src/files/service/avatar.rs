@@ -138,7 +138,7 @@ impl FileService {
         if let Some(old_blob) = old_blob {
             self.forget_old_avatar(&old_blob).await;
         }
-        Ok(format!("/api/users/{}/avatar?v={}", actor.user_id, blob_id))
+        Ok(crate::auth::avatar_url(&actor.user_id, &blob_id))
     }
 
     pub async fn remove_avatar(&self, actor: &Actor) -> AppResult<()> {

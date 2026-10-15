@@ -3,10 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use oneloop::{
-    AppState, Db, application, auth::unix_now, http::security::require_canonical_origin,
-};
-use proptest::prelude::*;
+use oneloop::{AppState, Db, application, auth::unix_now};
 use serde_json::{Value, json};
 use sha2::Digest;
 use tempfile::TempDir;
@@ -692,10 +689,30 @@ const BROWSER_ROUTES: &[(&str, &str, bool)] = &[
     ("POST", "/api/tasks/missing/attachments/reorder", false),
     ("PATCH", "/api/attachments/missing", false),
     ("DELETE", "/api/attachments/missing", false),
+    ("POST", "/api/attachments/missing/restore", false),
     ("GET", "/api/attachments/missing/download", false),
     ("GET", "/api/attachments/missing/content", false),
+    ("GET", "/api/attachments/missing/thumbnail", false),
     ("GET", "/api/attachments/missing/source", false),
     ("GET", "/api/attachments/missing/preview/html", false),
+    ("GET", "/api/projects/missing/knowledge", false),
+    ("GET", "/api/projects/missing/knowledge/search?q=x", false),
+    (
+        "GET",
+        "/api/projects/missing/knowledge/content?path=a",
+        false,
+    ),
+    ("GET", "/api/projects/missing/knowledge/text?path=a", false),
+    (
+        "GET",
+        "/api/projects/missing/knowledge/preview/html?path=a",
+        false,
+    ),
+    (
+        "GET",
+        "/api/projects/missing/knowledge/download?path=a",
+        false,
+    ),
     ("PUT", "/api/auth/avatar", false),
     ("DELETE", "/api/auth/avatar", false),
     ("GET", "/api/users/missing/avatar", false),
@@ -1200,17 +1217,4 @@ async fn health_reports_build_metadata_without_authentication() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let script = body_text(response).await;
     assert!(!script.contains("ONELOOP_BUILD"));
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
-    #[test]
-    fn origin_check_accepts_only_the_canonical_origin(raw in ".{0,512}") {
-        let mut headers = axum::http::HeaderMap::new();
-        if let Ok(value) = raw.parse() { headers.insert(axum::http::header::ORIGIN, value); }
-        let url = url::Url::parse("https://work.example.com").unwrap();
-        if require_canonical_origin(&axum::http::Method::POST, &headers, &url).is_ok() {
-            prop_assert_eq!(url::Url::parse(&raw).unwrap().origin(), url.origin());
-        }
-    }
 }

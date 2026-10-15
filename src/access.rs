@@ -1,6 +1,6 @@
-//! The one project access policy, shared by every service. Each check reads
-//! the current identity and access; private scopes never inherit
-//! administrator visibility. It also validates mentions.
+//! The one project access policy that every service uses, for browser
+//! sessions and apps alike. Each check reads current data. Mentions are
+//! checked here too, because they name project members.
 use crate::collaboration::{MentionKind, MentionToken};
 use crate::{
     AppError, AppResult,
@@ -75,6 +75,13 @@ pub(crate) fn allowed<T>(result: AppResult<T>) -> AppResult<bool> {
         Err(AppError::Unauthorized | AppError::Forbidden | AppError::NotFound { .. }) => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// Whether the actor may read private My Pool content, including its
+/// activity. An app needs the `my_pool_private` scope; callers still check
+/// the project.
+pub(crate) fn can_read_private_pool(conn: &Connection, actor: &Actor) -> AppResult<bool> {
+    allowed(require_scope(conn, actor, "my_pool_private", None))
 }
 
 pub(crate) fn require_project(

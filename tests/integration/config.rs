@@ -41,7 +41,7 @@ fn configuration_parses_sizes_proxies_and_paths() {
         ("ONELOOP_DISK_MIN_FREE", "512MiB"),
         (
             "ONELOOP_TRUSTED_PROXIES",
-            "127.0.0.1, 10.0.0.0/8,127.0.0.1/32",
+            "127.0.0.1, 10.0.0.0/8,,127.0.0.1/32,",
         ),
         ("ONELOOP_LOG_LEVEL", "debug"),
     ]))

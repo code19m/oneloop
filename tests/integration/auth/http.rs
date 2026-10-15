@@ -2,14 +2,17 @@ use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
+    response::Response,
 };
 use oneloop::{
     AppState, Db,
-    auth::{NewUser, create_user},
+    auth::{NewUser, create_user, password::PasswordPolicy},
 };
 use tower::ServiceExt;
 
 use crate::support::http::{body_bytes, body_json};
+
+use super::add_user;
 
 fn application() -> (tempfile::TempDir, Db, Router) {
     application_at("https://tasks.example.test")
@@ -23,23 +26,29 @@ fn application_at(public_url: &str) -> (tempfile::TempDir, Db, Router) {
     (directory, db, app)
 }
 
-async fn seed_user(db: &Db) {
-    db.transaction(|tx| {
-        create_user(
-            tx,
-            NewUser {
-                username: "person".into(),
-                display_name: "Person".into(),
-                password: "correct horse battery staple".into(),
-                is_admin: false,
-                must_change_password: false,
-            },
-            1_700_000_000,
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+/// The `name=value` part of the session cookie that `response` sets.
+fn session_cookie(response: &Response) -> String {
+    response.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+/// `GET /api/auth/me` with `cookie`.
+async fn me(app: &Router, cookie: &str) -> Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/me")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
 
 fn login_request(origin: Option<&str>) -> Request<Body> {
@@ -60,7 +69,7 @@ fn login_request(origin: Option<&str>) -> Request<Body> {
 #[tokio::test]
 async fn login_rejects_missing_or_cross_origin_and_issues_a_secure_cookie() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     assert_eq!(
         app.clone()
             .oneshot(login_request(None))
@@ -91,18 +100,7 @@ async fn login_rejects_missing_or_cross_origin_and_issues_a_secure_cookie() {
         .to_owned();
     assert!(cookie.starts_with("__Host-oneloop_session="));
     assert!(cookie.contains("; Secure"));
-    let session_cookie = cookie.split(';').next().unwrap();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/me")
-                .header(header::COOKIE, session_cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = me(&app, &session_cookie(&response)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let json: serde_json::Value = body_json(response).await;
     assert_eq!(json["user"]["username"], "person");
@@ -112,37 +110,22 @@ async fn login_rejects_missing_or_cross_origin_and_issues_a_secure_cookie() {
 #[tokio::test]
 async fn duplicate_session_cookies_fail_closed() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = session_cookie(&response);
     let duplicate = format!("{cookie}; {cookie}");
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/me")
-                .header(header::COOKIE, duplicate)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = me(&app, &duplicate).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn rejected_login_origins_report_the_configured_address_without_creating_sessions() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     for origin in [
         None,
         Some("null"),
@@ -201,6 +184,7 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
                 must_change_password: false,
             },
             oneloop::auth::unix_now()?,
+            &PasswordPolicy::default(),
         )?;
         Ok(())
     })
@@ -221,13 +205,7 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        cookie = response.headers()[header::SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        cookie = session_cookie(&response);
         if let Some(next) = next {
             let body = format!(r#"{{"currentPassword":"{current}","newPassword":"{next}"}}"#);
             let response = app
@@ -267,19 +245,13 @@ async fn maximum_escaped_passwords_can_be_changed_and_used_to_sign_in() {
 #[tokio::test]
 async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = session_cookie(&response);
     for (path, body, field) in [
         (
             "/api/auth/recent-auth",
@@ -303,17 +275,7 @@ async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire(
         assert_eq!(json["error"]["code"], "incorrect_password");
         assert_eq!(json["error"]["details"]["field"], field);
     }
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/auth/me")
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = me(&app, &cookie).await;
     assert_eq!(response.status(), StatusCode::OK);
     db.run(|connection| {
         connection.execute("UPDATE sessions SET revoked_at=1", [])?;
@@ -342,19 +304,13 @@ async fn incorrect_password_is_correctable_but_revoked_credentials_still_expire(
 #[tokio::test]
 async fn password_gate_delay_has_retry_after_and_preserves_session() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = session_cookie(&response);
     for _ in 0..5 {
         assert_eq!(
             app.clone()
@@ -388,25 +344,13 @@ async fn password_gate_delay_has_retry_after_and_preserves_session() {
             > 0
     );
     assert!(!response.headers().contains_key(header::SET_COOKIE));
-    assert_eq!(
-        app.oneshot(
-            Request::builder()
-                .uri("/api/auth/me")
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .unwrap()
-        )
-        .await
-        .unwrap()
-        .status(),
-        StatusCode::OK
-    );
+    assert_eq!(me(&app, &cookie).await.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn invalid_login_has_neutral_copy_for_unknown_inactive_and_wrong_password_accounts() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     for username in ["person", "missing", "!"] {
         let body = serde_json::json!({"username":username,"password":"wrong"}).to_string();
         let response = app
@@ -448,20 +392,14 @@ fn logout_request(cookie: Option<&str>, origin: Option<&str>) -> Request<Body> {
 async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
     for public_url in ["https://tasks.example.test", "http://localhost:8080"] {
         let (_directory, db, app) = application_at(public_url);
-        seed_user(&db).await;
+        add_user(&db, "person", false, false).await;
         let response = app
             .clone()
             .oneshot(login_request(Some(public_url)))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let cookie = response.headers()[header::SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        let cookie = session_cookie(&response);
         let name = cookie.split('=').next().unwrap();
         let clearing = format!(
             "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}",
@@ -498,17 +436,7 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
             assert_eq!(response.headers()[header::SET_COOKIE], clearing);
         }
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/auth/me")
-                    .header(header::COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = me(&app, &cookie).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         for expiry in ["idle_expires_at", "absolute_expires_at", "revoked_at"] {
             let response = app
@@ -516,13 +444,7 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
                 .oneshot(login_request(Some(public_url)))
                 .await
                 .unwrap();
-            let cookie = response.headers()[header::SET_COOKIE]
-                .to_str()
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned();
+            let cookie = session_cookie(&response);
             db.run(move |connection| {
                 let assignment = match expiry {
                     "absolute_expires_at" => "absolute_expires_at=1,idle_expires_at=1",
@@ -548,19 +470,13 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
 #[tokio::test]
 async fn rotated_cookies_keep_the_original_absolute_deadline() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let mut cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let mut cookie = session_cookie(&response);
     let deadline = oneloop::auth::unix_now().unwrap() + 3600;
     db.run(move |connection| {
         connection.execute(
@@ -599,17 +515,7 @@ async fn rotated_cookies_keep_the_original_absolute_deadline() {
         assert!((deadline - after..=deadline - before).contains(&max_age));
         let rotated = issued.split(';').next().unwrap().to_owned();
         assert_ne!(cookie, rotated);
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/auth/me")
-                    .header(header::COOKIE, cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = me(&app, &cookie).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         cookie = rotated;
     }
@@ -673,19 +579,13 @@ async fn hsts_uses_public_url_and_covers_success_and_error_responses() {
 #[tokio::test]
 async fn failed_logout_revocation_remains_retryable() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = session_cookie(&response);
     db.run(|connection| {
         connection.execute_batch(
             "CREATE TRIGGER fail_logout BEFORE UPDATE OF revoked_at ON sessions
@@ -724,19 +624,13 @@ async fn failed_logout_revocation_remains_retryable() {
 #[tokio::test]
 async fn a_page_showing_another_person_neither_reads_nor_writes() {
     let (_directory, db, app) = application();
-    seed_user(&db).await;
+    add_user(&db, "person", false, false).await;
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
         .await
         .unwrap();
-    let cookie = response.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = session_cookie(&response);
     let login: serde_json::Value = body_json(response).await;
     let person = login["user"]["id"].as_str().unwrap().to_owned();
     // A tab names the person it shows; the browser's cookie now belongs to someone else.
@@ -800,5 +694,80 @@ async fn a_page_showing_another_person_neither_reads_nor_writes() {
         .unwrap();
     assert_eq!(current.status(), StatusCode::OK);
     let current: serde_json::Value = body_json(current).await;
-    assert_eq!(current["user"]["displayName"], "Person");
+    assert_eq!(current["user"]["displayName"], "person");
+}
+
+#[tokio::test]
+async fn people_who_are_not_admins_cannot_manage_accounts() {
+    let (_directory, db, app) = application();
+    add_user(&db, "person", false, false).await;
+    let other = add_user(&db, "other", false, false).await;
+    let response = app
+        .clone()
+        .oneshot(login_request(Some("https://tasks.example.test")))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&response);
+    let person: serde_json::Value = body_json(response).await;
+    let person = person["user"]["id"].as_str().unwrap().to_owned();
+    let accounts = || {
+        db.run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id,username,display_name,is_admin,is_active,password_hash,revision
+                 FROM users ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    };
+    let before = accounts().await.unwrap();
+    // Valid requests from a fresh sign-in: only the admin role is missing.
+    for (method, uri, body) in [
+        ("GET", "/api/users".to_owned(), String::new()),
+        (
+            "POST",
+            "/api/users".to_owned(),
+            r#"{"username":"newcomer","displayName":"Newcomer","isAdmin":true}"#.to_owned(),
+        ),
+        (
+            "PATCH",
+            format!("/api/users/{person}"),
+            r#"{"displayName":"person","isAdmin":true,"isActive":true,"expectedRevision":1}"#
+                .to_owned(),
+        ),
+        (
+            "POST",
+            format!("/api/users/{other}/reset-password"),
+            String::new(),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header(header::ORIGIN, "https://tasks.example.test")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    assert_eq!(accounts().await.unwrap(), before);
 }

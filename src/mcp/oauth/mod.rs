@@ -258,6 +258,9 @@ fn resource_url(state: &AppState) -> String {
     format!("{}/mcp", issuer(state))
 }
 
+/// An error in the protocol's shape. The endpoints name the code for a
+/// mistake in the request, such as `invalid_scope`; other errors convert by
+/// their kind.
 struct OAuthError {
     code: &'static str,
     status: StatusCode,
@@ -272,31 +275,6 @@ impl OAuthError {
             description: code.replace('_', " "),
             retry_after: None,
         }
-    }
-    fn from_app(error: AppError, registration: bool) -> Self {
-        let code = match &error {
-            AppError::Unauthorized | AppError::Forbidden => "invalid_grant",
-            AppError::Validation { field, .. }
-                if registration && matches!(field.as_str(), "redirect_uri" | "redirect_uris") =>
-            {
-                "invalid_redirect_uri"
-            }
-            AppError::Validation { .. } if registration => "invalid_client_metadata",
-            AppError::Validation { field, .. } if field == "scope" => "invalid_scope",
-            AppError::Validation { field, .. } if field == "resource" => "invalid_target",
-            AppError::Validation { field, .. } if field == "grant_type" => "unsupported_grant_type",
-            AppError::Validation { field, .. } if field == "code_verifier" => "invalid_grant",
-            AppError::Unavailable(_) | AppError::RateLimited { .. } => "temporarily_unavailable",
-            _ if error.status().is_server_error() => "server_error",
-            _ => "invalid_request",
-        };
-        let mut mapped = Self::invalid(code);
-        if error.status().is_server_error() || matches!(error, AppError::RateLimited { .. }) {
-            mapped.status = error.status();
-            mapped.description = error.reported_message().0;
-        }
-        mapped.retry_after = error.retry_after();
-        mapped
     }
 
     /// The error as the authorization page shows it to a person.
@@ -316,6 +294,23 @@ impl OAuthError {
                 .insert(header::RETRY_AFTER, seconds.into());
         }
         response
+    }
+}
+impl From<AppError> for OAuthError {
+    fn from(error: AppError) -> Self {
+        let code = match &error {
+            AppError::Unauthorized | AppError::Forbidden => "invalid_grant",
+            AppError::Unavailable(_) | AppError::RateLimited { .. } => "temporarily_unavailable",
+            _ if error.status().is_server_error() => "server_error",
+            _ => "invalid_request",
+        };
+        let mut mapped = Self::invalid(code);
+        if error.status().is_server_error() || matches!(error, AppError::RateLimited { .. }) {
+            mapped.status = error.status();
+            mapped.description = error.reported_message().0;
+        }
+        mapped.retry_after = error.retry_after();
+        mapped
     }
 }
 impl IntoResponse for OAuthError {

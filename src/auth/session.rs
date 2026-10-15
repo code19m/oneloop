@@ -60,7 +60,7 @@ impl AuthService {
         let account_key = token_hash(&format!("login-account\0{lookup_name}"));
         // Wait outside the blocking pool, then check the latest failure state.
         // Hold admission through bookkeeping so waiting attempts observe the delay.
-        let permit = password_work_permit().await?;
+        let turn = password_turn().await?;
         let now = unix_now()?;
         self.check_login_throttle(&throttle_key, now).await?;
         if let Some(key) = &ip_throttle_key {
@@ -99,11 +99,13 @@ impl AuthService {
 
         let password_owned = password.to_owned();
         let hash = user.as_ref().map(|u| u.password_hash.clone());
-        let valid = password_work(&permit, move || {
-            let hash = hash.unwrap_or_else(dummy_password_hash);
-            verify_password(&password_owned, &hash)
-        })
-        .await?;
+        let valid = turn
+            .clone()
+            .run(move || {
+                let hash = hash.unwrap_or_else(dummy_password_hash);
+                verify_password(&password_owned, &hash)
+            })
+            .await??;
         let now = unix_now()?;
         if !valid || user.as_ref().is_none_or(|user| !user.user.is_active) {
             if user.as_ref().is_some_and(|user| !user.user.is_active) {

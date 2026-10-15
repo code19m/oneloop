@@ -9,11 +9,11 @@ use axum::{
     Router,
     body::Body,
     extract::ConnectInfo,
-    http::{HeaderValue, Request, StatusCode, header},
+    http::{Request, StatusCode, header},
 };
 use oneloop::{
     AppState, Db, application,
-    auth::{AuthService, LoginResult, NewUser, SessionMetadata, create_user, unix_now},
+    auth::{LoginResult, NewUser, SessionMetadata, create_user, unix_now},
     db::{create_backup, restore_backup},
 };
 use serde_json::{Value, json};
@@ -103,7 +103,6 @@ fn form(path: &str, value: &[(&str, &str)]) -> Request<Body> {
 pub(crate) struct McpClient<'a> {
     app: &'a Router,
     access: String,
-    session_id: Option<HeaderValue>,
     request_id: u64,
 }
 
@@ -113,12 +112,14 @@ impl<'a> McpClient<'a> {
         let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"integration-test","version":"1"}}});
         let response = app
             .clone()
-            .oneshot(mcp_request(&access, None, initialize))
+            .oneshot(mcp_request(&access, initialize))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let session_id = response.headers().get("mcp-session-id").cloned();
-        assert!(session_id.is_none(), "transport must remain stateless");
+        assert!(
+            response.headers().get("mcp-session-id").is_none(),
+            "transport must remain stateless"
+        );
         let initialized = mcp_body(response).await;
         assert_eq!(
             initialized["result"]["serverInfo"]["version"],
@@ -128,7 +129,6 @@ impl<'a> McpClient<'a> {
         Self {
             app,
             access,
-            session_id,
             request_id: 2,
         }
     }
@@ -141,7 +141,6 @@ impl<'a> McpClient<'a> {
             .clone()
             .oneshot(mcp_request(
                 &self.access,
-                self.session_id.as_ref(),
                 json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
             ))
             .await
@@ -156,19 +155,17 @@ impl<'a> McpClient<'a> {
     }
 }
 
-fn mcp_request(access: &str, session_id: Option<&HeaderValue>, payload: Value) -> Request<Body> {
-    let mut builder = Request::builder()
+fn mcp_request(access: &str, payload: Value) -> Request<Body> {
+    Request::builder()
         .method("POST")
         .uri("/mcp")
         .header(header::HOST, "127.0.0.1:8080")
         .header(header::AUTHORIZATION, format!("Bearer {access}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-protocol-version", "2025-11-25");
-    if let Some(session_id) = session_id {
-        builder = builder.header("mcp-session-id", session_id);
-    }
-    builder.body(Body::from(payload.to_string())).unwrap()
+        .header("mcp-protocol-version", "2025-11-25")
+        .body(Body::from(payload.to_string()))
+        .unwrap()
 }
 
 fn tool_value(response: &Value) -> Value {
@@ -237,16 +234,17 @@ pub(crate) async fn register(app: &Router) -> String {
     registered["client_id"].as_str().unwrap().to_owned()
 }
 
+/// The challenge in `authorization_path`; no verifier matches it, so tests
+/// that exchange the code replace it with one from `pkce`.
+const UNCHECKED_CHALLENGE: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+
 fn authorization_path(client: &str, redirect: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs([
             ("response_type", "code"),
             ("client_id", client),
             ("redirect_uri", redirect),
-            (
-                "code_challenge",
-                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
-            ),
+            ("code_challenge", UNCHECKED_CHALLENGE),
             ("code_challenge_method", "S256"),
             ("resource", "http://127.0.0.1:8080/mcp"),
             ("scope", "project_read discussion"),
@@ -256,24 +254,30 @@ fn authorization_path(client: &str, redirect: &str) -> String {
     format!("/oauth/authorize?{query}")
 }
 
-pub(crate) async fn authorize(app: &Router, session: &str, client: &str) -> (String, String) {
-    authorize_with(
-        app,
-        session,
-        client,
-        &[
-            "project_read",
-            "discussion",
-            "board_manage",
-            "roadmap_manage",
-            "inbox_private",
-            "my_pool_private",
-            "attachments",
-            "destructive",
-        ],
-        &["project-1"],
-    )
-    .await
+/// A PKCE code verifier and its S256 challenge.
+fn pkce() -> (&'static str, String) {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+    let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+/// Every scope a person can grant.
+pub(crate) const ALL_SCOPES: &[&str] = &[
+    "project_read",
+    "discussion",
+    "board_manage",
+    "roadmap_manage",
+    "inbox_private",
+    "my_pool_private",
+    "attachments",
+    "destructive",
+];
+
+/// Approves every scope on `project-1` for `client`: the code and its verifier.
+async fn authorize(app: &Router, session: &str, client: &str) -> (String, String) {
+    authorize_with(app, session, client, ALL_SCOPES, &["project-1"]).await
 }
 
 async fn authorize_with(
@@ -283,10 +287,7 @@ async fn authorize_with(
     scopes: &[&str],
     projects: &[&str],
 ) -> (String, String) {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use sha2::{Digest, Sha256};
-    let verifier = "verifier-with-forty-three-characters-0123456789ABCDE";
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let (verifier, challenge) = pkce();
     let query = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs([
             ("response_type", "code"),
@@ -388,16 +389,29 @@ fn code_request(client: &str, code: &str, verifier: &str) -> Request<Body> {
     )
 }
 
-async fn scoped_mcp<'a>(
+/// Registers an app and approves `scopes` on `projects` for it: the app's
+/// client ID and its first tokens.
+async fn connect_app(
+    app: &Router,
+    session: &str,
+    scopes: &[&str],
+    projects: &[&str],
+) -> (String, Value) {
+    let client = register(app).await;
+    let (code, verifier) = authorize_with(app, session, &client, scopes, projects).await;
+    let tokens = issue(app, &client, &code, &verifier).await;
+    (client, tokens)
+}
+
+/// An MCP client for a new app with `scopes` on `projects`.
+pub(crate) async fn scoped_mcp<'a>(
     app: &'a Router,
     session: &str,
     scopes: &[&str],
     projects: &[&str],
 ) -> McpClient<'a> {
-    let client = register(app).await;
-    let (code, verifier) = authorize_with(app, session, &client, scopes, projects).await;
-    let tokens = issue(app, &client, &code, &verifier).await;
-    McpClient::connect(app, tokens["access_token"].as_str().unwrap().to_owned()).await
+    let (_, tokens) = connect_app(app, session, scopes, projects).await;
+    McpClient::connect(app, tokens["access_token"].as_str().unwrap()).await
 }
 
 async fn registration(app: &Router, metadata: Value) -> axum::response::Response {

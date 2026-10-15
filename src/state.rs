@@ -27,7 +27,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, db: Db) -> Self {
         Self {
-            auth: AuthService::with_password_policy(db.clone(), config.password_policy.clone()),
+            auth: AuthService::new(db.clone(), config.password_policy.clone()),
             domain: DomainService::new(db.clone(), config.timezone.clone()),
             files: FileService::new(
                 db.clone(),

@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::{
     Config, Db,
-    auth::{LoginResult, NewUser, create_user},
+    auth::{LoginResult, NewUser, create_user, password::PasswordPolicy},
 };
 
 const CALLBACK: &str = "http://127.0.0.1/callback";
@@ -28,7 +28,7 @@ async fn consent_from_a_session_revoked_after_sign_in_creates_no_code() {
         is_admin: true,
         must_change_password: false,
     };
-    db.transaction(move |tx| create_user(tx, user, unix_now()?))
+    db.transaction(move |tx| create_user(tx, user, unix_now()?, &PasswordPolicy::default()))
         .await
         .unwrap();
     let LoginResult::Authenticated(session) = state
@@ -132,7 +132,7 @@ async fn described() -> Described {
         must_change_password: false,
     };
     db.transaction(move |tx| {
-        create_user(tx, user, unix_now()?)?;
+        create_user(tx, user, unix_now()?, &PasswordPolicy::default())?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','One','ONE',1,1)", [])?;
         Ok(())
     })

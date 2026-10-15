@@ -437,7 +437,7 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserView> {
     let id: String = r.get(0)?;
     let avatar: Option<String> = r.get(5)?;
     Ok(UserView {
-        avatar_url: avatar.map(|blob| format!("/api/users/{id}/avatar?v={blob}")),
+        avatar_url: avatar.map(|blob| crate::auth::avatar_url(&id, &blob)),
         id,
         username: r.get(1)?,
         name: r.get(2)?,
@@ -1341,7 +1341,7 @@ fn pool_page_connection(
     if scope.is_some_and(|s| s != "personal" && s != "team") {
         return Err(AppError::validation("scope", "must be personal or team"));
     }
-    if scope != Some("team") && !crate::auth::can_read_private_pool(connection, actor)? {
+    if scope != Some("team") && !crate::access::can_read_private_pool(connection, actor)? {
         return Err(AppError::Forbidden);
     }
     let (cursor_time, cursor_id) = parse_position_cursor(cursor)?;
