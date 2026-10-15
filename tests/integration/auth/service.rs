@@ -1,8 +1,8 @@
 use oneloop::{
     AppError, Db,
     auth::{
-        AccountUpdate, Actor, ActorSource, AuthService, LoginResult, NewUser, ProjectPermission,
-        SessionMetadata, create_user,
+        AccountUpdate, Actor, ActorSource, AuthService, LoginResult, NewUser, SessionMetadata,
+        create_user,
         password::{Blocklist, PasswordPolicy},
         token_hash, unix_now,
     },
@@ -105,18 +105,6 @@ async fn permissions_are_rechecked_and_admin_assignment_still_requires_membershi
     assert!(
         service
             .can_read_project(&member, &project_id)
-            .await
-            .unwrap()
-    );
-    assert!(
-        service
-            .can_manage_project(&member, &project_id, ProjectPermission::Board)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !service
-            .can_manage_project(&member, &project_id, ProjectPermission::Roadmap)
             .await
             .unwrap()
     );
@@ -523,27 +511,6 @@ async fn mcp_project_access_is_intersected_with_live_grant_scopes() {
         .unwrap();
     assert_eq!(actor.user_id, user_id);
     assert!(service.can_read_project(&actor, &project_id).await.unwrap());
-    assert!(
-        !service
-            .can_manage_project(&actor, &project_id, ProjectPermission::Board)
-            .await
-            .unwrap()
-    );
-    db.run(|connection| {
-        connection.execute(
-            "INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES('grant','board_manage')",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(
-        service
-            .can_manage_project(&actor, &project_id, ProjectPermission::Board)
-            .await
-            .unwrap()
-    );
     db.run(|connection| {
         connection.execute("UPDATE mcp_grants SET revoked_at=2 WHERE id='grant'", [])?;
         Ok(())

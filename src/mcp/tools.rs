@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
-    auth::{Actor, McpScope, ProjectPermission},
+    auth::{Actor, McpScope},
     collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
         BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
@@ -1512,7 +1512,7 @@ async fn create_transfer(
     let task = state.domain.task(actor, input.task_id.clone()).await?;
     state
         .auth
-        .require_project_management(actor, &task.project_id, ProjectPermission::Board)
+        .require_board_management(actor, &task.project_id)
         .await?;
     if input.size_bytes == 0 || input.size_bytes > crate::files::MAX_ATTACHMENT_BYTES {
         return Err(AppError::validation(

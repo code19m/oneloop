@@ -126,12 +126,6 @@ impl Actor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectPermission {
-    Board,
-    Roadmap,
-}
-
 /// Revalidate an operation's actor against current credentials and account state.
 /// The boundary's Actor is identity context, never a cached authority grant.
 pub(crate) fn refresh_actor_connection(

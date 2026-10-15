@@ -285,41 +285,27 @@ impl AuthService {
         }
     }
 
-    pub async fn can_manage_project(
+    /// For MCP upload tickets, which are issued before the upload checks.
+    pub(crate) async fn require_board_management(
         &self,
         actor: &Actor,
         project_id: &str,
-        permission: ProjectPermission,
-    ) -> AppResult<bool> {
+    ) -> AppResult<()> {
         let actor = actor.clone();
         let project_id = project_id.to_owned();
-        let need = match permission {
-            ProjectPermission::Board => crate::access::Need::Board,
-            ProjectPermission::Roadmap => crate::access::Need::Roadmap,
-        };
-        self.db
+        let allowed = self
+            .db
             .run(move |connection| {
                 crate::access::allowed(crate::access::require_project(
                     connection,
                     &actor,
                     &project_id,
-                    need,
+                    crate::access::Need::Board,
                     false,
                 ))
             })
-            .await
-    }
-
-    pub async fn require_project_management(
-        &self,
-        actor: &Actor,
-        project_id: &str,
-        permission: ProjectPermission,
-    ) -> AppResult<()> {
-        if self
-            .can_manage_project(actor, project_id, permission)
-            .await?
-        {
+            .await?;
+        if allowed {
             Ok(())
         } else {
             Err(AppError::Forbidden)

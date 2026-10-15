@@ -4,12 +4,12 @@ use axum::{
 };
 use oneloop::{
     AppError, AppState, Db, application,
-    auth::{Actor, ActorSource, ProjectPermission},
+    auth::{Actor, ActorSource},
     collaboration::{CollaborationCommand, CollaborationService},
-    domain::{BootstrapQuery, DomainService},
+    domain::{BootstrapQuery, CommandEnvelope, DomainOperation, DomainService},
     files::FileService,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
@@ -251,7 +251,6 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
         alice,
         ..
     } = seeded_project().await;
-    let auth = support::auth_service(&db);
     let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
@@ -336,16 +335,12 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
             "{name}: files"
         );
         assert_eq!(
-            auth.can_manage_project(&actor, "p1", ProjectPermission::Board)
-                .await
-                .unwrap_or(false),
+            may_change(&domain, &actor, Area::Board).await,
             readable && (admin || board),
             "{name}: board"
         );
         assert_eq!(
-            auth.can_manage_project(&actor, "p1", ProjectPermission::Roadmap)
-                .await
-                .unwrap_or(false),
+            may_change(&domain, &actor, Area::Roadmap).await,
             readable && (admin || roadmap),
             "{name}: roadmap management"
         );
@@ -416,16 +411,14 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
             }
         }
         assert_eq!(
-            auth.can_manage_project(&actor, "p1", ProjectPermission::Board)
-                .await
-                .unwrap(),
-            missing != "board_manage"
+            may_change(&domain, &actor, Area::Board).await,
+            missing != "board_manage",
+            "{missing}: board"
         );
         assert_eq!(
-            auth.can_manage_project(&actor, "p1", ProjectPermission::Roadmap)
-                .await
-                .unwrap(),
-            missing != "roadmap_manage"
+            may_change(&domain, &actor, Area::Roadmap).await,
+            missing != "roadmap_manage",
+            "{missing}: roadmap"
         );
         for (scope, name) in [
             (oneloop::auth::McpScope::Discussion, "discussion"),
@@ -490,5 +483,42 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
         })
         .await
         .unwrap();
+    }
+}
+
+enum Area {
+    Board,
+    Roadmap,
+}
+
+/// Whether `actor` may change the seeded project's Board or Roadmap. The
+/// command names a stale revision: access is checked first, so an allowed
+/// actor gets a revision conflict and nothing changes.
+async fn may_change(domain: &DomainService, actor: &Actor, area: Area) -> bool {
+    let (operation, payload): (_, Value) = match area {
+        Area::Board => (
+            DomainOperation::UpdateTask,
+            json!({"taskId":"task","title":"Changed"}),
+        ),
+        Area::Roadmap => (
+            DomainOperation::UpdateTrack,
+            json!({"trackId":"track","name":"Changed"}),
+        ),
+    };
+    let command = CommandEnvelope {
+        operation,
+        payload,
+        idempotency_key: uuid::Uuid::now_v7().to_string(),
+        expected_revision: Some(99),
+    };
+    match domain.execute(actor, command).await {
+        Err(AppError::RevisionConflict { .. }) => true,
+        Err(
+            AppError::Forbidden
+            | AppError::NotFound { .. }
+            | AppError::Unauthorized
+            | AppError::PreconditionFailed(_),
+        ) => false,
+        other => panic!("{operation:?}: {other:?}"),
     }
 }
