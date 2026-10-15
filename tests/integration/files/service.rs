@@ -726,9 +726,17 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
     let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
     drain(&runtime).await;
     let id = attachment.id;
-    let (events, undelivered): (i64, i64) = (query_one(&f.db, "SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'
-            AND project_id IS NULL AND actor_user_id IS NULL AND json_extract(metadata_json,'$.attributionUnavailable')", [id]).await, query_one(&f.db, "SELECT count(*) FROM outbox_messages WHERE delivered_at IS NULL", []).await);
-    assert_eq!((events, undelivered), (1, 0));
+    let counts: (i64, i64) = query_one(
+        &f.db,
+        "SELECT
+            (SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'
+                AND project_id IS NULL AND actor_user_id IS NULL
+                AND json_extract(metadata_json,'$.attributionUnavailable')),
+            (SELECT count(*) FROM outbox_messages WHERE delivered_at IS NULL)",
+        [id],
+    )
+    .await;
+    assert_eq!(counts, (1, 0));
 }
 
 #[tokio::test]

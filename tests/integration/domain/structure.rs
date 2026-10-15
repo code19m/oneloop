@@ -602,8 +602,16 @@ async fn assignee_activity_consolidates_both_membership_directions_without_rewri
                 .all(|event| !event.event_type.starts_with("task.assignee."))
         );
     }
-    let (raw, projected, hidden): (i64, i64, i64) = (query_one(&f.db, "SELECT count(*) FROM activity_events WHERE field_key='assignee:u3'", []).await, query_one(&f.db, "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3'", []).await, query_one(&f.db, "SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3' AND is_hidden=1", []).await);
-    assert_eq!((raw, projected, hidden), (4, 2, 2));
+    let counts: (i64, i64, i64) = query_one(
+        &f.db,
+        "SELECT
+            (SELECT count(*) FROM activity_events WHERE field_key='assignee:u3'),
+            (SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3'),
+            (SELECT count(*) FROM activity_projection WHERE field_key='assignee:u3' AND is_hidden=1)",
+        [],
+    )
+    .await;
+    assert_eq!(counts, (4, 2, 2));
 }
 
 #[tokio::test]
