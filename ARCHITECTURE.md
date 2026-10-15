@@ -157,10 +157,11 @@ a checksum, and a changed migration is refused.
 
 To change the schema, add the next numbered file and its `MIGRATIONS` entry,
 and raise `CURRENT_SCHEMA_VERSION`; a docs test then names the sample outputs
-in `docs/src/` that still show the old number. A migration may also run a Rust hook in the same transaction; give it a
-`hook_revision`, which the checksum covers. A migration that rebuilds a table
-other tables reference sets `foreign_keys_off`, so the runner turns foreign
-keys off outside the transaction and checks them all before it commits.
+in `docs/src/` that still show the old number. A migration may also run a Rust
+hook in the same transaction; give it a `hook_revision`, which the checksum
+covers. A migration that rebuilds a table other tables reference sets
+`foreign_keys_off`, so the runner turns foreign keys off outside the
+transaction and checks them all before it commits.
 
 `src/db/legacy/` is a frozen copy of the chain that databases created before
 0.1.0 went through. `db migrate` recognizes those databases by their exact
@@ -224,9 +225,11 @@ and an update here.
   stored value is renamed, readers map the old value; history is not rewritten.
 - **Writes are safe to retry and never overwrite blindly.** Commands and
   attachment changes carry an idempotency key, and edits carry the revision
-  they were based on. Two kinds of writes take no key: an attachment's
-  **Temporary** setting, which a repeat can't change further, and account and
-  session changes, which only the browser makes.
+  they were based on. Three kinds of writes take no key: an attachment's
+  **Temporary** setting, which a repeat can't change further; an admin's
+  **Clean up now**, which runs the same cleanup as file maintenance, so a
+  repeat removes only what is still eligible; and account and session changes,
+  which only the browser makes.
 - **Secrets are stored only as hashes.** Passwords use Argon2id; session
   tokens, app tokens and transfer tickets are stored as SHA-256 hashes. No
   secret appears in logs or audit payloads. The one exception is a credential

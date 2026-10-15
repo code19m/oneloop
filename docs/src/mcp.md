@@ -186,8 +186,9 @@ schema describes the payload of each operation.
 
 ### Rules for every call
 
-- **IDs.** Tools take the IDs that reads return. `read_task`, and the file
-  tools that take a `taskId`, also accept a task key such as `WEB-042`.
+- **IDs.** Tools take the IDs that reads return. `read_task`,
+  `list_attachments`, `create_attachment_upload` and `reorder_attachment` also
+  accept a task key, such as `WEB-042`.
 - **Retries.** Every write takes an `idempotencyKey` of 1 to 128 visible ASCII
   characters. If you retry with the same key and the same input, oneloop applies
   the change only once. The same key with different input fails with
