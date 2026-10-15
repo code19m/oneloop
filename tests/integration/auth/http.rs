@@ -696,3 +696,78 @@ async fn a_page_showing_another_person_neither_reads_nor_writes() {
     let current: serde_json::Value = body_json(current).await;
     assert_eq!(current["user"]["displayName"], "person");
 }
+
+#[tokio::test]
+async fn people_who_are_not_admins_cannot_manage_accounts() {
+    let (_directory, db, app) = application();
+    add_user(&db, "person", false, false).await;
+    let other = add_user(&db, "other", false, false).await;
+    let response = app
+        .clone()
+        .oneshot(login_request(Some("https://tasks.example.test")))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&response);
+    let person: serde_json::Value = body_json(response).await;
+    let person = person["user"]["id"].as_str().unwrap().to_owned();
+    let accounts = || {
+        db.run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id,username,display_name,is_admin,is_active,password_hash,revision
+                 FROM users ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    };
+    let before = accounts().await.unwrap();
+    // Valid requests from a fresh sign-in: only the admin role is missing.
+    for (method, uri, body) in [
+        ("GET", "/api/users".to_owned(), String::new()),
+        (
+            "POST",
+            "/api/users".to_owned(),
+            r#"{"username":"newcomer","displayName":"Newcomer","isAdmin":true}"#.to_owned(),
+        ),
+        (
+            "PATCH",
+            format!("/api/users/{person}"),
+            r#"{"displayName":"person","isAdmin":true,"isActive":true,"expectedRevision":1}"#
+                .to_owned(),
+        ),
+        (
+            "POST",
+            format!("/api/users/{other}/reset-password"),
+            String::new(),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header(header::ORIGIN, "https://tasks.example.test")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    assert_eq!(accounts().await.unwrap(), before);
+}
