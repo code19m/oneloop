@@ -25,7 +25,7 @@ pub(super) fn block_task(
         return Err(AppError::Conflict("task is already blocked".into()));
     }
     let reason = text::exact(&input.reason, "reason", BLOCK_REASON_MAX)?;
-    let mentions = validate_mentions(tx, &task.project_id, &reason, input.mentions, &[])?;
+    let mentions = mentions::validate(tx, &task.project_id, &reason, input.mentions, &[])?;
     let block_id = Uuid::now_v7().to_string();
     tx.execute(
         "INSERT INTO task_blocks (id,project_id,task_id,reason,created_by,created_at) VALUES (?1,\
@@ -115,7 +115,7 @@ pub(super) fn update_block_reason(
         .iter()
         .filter_map(|m| m.user_id.clone())
         .collect();
-    let mentions = validate_mentions(tx, &before.project_id, &reason, input.mentions, &retained)?;
+    let mentions = mentions::validate(tx, &before.project_id, &reason, input.mentions, &retained)?;
     if reason == before.reason && mentions == old_mentions {
         return Err(AppError::validation(
             "payload",

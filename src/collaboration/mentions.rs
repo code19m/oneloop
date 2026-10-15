@@ -1,6 +1,6 @@
-//! Mentions in comments and block reasons: how they are stored, read and
-//! turned into notifications. Validation is part of the access policy.
-use std::collections::BTreeSet;
+//! Mentions in comments and block reasons: how they are checked, stored,
+//! read and turned into notifications.
+use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::{
     Connection, Row, Transaction, params,
@@ -8,7 +8,7 @@ use rusqlite::{
 };
 use uuid::Uuid;
 
-use crate::{AppResult, auth::Actor};
+use crate::{AppError, AppResult, auth::Actor};
 
 use super::{MentionKind, MentionToken, NotificationInput, snapshot_notification_tx};
 
@@ -193,4 +193,161 @@ pub(crate) fn notify(
         snapshot_notification_tx(tx, actor, input(everyone_event, true), everyone, now)?;
     }
     Ok(notified)
+}
+
+/// Checks mentions against the exact text they select and keeps those that
+/// count: a mention in code or a quote is plain text. A person mentioned
+/// before an edit (`retained`) stays valid after leaving the project.
+pub(crate) fn validate(
+    tx: &Transaction<'_>,
+    project_id: &str,
+    content: &str,
+    mut mentions: Vec<MentionToken>,
+    retained: &[String],
+) -> AppResult<Vec<MentionToken>> {
+    mentions.sort_by_key(|token| (token.start_offset, token.end_offset));
+    let boundaries = utf16_boundaries(content);
+    let mut previous_end = 0usize;
+    let mut everyone_seen = false;
+    let mut selected = Vec::with_capacity(mentions.len());
+    for token in mentions {
+        if token.start_offset < previous_end || token.end_offset <= token.start_offset {
+            return Err(AppError::validation(
+                "mentions",
+                "ranges must be non-overlapping and ordered",
+            ));
+        }
+        let Some(&start) = boundaries.get(&token.start_offset) else {
+            return Err(AppError::validation(
+                "mentions",
+                "startOffset is not a UTF-16 boundary",
+            ));
+        };
+        let Some(&end) = boundaries.get(&token.end_offset) else {
+            return Err(AppError::validation(
+                "mentions",
+                "endOffset is not a UTF-16 boundary",
+            ));
+        };
+        if content.get(start..end) != Some(token.label.as_str()) {
+            return Err(AppError::validation(
+                "mentions",
+                "label does not match the selected text range",
+            ));
+        }
+        previous_end = token.end_offset;
+        // Match the composer's plain-text contexts, including unfinished code.
+        let before = &content[..start];
+        let line = before.rsplit('\n').next().unwrap_or_default();
+        if before.matches("```").count() % 2 == 1
+            || line.matches('`').count() % 2 == 1
+            || line.trim_start().starts_with('>')
+        {
+            continue;
+        }
+        match token.kind {
+            MentionKind::User => {
+                let user_id = token.user_id.as_deref().ok_or_else(|| {
+                    AppError::validation("mentions", "user mention requires userId")
+                })?;
+                if !crate::access::is_active_member(tx, project_id, user_id)?
+                    && !retained.iter().any(|id| id == user_id)
+                {
+                    return Err(AppError::validation(
+                        "mentions",
+                        "mentioned user is not an active project member",
+                    ));
+                }
+            }
+            MentionKind::Everyone => {
+                if token.user_id.is_some() {
+                    return Err(AppError::validation(
+                        "mentions",
+                        "@everyone cannot contain userId",
+                    ));
+                }
+                if token.label != "@everyone" {
+                    return Err(AppError::validation(
+                        "mentions",
+                        "everyone mention label must be @everyone",
+                    ));
+                }
+                if everyone_seen {
+                    return Err(AppError::validation(
+                        "mentions",
+                        "@everyone can be selected only once",
+                    ));
+                }
+                everyone_seen = true;
+            }
+        }
+        selected.push(token);
+    }
+    Ok(selected)
+}
+
+fn utf16_boundaries(value: &str) -> HashMap<usize, usize> {
+    let mut result = HashMap::new();
+    let mut utf16 = 0usize;
+    result.insert(0, 0);
+    for (byte, character) in value.char_indices() {
+        result.insert(utf16, byte);
+        utf16 += character.len_utf16();
+        result.insert(utf16, byte + character.len_utf8());
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_in_code_and_quotes_are_plain_text() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let tx = connection.transaction().unwrap();
+        for (content, expected) in [
+            ("🙂 @everyone", 1),
+            ("`@everyone`", 0),
+            ("Before `@everyone", 0),
+            ("```\n@everyone\n```", 0),
+            (" > @everyone", 0),
+            (">> @everyone", 0),
+            ("> quote\n@everyone", 1),
+            ("`code` @everyone", 1),
+            ("```\ncode\n```\n@everyone", 1),
+            ("`@everyone` then @everyone", 1),
+        ] {
+            let mentions = content
+                .match_indices("@everyone")
+                .map(|(start, label)| {
+                    let start_offset = content[..start].encode_utf16().count();
+                    MentionToken {
+                        kind: MentionKind::Everyone,
+                        user_id: None,
+                        start_offset,
+                        end_offset: start_offset + label.len(),
+                        label: label.into(),
+                    }
+                })
+                .collect();
+            let selected = validate(&tx, "project", content, mentions, &[]).unwrap();
+            assert_eq!(selected.len(), expected, "{content}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
+        #[test]
+        fn unicode_mention_offsets_land_only_on_codepoint_boundaries(value in ".{0,256}") {
+            let boundaries = utf16_boundaries(&value);
+            let mut units = 0;
+            for (offset, ch) in value.char_indices() {
+                proptest::prop_assert_eq!(boundaries.get(&units), Some(&offset));
+                if ch.len_utf16() == 2 { proptest::prop_assert!(!boundaries.contains_key(&(units + 1))); }
+                units += ch.len_utf16();
+            }
+            proptest::prop_assert_eq!(boundaries.get(&units), Some(&value.len()));
+        }
+    }
 }

@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     Db,
-    access::{Need, is_active_member, require_project, validate_mentions},
+    access::{Need, is_active_member, require_project},
     auth::Actor,
     clock::unix_now,
     collaboration::{

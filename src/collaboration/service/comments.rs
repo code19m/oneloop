@@ -115,7 +115,7 @@ pub(super) fn create_comment(
         .optional()?
         .ok_or(AppError::NotFound { resource: "task" })?;
     require_project(tx, actor, &project_id, Need::Discussion, false)?;
-    let mentions = access::validate_mentions(tx, &project_id, &content, input.mentions, &[])?;
+    let mentions = mentions::validate(tx, &project_id, &content, input.mentions, &[])?;
     let id = Uuid::now_v7().to_string();
     let (root_id, reply_author) = match input.reply_to_id.as_deref() {
         Some(reply_to_id) => {
@@ -233,8 +233,7 @@ pub(super) fn edit_comment(
         .iter()
         .filter_map(|token| token.user_id.clone())
         .collect();
-    let mentions =
-        access::validate_mentions(tx, &before.project_id, &content, input.mentions, &retained)?;
+    let mentions = mentions::validate(tx, &before.project_id, &content, input.mentions, &retained)?;
     let before_fingerprint = comment_fingerprint(
         before.content.as_deref().unwrap_or_default(),
         &before.mentions,

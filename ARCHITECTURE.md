@@ -59,7 +59,7 @@ small hints over SSE, and clients then fetch what changed.
   backups.
 - `access.rs`: the one project access policy. It combines account status,
   admin role, membership, the **Board** and **Roadmap** permissions, and an MCP
-  grant's projects and scopes. It also validates mentions.
+  grant's projects and scopes (`McpScope`).
 - `auth/`: `AuthService` for accounts, Argon2id password hashes, browser
   sessions, sign-in throttling and connected-app grants. `Actor` is the caller
   of any request, from either a browser session or an MCP grant.
@@ -67,8 +67,8 @@ small hints over SSE, and clients then fetch what changed.
   the Pool. `DomainService::execute` is the single write entry point; it takes
   a `Command` whose `DomainOperation` names the change. `reads` builds
   Board, Roadmap, task and Pool views with cursor paging.
-- `collaboration/`: comments, the consolidated activity feed, notifications
-  and the Inbox. `CollaborationRuntime` runs the outbox worker and the
+- `collaboration/`: comments, mentions, the consolidated activity feed,
+  notifications and the Inbox. `CollaborationRuntime` runs the outbox worker and the
   live-update streams.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
