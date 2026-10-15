@@ -130,8 +130,8 @@ impl Mutation {
     }
 }
 
-/// A command whose key and revision are checked and whose request is hashed
-/// before it waits for the database.
+/// A write whose key is checked and whose request is hashed before it waits
+/// for the database.
 pub(crate) struct Envelope {
     operation: &'static str,
     key: String,
@@ -139,6 +139,8 @@ pub(crate) struct Envelope {
 }
 
 impl Envelope {
+    /// A command: its revision is checked against `rule`, and the operation,
+    /// payload and revision are hashed.
     pub(crate) fn new(
         operation: &'static str,
         payload: &Value,
@@ -148,23 +150,33 @@ impl Envelope {
     ) -> AppResult<Self> {
         validate_key(key)?;
         rule.check(expected_revision)?;
-        let hash = request_hash(&json!({
-            "operation": operation,
-            "payload": payload,
-            "expectedRevision": expected_revision,
-        }))?;
+        Self::hashed(
+            operation,
+            key,
+            &json!({
+                "operation": operation,
+                "payload": payload,
+                "expectedRevision": expected_revision,
+            }),
+        )
+    }
+
+    /// A write with its own route, such as a file change, whose whole
+    /// `request` is hashed.
+    pub(crate) fn request(operation: &'static str, key: &str, request: &Value) -> AppResult<Self> {
+        validate_key(key)?;
+        Self::hashed(operation, key, request)
+    }
+
+    fn hashed(operation: &'static str, key: &str, request: &Value) -> AppResult<Self> {
         Ok(Self {
             operation,
             key: key.to_owned(),
-            hash,
+            hash: request_hash(request)?,
         })
     }
 
-    /// Runs the command once in `tx`, for the actor as the database knows it
-    /// now. A retry of a finished command gets its stored result after
-    /// `authorize_replay` rechecks today's access (it may also bring the
-    /// result up to date). Otherwise `apply` makes the change, and its result
-    /// becomes the receipt.
+    /// Runs the command once in `tx`, like `once`, and records its result.
     pub(crate) fn run(
         &self,
         tx: &Transaction<'_>,
@@ -173,12 +185,53 @@ impl Envelope {
         authorize_replay: impl FnOnce(&Actor, &mut CommandResult) -> AppResult<()>,
         apply: impl FnOnce(&Actor) -> AppResult<Mutation>,
     ) -> AppResult<CommandResult> {
+        self.once(
+            tx,
+            actor,
+            now,
+            |actor, stored: &mut CommandResult| {
+                authorize_replay(actor, stored)?;
+                stored.replayed = true;
+                Ok(())
+            },
+            |actor| {
+                let mutation = apply(actor)?;
+                let resource = Resource {
+                    kind: mutation.resource_type,
+                    id: mutation.resource_id,
+                    project_id: mutation
+                        .events
+                        .iter()
+                        .find_map(|event| event.project_id.clone()),
+                };
+                let result = CommandResult {
+                    entities: mutation.entities,
+                    events: mutation.events,
+                    replayed: false,
+                };
+                Ok((result, resource))
+            },
+        )
+    }
+
+    /// Runs the write once in `tx`, for the actor as the database knows it
+    /// now. A retry of a finished write gets its stored result after
+    /// `authorize_replay` rechecks today's access (it may also bring the
+    /// result up to date). Otherwise `apply` makes the change, and its result
+    /// becomes the receipt, which names `Resource`.
+    pub(crate) fn once<T: Serialize + DeserializeOwned>(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &Actor,
+        now: i64,
+        authorize_replay: impl FnOnce(&Actor, &mut T) -> AppResult<()>,
+        apply: impl FnOnce(&Actor) -> AppResult<(T, Resource)>,
+    ) -> AppResult<T> {
         let actor = refresh_actor_connection(tx, actor)?;
         if let Some(mut stored) =
-            replay::<CommandResult>(tx, &actor, &self.key, self.operation, &self.hash)?
+            replay::<T>(tx, &actor, &self.key, self.operation, &self.hash, now)?
         {
             authorize_replay(&actor, &mut stored)?;
-            stored.replayed = true;
             return Ok(stored);
         }
         let id = start(
@@ -190,31 +243,19 @@ impl Envelope {
             &self.hash,
             now,
         )?;
-        let mutation = apply(&actor)?;
-        let result = CommandResult {
-            entities: mutation.entities,
-            events: mutation.events,
-            replayed: false,
-        };
+        let (result, resource) = apply(&actor)?;
         let response = serde_json::to_string(&result)
-            .map_err(|error| AppError::internal(format!("serialize command response: {error}")))?;
-        succeed(
-            tx,
-            &id,
-            Receipt {
-                response: &response,
-                status: 200,
-                resource_type: Some(mutation.resource_type),
-                resource_id: mutation.resource_id.as_deref(),
-                project_id: result
-                    .events
-                    .iter()
-                    .find_map(|event| event.project_id.as_deref()),
-            },
-            now,
-        )?;
+            .map_err(|error| AppError::internal(format!("serialize write response: {error}")))?;
+        succeed(tx, &id, &response, &resource, now)?;
         Ok(result)
     }
+}
+
+/// The record a receipt names.
+pub(crate) struct Resource {
+    pub(crate) kind: &'static str,
+    pub(crate) id: Option<String>,
+    pub(crate) project_id: Option<String>,
 }
 
 pub(crate) fn validate_key(value: &str) -> AppResult<()> {
@@ -256,8 +297,8 @@ pub(crate) fn replay<T: DeserializeOwned>(
     key: &str,
     operation: &str,
     hash: &str,
+    now: i64,
 ) -> AppResult<Option<T>> {
-    let now = crate::clock::unix_now()?;
     tx.execute("DELETE FROM idempotency_keys WHERE expires_at<=?1", [now])?;
     let row = tx
         .query_row(
@@ -311,7 +352,7 @@ pub(crate) fn start(
     now: i64,
 ) -> AppResult<String> {
     let changed = tx.execute(
-        &format!("UPDATE idempotency_keys SET state='running',response_status=NULL,response_json=NULL,
+        &format!("UPDATE idempotency_keys SET state='running',response_json=NULL,
          updated_at=?4,expires_at=?5 WHERE {} AND state='failed' AND operation=?6 AND request_hash=?7", key_predicate(actor)),
         params![actor.user_id, key, actor.mcp_grant_id(), now, now+TTL_SECONDS, operation, hash],
     )?;
@@ -339,31 +380,23 @@ pub(crate) fn start(
     Ok(id.to_owned())
 }
 
-pub(crate) struct Receipt<'a> {
-    pub response: &'a str,
-    pub status: u16,
-    pub resource_type: Option<&'a str>,
-    pub resource_id: Option<&'a str>,
-    pub project_id: Option<&'a str>,
-}
-
 pub(crate) fn succeed(
     tx: &Transaction<'_>,
     id: &str,
-    receipt: Receipt<'_>,
+    response: &str,
+    resource: &Resource,
     now: i64,
 ) -> AppResult<()> {
     tx.execute(
-        "UPDATE idempotency_keys SET state='succeeded',response_status=?7,response_json=?1,
+        "UPDATE idempotency_keys SET state='succeeded',response_json=?1,
         resource_type=?2,resource_id=?3,project_id=?4,updated_at=?5 WHERE id=?6",
         params![
-            receipt.response,
-            receipt.resource_type,
-            receipt.resource_id,
-            receipt.project_id,
+            response,
+            resource.kind,
+            resource.id,
+            resource.project_id,
             now,
-            id,
-            receipt.status
+            id
         ],
     )?;
     Ok(())

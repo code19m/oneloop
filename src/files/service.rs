@@ -18,7 +18,10 @@ pub use upload::PendingAttachmentUpload;
 
 use super::BlobState;
 use crate::disk::{DiskAdmission, DiskReservation};
-use crate::{auth::unix_now, idempotency::validate_key as validate_idempotency_key};
+use crate::{
+    auth::unix_now,
+    idempotency::{Envelope, Resource, validate_key as validate_idempotency_key},
+};
 use std::{
     collections::{HashMap, HashSet},
     io::Cursor,
@@ -29,7 +32,7 @@ use std::{
 
 use image::{ImageEncoder, ImageFormat, ImageReader, Limits};
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -371,141 +374,134 @@ impl FileService {
         task_id: &str,
         input: AttachmentReorder,
     ) -> AppResult<AttachmentList> {
-        validate_idempotency_key(&input.idempotency_key)?;
+        let envelope = Envelope::request(
+            "attachment.reorder",
+            &input.idempotency_key,
+            &json!({
+                "taskId": task_id,
+                "attachmentId": input.attachment_id,
+                "targetId": input.target_id,
+                "after": input.after,
+                "expectedRevision": input.expected_revision,
+            }),
+        )?;
         if input.expected_revision < 1 {
             return Err(AppError::validation("expectedRevision", "must be positive"));
         }
         let actor = actor.clone();
         let task_id = task_id.to_owned();
-        let request_hash = crate::idempotency::request_hash(&json!({
-            "taskId": task_id,
-            "attachmentId": input.attachment_id,
-            "targetId": input.target_id,
-            "after": input.after,
-            "expectedRevision": input.expected_revision,
-        }))?;
-        let idempotency_id = Uuid::now_v7().to_string();
-        let list = self
-            .db
+        self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
                 let project_id = task_project(tx, &task_id)?;
                 require_file_access(tx, &actor, &project_id, true, false)?;
-                if let Some(existing) = crate::idempotency::replay(
+                envelope.once(
                     tx,
                     &actor,
-                    &input.idempotency_key,
-                    "attachment.reorder",
-                    &request_hash,
-                )? {
-                    return Ok(existing);
-                }
-                let actual_id = crate::idempotency::start(
-                    tx,
-                    &actor,
-                    &idempotency_id,
-                    &input.idempotency_key,
-                    "attachment.reorder",
-                    &request_hash,
                     now,
-                )?;
-                let mut current = attachment_views(tx, &task_id)?;
-                let previous_positions = current
-                    .iter()
-                    .map(|item| (item.id.clone(), (item.position, item.revision)))
-                    .collect::<HashMap<_, _>>();
-                let moving = current
-                    .iter()
-                    .position(|item| item.id == input.attachment_id)
-                    .ok_or(AppError::NotFound {
-                        resource: "attachment",
-                    })?;
-                if current[moving].revision != input.expected_revision {
-                    return Err(AppError::revision(input.expected_revision, current[moving].revision));
-                }
-                if input.attachment_id == input.target_id {
-                    let result = AttachmentList { items: current };
-                    finish_reorder_idempotency(tx, &actual_id, &input.attachment_id, &result, now)?;
-                    return Ok(result);
-                }
-                let item = current.remove(moving);
-                let target = current
-                    .iter()
-                    .position(|entry| entry.id == input.target_id)
-                    .ok_or(AppError::NotFound {
-                        resource: "attachment",
-                    })?;
-                current.insert(target + usize::from(input.after), item);
-                let before = attachment_views(tx, &task_id)?
-                    .into_iter()
-                    .map(|item| item.id)
-                    .collect::<Vec<_>>();
-                let after = current
-                    .iter()
-                    .map(|item| item.id.clone())
-                    .collect::<Vec<_>>();
-                if before == after {
-                    let result = AttachmentList { items: current };
-                    finish_reorder_idempotency(tx, &actual_id, &input.attachment_id, &result, now)?;
-                    return Ok(result);
-                }
-                // Every file of the task, deleted ones too, first moves to a
-                // negative position, so a new position never meets an old one.
-                tx.execute(
-                    "UPDATE task_attachments SET position=-position-1 WHERE task_id=?1",
-                    [&task_id],
-                )?;
-                for (position, item) in current.iter().enumerate() {
-                    let (old_position, old_revision) = previous_positions
-                        .get(&item.id)
-                        .copied()
-                        .ok_or_else(|| AppError::internal("attachment order changed unexpectedly"))?;
-                    let revision = old_revision + i64::from(old_position != position as i64);
-                    tx.execute(
-                        "UPDATE task_attachments SET position=?1,updated_at=?2,revision=?3 WHERE id=?4",
-                        params![position as i64, now, revision, item.id],
-                    )?;
-                }
-                // Deleted files follow in their order, so Undo puts one after
-                // the others. Their revisions stay, so Undo still applies.
-                let deleted = tx
-                    .prepare(
-                        "SELECT id FROM task_attachments WHERE task_id=?1 AND deleted_at IS NOT NULL
-                         ORDER BY position DESC",
-                    )?
-                    .query_map([&task_id], |row| row.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                for (offset, id) in deleted.iter().enumerate() {
-                    tx.execute(
-                        "UPDATE task_attachments SET position=?1 WHERE id=?2",
-                        params![(current.len() + offset) as i64, id],
-                    )?;
-                }
-                record_activity_tx(
-                    tx,
-                    &actor,
-                    ActivityInput {
-                        project_id: Some(&project_id),
-                        entity_type: "task",
-                        entity_id: &task_id,
-                        task_id: Some(&task_id),
-                        event_type: "attachment.reordered",
-                        field_key: Some("attachment-order"),
-                        before: Some(json!(before)),
-                        after: Some(json!(after)),
-                        metadata: json!({}),
-                        entity_revision: None,
+                    |_, _| Ok(()),
+                    |actor| {
+                        let resource = Resource {
+                            kind: "attachment",
+                            id: Some(input.attachment_id.clone()),
+                            project_id: None,
+                        };
+                        let mut current = attachment_views(tx, &task_id)?;
+                        let previous_positions = current
+                            .iter()
+                            .map(|item| (item.id.clone(), (item.position, item.revision)))
+                            .collect::<HashMap<_, _>>();
+                        let moving = current
+                            .iter()
+                            .position(|item| item.id == input.attachment_id)
+                            .ok_or(AppError::NotFound {
+                                resource: "attachment",
+                            })?;
+                        if current[moving].revision != input.expected_revision {
+                            return Err(AppError::revision(
+                                input.expected_revision,
+                                current[moving].revision,
+                            ));
+                        }
+                        if input.attachment_id == input.target_id {
+                            return Ok((AttachmentList { items: current }, resource));
+                        }
+                        let item = current.remove(moving);
+                        let target = current
+                            .iter()
+                            .position(|entry| entry.id == input.target_id)
+                            .ok_or(AppError::NotFound {
+                                resource: "attachment",
+                            })?;
+                        current.insert(target + usize::from(input.after), item);
+                        let before = attachment_views(tx, &task_id)?
+                            .into_iter()
+                            .map(|item| item.id)
+                            .collect::<Vec<_>>();
+                        let after = current
+                            .iter()
+                            .map(|item| item.id.clone())
+                            .collect::<Vec<_>>();
+                        if before == after {
+                            return Ok((AttachmentList { items: current }, resource));
+                        }
+                        // Every file of the task, deleted ones too, first moves to a
+                        // negative position, so a new position never meets an old one.
+                        tx.execute(
+                            "UPDATE task_attachments SET position=-position-1 WHERE task_id=?1",
+                            [&task_id],
+                        )?;
+                        for (position, item) in current.iter().enumerate() {
+                            let (old_position, old_revision) =
+                                previous_positions.get(&item.id).copied().ok_or_else(|| {
+                                    AppError::internal("attachment order changed unexpectedly")
+                                })?;
+                            let revision =
+                                old_revision + i64::from(old_position != position as i64);
+                            tx.execute(
+                                "UPDATE task_attachments SET position=?1,updated_at=?2,revision=?3
+                             WHERE id=?4",
+                                params![position as i64, now, revision, item.id],
+                            )?;
+                        }
+                        // Deleted files follow in their order, so Undo puts one after
+                        // the others. Their revisions stay, so Undo still applies.
+                        let deleted = tx
+                            .prepare(
+                                "SELECT id FROM task_attachments
+                             WHERE task_id=?1 AND deleted_at IS NOT NULL ORDER BY position DESC",
+                            )?
+                            .query_map([&task_id], |row| row.get::<_, String>(0))?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        for (offset, id) in deleted.iter().enumerate() {
+                            tx.execute(
+                                "UPDATE task_attachments SET position=?1 WHERE id=?2",
+                                params![(current.len() + offset) as i64, id],
+                            )?;
+                        }
+                        record_activity_tx(
+                            tx,
+                            actor,
+                            ActivityInput {
+                                project_id: Some(&project_id),
+                                entity_type: "task",
+                                entity_id: &task_id,
+                                task_id: Some(&task_id),
+                                event_type: "attachment.reordered",
+                                field_key: Some("attachment-order"),
+                                before: Some(json!(before)),
+                                after: Some(json!(after)),
+                                metadata: json!({}),
+                                entity_revision: None,
+                            },
+                            now,
+                        )?;
+                        let items = attachment_views(tx, &task_id)?;
+                        Ok((AttachmentList { items }, resource))
                     },
-                    now,
-                )?;
-                let result = AttachmentList {
-                    items: attachment_views(tx, &task_id)?,
-                };
-                finish_reorder_idempotency(tx, &actual_id, &input.attachment_id, &result, now)?;
-                Ok(result)
+                )
             })
-            .await?;
-        Ok(list)
+            .await
     }
 
     /// Deletes an attachment for the Undo window: reads hide it at once, and
@@ -520,79 +516,62 @@ impl FileService {
         if expected_revision < 1 {
             return Err(AppError::validation("expectedRevision", "must be positive"));
         }
-        validate_idempotency_key(idempotency_key)?;
+        let envelope = Envelope::request(
+            "attachment.delete",
+            idempotency_key,
+            &json!({"attachmentId": attachment_id, "expectedRevision": expected_revision}),
+        )?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
-        let key = idempotency_key.to_owned();
-        let request_hash = crate::idempotency::request_hash(
-            &json!({"attachmentId":attachment_id,"expectedRevision":expected_revision}),
-        )?;
-        let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let replay: Option<serde_json::Value> = crate::idempotency::replay(
+                envelope.once(
                     tx,
                     &actor,
-                    &key,
-                    "attachment.delete",
-                    &request_hash,
-                )?;
-                if let Some(replay) = replay {
-                    let project_id = replay["projectId"]
-                        .as_str()
-                        .ok_or_else(|| AppError::internal("deletion replay lacks project"))?;
-                    require_file_access(tx, &actor, project_id, false, true)?;
-                    return Ok(());
-                }
-                let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
-                if stored.attachment.revision != expected_revision {
-                    return Err(AppError::revision(expected_revision, stored.attachment.revision));
-                }
-                if stored.attachment.state == BlobState::Deleting {
-                    // Cleanup, or a deletion from before Undo, is removing the bytes.
-                    return Err(AppError::Conflict(
-                        "the attachment is being removed; try again shortly".into(),
-                    ));
-                }
-                let actual_id = crate::idempotency::start(
-                    tx,
-                    &actor,
-                    &idempotency_id,
-                    &key,
-                    "attachment.delete",
-                    &request_hash,
                     now,
-                )?;
-                tx.execute(
-                    "UPDATE task_attachments SET deleted_at=?1,updated_at=?1,revision=revision+1
-                     WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
-                    params![now, attachment_id, expected_revision],
-                )?;
-                record_attachment_deletion(
-                    tx,
-                    &DeleteActivityContext {
-                        id: attachment_id.clone(),
-                        project_id: Some(stored.attachment.project_id.clone()),
-                        task_id: Some(stored.attachment.task_id.clone()),
-                        name: stored.attachment.name.clone(),
+                    |actor, deleted: &mut DeletedAttachment| {
+                        require_file_access(tx, actor, &deleted.project_id, false, true)
                     },
-                    Some(&actor),
-                    now,
-                )?;
-                let response = json!({"projectId":stored.attachment.project_id,"taskId":stored.attachment.task_id}).to_string();
-                crate::idempotency::succeed(
-                    tx,
-                    &actual_id,
-                    crate::idempotency::Receipt {
-                        status: 204,
-                        response: &response,
-                        resource_type: Some("attachment"),
-                        resource_id: Some(&attachment_id),
-                        project_id: Some(&stored.attachment.project_id),
+                    |actor| {
+                        let stored = attachment_by_id(tx, &attachment_id)?.attachment;
+                        require_file_access(tx, actor, &stored.project_id, true, true)?;
+                        if stored.revision != expected_revision {
+                            return Err(AppError::revision(expected_revision, stored.revision));
+                        }
+                        if stored.state == BlobState::Deleting {
+                            // Cleanup, or a deletion from before Undo, is removing the bytes.
+                            return Err(AppError::Conflict(
+                                "the attachment is being removed; try again shortly".into(),
+                            ));
+                        }
+                        tx.execute(
+                            "UPDATE task_attachments SET deleted_at=?1,updated_at=?1,revision=revision+1
+                             WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
+                            params![now, attachment_id, expected_revision],
+                        )?;
+                        record_attachment_deletion(
+                            tx,
+                            &DeleteActivityContext {
+                                id: attachment_id.clone(),
+                                project_id: Some(stored.project_id.clone()),
+                                task_id: Some(stored.task_id.clone()),
+                                name: stored.name,
+                            },
+                            Some(actor),
+                            now,
+                        )?;
+                        let resource = Resource {
+                            kind: "attachment",
+                            id: Some(attachment_id.clone()),
+                            project_id: Some(stored.project_id.clone()),
+                        };
+                        let deleted = DeletedAttachment {
+                            project_id: stored.project_id,
+                            task_id: stored.task_id,
+                        };
+                        Ok((deleted, resource))
                     },
-                    now,
                 )?;
                 Ok(())
             })
@@ -608,106 +587,94 @@ impl FileService {
         attachment_id: &str,
         input: AttachmentRestore,
     ) -> AppResult<AttachmentView> {
-        validate_idempotency_key(&input.idempotency_key)?;
+        let envelope = Envelope::request(
+            "attachment.restore",
+            &input.idempotency_key,
+            &json!({"attachmentId": attachment_id, "expectedRevision": input.expected_revision}),
+        )?;
         if input.expected_revision < 1 {
             return Err(AppError::validation("expectedRevision", "must be positive"));
         }
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
-        let request_hash = crate::idempotency::request_hash(
-            &json!({"attachmentId":attachment_id,"expectedRevision":input.expected_revision}),
-        )?;
-        let idempotency_id = Uuid::now_v7().to_string();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                if let Some(view) = crate::idempotency::replay::<AttachmentView>(
+                envelope.once(
                     tx,
                     &actor,
-                    &input.idempotency_key,
-                    "attachment.restore",
-                    &request_hash,
-                )? {
-                    require_file_access(tx, &actor, &view.project_id, false, true)?;
-                    return Ok(view);
-                }
-                let (stored, deleted_at) = attachment_with_deletion(tx, &attachment_id)?;
-                require_file_access(tx, &actor, &stored.attachment.project_id, true, true)?;
-                let Some(deleted_at) = deleted_at else {
-                    return Err(AppError::Conflict("the attachment is not deleted".into()));
-                };
-                if stored.attachment.revision != input.expected_revision {
-                    return Err(AppError::revision(
-                        input.expected_revision,
-                        stored.attachment.revision,
-                    ));
-                }
-                crate::domain::require_undo_window("attachment", deleted_at, now)?;
-                if stored.attachment.state == BlobState::Deleting {
-                    return Err(AppError::Conflict(
-                        "the attachment is being removed and can no longer be restored".into(),
-                    ));
-                }
-                if stored.attachment.state == BlobState::Available
-                    && occupied_slots(tx, &stored.attachment.task_id, now)?
-                        >= MAX_ATTACHMENTS_PER_TASK
-                {
-                    return Err(AppError::Conflict(format!(
-                        "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
-                    )));
-                }
-                let actual_id = crate::idempotency::start(
-                    tx,
-                    &actor,
-                    &idempotency_id,
-                    &input.idempotency_key,
-                    "attachment.restore",
-                    &request_hash,
                     now,
-                )?;
-                let revision = input.expected_revision + 1;
-                tx.execute(
-                    "UPDATE task_attachments SET deleted_at=NULL,updated_at=?1,revision=?2
-                     WHERE id=?3 AND revision=?4 AND deleted_at IS NOT NULL",
-                    params![now, revision, attachment_id, input.expected_revision],
-                )?;
-                record_activity_tx(
-                    tx,
-                    &actor,
-                    ActivityInput {
-                        project_id: Some(&stored.attachment.project_id),
-                        entity_type: "attachment",
-                        entity_id: &attachment_id,
-                        task_id: Some(&stored.attachment.task_id),
-                        event_type: "attachment.restored",
-                        field_key: None,
-                        before: None,
-                        after: Some(json!({"name": stored.attachment.name})),
-                        metadata: json!({"name": stored.attachment.name}),
-                        entity_revision: Some(revision),
+                    |actor, view: &mut AttachmentView| {
+                        require_file_access(tx, actor, &view.project_id, false, true)
                     },
-                    now,
-                )?;
-                let view = attachment_by_id(tx, &attachment_id)?.attachment;
-                let response = serde_json::to_string(&view).map_err(|error| {
-                    AppError::internal(format!("serialize attachment: {error}"))
-                })?;
-                crate::idempotency::succeed(
-                    tx,
-                    &actual_id,
-                    crate::idempotency::Receipt {
-                        status: 200,
-                        response: &response,
-                        resource_type: Some("attachment"),
-                        resource_id: Some(&attachment_id),
-                        project_id: Some(&view.project_id),
+                    |actor| {
+                        let (stored, deleted_at) = attachment_with_deletion(tx, &attachment_id)?;
+                        let stored = stored.attachment;
+                        require_file_access(tx, actor, &stored.project_id, true, true)?;
+                        let Some(deleted_at) = deleted_at else {
+                            return Err(AppError::Conflict("the attachment is not deleted".into()));
+                        };
+                        if stored.revision != input.expected_revision {
+                            return Err(AppError::revision(input.expected_revision, stored.revision));
+                        }
+                        crate::domain::require_undo_window("attachment", deleted_at, now)?;
+                        if stored.state == BlobState::Deleting {
+                            return Err(AppError::Conflict(
+                                "the attachment is being removed and can no longer be restored"
+                                    .into(),
+                            ));
+                        }
+                        if stored.state == BlobState::Available
+                            && occupied_slots(tx, &stored.task_id, now)? >= MAX_ATTACHMENTS_PER_TASK
+                        {
+                            return Err(AppError::Conflict(format!(
+                                "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
+                            )));
+                        }
+                        let revision = input.expected_revision + 1;
+                        tx.execute(
+                            "UPDATE task_attachments SET deleted_at=NULL,updated_at=?1,revision=?2
+                             WHERE id=?3 AND revision=?4 AND deleted_at IS NOT NULL",
+                            params![now, revision, attachment_id, input.expected_revision],
+                        )?;
+                        record_activity_tx(
+                            tx,
+                            actor,
+                            ActivityInput {
+                                project_id: Some(&stored.project_id),
+                                entity_type: "attachment",
+                                entity_id: &attachment_id,
+                                task_id: Some(&stored.task_id),
+                                event_type: "attachment.restored",
+                                field_key: None,
+                                before: None,
+                                after: Some(json!({"name": stored.name})),
+                                metadata: json!({"name": stored.name}),
+                                entity_revision: Some(revision),
+                            },
+                            now,
+                        )?;
+                        let view = attachment_by_id(tx, &attachment_id)?.attachment;
+                        let resource = Resource {
+                            kind: "attachment",
+                            id: Some(attachment_id.clone()),
+                            project_id: Some(view.project_id.clone()),
+                        };
+                        Ok((view, resource))
                     },
-                    now,
-                )?;
-                Ok(view)
+                )
             })
             .await
     }
+}
+
+/// What a deletion's receipt keeps, so a retry rechecks access to the right
+/// project.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletedAttachment {
+    project_id: String,
+    task_id: String,
 }
 
 enum ReserveOutcome {
@@ -866,29 +833,6 @@ fn stored_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFile> {
     })
 }
 
-fn finish_reorder_idempotency(
-    tx: &Transaction<'_>,
-    idempotency_id: &str,
-    attachment_id: &str,
-    result: &AttachmentList,
-    now: i64,
-) -> AppResult<()> {
-    let response = serde_json::to_string(result)
-        .map_err(|error| AppError::internal(format!("serialize reorder response: {error}")))?;
-    crate::idempotency::succeed(
-        tx,
-        idempotency_id,
-        crate::idempotency::Receipt {
-            status: 200,
-            response: &response,
-            resource_type: Some("attachment"),
-            resource_id: Some(attachment_id),
-            project_id: None,
-        },
-        now,
-    )?;
-    Ok(())
-}
 fn record_attachment_deletion(
     tx: &Transaction<'_>,
     attachment: &DeleteActivityContext,
@@ -1291,8 +1235,11 @@ fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<boo
         // records the activity. Remove this branch when upgrades from rc.2
         // end.
         record_attachment_deletion(tx, &attachment, actor.as_ref(), now)?;
-        tx.execute("UPDATE idempotency_keys SET state='succeeded',response_status=204,updated_at=?1 WHERE \
-                     operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",params![now,attachment.id])?;
+        tx.execute(
+            "UPDATE idempotency_keys SET state='succeeded',updated_at=?1
+             WHERE operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",
+            params![now, attachment.id],
+        )?;
         tx.execute("DELETE FROM task_attachments WHERE blob_id=?1", [&blob])?;
         tx.execute("DELETE FROM file_blobs WHERE id=?1", [&blob])?;
     } else {

@@ -10,6 +10,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 - `ONELOOP_TRUSTED_PROXIES` now ignores empty items, such as a trailing
   comma, like the other lists. Before, oneloop refused to start.
+- A Knowledge change or disconnect without `expectedRevision` now gets 412
+  `precondition_failed`, like other edits, instead of 400. A revision below 1
+  gets 400.
 
 ### Fixed
 

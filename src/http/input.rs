@@ -1,8 +1,6 @@
 //! Extractors for browser JSON and query input. An error names the field and
 //! never repeats the value.
 use crate::{AppError, AppResult, input::field_error};
-// Knowledge commands still read their payload through this module.
-pub(crate) use crate::input::parse_payload;
 use axum::{
     body::Bytes,
     extract::{FromRequest, FromRequestParts, Request},

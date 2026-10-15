@@ -23,6 +23,7 @@ use crate::{
     blocking::Lane,
     collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
     files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
+    idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
 };
 
 use super::{
@@ -139,14 +140,6 @@ pub struct KnowledgeCommand {
     pub idempotency_key: String,
     #[serde(default)]
     pub expected_revision: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeCommandResult {
-    pub entities: Vec<Value>,
-    pub events: Vec<ActivityEvent>,
-    pub replayed: bool,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -420,87 +413,50 @@ impl KnowledgeService {
         &self,
         actor: &Actor,
         command: KnowledgeCommand,
-    ) -> AppResult<KnowledgeCommandResult> {
+    ) -> AppResult<CommandResult> {
         actor.require_ready()?;
         let operation = Operation::parse(&command.operation)
             .ok_or_else(|| AppError::validation("operation", "unsupported knowledge operation"))?;
-        crate::idempotency::validate_key(&command.idempotency_key)?;
-        let needs_revision = operation.needs_revision();
-        if needs_revision != command.expected_revision.is_some() {
-            return Err(AppError::validation(
-                "expectedRevision",
-                if needs_revision {
-                    "is required for this operation"
-                } else {
-                    "is not accepted for this operation"
-                },
-            ));
-        }
-        let hash = crate::idempotency::request_hash(&json!({
-            "operation": command.operation,
-            "payload": command.payload,
-            "expectedRevision": command.expected_revision,
-        }))?;
+        let envelope = Envelope::new(
+            operation.as_str(),
+            &command.payload,
+            &command.idempotency_key,
+            command.expected_revision,
+            operation.revision_rule(),
+        )?;
         let actor = actor.clone();
         let inner = self.inner.clone();
-        let (result, project_id, changed) = self
+        let (result, applied) = self
             .inner
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
+                // The project of a command that ran now, not of a retry.
+                let mut applied = None;
                 // Every knowledge command is an administrator's, including replays.
-                let current = refresh_actor_connection(tx, &actor)?;
-                current.require_admin()?;
-                if let Some(mut result) = crate::idempotency::replay::<KnowledgeCommandResult>(
+                let result = envelope.run(
                     tx,
                     &actor,
-                    &command.idempotency_key,
-                    &command.operation,
-                    &hash,
-                )? {
-                    result.replayed = true;
-                    return Ok((result, None, None));
-                }
-                let id = crate::idempotency::start(
-                    tx,
-                    &actor,
-                    &uuid::Uuid::now_v7().to_string(),
-                    &command.idempotency_key,
-                    &command.operation,
-                    &hash,
                     now,
-                )?;
-                let (project_id, entity, events) =
-                    dispatch(tx, &inner, &current, operation, &command, now)?;
-                let changed = operation.replaces_source().then(|| project_id.clone());
-                let result = KnowledgeCommandResult {
-                    entities: vec![entity],
-                    events,
-                    replayed: false,
-                };
-                let response = serde_json::to_string(&result).map_err(|error| {
-                    AppError::internal(format!("serialize knowledge response: {error}"))
-                })?;
-                crate::idempotency::succeed(
-                    tx,
-                    &id,
-                    crate::idempotency::Receipt {
-                        status: 200,
-                        response: &response,
-                        resource_type: Some("knowledge_source"),
-                        resource_id: Some(&project_id),
-                        project_id: Some(&project_id),
+                    |actor, _| actor.require_admin(),
+                    |actor| {
+                        actor.require_admin()?;
+                        let (project_id, entity, events) =
+                            dispatch(tx, &inner, actor, operation, &command, now)?;
+                        let mutation =
+                            Mutation::new(entity, events, "knowledge_source", &project_id);
+                        applied = Some(project_id);
+                        Ok(mutation)
                     },
-                    now,
                 )?;
-                Ok((result, Some(project_id), changed))
+                Ok((result, applied))
             })
             .await?;
-        // A sync that is still running works for the old source.
-        if let Some(project_id) = changed {
-            self.inner.stop_sync(&project_id);
-        }
-        if let Some(project_id) = project_id {
+        if let Some(project_id) = applied {
+            // A sync that is still running works for the old source.
+            if operation.replaces_source() {
+                self.inner.stop_sync(&project_id);
+            }
             // An administrator's change or retry syncs at once.
             self.inner.stop_waiting(&project_id);
             self.inner.wake.notify_one();
@@ -1046,30 +1002,24 @@ impl Inner {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Operation {
-    Connect,
-    Update,
-    Disconnect,
-    Sync,
-    CreateDeployKey,
+crate::idempotency::operations! {
+    enum Operation {
+        Connect = "knowledge.connect",
+        Update = "knowledge.update",
+        Disconnect = "knowledge.disconnect",
+        Sync = "knowledge.sync",
+        CreateDeployKey = "knowledge.deploy-key.create",
+    }
 }
 
 impl Operation {
-    fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "knowledge.connect" => Self::Connect,
-            "knowledge.update" => Self::Update,
-            "knowledge.disconnect" => Self::Disconnect,
-            "knowledge.sync" => Self::Sync,
-            "knowledge.deploy-key.create" => Self::CreateDeployKey,
-            _ => return None,
-        })
-    }
-
-    /// Changes to a connected source name the revision they were based on.
-    fn needs_revision(self) -> bool {
-        matches!(self, Self::Update | Self::Disconnect)
+    /// Changes to a connected source name the revision they were based on;
+    /// the other commands take none.
+    fn revision_rule(self) -> RevisionRule {
+        match self {
+            Self::Update | Self::Disconnect => RevisionRule::Existing,
+            Self::Connect | Self::Sync | Self::CreateDeployKey => RevisionRule::Create,
+        }
     }
 
     /// The source changes or goes, so a running sync works for the old one.
@@ -1110,7 +1060,7 @@ fn dispatch(
 }
 
 fn payload<T: DeserializeOwned>(command: &KnowledgeCommand) -> AppResult<T> {
-    crate::http::input::parse_payload(&command.payload)
+    crate::input::parse_payload(&command.payload)
 }
 
 struct Location {

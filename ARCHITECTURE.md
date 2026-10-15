@@ -97,7 +97,9 @@ small hints over SSE, and clients then fetch what changed.
   that run in a web page, and `mod.rs` wires the transport and file transfer
   endpoints.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
-  `Envelope`, which runs each domain and discussion command once around it.
+  `Envelope`, which runs each command, and each reorder, deletion and restore
+  of an attachment, once around it. Uploads use the ledger directly, because
+  their bytes arrive between two transactions.
 - `input.rs`: reads command payloads into typed input, with errors that name
   the field. `text.rs`: validation for display text such as titles and
   comments.

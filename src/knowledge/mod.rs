@@ -18,8 +18,8 @@ mod sync;
 pub use content::{Chunks, FileBody};
 pub use search::{DocumentHits, FileHit, Hit, Results as SearchResults};
 pub use service::{
-    FileMode, FileRead, KnowledgeCommand, KnowledgeCommandResult, KnowledgeFile, KnowledgeOverview,
-    KnowledgeService, KnowledgeView, OverviewFile, ReadmeText, SourceView, TextFile,
+    FileMode, FileRead, KnowledgeCommand, KnowledgeFile, KnowledgeOverview, KnowledgeService,
+    KnowledgeView, OverviewFile, ReadmeText, SourceView, TextFile,
 };
 
 /// Folder limits. A sync fails when a limit is exceeded, except that single

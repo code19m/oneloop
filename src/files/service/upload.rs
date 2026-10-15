@@ -44,6 +44,7 @@ impl FileService {
                     &replay_key,
                     "attachment.upload",
                     &replay_hash,
+                    unix_now()?,
                 )
             })
             .await?
@@ -87,6 +88,7 @@ impl FileService {
                         &key_owned,
                         "attachment.upload",
                         &request_hash,
+                        now,
                     )? {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
@@ -324,13 +326,12 @@ impl UploadAttempt {
                     crate::idempotency::succeed(
                         tx,
                         &idempotency_id,
-                        crate::idempotency::Receipt {
-                            status: 201,
-                            response: &serde_json::to_string(&view)
-                                .map_err(|e| AppError::internal(e.to_string()))?,
-                            resource_type: Some("attachment"),
-                            resource_id: Some(&attachment_id),
-                            project_id: Some(&project_id),
+                        &serde_json::to_string(&view)
+                            .map_err(|e| AppError::internal(e.to_string()))?,
+                        &Resource {
+                            kind: "attachment",
+                            id: Some(attachment_id.clone()),
+                            project_id: Some(project_id.clone()),
                         },
                         now,
                     )?;

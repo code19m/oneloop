@@ -703,12 +703,13 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         let provenance: (String, Option<String>, String) = f.db.run(move |c| Ok(c.query_row(
             "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted') FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'",
             [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?)).await.unwrap();
+        // The name the account had when it deleted the file.
         assert_eq!(
             provenance,
             (
                 "manager".into(),
                 via_mcp.then(|| "delete-grant".into()),
-                actor.display_name
+                "Manager".into()
             )
         );
     }
