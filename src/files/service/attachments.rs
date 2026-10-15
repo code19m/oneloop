@@ -1,17 +1,37 @@
 //! Attachment metadata: the list, retention, order, deletion and Undo.
-use super::*;
+
+use std::collections::HashMap;
+
+use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use super::{
+    ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id,
+    record_attachment_deletion, require_file_access, require_free_slot, require_revision,
+    stored_file_row, task_id_or_key, task_project,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    clock::unix_now,
+    collaboration::{ActivityInput, record_activity_tx},
+    files::{
+        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
+        BlobState, StoredFile,
+    },
+    idempotency::{Envelope, Resource},
+};
 
 impl FileService {
-    pub async fn list_attachments(
-        &self,
-        actor: &Actor,
-        task_id: &str,
-    ) -> AppResult<AttachmentList> {
+    /// The files of the task that `task` names by its ID or key.
+    pub async fn list_attachments(&self, actor: &Actor, task: &str) -> AppResult<AttachmentList> {
         let actor = actor.clone();
-        let task_id = task_id.to_owned();
+        let task = task.to_owned();
         let items = self
             .db
             .run(move |connection| {
+                let task_id = task_id_or_key(connection, &task)?;
                 let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, false, false)?;
                 attachment_views(connection, &task_id)
@@ -45,9 +65,7 @@ impl FileService {
         attachment_id: &str,
         patch: AttachmentPatch,
     ) -> AppResult<AttachmentView> {
-        if patch.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(patch.expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -105,31 +123,31 @@ impl FileService {
             .await
     }
 
+    /// Moves a file of the task that `task` names by its ID or key.
     pub async fn reorder(
         &self,
         actor: &Actor,
-        task_id: &str,
+        task: &str,
         input: AttachmentReorder,
     ) -> AppResult<AttachmentList> {
         let envelope = Envelope::request(
             "attachment.reorder",
             &input.idempotency_key,
             &json!({
-                "taskId": task_id,
+                "taskId": task,
                 "attachmentId": input.attachment_id,
                 "targetId": input.target_id,
                 "after": input.after,
                 "expectedRevision": input.expected_revision,
             }),
         )?;
-        if input.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(input.expected_revision)?;
         let actor = actor.clone();
-        let task_id = task_id.to_owned();
+        let task = task.to_owned();
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
+                let task_id = task_id_or_key(tx, &task)?;
                 let project_id = task_project(tx, &task_id)?;
                 require_file_access(tx, &actor, &project_id, true, false)?;
                 envelope.once(
@@ -141,7 +159,7 @@ impl FileService {
                         let resource = Resource {
                             kind: "attachment",
                             id: Some(input.attachment_id.clone()),
-                            project_id: None,
+                            project_id: Some(project_id.clone()),
                         };
                         let mut current = attachment_views(tx, &task_id)?;
                         let previous_positions = current
@@ -250,14 +268,12 @@ impl FileService {
         expected_revision: i64,
         idempotency_key: &str,
     ) -> AppResult<()> {
-        if expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
         let envelope = Envelope::request(
             "attachment.delete",
             idempotency_key,
             &json!({"attachmentId": attachment_id, "expectedRevision": expected_revision}),
         )?;
+        require_revision(expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -329,9 +345,7 @@ impl FileService {
             &input.idempotency_key,
             &json!({"attachmentId": attachment_id, "expectedRevision": input.expected_revision}),
         )?;
-        if input.expected_revision < 1 {
-            return Err(AppError::validation("expectedRevision", "must be positive"));
-        }
+        require_revision(input.expected_revision)?;
         let actor = actor.clone();
         let attachment_id = attachment_id.to_owned();
         self.db
@@ -352,7 +366,10 @@ impl FileService {
                             return Err(AppError::Conflict("the attachment is not deleted".into()));
                         };
                         if stored.revision != input.expected_revision {
-                            return Err(AppError::revision(input.expected_revision, stored.revision));
+                            return Err(AppError::revision(
+                                input.expected_revision,
+                                stored.revision,
+                            ));
                         }
                         crate::domain::require_undo_window("attachment", deleted_at, now)?;
                         if stored.state == BlobState::Deleting {
@@ -361,12 +378,8 @@ impl FileService {
                                     .into(),
                             ));
                         }
-                        if stored.state == BlobState::Available
-                            && occupied_slots(tx, &stored.task_id, now)? >= MAX_ATTACHMENTS_PER_TASK
-                        {
-                            return Err(AppError::Conflict(format!(
-                                "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
-                            )));
+                        if stored.state == BlobState::Available {
+                            require_free_slot(tx, &stored.task_id, now)?;
                         }
                         let revision = input.expected_revision + 1;
                         tx.execute(

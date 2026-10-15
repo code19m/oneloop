@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::transfer;
+use super::transfer::{self, TransferTicket, UploadTicketInput};
 
 use crate::{
     AppError, AppState,
@@ -238,7 +238,7 @@ pub(super) struct InboxInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ListAttachmentsInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
 }
 
@@ -256,7 +256,7 @@ pub(super) struct RetentionInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReorderInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     /// Stable attachment ID.
     pub attachment_id: String,
@@ -284,37 +284,9 @@ pub(super) struct DeleteAttachmentInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct UploadTicketInput {
-    /// Stable task ID (read_task also accepts a task key).
-    pub task_id: String,
-    /// Plain original filename of 1–255 characters; path separators are forbidden.
-    pub file_name: String,
-    /// Exact upload length in bytes, from 1 to 26214400 (25 MiB).
-    pub size_bytes: u64,
-    #[serde(default)]
-    /// Allow automatic removal of file bytes under storage pressure when true.
-    pub temporary: bool,
-    /// Unique key of 1–128 visible ASCII characters per logical write; reuse with identical input on retry.
-    pub idempotency_key: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct DownloadTicketInput {
     /// Stable attachment ID.
     pub attachment_id: String,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct TransferTicket {
-    pub url: String,
-    pub method: String,
-    /// One-use credential for the transfer request only; never repeat in replies.
-    pub authorization: String,
-    pub expires_in: i64,
-    /// Exact number of bytes transferred; send as Content-Length on upload.
-    pub content_length: u64,
 }
 
 impl OneloopMcp {

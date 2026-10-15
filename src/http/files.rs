@@ -1,25 +1,25 @@
-use super::input::{ApiJson, ApiQuery};
-use std::io::SeekFrom;
+use super::{
+    file_response::{self, Caching, Disposition},
+    input::{ApiJson, ApiQuery},
+};
 
 use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Extension, Multipart, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post, put},
 };
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio_util::io::ReaderStream;
 
 use crate::{
     AppError, AppResult, AppState,
     auth::Actor,
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
-        ConditionalRead, FileRead, MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead,
-        UploadDeadline,
+        MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead, UploadDeadline,
+        check_attachment_size,
     },
 };
 
@@ -98,12 +98,7 @@ async fn upload_attachment(
     let declared_size = required_header(&headers, "x-file-size", "file")?
         .parse::<u64>()
         .map_err(|_| AppError::validation("file", "X-File-Size must be an integer"))?;
-    if declared_size == 0 || declared_size > MAX_ATTACHMENT_BYTES {
-        return Err(AppError::validation(
-            "file",
-            "must contain 1 byte to 25 MiB",
-        ));
-    }
+    check_attachment_size(declared_size, "file")?;
     let deadline = UploadDeadline::new();
     let mut upload = None;
     let received = async {
@@ -144,14 +139,8 @@ async fn upload_attachment(
     let upload = match (received, upload) {
         (Ok(()), Some(upload)) => upload,
         (Ok(()), None) => return Err(AppError::validation("file", "file field is required")),
-        (Err(error), upload) => {
-            if let Some(upload) = upload
-                && let Err(cleanup_error) = upload.abort().await
-            {
-                tracing::warn!(error=%cleanup_error, "upload abort failed; reconciliation will retry");
-            }
-            return Err(error);
-        }
+        (Err(error), None) => return Err(error),
+        (Err(error), Some(upload)) => return Err(upload.fail(error).await),
     };
     let (view, created) = upload.finish().await?;
     let status = if created {
@@ -241,12 +230,18 @@ async fn download_attachment(
     Path(attachment_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let read = state
         .files
         .open_for_read(&actor, &attachment_id, ReadMode::Download)
         .await?;
-    file_response(read, &headers, true).await
+    file_response::leased(
+        read,
+        Some(&headers),
+        Disposition::Attachment,
+        Caching::NoStore,
+    )
+    .await
 }
 
 async fn content_attachment(
@@ -255,17 +250,17 @@ async fn content_attachment(
     Path(attachment_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let read = state
         .files
         .open_for_read_conditional(
             &actor,
             &attachment_id,
             ReadMode::Content,
-            validator(&headers),
+            file_response::validator(&headers),
         )
         .await?;
-    conditional_file_response(read, &headers).await
+    file_response::conditional(read, &headers).await
 }
 
 async fn thumbnail_attachment(
@@ -274,10 +269,10 @@ async fn thumbnail_attachment(
     Path(attachment_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     match state
         .files
-        .open_thumbnail(&actor, &attachment_id, validator(&headers))
+        .open_thumbnail(&actor, &attachment_id, file_response::validator(&headers))
         .await?
     {
         ThumbnailRead::Thumbnail {
@@ -286,31 +281,19 @@ async fn thumbnail_attachment(
             etag,
             name,
         } => {
-            let mut response = Response::new(Body::from(bytes));
-            let headers = response.headers_mut();
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(media_type));
-            headers.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, no-cache"),
-            );
-            headers.insert(
-                header::X_CONTENT_TYPE_OPTIONS,
-                HeaderValue::from_static("nosniff"),
-            );
-            headers.insert(
-                header::CONTENT_DISPOSITION,
-                content_disposition(&name, false)?,
-            );
-            headers.insert(
-                header::ETAG,
-                HeaderValue::from_str(&etag).expect("checksum ETag"),
-            );
-            Ok(response)
+            let length = bytes.len() as u64;
+            let caching = Caching::Revalidate(etag);
+            file_response::full(
+                Body::from(bytes),
+                length,
+                media_type,
+                &name,
+                Disposition::Inline,
+                caching,
+            )
         }
-        ThumbnailRead::NotModified(etag) => {
-            conditional_file_response(ConditionalRead::NotModified(etag), &headers).await
-        }
-        ThumbnailRead::Original(read) => conditional_file_response(read, &headers).await,
+        ThumbnailRead::NotModified(etag) => Ok(file_response::not_modified(etag)),
+        ThumbnailRead::Original(read) => file_response::conditional(read, &headers).await,
     }
 }
 
@@ -320,17 +303,17 @@ async fn source_attachment(
     Path(attachment_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let read = state
         .files
         .open_for_read_conditional(
             &actor,
             &attachment_id,
             ReadMode::Source,
-            validator(&headers),
+            file_response::validator(&headers),
         )
         .await?;
-    conditional_file_response(read, &headers).await
+    file_response::conditional(read, &headers).await
 }
 
 async fn html_preview(
@@ -339,62 +322,12 @@ async fn html_preview(
     Path(attachment_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let bytes = state
         .files
         .html_preview_bytes(&actor, &attachment_id)
         .await?;
-    Ok(html_preview_response(bytes))
-}
-
-/// Sanitized HTML for the preview frame of an attachment or Knowledge file.
-/// It runs in an opaque origin without scripts, forms, popups or plugins, and
-/// loads nothing from other sites: only inline styles, and images and fonts
-/// embedded as data. The app's own `frame-src 'self'` stops the framed page
-/// from navigating to other sites; without scripts, the page opened on its own
-/// navigates only when someone follows a link.
-pub(super) fn html_preview_response(bytes: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(bytes));
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        HeaderValue::from_static("SAMEORIGIN"),
-    );
-    headers.insert(
-        "cross-origin-resource-policy",
-        HeaderValue::from_static("same-origin"),
-    );
-    headers.insert(
-        "permissions-policy",
-        HeaderValue::from_static(
-            "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), fullscreen=(), payment=(), usb=()",
-        ),
-    );
-    headers.insert(
-        "content-security-policy",
-        HeaderValue::from_static(
-            "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; \
-             font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
-        ),
-    );
-    headers.insert("x-dns-prefetch-control", HeaderValue::from_static("off"));
-    response
+    Ok(file_response::html_preview(bytes))
 }
 
 async fn upload_avatar(
@@ -466,12 +399,12 @@ async fn avatar(
     Path(user_id): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let read = state
         .files
-        .open_avatar_conditional(&actor, &user_id, validator(&headers))
+        .open_avatar_conditional(&actor, &user_id, file_response::validator(&headers))
         .await?;
-    conditional_file_response(read, &headers).await
+    file_response::conditional(read, &headers).await
 }
 
 async fn storage_usage(
@@ -486,226 +419,6 @@ async fn storage_cleanup(
     Extension(actor): Extension<Actor>,
 ) -> AppResult<Json<crate::files::FileRuntimeReport>> {
     state.files.cleanup_for(&actor).await.map(Json)
-}
-
-pub(super) fn validator(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-}
-
-async fn conditional_file_response(
-    read: crate::files::ConditionalRead,
-    headers: &HeaderMap,
-) -> AppResult<Response> {
-    let (mut response, etag) = match read {
-        crate::files::ConditionalRead::NotModified(etag) => {
-            (StatusCode::NOT_MODIFIED.into_response(), etag)
-        }
-        crate::files::ConditionalRead::Modified(read) => {
-            let etag = read.etag.clone();
-            // A stale If-Range requires the whole representation, not a partial body.
-            let mut headers = headers.clone();
-            if headers
-                .get(header::IF_RANGE)
-                .is_some_and(|value| value.to_str().ok() != Some(&etag))
-            {
-                headers.remove(header::RANGE);
-            }
-            (file_response(*read, &headers, false).await?, etag)
-        }
-    };
-    response.headers_mut().insert(
-        header::ETAG,
-        HeaderValue::from_str(&etag).expect("checksum ETag"),
-    );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-cache"),
-    );
-    Ok(response)
-}
-
-pub(crate) async fn file_response(
-    mut read: FileRead,
-    request_headers: &HeaderMap,
-    attachment: bool,
-) -> AppResult<Response> {
-    let full_size = read
-        .byte_limit
-        .map_or(read.size, |limit| read.size.min(limit));
-    let range = if request_headers.get_all(header::RANGE).iter().count() > 1 {
-        SingleRange::Ignore
-    } else {
-        parse_single_range(request_headers.get(header::RANGE), full_size)
-    };
-    let (start, end, status) = match range {
-        SingleRange::Range(start, end) => (start, end, StatusCode::PARTIAL_CONTENT),
-        SingleRange::Ignore => (0, full_size.saturating_sub(1), StatusCode::OK),
-        SingleRange::Unsatisfiable => {
-            let mut response = Response::new(Body::empty());
-            *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
-            response.headers_mut().insert(
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes */{full_size}"))
-                    .expect("integer content range"),
-            );
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, no-store"),
-            );
-            response.headers_mut().insert(
-                header::X_CONTENT_TYPE_OPTIONS,
-                HeaderValue::from_static("nosniff"),
-            );
-            return Ok(response);
-        }
-    };
-    if start > 0 {
-        read.file.seek(SeekFrom::Start(start)).await?;
-    }
-    let length = if full_size == 0 { 0 } else { end - start + 1 };
-    let stream = ReaderStream::with_capacity(read.file.take(length), 64 * 1024);
-    let mut response = Response::new(Body::from_stream(stream));
-    *response.status_mut() = status;
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&read.media_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    headers.insert(
-        header::CONTENT_LENGTH,
-        HeaderValue::from_str(&length.to_string()).expect("integer header"),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        content_disposition(&read.name, attachment)?,
-    );
-    if status == StatusCode::PARTIAL_CONTENT {
-        headers.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{full_size}"))
-                .expect("integer range header"),
-        );
-    }
-    Ok(response)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum SingleRange {
-    Ignore,
-    Unsatisfiable,
-    Range(u64, u64),
-}
-
-fn parse_single_range(value: Option<&HeaderValue>, size: u64) -> SingleRange {
-    let Some(raw) = value
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("bytes="))
-    else {
-        return SingleRange::Ignore;
-    };
-    let Some((start, end)) = raw.split_once('-') else {
-        return SingleRange::Ignore;
-    };
-    if (start.is_empty() && end.is_empty())
-        || !start.bytes().chain(end.bytes()).all(|b| b.is_ascii_digit())
-    {
-        return SingleRange::Ignore;
-    }
-    // Decimal values larger than u64 are valid syntax. Saturation preserves
-    // suffix/end clipping and makes an enormous start unsatisfiable.
-    let number = |s: &str| s.parse::<u64>().unwrap_or(u64::MAX);
-    if start.is_empty() {
-        let suffix = number(end);
-        if size == 0 || suffix == 0 {
-            return SingleRange::Unsatisfiable;
-        }
-        return SingleRange::Range(size.saturating_sub(suffix), size - 1);
-    }
-    let start = number(start);
-    let end = if end.is_empty() {
-        u64::MAX
-    } else {
-        number(end)
-    };
-    if start > end {
-        return SingleRange::Ignore;
-    }
-    if start >= size {
-        return SingleRange::Unsatisfiable;
-    }
-    SingleRange::Range(start, end.min(size - 1))
-}
-
-pub(super) fn content_disposition(name: &str, attachment: bool) -> AppResult<HeaderValue> {
-    // Old uploads may predate filename validation. Do not propagate directional
-    // overrides to download-manager labels; preserve ordinary RTL and joiners.
-    let name: String = name
-        .chars()
-        .filter(|c| {
-            !matches!(c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        })
-        .collect();
-    let fallback: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii() && !c.is_ascii_control() && !matches!(c, '"' | '\\' | '/' | ';') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let fallback = if fallback.trim().is_empty() {
-        "download"
-    } else {
-        &fallback
-    };
-    let encoded = name
-        .as_bytes()
-        .iter()
-        .flat_map(|byte| {
-            if byte.is_ascii_alphanumeric()
-                || matches!(
-                    *byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'&'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-            {
-                vec![(*byte as char).to_string()]
-            } else {
-                vec![format!("%{byte:02X}")]
-            }
-        })
-        .collect::<String>();
-    HeaderValue::from_str(&format!(
-        "{}; filename=\"{fallback}\"; filename*=UTF-8''{}",
-        if attachment { "attachment" } else { "inline" },
-        encoded
-    ))
-    .map_err(|error| AppError::internal(format!("content disposition failed: {error}")))
 }
 
 fn multipart_error(
@@ -731,106 +444,4 @@ fn required_header(
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| AppError::validation(field, format!("{name} header is required")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ranges_are_bounded_and_single() {
-        let exact = HeaderValue::from_static("bytes=10-19");
-        assert_eq!(
-            parse_single_range(Some(&exact), 100),
-            SingleRange::Range(10, 19)
-        );
-        let suffix = HeaderValue::from_static("bytes=-10");
-        assert_eq!(
-            parse_single_range(Some(&suffix), 100),
-            SingleRange::Range(90, 99)
-        );
-        for raw in [
-            "bytes=0-1,4-5",
-            "items=0-1",
-            "bytes=9-3",
-            "bytes=abc",
-            "bytes=+1-2",
-            "bytes=-",
-        ] {
-            assert_eq!(
-                parse_single_range(Some(&HeaderValue::from_str(raw).unwrap()), 100),
-                SingleRange::Ignore
-            );
-        }
-        for raw in ["bytes=100-", "bytes=-0", "bytes=999999999999999999999999-"] {
-            assert_eq!(
-                parse_single_range(Some(&HeaderValue::from_str(raw).unwrap()), 100),
-                SingleRange::Unsatisfiable
-            );
-        }
-        assert_eq!(
-            parse_single_range(Some(&HeaderValue::from_bytes(b"bytes=\xff").unwrap()), 100),
-            SingleRange::Ignore
-        );
-        assert_eq!(
-            parse_single_range(Some(&exact), 0),
-            SingleRange::Unsatisfiable
-        );
-    }
-
-    #[test]
-    fn filenames_are_encoded_in_content_disposition() {
-        let value = content_disposition("report \"final\".pdf", true)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert!(value.starts_with("attachment;"));
-        assert!(value.contains("report%20%22final%22.pdf"));
-        assert!(value.contains("filename=\"report _final_.pdf\""));
-        let unicode = content_disposition("Résumé;\\\r\n.pdf", true).unwrap();
-        assert!(
-            unicode
-                .to_str()
-                .unwrap()
-                .contains("filename=\"R_sum_____.pdf\"")
-        );
-    }
-}
-
-#[cfg(test)]
-mod generated_tests {
-    use super::*;
-    proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
-        #[test]
-        fn generated_ranges_are_bounded(size in proptest::prelude::any::<u64>(), start in proptest::prelude::any::<u64>(), end in proptest::prelude::any::<u64>(), form in 0u8..4) {
-            let raw = match form { 0 => format!("bytes={start}-{end}"), 1 => format!("bytes=-{end}"), 2 => format!("bytes={start}-"), _ => format!("bytes={start}-{end},0-1") };
-            if let SingleRange::Range(s,e) = parse_single_range(Some(&raw.parse().unwrap()), size) {
-                proptest::prop_assert!(s <= e && e < size);
-            }
-        }
-    }
-}
-
-pub(super) fn require_safe_file_destination(headers: &HeaderMap) -> AppResult<()> {
-    if headers
-        .get("sec-fetch-dest")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|value| {
-            matches!(
-                value,
-                "script"
-                    | "worker"
-                    | "sharedworker"
-                    | "serviceworker"
-                    | "style"
-                    | "object"
-                    | "embed"
-            )
-        })
-    {
-        return Err(AppError::Forbidden);
-    }
-    Ok(())
 }

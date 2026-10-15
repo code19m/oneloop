@@ -93,7 +93,7 @@ async fn transfer_tickets_revoke_the_whole_grant_after_another_project_is_lost()
 }
 
 #[tokio::test]
-async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
+async fn file_tools_accept_a_task_key() {
     let (_dir, db, app, session, _user) = fixture().await;
     let mut mcp = scoped_mcp(
         &app,
@@ -110,30 +110,50 @@ async fn an_upload_ticket_for_a_task_key_attaches_the_file_to_that_task() {
     let task = create_protocol_task(&mut mcp, "project-1", "keyed").await;
     let id = task.clone();
     let key: String = query_one(&db, "SELECT task_key FROM tasks WHERE id=?1", [id]).await;
-    let ticket = tool_value(
+    for name in ["first.txt", "second.txt"] {
+        let ticket = tool_value(
+            &mcp.call(
+                "create_attachment_upload",
+                json!({"taskId": key, "fileName": name, "sizeBytes": 5, "idempotencyKey": name}),
+            )
+            .await,
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/mcp/files/upload")
+                    .header(
+                        header::AUTHORIZATION,
+                        ticket["authorization"].as_str().unwrap(),
+                    )
+                    .body(Body::from("notes"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["value"]["taskId"], task);
+    }
+    let listed = tool_value(&mcp.call("list_attachments", json!({"taskId": key})).await);
+    let [first, second] = [&listed["items"][0], &listed["items"][1]];
+    assert_eq!(second["name"], "second.txt");
+    let reordered = tool_value(
         &mcp.call(
-            "create_attachment_upload",
-            json!({"taskId": key, "fileName": "notes.txt", "sizeBytes": 5, "idempotencyKey": "by-key"}),
+            "reorder_attachment",
+            json!({"taskId": key, "attachmentId": second["id"], "targetId": first["id"],
+                   "expectedRevision": second["revision"], "idempotencyKey": "by-key"}),
         )
         .await,
     );
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/mcp/files/upload")
-                .header(
-                    header::AUTHORIZATION,
-                    ticket["authorization"].as_str().unwrap(),
-                )
-                .body(Body::from("notes"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await["value"]["taskId"], task);
+    let names: Vec<_> = reordered["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].clone())
+        .collect();
+    assert_eq!(names, ["second.txt", "first.txt"]);
 }
 
 #[tokio::test]

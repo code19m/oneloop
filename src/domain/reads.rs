@@ -513,7 +513,10 @@ fn pool_page_connection(
     })
 }
 
-fn resolve_task_id(connection: &rusqlite::Connection, value: &str) -> AppResult<Option<String>> {
+pub(crate) fn resolve_task_id(
+    connection: &rusqlite::Connection,
+    value: &str,
+) -> AppResult<Option<String>> {
     connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional().map_err(Into::into)
 }
 

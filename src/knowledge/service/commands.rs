@@ -1,6 +1,23 @@
 //! Administrators' Knowledge commands: connecting, changing and
 //! disconnecting a source, asking for a sync, and creating a deploy key.
-use super::*;
+
+use rusqlite::{Connection, Transaction, params};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+
+use super::{Inner, KnowledgeService, load_source, source_activity, source_view};
+use crate::{
+    AppError, AppResult,
+    access::{Need, require_project},
+    auth::Actor,
+    clock::unix_now,
+    collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
+    idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
+    knowledge::{
+        secrets::{Purpose, generate_deploy_key},
+        source::{self, GitUrl, Transport},
+    },
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,11 +106,8 @@ impl KnowledgeService {
                     |actor, _| actor.require_admin(),
                     |actor| {
                         actor.require_admin()?;
-                        let (project_id, entity, events) =
-                            dispatch(tx, &inner, actor, operation, &command, now)?;
-                        let mutation =
-                            Mutation::new(entity, events, "knowledge_source", &project_id);
-                        applied = Some(project_id);
+                        let mutation = dispatch(tx, &inner, actor, operation, &command, now)?;
+                        applied = mutation.resource_id.clone();
                         Ok(mutation)
                     },
                 )?;
@@ -146,7 +160,7 @@ fn dispatch(
     operation: Operation,
     command: &KnowledgeCommand,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     match operation {
         Operation::Connect => connect(tx, inner, actor, payload(command)?, now),
         Operation::Update => update(
@@ -194,7 +208,7 @@ fn connect(
     actor: &Actor,
     input: Connect,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Read, false)?;
     if load_source(tx, &input.project_id)?.is_some() {
         return Err(AppError::Conflict(
@@ -260,7 +274,7 @@ fn connect(
         now,
     )?);
     let entity = source_entity(tx, &input.project_id)?;
-    Ok((input.project_id, entity, events))
+    Ok(source_mutation(entity, events, &input.project_id))
 }
 
 fn update(
@@ -270,7 +284,7 @@ fn update(
     input: Update,
     expected: i64,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Read, false)?;
     let before = load_source(tx, &input.project_id)?.ok_or(AppError::NotFound {
         resource: "knowledge source",
@@ -368,7 +382,7 @@ fn update(
         now,
     )?);
     let entity = source_entity(tx, &input.project_id)?;
-    Ok((input.project_id, entity, events))
+    Ok(source_mutation(entity, events, &input.project_id))
 }
 
 fn disconnect(
@@ -378,7 +392,7 @@ fn disconnect(
     input: ProjectOnly,
     expected: i64,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Read, false)?;
     let before = load_source(tx, &input.project_id)?.ok_or(AppError::NotFound {
         resource: "knowledge source",
@@ -415,7 +429,7 @@ fn disconnect(
         "deleted": true,
         "revision": before.revision + 1,
     });
-    Ok((input.project_id, entity, vec![event]))
+    Ok(source_mutation(entity, vec![event], &input.project_id))
 }
 
 fn request_sync(
@@ -423,7 +437,7 @@ fn request_sync(
     actor: &Actor,
     input: ProjectOnly,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Read, false)?;
     if load_source(tx, &input.project_id)?.is_none() {
         return Err(AppError::NotFound {
@@ -435,7 +449,7 @@ fn request_sync(
         params![input.project_id, now],
     )?;
     let entity = source_entity(tx, &input.project_id)?;
-    Ok((input.project_id, entity, Vec::new()))
+    Ok(source_mutation(entity, Vec::new(), &input.project_id))
 }
 
 fn create_deploy_key(
@@ -444,7 +458,7 @@ fn create_deploy_key(
     actor: &Actor,
     input: ProjectOnly,
     now: i64,
-) -> AppResult<(String, Value, Vec<ActivityEvent>)> {
+) -> AppResult<Mutation> {
     require_project(tx, actor, &input.project_id, Need::Read, false)?;
     let events = ensure_deploy_key(tx, inner, actor, &input.project_id, now)?
         .into_iter()
@@ -460,7 +474,7 @@ fn create_deploy_key(
         "projectId": input.project_id,
         "publicKey": public_key,
     });
-    Ok((input.project_id, entity, events))
+    Ok(source_mutation(entity, events, &input.project_id))
 }
 
 /// Create the project's deploy key unless it has one.
@@ -494,6 +508,11 @@ fn ensure_deploy_key(
         source_activity(project_id, "knowledge.deploy_key.created"),
         now,
     )?))
+}
+
+/// A change to a project's Knowledge source, whose receipt names the project.
+fn source_mutation(entity: Value, events: Vec<ActivityEvent>, project_id: &str) -> Mutation {
+    Mutation::new(entity, events, "knowledge_source", project_id)
 }
 
 /// The source as a command returns it.

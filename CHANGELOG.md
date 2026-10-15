@@ -18,6 +18,10 @@ All notable changes to oneloop are recorded here. The format follows
 - Editing, deleting or restoring a comment without `expectedRevision` now
   fails with `precondition_failed` (412), as changes to tasks and other
   records do. It failed with `validation_failed` (400).
+- In MCP, `list_attachments` and `reorder_attachment` now accept a task key,
+  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does. The
+  browser API's `GET /api/tasks/{id}/attachments` and
+  `POST /api/tasks/{id}/attachments/reorder` accept one too.
 
 ### Fixed
 
@@ -86,6 +90,12 @@ All notable changes to oneloop are recorded here. The format follows
 - On a 320-pixel-wide screen, the Roadmap header shows the whole **Epic**
   button. Before, part of it was cut off. Screen readers still read the
   Roadmap heading there.
+- With a very large `ONELOOP_STORAGE_LIMIT`, above about 200 PiB, the storage
+  page for administrators shows the right cleanup points of 80% and 70%.
+  Before, it showed wrong values.
+- A Knowledge file download now always sends the file, as an attachment
+  download does. Before, a download request with `If-None-Match` could get an
+  empty "not modified" answer.
 
 ### Security
 

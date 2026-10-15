@@ -3,45 +3,41 @@
 //! read checks current project access, and no reply contains a saved
 //! credential.
 
+mod catalog;
+mod commands;
+mod mcp;
+
+pub use commands::KnowledgeCommand;
+
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::Not,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+use serde_json::json;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-
-use crate::{
-    AppError, AppResult, Db,
-    access::{Need, require_project},
-    auth::{Actor, ActorSource, refresh_actor_connection},
-    blocking::Lane,
-    clock::unix_now,
-    collaboration::{ActivityEvent, ActivityInput, record_activity_tx},
-    files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
-    idempotency::{CommandResult, Envelope, Mutation, RevisionRule},
-};
-
-mod catalog;
-use catalog::Catalog;
-mod commands;
-pub use commands::KnowledgeCommand;
-mod mcp;
 
 use super::{
     MAX_DOWNLOAD_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_FOLDERS, MAX_TOTAL_BYTES,
     content::FileBody,
     git::{Git, Limits},
-    markdown,
-    search::{Content, INDEX_BYTES_MAX, Index, Results},
-    secrets::{Purpose, SecretBox, generate_deploy_key},
-    source::{self, GitUrl, Transport},
+    secrets::SecretBox,
+    source::{GitUrl, Transport},
 };
+use crate::{
+    AppError, AppResult, Db,
+    access::{Need, require_project},
+    auth::{Actor, ActorSource, refresh_actor_connection},
+    blocking::{Lane, PerPerson},
+    collaboration::ActivityInput,
+    files::{MAX_TEXT_PREVIEW_BYTES, PreviewKind},
+};
+use catalog::Catalog;
 
 /// How long a search or a file read waits for the one before it, like a
 /// database request.
@@ -77,7 +73,7 @@ pub(super) struct Inner {
     searches: Lane,
     /// People with a search that runs or waits. Each has one at most, so no
     /// one can fill the queue.
-    searchers: Mutex<HashSet<String>>,
+    searchers: PerPerson,
 }
 
 /// The Knowledge page: sync state and the file list. Only administrators
@@ -299,7 +295,7 @@ impl KnowledgeService {
                 builds: tokio::sync::Mutex::new(()),
                 readers: Lane::new("knowledge reader", 1),
                 searches: Lane::new("knowledge search", 1),
-                searchers: Mutex::new(HashSet::new()),
+                searchers: PerPerson::new(usize::MAX),
             }),
         }
     }
@@ -581,245 +577,4 @@ fn requested_path(path: &str) -> AppResult<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A project with a synced folder of Markdown `files`, and a signed-in
-    /// admin for each of `people`.
-    async fn synced_project(
-        files: Vec<(String, String)>,
-        people: &[&str],
-    ) -> (tempfile::TempDir, KnowledgeService, Vec<Actor>) {
-        use crate::auth::{
-            AuthService, LoginResult, NewUser, create_user, password::PasswordPolicy,
-        };
-        let (root, db) = crate::db::migrated_db();
-        let password = "test-only-password-012345";
-        let usernames: Vec<String> = people.iter().map(|name| (*name).to_owned()).collect();
-        let names = usernames.clone();
-        db.transaction(move |tx| {
-            for username in names {
-                let user = NewUser {
-                    display_name: username.clone(),
-                    username,
-                    password: password.into(),
-                    is_admin: true,
-                    must_change_password: false,
-                };
-                create_user(tx, user, unix_now()?, &PasswordPolicy::default())?;
-            }
-            tx.execute_batch(
-                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);
-                 INSERT INTO knowledge_sources(project_id,url,branch,folder,state,commit_id,created_at,updated_at,generation)
-                 VALUES('p','https://git.example.test/docs.git','main','','ready','c',1,1,'g');",
-            )?;
-            for (path, content) in files {
-                tx.execute(
-                    "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
-                     VALUES('p',?1,?2,'text/plain','markdown',?3,1,?4)",
-                    params![path, content.len() as i64, format!("sum-{path}"), content.into_bytes()],
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .unwrap();
-        let auth = AuthService::new(db.clone(), PasswordPolicy::default());
-        let mut actors = Vec::new();
-        for username in &usernames {
-            let login = auth
-                .login(username, password, Default::default(), None)
-                .await
-                .unwrap();
-            let LoginResult::Authenticated(session) = login else {
-                panic!("the session limit can't be reached");
-            };
-            actors.push(session.actor);
-        }
-        (root, KnowledgeService::new(db, 0), actors)
-    }
-
-    #[tokio::test]
-    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
-        // This test's runtime runs on this thread, so whatever a search scans
-        // and builds on the async worker counts against this thread's heap.
-        let section = "## Shared steps\n\nShared words for every reader.\n\n";
-        let files = (0..300)
-            .map(|index| {
-                let content = format!("# Note {index}\n\n{}", section.repeat(6));
-                (format!("shared-{index}.md"), content)
-            })
-            .collect();
-        let (_root, service, people) = synced_project(files, &["admin"]).await;
-        // The first search builds the index.
-        service.search(&people[0], "p", "shared").await.unwrap();
-        let watch = crate::test_memory::Watch::start();
-        let results = service
-            .search(&people[0], "p", "shared words")
-            .await
-            .unwrap();
-        assert_eq!((results.file_count, results.hit_count), (0, 1800));
-        assert_eq!(results.documents.len(), 50);
-        assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
-    }
-
-    #[tokio::test]
-    async fn each_person_has_one_search_and_a_search_waits_at_most_five_seconds() {
-        let files = vec![("note.md".to_owned(), "# Note\n\nShared words.\n".to_owned())];
-        let (_root, service, people) = synced_project(files, &["alice", "bob"]).await;
-        let (alice, bob) = (&people[0], &people[1]);
-        // The first search builds the index.
-        service.search(alice, "p", "shared").await.unwrap();
-        tokio::time::pause();
-        let search = |actor: &Actor| {
-            let (service, actor) = (service.clone(), actor.clone());
-            tokio::spawn(async move { service.search(&actor, "p", "shared").await })
-        };
-        let searching = |actor: &Actor| {
-            let searchers = service.inner.searchers.lock().unwrap();
-            searchers.contains(&actor.user_id)
-        };
-        // A long search holds the one slot, and Alice's search waits for it.
-        let held = service.inner.searches.turn().await;
-        let first = search(alice);
-        while !searching(alice) {
-            tokio::task::yield_now().await;
-        }
-        // Her next one is told at once to try again; Bob's waits its turn.
-        let second = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            service.search(alice, "p", "shared"),
-        )
-        .await
-        .expect("a second search of one person doesn't wait");
-        assert!(
-            matches!(second, Err(AppError::Unavailable(_))),
-            "{second:?}"
-        );
-        let other = search(bob);
-        drop(held);
-        first.await.unwrap().unwrap();
-        other.await.unwrap().unwrap();
-        // A search whose request ends lets its person search again at once.
-        let held = service.inner.searches.turn().await;
-        let cancelled = search(alice);
-        while !searching(alice) {
-            tokio::task::yield_now().await;
-        }
-        cancelled.abort();
-        assert!(cancelled.await.unwrap_err().is_cancelled());
-        assert!(!searching(alice));
-        // A search that waits too long is told to try again.
-        let waiting = search(bob);
-        tokio::time::sleep(QUEUE_WAIT + std::time::Duration::from_secs(1)).await;
-        let waited = waiting.await.unwrap();
-        assert!(
-            matches!(waited, Err(AppError::Unavailable(_))),
-            "{waited:?}"
-        );
-        assert!(!searching(bob));
-        drop(held);
-        service.search(bob, "p", "shared").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_reply_holds_only_the_start_of_each_long_heading() {
-        let long = "Long words ".repeat(10_000);
-        let mut content = format!("# {long}\n\nIntro.\n\n");
-        for _ in 0..10 {
-            content.push_str(&format!("## {long}\n\nText.\n\n"));
-        }
-        let files = vec![("long.md".to_owned(), content)];
-        let (_root, service, people) = synced_project(files, &["alice"]).await;
-        let read = service
-            .read_text(&people[0], "p", "long.md", None)
-            .await
-            .unwrap();
-        let title = read.title.unwrap();
-        assert!(title.starts_with("Long words Long"));
-        assert!(
-            title.len() <= markdown::HEADING_BYTES_MAX,
-            "{}",
-            title.len()
-        );
-        assert!(read.headings.len() > 1);
-        for heading in &read.headings {
-            assert!(heading.len() <= markdown::HEADING_BYTES_MAX + "## ".len());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_file_read_waits_at_most_five_seconds_for_the_one_before_it() {
-        let files = vec![("note.md".to_owned(), "# Note\n\nWords.\n".to_owned())];
-        let (_root, service, people) = synced_project(files, &["alice"]).await;
-        tokio::time::pause();
-        // Another read holds the one reader.
-        let held = service.inner.readers.turn().await;
-        let read = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            service.read_text(&people[0], "p", "note.md", None),
-        )
-        .await
-        .expect("a read doesn't wait for long");
-        assert!(matches!(read, Err(AppError::Unavailable(_))), "{read:?}");
-        drop(held);
-        let read = service
-            .read_text(&people[0], "p", "note.md", None)
-            .await
-            .unwrap();
-        assert_eq!(read.content.as_deref(), Some("# Note\n\nWords.\n"));
-    }
-
-    #[test]
-    fn an_html_preview_reads_no_bytes_of_other_files() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static CONTENT_READS: AtomicUsize = AtomicUsize::new(0);
-        let (_root, mut connection) = crate::db::migrated_connection();
-        connection.execute_batch("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p','Project','PRJ',1,1);").unwrap();
-        for (path, media_type, kind, content) in [
-            (
-                "data.bin",
-                "application/octet-stream",
-                None,
-                vec![7; 4 * 1024 * 1024],
-            ),
-            (
-                "page.html",
-                "text/html",
-                Some("html"),
-                b"<p>hi</p>".to_vec(),
-            ),
-        ] {
-            connection
-                .execute(
-                    "INSERT INTO knowledge_files(project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
-                     VALUES('p',?1,?2,?3,?4,'sum',1,?5)",
-                    params![path, content.len() as i64, media_type, kind, content],
-                )
-                .unwrap();
-        }
-        connection.trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(|event| {
-                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
-                    && sql.contains("content")
-                {
-                    CONTENT_READS.fetch_add(1, Ordering::Relaxed);
-                }
-            }),
-        );
-        let transaction = connection.transaction().unwrap();
-        assert!(matches!(
-            html_preview_bytes(&transaction, "p", "data.bin"),
-            Err(AppError::NotFound {
-                resource: "preview"
-            })
-        ));
-        assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            html_preview_bytes(&transaction, "p", "page.html").unwrap(),
-            b"<p>hi</p>"
-        );
-        assert_eq!(CONTENT_READS.load(Ordering::Relaxed), 1);
-    }
-}
+mod tests;

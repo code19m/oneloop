@@ -1,6 +1,16 @@
 //! Knowledge reads for MCP clients: a folder overview and one file's text,
 //! within the response limits.
-use super::{catalog::INDEXED_FILE_BYTES, *};
+
+use super::{
+    FileMode, KnowledgeFile, KnowledgeOverview, KnowledgeService, OverviewFile, QUEUE_WAIT,
+    ReadmeText, TextFile, catalog::INDEXED_FILE_BYTES, requested_path,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    files::PreviewKind,
+    knowledge::{markdown, source},
+};
 
 const OVERVIEW_FILES_MAX: usize = 200;
 const OVERVIEW_SECTIONS_MAX: usize = 12;
@@ -238,6 +248,7 @@ fn cut(text: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::service::tests::synced_project;
 
     #[test]
     fn long_text_is_cut_at_a_nearby_line_break() {
@@ -247,5 +258,53 @@ mod tests {
         assert_eq!(text, "first line");
         let (text, truncated) = cut("ééééé", 3);
         assert_eq!((text.as_str(), truncated), ("ééé", true));
+    }
+
+    #[tokio::test]
+    async fn a_reply_holds_only_the_start_of_each_long_heading() {
+        let long = "Long words ".repeat(10_000);
+        let mut content = format!("# {long}\n\nIntro.\n\n");
+        for _ in 0..10 {
+            content.push_str(&format!("## {long}\n\nText.\n\n"));
+        }
+        let files = vec![("long.md".to_owned(), content)];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        let read = service
+            .read_text(&people[0], "p", "long.md", None)
+            .await
+            .unwrap();
+        let title = read.title.unwrap();
+        assert!(title.starts_with("Long words Long"));
+        assert!(
+            title.len() <= markdown::HEADING_BYTES_MAX,
+            "{}",
+            title.len()
+        );
+        assert!(read.headings.len() > 1);
+        for heading in &read.headings {
+            assert!(heading.len() <= markdown::HEADING_BYTES_MAX + "## ".len());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_read_waits_at_most_five_seconds_for_the_one_before_it() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nWords.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice"]).await;
+        tokio::time::pause();
+        // Another read holds the one reader.
+        let held = service.inner.readers.turn().await;
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            service.read_text(&people[0], "p", "note.md", None),
+        )
+        .await
+        .expect("a read doesn't wait for long");
+        assert!(matches!(read, Err(AppError::Unavailable(_))), "{read:?}");
+        drop(held);
+        let read = service
+            .read_text(&people[0], "p", "note.md", None)
+            .await
+            .unwrap();
+        assert_eq!(read.content.as_deref(), Some("# Note\n\nWords.\n"));
     }
 }

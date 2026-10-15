@@ -1,13 +1,35 @@
 //! Thumbnails of image attachments. Requests only queue work; one background
 //! job at a time decodes within the avatar limits and shares their decode lane.
-use super::*;
-use std::{collections::VecDeque, sync::Mutex};
+
+use std::{
+    collections::{HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use image::{
-    DynamicImage,
+    DynamicImage, ImageEncoder,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
 };
-use tokio::sync::{Notify, watch};
+use rusqlite::{OptionalExtension, params};
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{Notify, watch},
+};
+use uuid::Uuid;
+
+use super::{
+    ConditionalRead, FileService, ReadMode, attachment_by_id, decode, etag_matches,
+    log_cleanup_failure, require_file_access,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    clock::unix_now,
+    disk::DiskReservation,
+    files::{BlobState, PreviewKind, detect},
+};
 
 /// A thumbnail fits in a square of this many pixels. Smaller images keep
 /// their size.
@@ -242,10 +264,7 @@ impl FileService {
             None => self.capacity_usage().await?.total(),
         };
         *used = Some(current);
-        let threshold = self
-            .storage_limit_bytes
-            .saturating_mul(CLEANUP_HIGH_PERCENT)
-            / 100;
+        let threshold = self.high_watermark();
         if current >= threshold {
             return Ok(false);
         }
@@ -381,29 +400,6 @@ impl FileService {
                     .is_none_or(|key| !referenced.contains(&key))
             })
             .collect())
-    }
-
-    /// Rechecks a candidate from an older snapshot under the gate that
-    /// thumbnail writes hold, then removes it.
-    pub(super) async fn remove_thumbnail_if_orphaned(&self, path: &Path) -> AppResult<bool> {
-        let _maintenance_gate = self.acquire_file_maintenance_gate().await?;
-        if let Some(key) = self.store.thumbnail_key(path) {
-            let referenced_now: bool = self
-                .db
-                .run(move |connection| {
-                    Ok(connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM file_blobs WHERE storage_key=?1)",
-                        [key],
-                        |row| row.get(0),
-                    )?)
-                })
-                .await?;
-            if referenced_now {
-                return Ok(false);
-            }
-        }
-        self.store.remove_file_if_present(path).await?;
-        Ok(true)
     }
 }
 

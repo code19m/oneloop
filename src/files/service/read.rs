@@ -1,6 +1,22 @@
 //! Authenticated file reads use leases and revalidate live parent access before serving bytes.
-use super::*;
-use crate::files::sanitized_html_preview;
+
+use rusqlite::params;
+use tokio::io::AsyncReadExt;
+use uuid::Uuid;
+
+use super::{
+    ConditionalRead, FileRead, FileService, attachment_by_id, etag_matches, file_etag,
+    insert_read_lease, require_file_access,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    clock::unix_now,
+    files::{
+        BlobState, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
+        sanitized_html_preview,
+    },
+};
 
 impl FileService {
     pub async fn open_for_read(
@@ -67,18 +83,8 @@ impl FileService {
                 if etag_matches(validator.as_deref(), &etag) {
                     return Ok((stored, etag, false));
                 }
-                tx.execute(
-                    "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
-                     VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![
-                        lease_id_tx,
-                        stored.blob_id,
-                        if mode == ReadMode::Download { "download" } else { "preview" },
-                        actor.user_id,
-                        now,
-                        now + FILE_LEASE_SECONDS
-                    ],
-                )?;
+                let kind = if mode == ReadMode::Download { "download" } else { "preview" };
+                insert_read_lease(tx, &lease_id_tx, &stored.blob_id, kind, &actor.user_id, now)?;
                 Ok((stored, etag, true))
             })
             .await?;
@@ -86,18 +92,8 @@ impl FileService {
         if !modified {
             return Ok(ConditionalRead::NotModified(etag));
         }
-        let path = self
-            .store
-            .file_path(stored.storage_key.as_deref().expect("checked storage key"))?;
-        let file = match File::open(path).await {
-            Ok(file) => file,
-            Err(_) => {
-                self.release_file_lease(lease_id).await?;
-                return Err(AppError::NotFound {
-                    resource: "attachment",
-                });
-            }
-        };
+        let key = stored.storage_key.as_deref().expect("checked storage key");
+        let file = self.open_leased(key, lease_id, "attachment").await?;
         let byte_limit = match mode {
             ReadMode::Source => Some(MAX_TEXT_PREVIEW_BYTES),
             ReadMode::HtmlPreview => Some(MAX_HTML_PREVIEW_BYTES),
@@ -110,11 +106,7 @@ impl FileService {
             ReadMode::Content => stored.attachment.media_type.clone(),
         };
         Ok(ConditionalRead::Modified(Box::new(FileRead {
-            file: LeasedFile {
-                file,
-                db: self.db.clone(),
-                lease_id: Some(lease_id),
-            },
+            file,
             name: stored.attachment.name,
             size: stored.attachment.size,
             media_type,

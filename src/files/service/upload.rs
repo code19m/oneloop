@@ -1,5 +1,37 @@
 //! Upload admission and durable reservations; streaming never holds a database write transaction.
-use super::*;
+
+use std::{future::Future, path::PathBuf, time::Duration};
+
+use rusqlite::{Transaction, params};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::AsyncWriteExt,
+    time::{Instant, timeout_at},
+};
+use uuid::Uuid;
+
+use super::{
+    FileService, attachment_by_id, capacity::require_capacity, log_cleanup_failure,
+    require_file_access, require_free_slot, task_id_or_key, task_project,
+};
+use crate::{
+    AppError, AppResult, Db,
+    auth::Actor,
+    clock::unix_now,
+    collaboration::{ActivityInput, record_activity_tx},
+    db::DataLease,
+    disk::DiskReservation,
+    files::{
+        AttachmentView, FileStore, MAX_ATTACHMENT_BYTES, MAX_HTML_PREVIEW_BYTES,
+        UPLOAD_RESERVATION_SECONDS,
+        detect::{self, validate_original_name},
+    },
+    idempotency::{Resource, validate_key as validate_idempotency_key},
+};
+
+const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
 
 /// The rules an upload meets before its bytes arrive. The fields are named as
 /// MCP upload tickets name them.
@@ -7,9 +39,15 @@ fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()
     actor.require_ready()?;
     validate_original_name(name)?;
     validate_idempotency_key(key)?;
+    check_attachment_size(size, "sizeBytes")
+}
+
+/// Refuses an attachment of `size` bytes outside the limits, naming `field`.
+/// The browser checks a declared size before it reads the body.
+pub(crate) fn check_attachment_size(size: u64, field: &'static str) -> AppResult<()> {
     if size == 0 || size > MAX_ATTACHMENT_BYTES {
         return Err(AppError::validation(
-            "sizeBytes",
+            field,
             format!(
                 "must contain 1 byte to {} MiB",
                 MAX_ATTACHMENT_BYTES / (1024 * 1024)
@@ -17,6 +55,35 @@ fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()
         ));
     }
     Ok(())
+}
+
+/// The time limits on the bytes of an upload, for browser and MCP uploads
+/// alike: a minute for each read, and the life of the reservation in all.
+pub(crate) struct UploadDeadline {
+    overall: Instant,
+}
+
+impl UploadDeadline {
+    pub(crate) fn new() -> Self {
+        Self {
+            overall: Instant::now() + Duration::from_secs(UPLOAD_RESERVATION_SECONDS as u64),
+        }
+    }
+
+    pub(crate) async fn read<T>(&self, read: impl Future<Output = T>) -> AppResult<T> {
+        let now = Instant::now();
+        // timeout_at polls the read first. Reject an expired overall deadline
+        // even when the next buffered chunk is immediately ready.
+        if now >= self.overall {
+            return Err(AppError::validation(
+                "file",
+                "upload timed out; retry the upload",
+            ));
+        }
+        timeout_at(self.overall.min(now + Duration::from_secs(60)), read)
+            .await
+            .map_err(|_| AppError::validation("file", "upload timed out; retry the upload"))
+    }
 }
 
 impl FileService {
@@ -38,15 +105,8 @@ impl FileService {
         self.db
             .run(move |connection| {
                 crate::access::require_scope(connection, &actor, "attachments", None)?;
-                let (task_id, project_id): (String, String) = connection
-                    .query_row(
-                        "SELECT id,project_id FROM tasks
-                         WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",
-                        [&task],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "task" })?;
+                let task_id = task_id_or_key(connection, &task)?;
+                let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, true, false)?;
                 Ok(task_id)
             })
@@ -133,11 +193,7 @@ impl FileService {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
 
-                    if occupied_slots(tx, &task_id_owned, now)? >= MAX_ATTACHMENTS_PER_TASK {
-                        return Err(AppError::Conflict(
-                            format!("a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"),
-                        ));
-                    }
+                    require_free_slot(tx, &task_id_owned, now)?;
 
                     require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
@@ -262,6 +318,15 @@ impl AttachmentUpload {
             Self::Replayed(_) => Ok(()),
         }
     }
+
+    /// Aborts an upload whose bytes failed with `error`, and returns the
+    /// error. A retry then finds the task slot and the key free.
+    pub async fn fail(self, error: AppError) -> AppError {
+        if let Err(cleanup) = self.abort().await {
+            tracing::warn!(error=%cleanup, "upload abort failed; reconciliation will retry");
+        }
+        error
+    }
 }
 
 /// A retry of an upload that finished. Its bytes are only counted and hashed.
@@ -354,26 +419,60 @@ pub struct PendingAttachmentUpload {
 impl UploadAttempt {
     /// Frees the attempt's task slot and retry key and removes its bytes,
     /// unless its file was published. Without the data lease, for example
-    /// during a backup, the bytes stay for reconciliation to remove.
+    /// during a backup, the bytes stay for reconciliation to remove, as no
+    /// reservation owns them any more.
     async fn cleanup(&self, lease: Option<&DataLease>) -> AppResult<()> {
-        match lease {
-            Some(lease) => {
-                self.service
-                    .cleanup_upload_attempt(
-                        &self.reservation_id,
-                        &self.idempotency_id,
-                        &self.storage_key,
-                        &self.staging_path,
-                        lease,
-                    )
-                    .await
-            }
-            None => {
-                self.service
-                    .release_upload_reservation(&self.reservation_id, &self.idempotency_id)
-                    .await
-            }
+        let reservation_id = self.reservation_id.clone();
+        let idempotency_id = self.idempotency_id.clone();
+        if lease.is_none() {
+            return self
+                .service
+                .db
+                .transaction(move |tx| release_upload_rows(tx, &reservation_id, &idempotency_id))
+                .await;
         }
+        let storage_key = self.storage_key.clone();
+        let destination = self.service.store.file_path(&storage_key);
+        let published = self
+            .service
+            .db
+            .transaction(move |tx| {
+                let committed: bool = tx.query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM file_blobs b
+                       JOIN task_attachments a ON a.blob_id=b.id
+                       WHERE b.storage_key=?1 AND b.state='available'
+                     )",
+                    [&storage_key],
+                    |row| row.get(0),
+                )?;
+                let succeeded: bool = tx.query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM idempotency_keys
+                       WHERE id=?1 AND state='succeeded'
+                     )",
+                    [&idempotency_id],
+                    |row| row.get(0),
+                )?;
+                if committed || succeeded {
+                    return Ok(true);
+                }
+                release_upload_rows(tx, &reservation_id, &idempotency_id)?;
+                Ok(false)
+            })
+            .await?;
+        if published {
+            return Ok(());
+        }
+        let store = &self.service.store;
+        store.remove_file_if_present(&self.staging_path).await?;
+        let destination = destination?;
+        let destination_existed = fs::metadata(&destination).await.is_ok();
+        store.remove_file_if_present(&destination).await?;
+        if destination_existed {
+            FileStore::sync_parent(destination).await?;
+        }
+        Ok(())
     }
 
     /// Publishes the staged file as an attachment, or cleans up.
@@ -608,5 +707,40 @@ impl Drop for PendingAttachmentUpload {
                 log_cleanup_failure(attempt.cleanup(lease.as_ref()).await);
             });
         }
+    }
+}
+
+fn release_upload_rows(
+    tx: &Transaction<'_>,
+    reservation_id: &str,
+    idempotency_id: &str,
+) -> AppResult<()> {
+    tx.execute(
+        "DELETE FROM upload_reservations WHERE id=?1 AND committed_at IS NULL",
+        [reservation_id],
+    )?;
+    tx.execute(
+        "UPDATE idempotency_keys
+         SET state='failed',updated_at=unixepoch()
+         WHERE id=?1 AND state='running'
+           AND resource_type='upload_reservation' AND resource_id=?2",
+        params![idempotency_id, reservation_id],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn overall_deadline_ends_even_a_trickling_upload() {
+        let deadline = UploadDeadline {
+            overall: Instant::now() + Duration::from_millis(20),
+        };
+        assert_eq!(deadline.read(async { 7 }).await.unwrap(), 7);
+        tokio::time::advance(Duration::from_millis(25)).await;
+        assert!(deadline.read(async { 8 }).await.is_err());
+        assert!(deadline.read(std::future::pending::<()>()).await.is_err());
     }
 }

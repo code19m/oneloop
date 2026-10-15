@@ -1,6 +1,17 @@
 //! Search indexes and Markdown outlines of the synced files, built on first
 //! use and kept for the newest commits.
-use super::*;
+
+use std::sync::Arc;
+
+use rusqlite::{OptionalExtension, params};
+
+use super::{Inner, KnowledgeService, QUEUE_WAIT, authorize_read, preview_kind};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    files::PreviewKind,
+    knowledge::search::{Content, INDEX_BYTES_MAX, Index, Results},
+};
 
 /// Text files larger than this are found by name only.
 pub(super) const INDEXED_FILE_BYTES: i64 = 1024 * 1024;
@@ -19,40 +30,15 @@ pub(super) struct Catalog {
     pub(super) index: Index,
 }
 
-/// A person's search while it runs or waits.
-struct Searching<'a> {
-    inner: &'a Inner,
-    user_id: &'a str,
-}
-
-impl<'a> Searching<'a> {
-    /// A person who already has a search is told to try again at once.
-    fn start(inner: &'a Inner, user_id: &'a str) -> AppResult<Self> {
-        let mut searchers = inner.searchers.lock().expect("searchers lock");
-        if !searchers.insert(user_id.to_owned()) {
-            return Err(AppError::Unavailable(
-                "your previous knowledge search is still running; try again shortly".into(),
-            ));
-        }
-        Ok(Self { inner, user_id })
-    }
-}
-
-impl Drop for Searching<'_> {
-    // A search ends when its request does, even one that is cancelled.
-    fn drop(&mut self) {
-        self.inner
-            .searchers
-            .lock()
-            .expect("searchers lock")
-            .remove(self.user_id);
-    }
-}
-
 impl KnowledgeService {
     pub async fn search(&self, actor: &Actor, project_id: &str, query: &str) -> AppResult<Results> {
         actor.require_ready()?;
-        let _searching = Searching::start(&self.inner, &actor.user_id)?;
+        // A search ends when its request does, even one that is cancelled.
+        let _searching = self.inner.searchers.claim(&actor.user_id).map_err(|_| {
+            AppError::Unavailable(
+                "your previous knowledge search is still running; try again shortly".into(),
+            )
+        })?;
         let Some(catalog) = self.catalog(actor, project_id).await? else {
             return Ok(Results::default());
         };
@@ -227,5 +213,98 @@ impl Inner {
             .lock()
             .expect("catalog cache lock")
             .retain(|cached| cached.project_id != project_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{blocking::Taken, knowledge::service::tests::synced_project};
+
+    #[tokio::test]
+    async fn a_search_builds_its_results_off_the_worker_that_awaits_it() {
+        // This test's runtime runs on this thread, so whatever a search scans
+        // and builds on the async worker counts against this thread's heap.
+        let section = "## Shared steps\n\nShared words for every reader.\n\n";
+        let files = (0..300)
+            .map(|index| {
+                let content = format!("# Note {index}\n\n{}", section.repeat(6));
+                (format!("shared-{index}.md"), content)
+            })
+            .collect();
+        let (_root, service, people) = synced_project(files, &["admin"]).await;
+        // The first search builds the index.
+        service.search(&people[0], "p", "shared").await.unwrap();
+        let watch = crate::test_memory::Watch::start();
+        let results = service
+            .search(&people[0], "p", "shared words")
+            .await
+            .unwrap();
+        assert_eq!((results.file_count, results.hit_count), (0, 1800));
+        assert_eq!(results.documents.len(), 50);
+        assert!(watch.peak() < 16 * 1024, "{} bytes", watch.peak());
+    }
+
+    #[tokio::test]
+    async fn each_person_has_one_search_and_a_search_waits_at_most_five_seconds() {
+        let files = vec![("note.md".to_owned(), "# Note\n\nShared words.\n".to_owned())];
+        let (_root, service, people) = synced_project(files, &["alice", "bob"]).await;
+        let (alice, bob) = (&people[0], &people[1]);
+        // The first search builds the index.
+        service.search(alice, "p", "shared").await.unwrap();
+        tokio::time::pause();
+        let search = |actor: &Actor| {
+            let (service, actor) = (service.clone(), actor.clone());
+            tokio::spawn(async move { service.search(&actor, "p", "shared").await })
+        };
+        // Probes whether a person's search runs or waits; a free place is
+        // given back at once.
+        let searching = |actor: &Actor| {
+            matches!(
+                service.inner.searchers.claim(&actor.user_id),
+                Err(Taken::Mine)
+            )
+        };
+        // A long search holds the one slot, and Alice's search waits for it.
+        let held = service.inner.searches.turn().await;
+        let first = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        // Her next one is told at once to try again; Bob's waits its turn.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.search(alice, "p", "shared"),
+        )
+        .await
+        .expect("a second search of one person doesn't wait");
+        assert!(
+            matches!(second, Err(AppError::Unavailable(_))),
+            "{second:?}"
+        );
+        let other = search(bob);
+        drop(held);
+        first.await.unwrap().unwrap();
+        other.await.unwrap().unwrap();
+        // A search whose request ends lets its person search again at once.
+        let held = service.inner.searches.turn().await;
+        let cancelled = search(alice);
+        while !searching(alice) {
+            tokio::task::yield_now().await;
+        }
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        assert!(!searching(alice));
+        // A search that waits too long is told to try again.
+        let waiting = search(bob);
+        tokio::time::sleep(QUEUE_WAIT + std::time::Duration::from_secs(1)).await;
+        let waited = waiting.await.unwrap();
+        assert!(
+            matches!(waited, Err(AppError::Unavailable(_))),
+            "{waited:?}"
+        );
+        assert!(!searching(bob));
+        drop(held);
+        service.search(bob, "p", "shared").await.unwrap();
     }
 }

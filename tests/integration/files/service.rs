@@ -1986,6 +1986,17 @@ async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
 }
 
 #[tokio::test]
+async fn the_storage_report_has_exact_watermarks_for_the_largest_limit() {
+    let f = Fixture::new().await;
+    // A huge limit is a natural way to say "no limit".
+    let usage = f.service(u64::MAX).storage_usage(&f.admin).await.unwrap();
+    assert_eq!(
+        (usage.high_watermark_bytes, usage.low_watermark_bytes),
+        (14_757_395_258_967_641_292, 12_912_720_851_596_686_130)
+    );
+}
+
+#[tokio::test]
 async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let f = Fixture::new().await;
     let service = f.service(1000000);

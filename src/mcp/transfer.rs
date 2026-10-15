@@ -10,22 +10,50 @@ use axum::{
     response::Response,
     routing::{get, put},
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Row, params};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use super::{
-    bearer, cors,
-    tools::{TransferTicket, UploadTicketInput},
-};
+use super::{bearer, cors};
 use crate::{
     AppError, AppResult, AppState,
     auth::{Actor, ActorSource, refresh_actor_connection, revoke_unless_current, token},
     clock::unix_now,
     files::{ReadMode, UploadDeadline},
+    http::file_response::{self, Caching, Disposition},
 };
 
 /// How long a ticket works.
 const TICKET_SECONDS: i64 = 5 * 60;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct UploadTicketInput {
+    /// Task ID or key, such as `WEB-042`.
+    pub task_id: String,
+    /// Plain original filename of 1–255 characters; path separators are forbidden.
+    pub file_name: String,
+    /// Exact upload length in bytes, from 1 to 26214400 (25 MiB).
+    pub size_bytes: u64,
+    #[serde(default)]
+    /// Allow automatic removal of file bytes under storage pressure when true.
+    pub temporary: bool,
+    /// Unique key of 1–128 visible ASCII characters per logical write; reuse with identical input on retry.
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TransferTicket {
+    pub url: String,
+    pub method: String,
+    /// One-use credential for the transfer request only; never repeat in replies.
+    pub authorization: String,
+    pub expires_in: i64,
+    /// Exact number of bytes transferred; send as Content-Length on upload.
+    pub content_length: u64,
+}
 
 /// The routes that claim tickets. The ticket is the credential, and bodies
 /// are as large as an attachment.
@@ -40,26 +68,74 @@ pub(super) fn router(state: &AppState) -> Router<AppState> {
         ))
 }
 
+/// Which way a ticket moves bytes.
+#[derive(Clone, Copy)]
+enum Direction {
+    Upload,
+    Download,
+}
+
+impl Direction {
+    /// The name in the ticket's row and in its URL.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+        }
+    }
+
+    fn method(self) -> &'static str {
+        match self {
+            Self::Upload => "PUT",
+            Self::Download => "GET",
+        }
+    }
+}
+
 /// What a ticket lets its holder do.
 enum Ticket {
-    Upload {
-        task_id: String,
-        file_name: String,
-        size: u64,
-        temporary: bool,
-        idempotency_key: String,
-    },
-    Download {
-        attachment_id: String,
-    },
+    Upload(UploadTicket),
+    Download(DownloadTicket),
 }
 
 impl Ticket {
-    fn direction(&self) -> &'static str {
+    fn direction(&self) -> Direction {
         match self {
-            Self::Upload { .. } => "upload",
-            Self::Download { .. } => "download",
+            Self::Upload(_) => Direction::Upload,
+            Self::Download(_) => Direction::Download,
         }
+    }
+}
+
+struct UploadTicket {
+    task_id: String,
+    file_name: String,
+    size: u64,
+    temporary: bool,
+    idempotency_key: String,
+}
+
+impl UploadTicket {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            task_id: row.get("task_id")?,
+            file_name: row.get("file_name")?,
+            size: row.get::<_, i64>("size_bytes")?.max(0) as u64,
+            temporary: row.get("is_ephemeral")?,
+            idempotency_key: row.get("idempotency_key")?,
+        })
+    }
+}
+
+struct DownloadTicket {
+    attachment_id: String,
+}
+
+impl DownloadTicket {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            attachment_id: row.get("attachment_id")?,
+        })
     }
 }
 
@@ -80,13 +156,13 @@ pub(super) async fn issue_upload(
             &input.idempotency_key,
         )
         .await?;
-    let ticket = Ticket::Upload {
+    let ticket = Ticket::Upload(UploadTicket {
         task_id,
         file_name: input.file_name,
         size: input.size_bytes,
         temporary: input.temporary,
         idempotency_key: input.idempotency_key,
-    };
+    });
     issue(state, actor, ticket, input.size_bytes).await
 }
 
@@ -97,9 +173,9 @@ pub(super) async fn issue_download(
     attachment_id: &str,
 ) -> AppResult<TransferTicket> {
     let attachment = state.files.attachment(actor, attachment_id).await?;
-    let ticket = Ticket::Download {
+    let ticket = Ticket::Download(DownloadTicket {
         attachment_id: attachment.id,
-    };
+    });
     issue(state, actor, ticket, attachment.size).await
 }
 
@@ -122,22 +198,16 @@ async fn issue(
                 [now],
             )?;
             let (task, attachment, name, size, temporary, key) = match ticket {
-                Ticket::Upload {
-                    task_id,
-                    file_name,
-                    size,
-                    temporary,
-                    idempotency_key,
-                } => (
-                    Some(task_id),
+                Ticket::Upload(upload) => (
+                    Some(upload.task_id),
                     None,
-                    Some(file_name),
-                    Some(size as i64),
-                    temporary,
-                    Some(idempotency_key),
+                    Some(upload.file_name),
+                    Some(upload.size as i64),
+                    upload.temporary,
+                    Some(upload.idempotency_key),
                 ),
-                Ticket::Download { attachment_id } => {
-                    (None, Some(attachment_id), None, None, false, None)
+                Ticket::Download(download) => {
+                    (None, Some(download.attachment_id), None, None, false, None)
                 }
             };
             tx.execute(
@@ -148,7 +218,7 @@ async fn issue(
                 params![
                     hash,
                     grant,
-                    direction,
+                    direction.as_str(),
                     task,
                     attachment,
                     name,
@@ -163,21 +233,27 @@ async fn issue(
         })
         .await?;
     Ok(TransferTicket {
-        url: format!("{}/mcp/files/{direction}", state.config.base_url()),
-        method: if direction == "upload" { "PUT" } else { "GET" }.into(),
+        url: format!(
+            "{}/mcp/files/{}",
+            state.config.base_url(),
+            direction.as_str()
+        ),
+        method: direction.method().into(),
         authorization: format!("Bearer {secret}"),
         expires_in: TICKET_SECONDS,
         content_length,
     })
 }
 
-/// Uses up the ticket that the request presents, for the grant's person as
-/// the database knows them now. A grant that no longer works is revoked.
-async fn claim(
+/// Uses up the `direction` ticket that the request presents, for the grant's
+/// person as the database knows them now, and reads it with `ticket`. A
+/// grant that no longer works is revoked.
+async fn claim<T: Send + 'static>(
     state: &AppState,
     headers: &HeaderMap,
-    direction: &'static str,
-) -> AppResult<(Actor, Ticket)> {
+    direction: Direction,
+    ticket: fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> AppResult<(Actor, T)> {
     let hash = token::hash(bearer(headers).ok_or(AppError::Unauthorized)?);
     let now = unix_now()?;
     let claimed = state
@@ -190,23 +266,8 @@ async fn claim(
                      FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id
                      WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL
                        AND f.expires_at>?3",
-                    params![hash, direction, now],
-                    |row| {
-                        let ticket = if direction == "upload" {
-                            Ticket::Upload {
-                                task_id: row.get(2)?,
-                                file_name: row.get(4)?,
-                                size: row.get::<_, i64>(5)?.max(0) as u64,
-                                temporary: row.get(6)?,
-                                idempotency_key: row.get(7)?,
-                            }
-                        } else {
-                            Ticket::Download {
-                                attachment_id: row.get(3)?,
-                            }
-                        };
-                        Ok((row.get::<_, String>(0)?, row.get(1)?, ticket))
-                    },
+                    params![hash, direction.as_str(), now],
+                    |row| Ok((row.get::<_, String>(0)?, row.get(1)?, ticket(row)?)),
                 )
                 .optional()?
             else {
@@ -246,22 +307,13 @@ async fn upload(
     body: Body,
 ) -> AppResult<axum::Json<ValueResponse>> {
     let deadline = UploadDeadline::new();
-    let (actor, ticket) = claim(&state, &headers, "upload").await?;
-    let Ticket::Upload {
-        task_id,
-        file_name,
-        size,
-        temporary,
-        idempotency_key,
-    } = ticket
-    else {
-        unreachable!("an upload claim returns an upload ticket")
-    };
+    let (actor, ticket) =
+        claim(&state, &headers, Direction::Upload, UploadTicket::from_row).await?;
     if let Some(length) = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
-        && length != size
+        && length != ticket.size
     {
         return Err(AppError::validation(
             "content-length",
@@ -272,16 +324,23 @@ async fn upload(
         .files
         .begin_attachment_upload(
             &actor,
-            &task_id,
-            &file_name,
-            size,
-            temporary,
-            &idempotency_key,
+            &ticket.task_id,
+            &ticket.file_name,
+            ticket.size,
+            ticket.temporary,
+            &ticket.idempotency_key,
         )
         .await?;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = deadline.read(stream.next()).await? {
-        upload.write_chunk(&chunk.map_err(body_error)?).await?;
+    let received = async {
+        while let Some(chunk) = deadline.read(stream.next()).await? {
+            upload.write_chunk(&chunk.map_err(body_error)?).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = received {
+        return Err(upload.fail(error).await);
     }
     let (attachment, _) = upload.finish().await?;
     Ok(axum::Json(ValueResponse {
@@ -296,22 +355,23 @@ fn body_error(_: axum::Error) -> AppError {
 }
 
 async fn download(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
-    let (actor, ticket) = claim(&state, &headers, "download").await?;
-    let Ticket::Download { attachment_id } = ticket else {
-        unreachable!("a download claim returns a download ticket")
-    };
+    let (actor, ticket) = claim(
+        &state,
+        &headers,
+        Direction::Download,
+        DownloadTicket::from_row,
+    )
+    .await?;
     let read = state
         .files
-        .open_for_read(&actor, &attachment_id, ReadMode::Download)
+        .open_for_read(&actor, &ticket.attachment_id, ReadMode::Download)
         .await?;
     // A ticket works once, so the response is always the whole file, and it
     // offers no ranges.
-    let mut response = crate::http::files::file_response(read, &HeaderMap::new(), true).await?;
-    response.headers_mut().remove(header::ACCEPT_RANGES);
-    Ok(response)
+    file_response::leased(read, None, Disposition::Attachment, Caching::NoStore).await
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct ValueResponse {
     value: serde_json::Value,
 }

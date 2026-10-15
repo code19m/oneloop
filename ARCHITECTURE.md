@@ -72,8 +72,10 @@ small hints over SSE, and clients then fetch what changed.
   live-update streams.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
-  recovery, with one submodule per job. `FileStore` owns the bytes on disk,
-  and `preview` cleans HTML before an attachment or a Knowledge file shows it.
+  recovery, with one submodule per job. `FileStore` owns the bytes on disk.
+  Attachments and Knowledge files share `detect`, which decides a file's type
+  and preview from its bytes, and `preview`, which cleans HTML before it is
+  shown.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
   project, read-only. Its commands manage the source, and each connect or
   change starts a new source generation; results from an older one are
@@ -88,7 +90,9 @@ small hints over SSE, and clients then fetch what changed.
   endpoint for domain, comment, Inbox and Knowledge writes. `auth` (accounts
   and sessions) and `files` (uploads, file changes, previews and storage) have
   their own REST routes for reads and writes. `domain`, `collaboration` and
-  `knowledge` serve reads. `security` checks host and origin, resolves client
+  `knowledge` serve reads. `file_response` sends file bytes for attachments,
+  avatars, Knowledge and MCP downloads with one set of safe headers, ranges
+  and cache rules. `security` checks host and origin, resolves client
   addresses through trusted proxies and sets headers. `assets` serves the
   embedded client under `/v/<hash>/` URLs; the hash names the embedded files,
   so browsers can keep them for good. `server` bounds connections and shutdown.
@@ -112,8 +116,8 @@ small hints over SSE, and clients then fetch what changed.
   planner statistics, empties deleted comments and clears old archived Inbox
   items, each job on its own timer.
 - `blocking.rs`: lanes that bound blocking work, such as file scans, image
-  decodes and Knowledge searches. `disk.rs`: admission of new bytes against
-  the free-space floor.
+  decodes and Knowledge searches, and one place per person in a lane's
+  queue. `disk.rs`: admission of new bytes against the free-space floor.
 - `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
   timezone, with rules from the server's zoneinfo when it is at least as new as
   the IANA database built into oneloop.

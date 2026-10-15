@@ -4,62 +4,46 @@
 
 mod attachments;
 mod avatar;
-pub use avatar::AvatarSlot;
+mod capacity;
 mod decode;
-mod detect;
-pub(crate) use detect::classify_bytes;
-use detect::{preview_kind_from_metadata, validate_original_name};
+mod deletion;
 mod maintenance;
-use maintenance::{CLEANUP_HIGH_PERCENT, require_capacity};
 mod read;
-pub use read::ReadMode;
 mod thumbnail;
-pub(crate) use thumbnail::ThumbnailRead;
 mod upload;
-pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
 
-use super::BlobState;
-use crate::disk::{DiskAdmission, DiskReservation};
-use crate::{
-    clock::unix_now,
-    idempotency::{Envelope, Resource, validate_key as validate_idempotency_key},
-};
+pub use avatar::AvatarSlot;
+pub use read::ReadMode;
+pub(crate) use thumbnail::ThumbnailRead;
+pub use upload::{AttachmentUpload, PendingAttachmentUpload, ReplayedUpload};
+pub(crate) use upload::{UploadDeadline, check_attachment_size};
+
 use std::{
-    collections::{HashMap, HashSet},
-    io::Cursor,
-    path::{Path, PathBuf},
     pin::Pin,
     task::{Context, Poll},
 };
 
-use image::{ImageEncoder, ImageFormat, ImageReader, Limits};
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tokio::{
-    fs::{self, File, OpenOptions},
-    io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWriteExt, ReadBuf},
-};
-use uuid::Uuid;
-
-use crate::{
-    AppError, AppResult, Db,
-    auth::{Actor, ActorSource, refresh_actor_connection},
-    blocking::Lane,
-    collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
-    db::{DataLayout, DataLease},
-    domain::UNDO_WINDOW_SECONDS,
+    fs::File,
+    io::{AsyncRead, AsyncSeek, ReadBuf},
 };
 
 use super::{
-    ACCESS_GRACE_SECONDS, AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore,
-    AttachmentView, FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_TASK,
-    MAX_AVATAR_BYTES, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
-    StorageCleanupRun, StorageProjectUsage, StorageUsage, StoredFile, UPLOAD_RESERVATION_SECONDS,
+    AttachmentView, BlobState, FILE_LEASE_SECONDS, FileStore, MAX_ATTACHMENTS_PER_TASK,
+    MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind, StoredFile,
+    detect::preview_kind_from_metadata,
 };
-
-const PREFIX_INSPECTION_BYTES: usize = MAX_HTML_PREVIEW_BYTES as usize;
+use crate::{
+    AppError, AppResult, Db,
+    auth::Actor,
+    blocking::{Lane, PerPerson},
+    collaboration::{ActivityInput, record_activity_tx, record_system_activity_tx},
+    db::DataLayout,
+    disk::DiskAdmission,
+};
 
 #[derive(Clone)]
 pub struct FileService {
@@ -69,7 +53,7 @@ pub struct FileService {
     disk: DiskAdmission,
     thumbnails: std::sync::Arc<thumbnail::ThumbnailQueue>,
     /// People with an avatar upload under way, one upload each.
-    avatar_uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    avatar_uploaders: PerPerson,
     scans: Lane,
     /// One image decode at a time, for avatar uploads and thumbnails together,
     /// so their memory never adds up.
@@ -122,10 +106,33 @@ pub(crate) fn etag_matches(request: Option<&str>, etag: &str) -> bool {
     })
 }
 
+/// An open file whose read lease keeps it from deletion until it is dropped.
 pub struct LeasedFile {
     file: File,
     db: Db,
     lease_id: Option<String>,
+}
+
+/// Leases the blob for a read of `kind` by `owner`.
+fn insert_read_lease(
+    tx: &Transaction<'_>,
+    id: &str,
+    blob_id: &str,
+    kind: &str,
+    owner: &str,
+    now: i64,
+) -> AppResult<()> {
+    tx.execute(
+        "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        params![id, blob_id, kind, owner, now, now + FILE_LEASE_SECONDS],
+    )?;
+    Ok(())
+}
+
+fn delete_lease(connection: &rusqlite::Connection, id: &str) -> AppResult<()> {
+    connection.execute("DELETE FROM file_leases WHERE id=?1", [id])?;
+    Ok(())
 }
 
 impl AsyncRead for LeasedFile {
@@ -159,13 +166,7 @@ impl Drop for LeasedFile {
         let db = self.db.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                if let Err(error) = db
-                    .transaction(move |connection| {
-                        connection.execute("DELETE FROM file_leases WHERE id=?1", [lease_id])?;
-                        Ok(())
-                    })
-                    .await
-                {
+                if let Err(error) = db.transaction(move |tx| delete_lease(tx, &lease_id)).await {
                     tracing::warn!(%error, "file lease release failed; expiry cleanup will retry");
                 }
             });
@@ -183,10 +184,34 @@ impl FileService {
             storage_limit_bytes,
             disk,
             thumbnails: Default::default(),
-            avatar_uploaders: Default::default(),
+            avatar_uploaders: PerPerson::new(avatar::AVATAR_UPLOADS),
             scans: Lane::new("file scanner", 2),
             decodes: Lane::new("image decoder", 1),
             inspections: Lane::new("text inspection", 2),
+        }
+    }
+
+    /// Opens the stored file with `storage_key` under the lease `lease_id`.
+    /// When the file is gone, the lease ends and the `missing` resource is not
+    /// found.
+    async fn open_leased(
+        &self,
+        storage_key: &str,
+        lease_id: String,
+        missing: &'static str,
+    ) -> AppResult<LeasedFile> {
+        match File::open(self.store.file_path(storage_key)?).await {
+            Ok(file) => Ok(LeasedFile {
+                file,
+                db: self.db.clone(),
+                lease_id: Some(lease_id),
+            }),
+            Err(_) => {
+                self.db
+                    .transaction(move |tx| delete_lease(tx, &lease_id))
+                    .await?;
+                Err(AppError::NotFound { resource: missing })
+            }
         }
     }
 
@@ -204,6 +229,12 @@ impl FileService {
             .await
             .map_err(|error| AppError::internal(format!("file lock worker failed: {error}")))?
     }
+}
+
+/// The ID of the task that `task` names by its ID or its key, such as
+/// `WEB-042`.
+fn task_id_or_key(connection: &rusqlite::Connection, task: &str) -> AppResult<String> {
+    crate::domain::resolve_task_id(connection, task)?.ok_or(AppError::NotFound { resource: "task" })
 }
 
 fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<String> {
@@ -244,10 +275,10 @@ fn require_file_access(
     })
 }
 
-/// Attachments that count against a task's limit: available files, files
-/// being removed, and uploads under way.
-fn occupied_slots(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<i64> {
-    Ok(tx.query_row(
+/// Refuses another attachment of a task that has no free slot. Available
+/// files, files being removed and uploads under way take a slot.
+fn require_free_slot(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<()> {
+    let occupied: i64 = tx.query_row(
         "SELECT
            (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
             WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
@@ -255,7 +286,21 @@ fn occupied_slots(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<i6
             WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
         params![task_id, now],
         |row| row.get(0),
-    )?)
+    )?;
+    if occupied >= MAX_ATTACHMENTS_PER_TASK {
+        return Err(AppError::Conflict(format!(
+            "a task can have at most {MAX_ATTACHMENTS_PER_TASK} available attachments"
+        )));
+    }
+    Ok(())
+}
+
+/// An attachment change names the revision it was based on.
+fn require_revision(expected: i64) -> AppResult<()> {
+    if expected < 1 {
+        return Err(AppError::validation("expectedRevision", "must be positive"));
+    }
+    Ok(())
 }
 
 /// The columns `stored_file_row` reads, in its order.
@@ -357,9 +402,6 @@ fn record_attachment_deletion(
     };
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;
 
 // Cleanup must never hide the original write/commit failure. Recovery retries
 // durable pending state if the volume is too full even for the cleanup write.

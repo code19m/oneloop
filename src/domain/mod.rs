@@ -14,3 +14,5 @@ pub use models::*;
 pub use reads::{BoardQuery, BoardViewQuery, BootstrapQuery, PageQuery, PoolQuery};
 pub use service::DomainService;
 pub use types::*;
+
+pub(crate) use reads::resolve_task_id;
