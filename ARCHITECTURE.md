@@ -53,10 +53,9 @@ small hints over SSE, and clients then fetch what changed.
 - `config.rs`: `Config` (everything `serve` needs) and `DataConfig` (only the
   data directory, for maintenance commands), read from `ONELOOP_*` variables.
 - `db/`: `Db` runs SQLite on a fixed pool of blocking workers behind a single
-  writer permit, and keeps the disk reservations that uploads and Knowledge
-  syncs share. `DataLayout` knows the paths and lock files of a data
-  directory. `migration` applies migrations; `backup` creates and restores
-  backups.
+  writer permit, with read snapshots. `DataLayout` knows the paths and lock
+  files of a data directory. `migration` applies migrations; `backup` creates
+  and restores backups.
 - `access.rs`: the one project access policy. It combines account status,
   admin role, membership, the **Board** and **Roadmap** permissions, and an MCP
   grant's projects and scopes (`McpScope`).
@@ -65,37 +64,44 @@ small hints over SSE, and clients then fetch what changed.
   of any request, from either a browser session or an MCP grant.
 - `domain/`: projects, members, tracks, epics, milestones, tasks, blocking and
   the Pool. `DomainService::execute` is the single write entry point; it takes
-  a `Command` whose `DomainOperation` names the change. `reads` builds
-  Board, Roadmap, task and Pool views with cursor paging.
+  a `Command` whose `DomainOperation` names the change, and `service/` groups
+  the handlers by kind of record. `reads` builds Board, Roadmap, task and Pool
+  views with cursor paging.
 - `collaboration/`: comments, mentions, the consolidated activity feed,
   notifications and the Inbox. `CollaborationRuntime` runs the outbox worker
   and the live-update streams.
-- `files/`: `FileService` handles attachments and avatars: upload admission,
-  capacity and cleanup, previews and thumbnails, read leases and crash
-  recovery, with one submodule per job. `FileStore` owns the bytes on disk.
+- `files/`: `FileService` handles attachments and avatars, with one module
+  per job in `service/`: `upload`, `attachments`, `read` (read leases),
+  `avatar`, `thumbnail` and `decode`, `capacity` (the storage limit and
+  cleanup of temporary files), `deletion` (deletion jobs) and `maintenance`
+  (crash recovery and reconciliation). `FileStore` owns the bytes on disk.
   Attachments and Knowledge files share `detect`, which decides a file's type
   and preview from its bytes, and `preview`, which cleans HTML before it is
   shown.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
-  project, read-only. Its commands manage the source, and each connect or
-  change starts a new source generation; results from an older one are
-  dropped. A background worker in `sync` checks each branch every minute and
-  stores the folder's files in SQLite; a change or disconnect stops the
-  project's running sync. `git` runs the `git` program with a private home and
-  configuration, only over HTTPS and SSH, without prompts or hooks, within time
-  and size limits, and in its own process group, so a stop also ends Git's
-  helpers. `search` and `markdown` index Markdown sections for search and MCP,
-  and `secrets` encrypts access tokens and deploy keys.
+  project, read-only. Its commands (`service/commands`) manage the source, and
+  each connect or change starts a new source generation; results from an older
+  one are dropped. A background worker in `sync` checks each branch every
+  minute and stores the folder's files in SQLite; a change or disconnect stops
+  the project's running sync. `git` runs the `git` program with a private home
+  and configuration, only over HTTPS and SSH, without prompts or hooks, within
+  time and size limits, and in its own process group, so a stop also ends
+  Git's helpers. `source` checks repository URLs, branches and folders before
+  any of them reach `git`. `search` indexes file names, paths and text,
+  `markdown` reads headings and sections, and `service/catalog` keeps both for
+  the newest commits; `service/mcp` answers MCP reads. `content` streams a
+  stored file in chunks, and `secrets` encrypts access tokens and deploy keys.
 - `http/`: thin axum adapters. `commands` is `POST /api/commands`, the one
   endpoint for domain, comment, Inbox and Knowledge writes. `auth` (accounts
   and sessions) and `files` (uploads, file changes, previews and storage) have
   their own REST routes for reads and writes. `domain`, `collaboration` and
   `knowledge` serve reads. `file_response` sends file bytes for attachments,
   avatars, Knowledge and MCP downloads with one set of safe headers, ranges
-  and cache rules. `security` checks host and origin, resolves client
-  addresses through trusted proxies and sets headers. `assets` serves the
-  embedded client under `/v/<hash>/` URLs; the hash names the embedded files,
-  so browsers can keep them for good. `server` bounds connections and shutdown.
+  and cache rules. `input` turns browser JSON and queries into typed input.
+  `security` checks host and origin, resolves client addresses through trusted
+  proxies and sets headers. `assets` serves the embedded client under
+  `/v/<hash>/` URLs; the hash names the embedded files, so browsers can keep
+  them for good. `server` bounds connections and shutdown.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, `client_metadata` fetches client
   ID metadata documents from public addresses only, `cors` answers clients
@@ -109,10 +115,10 @@ small hints over SSE, and clients then fetch what changed.
   `Envelope` runs a write once: every command, and each reorder, deletion and
   restore of an attachment. Uploads use the ledger directly, because their
   bytes arrive between two transactions.
-- `input.rs`: reads command payloads into typed input, with errors that name
-  the field. `text.rs`: validation for display text such as titles and
-  comments. `paging.rs`: page sizes and the opaque cursors that continue a
-  page.
+- `input.rs`: reads command payloads into typed input for every transport,
+  with errors that name the field. `text.rs`: validation for display text such
+  as titles and comments. `paging.rs`: page sizes and the opaque cursors that
+  continue a page.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`: background maintenance and the supervision of every worker.
@@ -120,9 +126,10 @@ small hints over SSE, and clients then fetch what changed.
   throttles and expired transient rows (with `retention.rs`), refreshes
   planner statistics, empties deleted comments and clears old archived Inbox
   items, each job on its own timer.
-- `blocking.rs`: lanes that bound blocking work, such as file scans, image
-  decodes and Knowledge searches, and one place per person in a lane's
-  queue. `disk.rs`: admission of new bytes against the free-space floor.
+- `blocking.rs`: lanes that bound blocking work, such as password hashing,
+  file scans, image decodes and Knowledge searches, and one place per person
+  in a lane's queue. `disk.rs`: the disk budget that uploads and Knowledge
+  syncs share, which admits new bytes only above the free-space floor.
 - `error.rs`: `AppError`. `clock.rs`: `unix_now`. `timezone.rs`: the instance
   timezone, with rules from the server's zoneinfo when it is at least as new as
   the IANA database built into oneloop.
@@ -130,10 +137,16 @@ small hints over SSE, and clients then fetch what changed.
 ### `frontend/`
 
 The web client, served file-for-file from the binary. The entry point is
-`index.html`, then `src/app/main.js` and `boot.js`. New code goes in `src/` as
-ES modules with JSDoc types, checked by TypeScript's `checkJs`. `views/` holds
-the older renderer. [frontend/README.md](frontend/README.md) explains how it
-loads and where code goes.
+`index.html`, then `src/app/main.js` and `boot.js`. `src/` holds ES modules
+with JSDoc types, checked by TypeScript's `checkJs`: start-up and the view
+bridge in `app/`, sign-in in `auth/`, the API client and the client's copy of
+the data in `data/`, and whole features in `features/`, such as Knowledge,
+comments and live updates, file previews and connection recovery. `views/` is
+the older, untyped renderer: `app.js` is the shell with routing and the render
+pipeline, and `views/app/` has one module per page or job, such as `board.js`
+and `task.js`. A new feature goes in `src/features/`.
+[frontend/README.md](frontend/README.md) explains how it loads and where code
+goes.
 
 ### `migrations/`
 
@@ -142,11 +155,13 @@ Numbered SQL files, applied in order by `oneloop db migrate` and listed in
 the first public release. `schema_migrations` records each applied version with
 a checksum, and a changed migration is refused.
 
-To change the schema, add the next numbered file and its `MIGRATIONS` entry.
-A migration may also run a Rust hook in the same transaction; give it a
-`hook_revision`, which the checksum covers. A migration that rebuilds a table
-other tables reference sets `foreign_keys_off`, so the runner turns foreign
-keys off outside the transaction and checks them all before it commits.
+To change the schema, add the next numbered file and its `MIGRATIONS` entry,
+and raise `CURRENT_SCHEMA_VERSION`; a docs test then names the sample outputs
+in `docs/src/` that still show the old number. A migration may also run a Rust
+hook in the same transaction; give it a `hook_revision`, which the checksum
+covers. A migration that rebuilds a table other tables reference sets
+`foreign_keys_off`, so the runner turns foreign keys off outside the
+transaction and checks them all before it commits.
 
 `src/db/legacy/` is a frozen copy of the chain that databases created before
 0.1.0 went through. `db migrate` recognizes those databases by their exact
@@ -210,9 +225,11 @@ and an update here.
   stored value is renamed, readers map the old value; history is not rewritten.
 - **Writes are safe to retry and never overwrite blindly.** Commands and
   attachment changes carry an idempotency key, and edits carry the revision
-  they were based on. Two kinds of writes take no key: an attachment's
-  **Temporary** setting, which a repeat can't change further, and account and
-  session changes, which only the browser makes.
+  they were based on. Three kinds of writes take no key: an attachment's
+  **Temporary** setting, which a repeat can't change further; an admin's
+  **Clean up now**, which runs the same cleanup as file maintenance, so a
+  repeat removes only what is still eligible; and account and session changes,
+  which only the browser makes.
 - **Secrets are stored only as hashes.** Passwords use Argon2id; session
   tokens, app tokens and transfer tickets are stored as SHA-256 hashes. No
   secret appears in logs or audit payloads. The one exception is a credential

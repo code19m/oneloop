@@ -6,47 +6,89 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- A Knowledge folder now stops syncing, and shows that it is too large, when
+  it has more than 5,000 subfolders, or more than 5,000 files counting links
+  and other files that the sync leaves out. A knowledge base that synced in
+  0.1.0-rc.4 can reach these limits: choose a smaller folder, or remove files
+  or subfolders from it. Before, such a folder could fill the disk with
+  folders or left-out files, and many deep subfolders could make search use
+  gigabytes of memory.
+- In MCP, the command tools now answer every edit and deletion without
+  `expectedRevision` with `precondition_failed`, as the documentation says.
+  Before, `discussion.comment.edit` failed with `validation_failed`, and
+  `execute_destructive_command` refused the call as invalid arguments.
+  `discussion.comment.create` and the `inbox.*` operations now refuse an
+  `expectedRevision` with `validation_failed`, as creating a task does.
+  Before, they ignored it.
+- In MCP, a `read_pool` `nextCursor` from an earlier version now fails with
+  `validation_failed`, because Pool cursors have a new form. Start again from
+  the first page.
+
 ### Changed
 
 - `ONELOOP_TRUSTED_PROXIES` now ignores empty items, such as a trailing
   comma, like the other lists. Before, oneloop refused to start.
-- A Knowledge change or disconnect without `expectedRevision` now gets 412
-  `precondition_failed`, like other edits, instead of 400. A revision below 1
-  gets 400.
 - An MCP download now names the file in its `Content-Disposition` header, as
   a browser download does.
-- Editing, deleting or restoring a comment without `expectedRevision` now
-  fails with `precondition_failed` (412), as changes to tasks and other
-  records do. It failed with `validation_failed` (400).
 - In MCP, `list_attachments` and `reorder_attachment` now accept a task key,
-  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does. The
-  browser API's `GET /api/tasks/{id}/attachments` and
-  `POST /api/tasks/{id}/attachments/reorder` accept one too.
-- In MCP, a `read_pool` `nextCursor` from an earlier version now fails with
-  `validation_failed`, because Pool cursors have a new form. Start again from
-  the first page.
-- In MCP, `discussion.comment.create` and the `inbox.*` operations now refuse
-  an `expectedRevision` with `validation_failed`, as creating a task does.
-  Before, they accepted it and ignored it.
+  such as `WEB-042`, in `taskId`, as `create_attachment_upload` does.
 
 ### Fixed
 
+- `oneloop serve`, `oneloop backup` and the other commands no longer fail
+  when nothing reads their standard error and they have a warning or notice
+  to print, such as a copy left by an interrupted backup. The `serve` warning
+  about an empty `ONELOOP_TRUSTED_PROXIES` is now a log line like the others.
 - Times such as "5m ago" on comments, activity and the Inbox now count from
   the server's clock. Before, a computer clock that ran fast or slow made a
   new comment read "5m ago", or stay "just now" too long.
-- `oneloop serve` no longer crashes when nothing reads its standard error and
-  it warns that `ONELOOP_TRUSTED_PROXIES` is empty. The warning is now a log
-  line like the others.
-- `oneloop backup` and the other commands that open the data directory no
-  longer fail when nothing reads their standard error and they have a notice
-  to print, such as a copy left by an interrupted backup.
-- A Knowledge folder with more than 5,000 subfolders no longer syncs, and
-  shows that it is too large. Before, a folder with many deep subfolders
-  could make search use gigabytes of memory, and a sync could fill the disk
-  with folders.
-- Links and other files that a Knowledge sync leaves out now count toward
-  the folder's 5,000 files. Before, a folder of many such files could sync
-  and fill the disk with them.
+- The Inbox's counts, activity feeds, a block's history and, in MCP,
+  `search_tasks` without a status now show the data of one moment. Before, a
+  change that landed while they were read could show twice, not at all, or
+  with counts that didn't match the items.
+- When a person opens more than 16 tabs, the oldest one now always says that
+  its live updates are paused, with **Resume**. Before, it could look
+  connected and show no new changes until you used it, or reconnect at once
+  and close another tab.
+- One person's slow avatar uploads can no longer hold up avatar changes for
+  everyone. Each person now has one avatar upload at a time; another one
+  gets "try again" at once. When the server is busy, a refused avatar upload
+  now gets that answer instead of a network error.
+- After you change a task's status on its page, the status in the page header,
+  the Status icon and **Block task** now change at once. Before, they changed
+  only after you left the task's fields. **Overdue** also follows a changed
+  deadline at once.
+- Choosing **Done** in the Status of a blocked task now asks you to unblock and
+  complete it, as the Board does. Before, the change failed with an error.
+- Saving a changed block reason now says "Block reason updated", and unblocking
+  and completing a task says "Task unblocked and completed". Before, they said
+  "Task blocked" and "Task unblocked".
+- A block reason with several spaces in a row before a mention keeps the
+  mention. Before, the mention was dropped and the person was not notified.
+- oneloop asks before you leave a task whose new deadline could not be saved
+  because the connection was lost, also after you left the deadline field. A
+  link to the page you are on no longer asks to discard your changes.
+- When you press **Back** or **Forward** with text you haven't sent and then
+  **Cancel**, the browser history stays as it was. Before, the next **Back**
+  skipped a page.
+- When someone else renamed a milestone while you edited its name, the
+  question about the change now shows their name. Before, it showed no saved
+  value.
+- The **Temporary** switch in a file preview works. Before, it did nothing.
+- After you add a Pool item with a description, the description field closes,
+  so the next item starts with its title. Before, it stayed open and empty.
+- Dropping a track back in its own place on the Roadmap no longer shows an
+  error.
+- On a 320-pixel-wide screen, the Roadmap header shows the whole **Epic**
+  button. Before, part of it was cut off. Screen readers still read the
+  Roadmap heading there.
+- An epic's activity now comes in pages of up to 100 items, like all other
+  activity, as the limits in the documentation say. It stopped at 50.
+- With a very large `ONELOOP_STORAGE_LIMIT`, above about 200 PiB, the storage
+  page for administrators shows the right cleanup points of 80% and 70%.
+  Before, it showed wrong values.
 - When a Knowledge folder is too large to sync, oneloop now says to remove
   files or subfolders. Before, it said to remove large files, which doesn't
   help a folder with too many files or subfolders.
@@ -54,65 +96,13 @@ All notable changes to oneloop are recorded here. The format follows
   because their text doesn't fit in the search index. Before, a word in such
   a file gave "No results" without a reason. In MCP, `search_knowledge` and
   `read_knowledge_overview` replies then include `"partial": true`.
-- One person's slow avatar uploads can no longer hold up avatar changes for
-  everyone. Each person now has one avatar upload at a time; another one
-  gets "try again" at once. When the server is busy, a refused avatar upload
-  now gets that answer instead of a network error.
-- The Inbox's unread and filter counts now always match the items they come
-  with, and an activity feed or a block's history no longer mixes data from
-  before and after a change that lands while it is read.
-- After you change a task's status on its page, the status in the page header,
-  the Status icon and **Block task** now change at once. Before, they changed
-  only after you left the task's fields. **Overdue** also follows a changed
-  deadline at once.
-- Dropping a track back in its own place on the Roadmap no longer shows an
-  error.
-- The **Temporary** switch in a file preview works. Before, it did nothing.
-- A tab whose live updates a newer tab took over now says that live updates
-  are paused, with **Resume**. Before, it looked connected but showed no new
-  changes until you used it.
-- Saving a changed block reason now says "Block reason updated", and unblocking
-  and completing a task says "Task unblocked and completed". Before, they said
-  "Task blocked" and "Task unblocked".
 - Markdown in **Knowledge** shows at the reader's own width and spacing.
   Before, it used the wider layout of file previews.
-- oneloop asks before you leave a task whose new deadline could not be saved
-  because the connection was lost, also after you left the deadline field. A
-  link to the page you are on no longer asks to discard your changes.
-- Choosing **Done** in the Status of a blocked task now asks you to unblock and
-  complete it, as the Board does. Before, the change failed with an error.
-- A block reason with several spaces in a row before a mention keeps the
-  mention. Before, the mention was dropped and the person was not notified.
-- An epic's activity now comes in pages of up to 100 items, like all other
-  activity, as the limits in the documentation say. It stopped at 50.
-- The page where you connect an AI app lists projects in the same order as
-  the app, without regard to upper and lower case.
-- In MCP, `execute_destructive_command` without `expectedRevision` now fails
-  with `precondition_failed`, as edits do and as the documentation says.
-  Before, the call was refused as invalid arguments.
-- In MCP, `search_tasks` without a status now reads all four columns at one
-  moment. Before, a task that moved while it was read could show up twice or
-  not at all.
-- When a person opens more than 16 tabs, the oldest tab is now always told
-  that it was closed, even when it was behind on updates. Before, such a tab
-  could reconnect at once and close another tab.
-- When someone else renamed a milestone while you edited its name, the
-  question about the change now shows their name. Before, it showed no saved
-  value.
-- When you press **Back** or **Forward** with text you haven't sent and then
-  **Cancel**, the browser history stays as it was. Before, the next **Back**
-  skipped a page.
-- After you add a Pool item with a description, the description field closes,
-  so the next item starts with its title. Before, it stayed open and empty.
-- On a 320-pixel-wide screen, the Roadmap header shows the whole **Epic**
-  button. Before, part of it was cut off. Screen readers still read the
-  Roadmap heading there.
-- With a very large `ONELOOP_STORAGE_LIMIT`, above about 200 PiB, the storage
-  page for administrators shows the right cleanup points of 80% and 70%.
-  Before, it showed wrong values.
 - A Knowledge file download now always sends the file, as an attachment
   download does. Before, a download request with `If-None-Match` could get an
   empty "not modified" answer.
+- The page where you connect an AI app lists projects in the same order as
+  the app, without regard to upper and lower case.
 
 ### Security
 

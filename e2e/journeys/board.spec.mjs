@@ -162,7 +162,7 @@ test('a scaled Board boots once and keeps overlays, avatars and filters bounded'
     if (i % 4) await command(instance.api, 'task.move', { taskId: task.id, status: ['planning', 'in_progress', 'in_review', 'done'][i % 4] }, task.revision);
   }
   const png = readFileSync(new URL('../../frontend/icons/favicon-32.png', import.meta.url));
-  const avatar = await instance.api.put('/api/auth/avatar', { headers: { 'X-File-Size': String(png.length) }, multipart: { file: { name: 'avatar.png', mimeType: 'image/png', buffer: png } } });
+  const avatar = await instance.api.put('/api/auth/avatar', { multipart: { file: { name: 'avatar.png', mimeType: 'image/png', buffer: png } } });
   expect(avatar.ok(), await avatar.text()).toBeTruthy();
   await context.addCookies((await instance.api.storageState()).cookies);
   await page.addInitScript(() => {

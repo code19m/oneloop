@@ -263,6 +263,9 @@ test('Blocked reasons and comment times add no Tab stops, and keep their details
 });
 
 test('a focused file name keeps its tip while the task page scrolls, and the tip does not repeat the name', async ({ page, instance }) => {
+  // The attachments load after the page and grow into place. Without motion,
+  // the file name holds still until the test scrolls, so the first gap is final.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1280, height: 560 });
   const name = `quarterly-report-${'forecast-'.repeat(12)}.txt`;
   const response = await instance.api.post(`/api/tasks/${instance.projects[0].task.id}/attachments`, {

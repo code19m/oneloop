@@ -1,3 +1,5 @@
+//! Browser routes for attachments, avatars and storage: uploads, file
+//! changes, file bytes, previews, the storage report and cleanup.
 use super::{
     file_response::{self, Caching, Disposition},
     input::{ApiJson, ApiQuery},

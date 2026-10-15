@@ -9,30 +9,31 @@ example `v0.1.0-rc.1`.
 1. Set the version in `Cargo.toml` and run `cargo check` to update
    `Cargo.lock`. Then `node --test scripts/tests/pinned-versions.test.mjs`
    lists each place in `README.md`, `deploy/compose.yaml` and `docs/src/`
-   that still shows the old version. If `CURRENT_SCHEMA_VERSION` changed
-   since the previous release, also update the schema numbers in the docs:
-   the sample output of `db migrate` and `/healthz`, and the name of the
-   pre-upgrade backup;
-   `rg 'migrated from|schema [0-9]|schemaVersion|pre-migration-v' docs/src`
-   finds them. For the first stable release, also rewrite the **Status**
-   section of `README.md`, which still calls oneloop a release candidate.
+   that still shows the old version. For the first stable release, also
+   rewrite the **Status** section of `README.md`, which still calls oneloop a
+   release candidate.
 2. In `CHANGELOG.md`, move the `Unreleased` entries into a new
-   `## [X.Y.Z] - YYYY-MM-DD` section, update the comparison links at the
-   bottom, and note any upgrade steps.
+   `## [X.Y.Z] - YYYY-MM-DD` section, add a **Distribution** section like the
+   previous release's, update the comparison links at the bottom, and put
+   any steps people must take under **Upgrade notes**.
 3. Check the version and notes:
 
    ```sh
    node scripts/release-metadata.mjs vX.Y.Z
    ```
-4. Review what ships besides our own code:
+4. If the Board, the Roadmap or the task page looks different since the
+   previous release, regenerate the screenshots in
+   `docs/src/assets/screenshots/` with `e2e/screenshots.mjs`, as its first
+   lines describe. Look at each image before you commit it.
+5. Review what ships besides our own code:
    - regenerate and review the notices with `node scripts/third-party-notices.mjs`,
      then run `node scripts/vendor-audit.mjs --check`;
    - look at the latest Dependencies workflow run;
    - compare the bundled SQLite version with SQLite's release and security
      notes, because the Rust advisory database doesn't cover it.
-5. Build the image and try it on both architectures if you can: first run,
+6. Build the image and try it on both architectures if you can: first run,
    an upgrade from the previous release, and a backup restore.
-6. Merge to `main`. Then tag the merged release commit, usually `origin/main`,
+7. Merge to `main`. Then tag the merged release commit, usually `origin/main`,
    and push the tag:
 
    ```sh

@@ -5,6 +5,10 @@ import {readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {inScratch, runScript} from './support.mjs';
 
+/** The Distribution section of `version`'s release notes. */
+const distribution = version =>
+  `### Distribution\n\n- \`ghcr.io/code19m/oneloop:${version}\`\n- \`cargo install --git https://github.com/code19m/oneloop --tag v${version} --locked\``;
+
 /** Calls `run` in a checkout with this Cargo.toml version and CHANGELOG.md, with a function that runs the script. */
 function fixture(version, changelog, run) {
   inScratch(directory => {
@@ -16,18 +20,19 @@ function fixture(version, changelog, run) {
 }
 
 test('release candidates are identified and notes exclude other versions', () => {
-  const changelog = '# Changelog\n\n## [Unreleased]\nNext work\n\n## [1.2.3-rc.1] - 2026-09-27\n\nCandidate notes\n\n## [1.2.2]\nOld notes\n';
+  const notes = `Candidate notes\n\n${distribution('1.2.3-rc.1')}`;
+  const changelog = `# Changelog\n\n## [Unreleased]\nNext work\n\n## [1.2.3-rc.1] - 2026-09-27\n\n${notes}\n\n## [1.2.2]\nOld notes\n`;
   fixture('1.2.3-rc.1', changelog, (run, read) => {
     const result = run('v1.2.3-rc.1');
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {version: '1.2.3-rc.1', prerelease: true});
     assert.equal(read('outputs'), 'version=1.2.3-rc.1\nprerelease=true\n');
-    assert.equal(read('target/release-notes.md'), 'Candidate notes\n');
+    assert.equal(read('target/release-notes.md'), notes + '\n');
   });
 });
 
 test('final releases are identified; bad tags/versions fail', () => {
-  fixture('1.2.3', '## [1.2.3] - 2026-09-27\n\nStable notes\n', run => {
+  fixture('1.2.3', `## [1.2.3] - 2026-09-27\n\nStable notes\n\n${distribution('1.2.3')}\n`, run => {
     const result = run('v1.2.3');
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {version: '1.2.3', prerelease: false});
@@ -54,8 +59,18 @@ test('release notes need visible content, not just reference definitions or comm
   }
 });
 
+test('release notes must say how to install that exact version', () => {
+  for (const notes of ['Stable notes', distribution('1.2.3-rc.1'), distribution('1.2.3').replace(/--tag \S+/, '')]) {
+    fixture('1.2.3', `## [1.2.3] - 2026-10-04\n\n${notes}\n`, run => {
+      const result = run('v1.2.3');
+      assert.notEqual(result.status, 0, notes);
+      assert.match(result.stderr, /Add a Distribution section/);
+    });
+  }
+});
+
 test('visible release notes keep reference definitions in the published Markdown', () => {
-  const notes = 'See the [fixed bug][issue].\n\n[issue]: https://example.com/issues/123 "Bug report"';
+  const notes = `See the [fixed bug][issue].\n\n${distribution('1.2.3')}\n\n[issue]: https://example.com/issues/123 "Bug report"`;
   fixture('1.2.3', `## [1.2.3] - 2026-10-04\n\n${notes}\n`, (run, read) => {
     const result = run('v1.2.3');
     assert.equal(result.status, 0, result.stderr);

@@ -119,8 +119,8 @@ Mention people in the reason with `@` to notify them. The card then shows a
 
 - The task keeps its status while it is blocked. **Unblock task** removes the
   block and notifies the assignees.
-- Done tasks can't be blocked. If you move a blocked task to Done, oneloop asks
-  you to unblock it first.
+- Done tasks can't be blocked. If you move a blocked task to Done, oneloop
+  offers to unblock and complete it in one step.
 
 ### Files
 

@@ -1,11 +1,13 @@
 //! The documentation site names every command and MCP tool the binary
-//! offers. A unit test in src/config.rs checks the environment variables.
+//! offers, and shows the current schema. A unit test in src/config.rs checks
+//! the environment variables.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use clap::CommandFactory;
 use oneloop::cli::Cli;
+use oneloop::db::CURRENT_SCHEMA_VERSION;
 use serde_json::json;
 
 use crate::mcp::{ALL_SCOPES, fixture, scoped_mcp};
@@ -53,6 +55,57 @@ fn command_reference_names_every_subcommand() {
     assert!(
         missing.is_empty(),
         "docs/src/reference.md does not mention {missing:?}"
+    );
+}
+
+/// The number after each `prefix` and then `infix` in `text`: 6 in
+/// "migrated from 2 to 6" for `("migrated from ", " to ")`.
+fn numbers_after(text: &str, prefix: &str, infix: &str) -> Vec<i64> {
+    text.match_indices(prefix)
+        .map(|(start, _)| {
+            let rest = &text[start + prefix.len()..];
+            let rest = rest.split_once(infix).map_or("", |(_, rest)| rest);
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end]
+                .parse()
+                .unwrap_or_else(|_| panic!("no number after {prefix:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn sample_outputs_show_the_current_schema_version() {
+    // `db migrate` prints "migrated from 2 to 6" or "is current (schema 6)",
+    // and `/healthz` returns `"schemaVersion":6`.
+    let patterns = [
+        ("migrated from ", " to "),
+        ("(schema ", ""),
+        ("\"schemaVersion\":", ""),
+    ];
+    let mut found = BTreeSet::new();
+    let mut stale = Vec::new();
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/src");
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if !name.ends_with(".md") {
+            continue;
+        }
+        let page = read(&format!("docs/src/{name}"));
+        for (prefix, infix) in patterns {
+            for version in numbers_after(&page, prefix, infix) {
+                found.insert(prefix);
+                if version != CURRENT_SCHEMA_VERSION {
+                    stale.push(format!("docs/src/{name}: schema {version}"));
+                }
+            }
+        }
+    }
+    assert_eq!(found.len(), patterns.len(), "a pattern went stale");
+    assert!(
+        stale.is_empty(),
+        "update to schema {CURRENT_SCHEMA_VERSION}: {stale:#?}"
     );
 }
 
