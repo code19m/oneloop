@@ -1,4 +1,4 @@
-//! Date validation, preserving the exact date contract.
+//! Calendar dates in commands, which must be exactly `YYYY-MM-DD`.
 use super::*;
 
 pub(super) fn date(value: &str, field: &'static str) -> AppResult<String> {

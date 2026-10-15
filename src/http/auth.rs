@@ -1,3 +1,5 @@
+//! Account and session routes, and the middleware that turns a session
+//! cookie into the request's `Actor`.
 use super::input::{ApiJson, ApiQuery};
 use std::net::SocketAddr;
 

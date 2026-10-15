@@ -1,4 +1,4 @@
-//! Membership changes preserve assignment history and require current administrator access.
+//! Adding, changing and removing project members.
 use super::*;
 
 pub(super) fn add_membership(

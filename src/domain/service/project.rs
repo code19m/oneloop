@@ -1,4 +1,4 @@
-//! Project administration and atomic deletion; historical prefixes remain reserved.
+//! Creating, renaming and deleting projects.
 use super::*;
 
 pub(super) fn create_project(

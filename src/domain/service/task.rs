@@ -1,4 +1,4 @@
-//! Task mutations preserve required epic ownership, assignee eligibility and block completion guards.
+//! Creating, editing, moving, deleting and restoring tasks.
 use super::ordering::{task_append_position, task_insert_position};
 use super::validation::optional_date;
 use super::*;

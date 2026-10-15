@@ -1,3 +1,5 @@
+//! Host and origin checks, security headers, session cookies and client
+//! addresses behind trusted proxies.
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{

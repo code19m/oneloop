@@ -1,3 +1,5 @@
+//! Comment and Inbox commands, and the views that comment, activity and Inbox
+//! reads return.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

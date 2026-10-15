@@ -1,3 +1,5 @@
+//! Read routes for comments, activity and the Inbox, and the live-update
+//! stream.
 use super::input::{ApiQuery, id_list};
 use std::convert::Infallible;
 

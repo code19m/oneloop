@@ -1,3 +1,5 @@
+//! `OneloopMcp`: every MCP tool, its input schema and how its errors reach
+//! the client.
 use std::collections::BTreeSet;
 
 use axum::http::request::Parts;

@@ -1,3 +1,5 @@
+//! Read routes for projects, the Board, the Roadmap, epics, tasks and the
+//! Pool.
 use super::input::{ApiQuery, id_list};
 use axum::{
     Extension, Json, Router,

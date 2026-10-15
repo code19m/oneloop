@@ -1,4 +1,5 @@
-//! Bounded maintenance for transient state. Product audit history is permanent.
+//! Removes expired transient rows, such as old sessions and used OAuth
+//! codes, a batch at a time. Audit history is never removed.
 use rusqlite::params;
 
 use crate::{AppResult, Db};

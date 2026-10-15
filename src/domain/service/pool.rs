@@ -1,4 +1,4 @@
-//! Private/team Pool commands preserve ownership and atomically promote into tasks.
+//! Pool items, personal and team, and their promotion to tasks.
 use super::task::create_task;
 use super::*;
 

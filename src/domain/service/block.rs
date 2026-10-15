@@ -1,4 +1,4 @@
-//! Blocking episodes preserve exact mention text and deliver only newly selected recipients.
+//! Blocking and unblocking tasks, and editing a block reason.
 use super::ordering::task_append_position;
 use super::*;
 

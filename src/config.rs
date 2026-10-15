@@ -1,3 +1,5 @@
+//! Settings from `ONELOOP_*` environment variables: `Config` for `serve` and
+//! `DataConfig` for the maintenance commands.
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,

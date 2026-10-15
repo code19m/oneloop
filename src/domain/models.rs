@@ -1,3 +1,4 @@
+//! The views that domain reads and commands return.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

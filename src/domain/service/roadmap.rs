@@ -1,4 +1,4 @@
-//! Roadmap writes require roadmap permission and retain revision and child-deletion guards.
+//! Tracks, epics and milestones.
 use super::ordering::{active_ids, compact_positions, resequence};
 use super::validation::{date, optional_date};
 use super::*;

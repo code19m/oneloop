@@ -1,3 +1,5 @@
+//! The `oneloop` command line: one handler per command. `serve` wires the
+//! server together and owns graceful shutdown.
 use std::{
     io::{self, IsTerminal, Read, Write},
     path::PathBuf,

@@ -1,4 +1,5 @@
-//! Discussion and private Inbox services. Mutations, audit and recipient snapshots commit together; reads enforce current access.
+//! `CollaborationService`: the comment and Inbox commands with the checks a
+//! retry repeats. Its reads live in the submodules.
 
 mod activity;
 mod comments;

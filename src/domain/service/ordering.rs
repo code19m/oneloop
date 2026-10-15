@@ -1,4 +1,4 @@
-//! Track/epic compaction and gapped task ordering under a single write transaction.
+//! Positions of tracks, epics and tasks in their lists.
 use super::*;
 
 pub(super) fn active_ids(

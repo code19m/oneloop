@@ -470,7 +470,6 @@ fn activate_epic_for_work(
     Ok(None)
 }
 
-// SQL is kept outside calls so rustfmt can format the surrounding control flow.
 const MEMBERSHIP_PERMISSIONS_SQL: &str = "SELECT manage_roadmap,manage_board,revision FROM project_memberships WHERE project_id=?1 \
                      AND user_id=?2";
 const HAS_OPEN_ASSIGNMENTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM task_assignees a JOIN tasks t ON t.id=a.task_id WHERE \

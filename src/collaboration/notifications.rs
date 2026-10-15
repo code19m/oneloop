@@ -1,3 +1,4 @@
+//! Notifications: who an event notifies, decided when its write commits.
 use std::collections::BTreeSet;
 
 use rusqlite::{OptionalExtension, Transaction, params};

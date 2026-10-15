@@ -1,3 +1,5 @@
+//! Domain commands: the operations, what each needs, and their payloads,
+//! with the values they share, such as `TaskStatus`.
 use serde::{Deserialize, Serialize};
 
 use crate::{
