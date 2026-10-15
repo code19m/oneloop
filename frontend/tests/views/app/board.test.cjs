@@ -1,7 +1,7 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, settle } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, deferred, tick } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
@@ -50,33 +50,17 @@ test('live Pool content patches visible titles, descriptions and labels without 
 });
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
-const boot = (route = 'board', { readOnly = false, stored, prepare } = {}) => bootApp({ route, stored, prepare: (D, w) => {
-  prepare?.(D, w);
-  if (readOnly) D.users.find(u => u.id === D.session.userId).admin = false;
-} });
-
-const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-/** Boot with a runtime whose actions stay pending until the test settles them. */
-function withRuntime(route = 'board') {
-  const calls = [], reports = [], requests = [];
-  const t = bootApp({ route });
-  const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard'].map(name => [name, hold(name)])), report(error) { reports.push(error); } };
-  return { ...t, calls, reports, requests };
-}
-const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
+const boot = (route = 'board', { prepare } = {}) => bootApp({ route, prepare });
+/** The Board with its saving runtime functions held until the test settles them. */
+const heldBoard = () => withRuntime('board', ['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard']);
 
 /** Boot the Board with recorded animations, a fixed layout and a runtime whose actions succeed at once. */
 function recordingBoard(reduced) {
   const animations = [];
   const t = bootApp({
     html: '<meta name="theme-color"><style>.card,.empty-note,.board-load-more,.board{opacity:1}</style><div id="app"></div>',
-    media: query => reduced && query.includes('reduced-motion'),
-    setup: w => {
-      w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; };
-      w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
-    },
+    media: query => reduced && query.includes('reduced-motion'), layout: true,
+    setup: w => { w.Element.prototype.animate = function () { animations.push(this); return { finished: Promise.resolve(), cancel() {} }; }; },
   });
   t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTask', 'setDoneOrder', 'filterBoard', 'loadMoreBoard'].map(name => [name, () => Promise.resolve({})])), report: () => {} };
   return { ...t, animations };
@@ -209,7 +193,7 @@ test('Pool descriptions are optional, cancel cleanly, move into promotion and re
 });
 
 test('a Board move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   assert.equal(task.state,'progress');assert(t.d.querySelector(`[data-col="progress"] [data-task="${task.id}"]`));
@@ -223,7 +207,7 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
 });
 
 test('a newest-first Done takes a finished card on top, keeps the manual order and offers no reordering', async () => {
-  const t=withRuntime('board'),projectId=t.A.context().projectId;
+  const t=heldBoard(),projectId=t.A.context().projectId;
   t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
@@ -247,7 +231,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
 });
 
 test('the manual Done order keeps the drop position and reordering', () => {
-  const t=withRuntime('board');
+  const t=heldBoard();
   const toggle=t.d.querySelector('[data-col="done"] .done-order');
   assert.equal(toggle.getAttribute('aria-pressed'),'false');
   const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
@@ -259,7 +243,7 @@ test('the manual Done order keeps the drop position and reordering', () => {
 });
 
 test('a rejected Board move rolls back its card', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'review');
   assert.equal(task.state,'review');t.requests[0].reject(Object.assign(new Error('Rejected'),{code:'validation_failed'}));await tick();await tick();
@@ -267,7 +251,7 @@ test('a rejected Board move rolls back its card', async () => {
 });
 
 test('an uncertain Board move keeps its new column', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   t.requests[0].reject(Object.assign(new Error('Unknown outcome'),{uncertain:true}));await tick();await tick();
@@ -275,7 +259,7 @@ test('an uncertain Board move keeps its new column', async () => {
 });
 
 test('a rejected move after switching projects restores only its own card and counts', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block),original=task.state;
   t.D.projectTaskCounts||={};t.D.projectTaskCounts.p1={planning:5,progress:1,review:1,done:1,blocked:0,open:7};
   t.D.projectTaskCounts.p2={planning:9,progress:8,review:7,done:6,blocked:5,open:24};
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
@@ -287,7 +271,7 @@ test('a rejected move after switching projects restores only its own card and co
 });
 
 test('a rejected reorder after switching projects restores only its own card', async () => {
-  const t=withRuntime('board'),column=t.D.tasks.filter((item)=>item.projectId==='p1'&&item.state==='planning');
+  const t=heldBoard(),column=t.D.tasks.filter((item)=>item.projectId==='p1'&&item.state==='planning');
   const [first,second]=column,ids=()=>t.D.tasks.filter((item)=>item.projectId==='p1').map((item)=>item.id),original=ids();
   t.A.moveTaskOrder(first.id,second.id,false);
   assert.deepEqual(t.calls.map(([name,move])=>[name,move.afterTaskId,move.optimistic]),[['moveTask',second.internalId,true]]);
@@ -299,7 +283,7 @@ test('a rejected reorder after switching projects restores only its own card', a
 });
 
 test('a move rejected after the session changed does not roll back the new session', async () => {
-  const t=withRuntime('board'),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
+  const t=heldBoard(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   t.D.session={...t.D.session,id:'replacement-session'};
@@ -309,7 +293,7 @@ test('a move rejected after the session changed does not roll back the new sessi
 
 /** A Board whose Done column has `count` loaded cards, and more on the server when `more` is set. */
 function longDone(count, more) {
-  const t = withRuntime('board'), projectId = t.A.context().projectId;
+  const t = heldBoard(), projectId = t.A.context().projectId;
   const template = t.D.tasks.find(item => item.state === 'done' && item.projectId === projectId) || t.D.tasks.find(item => item.state === 'done');
   t.D.tasks = t.D.tasks.filter(item => item.state !== 'done');
   for (let i = 0; i < count; i++) t.D.tasks.push({ ...template, id: `DONE-${100 + i}`, internalId: `done-${i}`, title: `Done ${i}`, block: null, assignees: [] });

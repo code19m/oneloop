@@ -340,7 +340,7 @@ test('PDF previews redraw only on width changes, zoom and paging, and stop when 
   const { d, state, observers, open } = await pdfPreview('http://localhost/', '/views/uploads.js');
   // Width changes are debounced for 120 ms; drive the clock instead of sleeping.
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const advance = async milliseconds => { t.mock.timers.tick(milliseconds); for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const advance = async milliseconds => { t.mock.timers.tick(milliseconds); for (let i = 0; i < 5; i++) await settle(); };
   const host = open(); await advance(0);
   const observer = observers.find(o => o.el === host);
   assert.equal(state.renders, 1);
@@ -433,7 +433,7 @@ test('live updates read attachments and storage usage again passively', async ()
   } });
   const listener = change => t.runtime.publish(change);
   // Each read answers at once; let its reply land before the next step.
-  const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await new Promise(resolve => setImmediate(resolve)); };
+  const answered = async (count, message) => { await waitFor(() => reads.length === count, message); await settle(); };
   await answered(1, 'the task page reads its attachments');
   listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
   await answered(2, 'a live update reads them again');
@@ -454,9 +454,9 @@ test('a live re-read of attachments that lost access stays quiet', async () => {
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => { if (++reads > 1) throw new ApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; } } });
   const listener = change => t.runtime.publish(change);
   const notices = []; t.A.toast = (text, kind) => notices.push([text, kind]);
-  await waitFor(() => reads === 1, 'the page reads its attachments'); await new Promise(resolve => setImmediate(resolve));
+  await waitFor(() => reads === 1, 'the page reads its attachments'); await settle();
   listener({ type: 'sse', taskId: 'BIR-079', entityType: 'task' });
-  await waitFor(() => reads === 2, 'a live update reads them again'); await new Promise(resolve => setImmediate(resolve));
+  await waitFor(() => reads === 2, 'a live update reads them again'); await settle();
   assert.deepEqual(notices, [], 'leaving the project explains the change, not a failed read');
 });
 

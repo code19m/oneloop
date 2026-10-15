@@ -3,14 +3,14 @@ import test from 'node:test';
 import { createRequire } from 'node:module';
 import { openDialog, placeNear } from '../../../src/app/layers.js';
 
+import { useGlobals } from '../../support/helpers.cjs';
+
 const { JSDOM } = createRequire(import.meta.url)('../../support/dom.cjs');
 
 /** A page with an inert-able #app, its document standing in for the global one. */
 function page(t) {
   const w = new JSDOM('<div id="app"><button id="behind">Behind</button></div>').window;
-  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
-  globalThis.document = w.document;
-  t.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else delete globalThis.document; });
+  useGlobals(t, { document: w.document });
   return w;
 }
 const key = (w, name, shiftKey = false) => { const event = new w.KeyboardEvent('keydown', { key: name, shiftKey, bubbles: true, cancelable: true }); w.document.activeElement.dispatchEvent(event); return event; };

@@ -18,6 +18,7 @@ const { createLegacyData, sessionKey } = require('../../src/data/projection-stor
 const { actionErrorFeedback, retryableFailure } = require('../../src/app/action-feedback.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
 const { setTrustedHTML } = require('../../src/app/trusted-types.js');
+const { settle, waitFor, deferred, tick } = require('./helpers.cjs');
 const { UIAction, escapeHtml } = require('../../src/app/markup.js');
 const { installViewActions } = require('../../src/app/view-actions.js');
 const { installViewBridge } = require('../../src/app/view-bridge.js');
@@ -242,14 +243,16 @@ function wire(w, { api: answers = {}, reads: readAnswers = {}, auth: authAnswers
  * @param {Record<string,unknown>} [options.reads] read controller methods to replace
  * @param {Record<string,unknown>} [options.auth] auth controller methods to replace
  * @param {(scope?: object) => Promise<unknown>} [options.reloadBootstrap] the bootstrap reload
+ * @param {boolean} [options.layout] give every element the same 300 by 500 pixel box, as jsdom lays nothing out
  * @param {(window: any) => void} [options.setup] runs before any script
  * @param {(data: any, window: any) => void} [options.prepare] runs after the fixture loads
+ * @param {(window: any) => void} [options.collaboration] runs just before collaboration.js, to replace its controller
  * @param {(name: string, window: any) => void} [options.beforeScript] runs before each script
  */
 function bootApp({
   route = 'board', url, html = '<meta name="theme-color"><div id="app"></div>',
   media = query => query.includes('reduced-motion'), stored = {}, scripts = appScripts, actions = false,
-  api, reads, auth, reloadBootstrap, setup, prepare, beforeScript,
+  api, reads, auth, reloadBootstrap, layout = false, setup, prepare, collaboration, beforeScript,
 } = {}) {
   const dom = new JSDOM(html, { url: url || `http://localhost/#/${route}`, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
@@ -258,6 +261,7 @@ function bootApp({
   w.URL.createObjectURL = () => 'blob:test';
   w.URL.revokeObjectURL = () => {};
   for (const [key, value] of Object.entries(stored)) w.localStorage.setItem(key, value);
+  if (layout) w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
   useWindowGlobals(w);
   // Before any script, so actions run first on the document, as in the app.
   if (actions) installViewActions(w.document);
@@ -265,6 +269,7 @@ function bootApp({
   let wiring = null;
   for (const name of scripts) {
     beforeScript?.(name, w);
+    if (name === 'collaboration') collaboration?.(w);
     load(dom, name);
     if (name !== 'data') continue;
     wiring = wire(w, { api, reads, auth, reloadBootstrap });
@@ -274,14 +279,19 @@ function bootApp({
   return { dom, w, d: w.document, A: w.App, D: w.DATA, bridge, ...wiring };
 }
 
-/** Poll `condition` on the event loop until it holds, then assert it. */
-async function waitFor(condition, message = 'condition holds', timeout = 5_000) {
-  const deadline = Date.now() + timeout;
-  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.ok(condition(), message);
+/**
+ * Boot `route` with the runtime functions `held` replaced: each records its
+ * call in `calls` and stays pending in `requests` until the test settles it.
+ */
+function withRuntime(route, held) {
+  const calls = [], reports = [], requests = [];
+  const t = bootApp({ route });
+  const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(held.map(name => [name, hold(name)])), report(error) { reports.push(error); } };
+  return { ...t, calls, reports, requests };
 }
 
-/** Let pending microtasks and immediate callbacks run. */
-const settle = () => new Promise(resolve => setImmediate(resolve));
+/** The dataTransfer of a drag that carries `id` as `type`. */
+const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
 
-module.exports = { JSDOM, jsdom, source, load, bootApp, appScripts, previewLibraries, waitFor, settle, fixtures };
+module.exports = { JSDOM, jsdom, source, load, bootApp, withRuntime, transfer, appScripts, previewLibraries, waitFor, settle, deferred, tick, fixtures };

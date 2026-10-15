@@ -10,7 +10,8 @@ views/      Older view layer: the app.js module and classic scripts
 styles/     CSS and grain texture
 icons/      Favicons and app icons
 vendor/     Browser libraries, licenses and audit records
-tests/      Unit tests mirroring src/ and views/, with a shared jsdom harness
+tests/      Unit tests mirroring src/ and views/; support/ has the jsdom harness
+            (dom.cjs) and helpers that need no DOM (helpers.cjs)
 ```
 
 ## Where new code goes

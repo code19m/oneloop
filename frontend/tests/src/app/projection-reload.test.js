@@ -5,9 +5,8 @@ import {createBootstrapController} from '../../../src/data/bootstrap-controller.
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
+import {settle,waitFor} from '../../support/helpers.cjs';
 
-const tick=()=>new Promise(resolve=>setImmediate(resolve));
-const until=async check=>{while(!check())await new Promise(resolve=>setTimeout(resolve,1));};
 const projection=(projectId,extra={})=>({timeZone:projectId,session:{userId:'u1',isAdmin:true},users:[{id:'u1',name:'Owner',isAdmin:true,isActive:true}],
   projects:[{id:'p1',name:'One',taskPrefix:'ONE',revision:1},{id:'p2',name:'Two',taskPrefix:'TWO',revision:1}],memberships:[],
   tracks:[{id:'t1',projectId,name:'Track',position:1,revision:1}],epics:[{id:'e1',projectId,trackId:'t1',title:'Epic',startDate:'2026-01-01',state:'active',position:1,revision:1}],
@@ -35,12 +34,12 @@ function page(context){
 test('a live refresh lets the task someone is opening load, then refreshes it',async()=>{
   const t=page({view:'task',taskId:'ONE-2',projectId:'p1',hash:'#/task/ONE-2'});
   const opening=t.reads.task('ONE-2'),live=t.reload({background:true});
-  await tick();
+  await settle();
   assert.deepEqual(t.calls.map(call=>call.name),['task'],'the refresh waits for the task read');
   assert.equal(t.calls[0].options.signal.aborted,false);
   t.next('task').resolve(view('one-2'));
   assert.equal((await opening).stale,false);
-  await until(()=>t.calls.length===2);
+  await waitFor(()=>t.calls.length===2);
   const bootstrap=t.next('bootstrap');assert.equal(bootstrap.options.taskId,'ONE-2');
   bootstrap.resolve(projection('p1',{view:'task',tasks:[view('one-2')]}));
   assert.equal((await live).stale,false);
@@ -49,7 +48,7 @@ test('a live refresh lets the task someone is opening load, then refreshes it',a
 test('a live refresh of the old project waits for a project switch and then lets it stand',async()=>{
   const context={view:'board',projectId:'p1',board:{}};const t=page(context);
   const switching=t.bootstrap.load({projectId:'p2',view:'board'}),live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic'}]});
-  await tick();
+  await settle();
   assert.equal(t.calls.length,1);assert.equal(t.calls[0].options.signal.aborted,false);
   t.next('bootstrap').resolve(projection('p2',{view:'board'}));
   assert.equal((await switching).stale,false);context.projectId='p2';
@@ -60,16 +59,16 @@ test('a live refresh of the old project waits for a project switch and then lets
 test('a live refresh without a project refreshes the project chosen meanwhile',async()=>{
   const context={view:'roadmap',projectId:'p1'};const t=page(context);
   const switching=t.bootstrap.load({projectId:'p2',view:'roadmap'}),live=t.reload({background:true});
-  await tick();t.next('bootstrap').resolve(projection('p2'));await switching;context.projectId='p2';
-  await until(()=>t.calls.length===2);const refresh=t.next('bootstrap');assert.equal(refresh.options.projectId,'p2');
+  await settle();t.next('bootstrap').resolve(projection('p2'));await switching;context.projectId='p2';
+  await waitFor(()=>t.calls.length===2);const refresh=t.next('bootstrap');assert.equal(refresh.options.projectId,'p2');
   refresh.resolve(projection('p2'));assert.equal((await live).stale,false);assert.equal(t.data.timeZone,'p2');
 });
 
 test('a refresh with the epic drawer open reads the drawer tasks again',async()=>{
   const t=page({view:'roadmap',projectId:'p1',peek:'e1'});
   const live=t.reload({background:true});
-  await until(()=>t.calls.length===1);t.next('bootstrap').resolve(projection('p1'));
-  await until(()=>t.calls.length===3);
+  await waitFor(()=>t.calls.length===1);t.next('bootstrap').resolve(projection('p1'));
+  await waitFor(()=>t.calls.length===3);
   t.next('epicTasks').resolve({items:[view('t1'),view('t2')],nextCursor:null,total:2});
   t.next('epicActivity').resolve({items:[],nextCursor:null});
   assert.equal((await live).stale,false);
@@ -164,7 +163,7 @@ test('a live task change re-reads the open epic drawer with the Roadmap, after a
   mergeEpicTaskPage(t.data,'e1',[view('t1'),view('t2')],{nextCursor:'after-t2',total:3});
   const more=t.reads.moreEpicTasks('e1');
   const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'task',entityId:'t1'}]});
-  await tick();
+  await settle();
   const loading=t.next('epicTasks');assert.equal(loading.options.cursor,'after-t2');
   assert.deepEqual(t.calls.map(call=>call.name),['epicTasks'],'the live read waits for Load more');
   loading.resolve({items:[view('t3')],nextCursor:null,total:3});

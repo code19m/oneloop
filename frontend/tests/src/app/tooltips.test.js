@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import { installTooltips } from '../../../src/app/tooltips.js';
+import { settle } from '../../support/helpers.cjs';
 const { JSDOM, bootApp } = createRequire(import.meta.url)('../../support/dom.cjs');
 
 const page = `<main>
@@ -108,7 +109,7 @@ test('the tip goes when its element is redrawn, or when the page scrolls under a
   const t = tips();
   t.d.getElementById('due').focus(); assert(t.tip());
   t.d.getElementById('due').remove();
-  await new Promise(resolve => setImmediate(resolve));
+  await settle();
   assert.equal(t.tip(), null);
   t.tap(t.d.getElementById('badge')); assert(t.tip());
   t.d.dispatchEvent(new t.w.Event('scroll'));
@@ -174,6 +175,6 @@ test('a live Board update keeps a shown tip in the badge\'s description', async 
   board.D.tasks.find(task => task.id === 'BIR-079').title = 'Renamed while the tip shows';
   board.A.refreshBoard({ animate: false });
   assert.equal(badge(), shown, 'the update patches the card in place');
-  await new Promise(resolve => setImmediate(resolve));
+  await settle();
   assert.equal(shown.getAttribute('aria-describedby'), 'app-tip');
 });

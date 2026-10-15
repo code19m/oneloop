@@ -4,8 +4,7 @@ const assert = require('node:assert/strict');
 const { bootApp, waitFor } = require('../../support/dom.cjs');
 
 // Every element reports the same box, so geometry-based focus code has a layout.
-const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
-const boot = (route = 'board') => bootApp({ route, media: () => true, setup: layout });
+const boot = (route = 'board') => bootApp({ route, media: () => true, layout: true });
 const key = (t, name, shiftKey = false) => t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: name, shiftKey, bubbles: true, cancelable: true }));
 
 test('the task dialog labels its fields, traps focus and returns it to its trigger', () => {

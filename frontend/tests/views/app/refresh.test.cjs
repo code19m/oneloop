@@ -132,9 +132,8 @@ test('a completed epic action cannot dismiss a dialog opened above its still-mou
  assert.equal(t.d.querySelector('.modal [name="title"]'),input);assert.equal(input.value,'Next task draft');assert.equal(t.d.activeElement,input);
 });
 
-const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
-/** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace its transport. */
-const boot = (route = 'task/BIR-079', prepare) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); } });
+/** Boot with a fixed layout; `collaboration` runs just before collaboration.js, to replace its transport. */
+const boot = (route = 'task/BIR-079', collaboration) => bootApp({ route, media: () => true, layout: true, collaboration });
 
 test('document titles follow the view and the account menu keeps unsaved profile input', () => {
   const t=boot(),task=t.D.tasks.find(task=>task.id==='BIR-079');

@@ -4,6 +4,7 @@ import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
 import {createRecoveryController,isRevisionConflict,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
 import {createBuildMonitor} from '../../../../src/app/build-info.js';
+import {useGlobals,settle} from '../../../support/helpers.cjs';
 const {JSDOM}=createRequire(import.meta.url)('../../../support/dom.cjs');
 
 function fixture(overrides={}){
@@ -317,24 +318,20 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
   }
 });
 
-test('blur conflict stays beside its field and reveals long latest values on demand',async()=>{
-  const dom=new JSDOM('<main class="content"><div class="task-page"><section class="tp-sec"><textarea id="description">mine</textarea></section></div></main>');
-  const previous=globalThis.document,previousEvent=globalThis.Event;globalThis.document=dom.window.document;globalThis.Event=dom.window.Event;
-  try{
-    const field=document.querySelector('textarea');
-    const value='<script>do not execute</script>'+ ' saved'.repeat(80);
-    const pending=presentDomConflict({target:field,latestValue:value,myValue:'mine'});
-    const box=document.querySelector('[data-recovery-conflict]');assert.equal(box.parentElement,field.parentElement);assert.equal(document.querySelectorAll('script').length,0);
-    assert.ok(box.querySelector('span').textContent.length<260);
-    const show=[...box.querySelectorAll('button')].find(button=>button.textContent==='Show all');show.click();assert.ok(box.textContent.includes(value));assert.equal(show.getAttribute('aria-expanded'),'true');
-    [...box.querySelectorAll('button')].find(button=>button.textContent==='Use latest').click();assert.equal(await pending,'latest');assert.equal(field.value,value);assert.equal(document.querySelector('[data-recovery-conflict]'),null);
-  }finally{globalThis.document=previous;globalThis.Event=previousEvent;dom.window.close();}
+test('blur conflict stays beside its field and reveals long latest values on demand',async(t)=>{
+  const document=onPage(t,'<main class="content"><div class="task-page"><section class="tp-sec"><textarea id="description">mine</textarea></section></div></main>');
+  const field=document.querySelector('textarea');
+  const value='<script>do not execute</script>'+ ' saved'.repeat(80);
+  const pending=presentDomConflict({target:field,latestValue:value,myValue:'mine'});
+  const box=document.querySelector('[data-recovery-conflict]');assert.equal(box.parentElement,field.parentElement);assert.equal(document.querySelectorAll('script').length,0);
+  assert.ok(box.querySelector('span').textContent.length<260);
+  const show=[...box.querySelectorAll('button')].find(button=>button.textContent==='Show all');show.click();assert.ok(box.textContent.includes(value));assert.equal(show.getAttribute('aria-expanded'),'true');
+  [...box.querySelectorAll('button')].find(button=>button.textContent==='Use latest').click();assert.equal(await pending,'latest');assert.equal(field.value,value);assert.equal(document.querySelector('[data-recovery-conflict]'),null);
 });
 
-test('removing an unresolved editor cancels its prompt without retaining a draft',async()=>{
-  const dom=new JSDOM('<div class="task-page"><textarea>mine</textarea></div>');const previous=globalThis.document;globalThis.document=dom.window.document;
-  try{const pending=presentDomConflict({target:document.querySelector('textarea'),latestValue:'latest',myValue:'mine'});document.body.replaceChildren();assert.equal(await pending,'cancelled');}
-  finally{globalThis.document=previous;dom.window.close();}
+test('removing an unresolved editor cancels its prompt without retaining a draft',async(t)=>{
+  const document=onPage(t,'<div class="task-page"><textarea>mine</textarea></div>');
+  const pending=presentDomConflict({target:document.querySelector('textarea'),latestValue:'latest',myValue:'mine'});document.body.replaceChildren();assert.equal(await pending,'cancelled');
 });
 
 /**
@@ -363,7 +360,7 @@ function updatable({autoReload=true,hidden=false,stores={local:new Map(),session
     /** The tab hides, or shows again. */
     show(visible){documentObject.visibilityState=visible?'visible':'hidden';fire('visibilitychange');},
     /** Move the clock on, run the timers that are due, and let the checks they start finish. */
-    async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await microtask();}};
+    async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await settle();}};
 }
 const newVersion={version:'0.2.0',revision:'b2'},oldVersion={version:'0.1.0',revision:'a1'};
 
@@ -452,54 +449,50 @@ test('turning Reload after updates on applies to an update that is already waiti
   page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
 });
 
-/** Run `body` with a jsdom page as the document the conflict prompt uses. */
-async function onPage(html,body){
-  const dom=new JSDOM(html),previous=globalThis.document,previousEvent=globalThis.Event;globalThis.document=dom.window.document;globalThis.Event=dom.window.Event;
-  try{await body(dom.window.document);}finally{globalThis.document=previous;globalThis.Event=previousEvent;dom.window.close();}
+/** A jsdom page: the document the conflict prompt uses until test `t` ends. */
+function onPage(t,html){
+  const {window}=new JSDOM(html);
+  useGlobals(t,{document:window.document,Event:window.Event});
+  return window.document;
 }
-const microtask=()=>new Promise(resolve=>setImmediate(resolve));
 const answer=(document,label)=>[...document.querySelectorAll('[data-recovery-conflict] button')].find(button=>button.textContent===label).click();
 
-test('a redraw moves an unanswered prompt beside the redrawn field, where Use latest fills it in',async()=>{
+test('a redraw moves an unanswered prompt beside the redrawn field, where Use latest fills it in',async(t)=>{
   const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
-  await onPage(`<div class="task-page">${section}</div>`,async document=>{
-    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-    const box=document.querySelector('[data-recovery-conflict]');
-    document.querySelector('.task-page').innerHTML=section;
-    await microtask();
-    const redrawn=document.getElementById('task-description');
-    assert.equal(box.parentElement,redrawn.parentElement,'beside the new field');
-    answer(document,'Use latest');
-    assert.equal(await pending,'latest');assert.equal(redrawn.value,'theirs');
-  });
+  const document=onPage(t,`<div class="task-page">${section}</div>`);
+  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+  const box=document.querySelector('[data-recovery-conflict]');
+  document.querySelector('.task-page').innerHTML=section;
+  await settle();
+  const redrawn=document.getElementById('task-description');
+  assert.equal(box.parentElement,redrawn.parentElement,'beside the new field');
+  answer(document,'Use latest');
+  assert.equal(await pending,'latest');assert.equal(redrawn.value,'theirs');
 });
 
-test('a prompt closes without an answer when its redrawn field can no longer be edited',async()=>{
-  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="task-description">mine</textarea></section></div>',async document=>{
-    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-    document.querySelector('.task-page').innerHTML='<section class="tp-sec"><textarea id="task-description" readonly>mine</textarea></section>';
-    assert.equal(await pending,'cancelled');assert.equal(document.querySelector('[data-recovery-conflict]'),null);
-  });
+test('a prompt closes without an answer when its redrawn field can no longer be edited',async(t)=>{
+  const document=onPage(t,'<div class="task-page"><section class="tp-sec"><textarea id="task-description">mine</textarea></section></div>');
+  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+  document.querySelector('.task-page').innerHTML='<section class="tp-sec"><textarea id="task-description" readonly>mine</textarea></section>';
+  assert.equal(await pending,'cancelled');assert.equal(document.querySelector('[data-recovery-conflict]'),null);
 });
 
-test('a newer prompt replaces one still waiting, which closes without an answer',async()=>{
-  await onPage('<div class="task-page"><section class="tp-sec"><textarea id="a">a</textarea></section><section class="tp-sec"><textarea id="b">b</textarea></section></div>',async document=>{
-    const field=id=>document.getElementById(id);
-    const first=presentDomConflict({target:field('a'),locate:()=>field('a'),latestValue:'A',myValue:'a'});
-    const second=presentDomConflict({target:field('b'),locate:()=>field('b'),latestValue:'B',myValue:'b'});
-    assert.equal(await first,'cancelled');
-    assert.equal(document.querySelectorAll('[data-recovery-conflict]').length,1);
-    answer(document,'Keep my changes');assert.equal(await second,'mine');
-  });
+test('a newer prompt replaces one still waiting, which closes without an answer',async(t)=>{
+  const document=onPage(t,'<div class="task-page"><section class="tp-sec"><textarea id="a">a</textarea></section><section class="tp-sec"><textarea id="b">b</textarea></section></div>');
+  const field=id=>document.getElementById(id);
+  const first=presentDomConflict({target:field('a'),locate:()=>field('a'),latestValue:'A',myValue:'a'});
+  const second=presentDomConflict({target:field('b'),locate:()=>field('b'),latestValue:'B',myValue:'b'});
+  assert.equal(await first,'cancelled');
+  assert.equal(document.querySelectorAll('[data-recovery-conflict]').length,1);
+  answer(document,'Keep my changes');assert.equal(await second,'mine');
 });
 
-test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async()=>{
+test('after Keep my changes, a redraw removes the saving note instead of bringing it back',async(t)=>{
   const section='<section class="tp-sec"><textarea id="task-description">mine</textarea></section>';
-  await onPage(`<div class="task-page">${section}</div>`,async document=>{
-    const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
-    answer(document,'Keep my changes');assert.equal(await pending,'mine');
-    assert.match(document.querySelector('[data-recovery-conflict]').textContent,/Saving your changes/);
-    document.querySelector('.task-page').innerHTML=section;await microtask();
-    assert.equal(document.querySelector('[data-recovery-conflict]'),null);
-  });
+  const document=onPage(t,`<div class="task-page">${section}</div>`);
+  const pending=presentDomConflict({target:document.getElementById('task-description'),locate:()=>document.getElementById('task-description'),latestValue:'theirs',myValue:'mine'});
+  answer(document,'Keep my changes');assert.equal(await pending,'mine');
+  assert.match(document.querySelector('[data-recovery-conflict]').textContent,/Saving your changes/);
+  document.querySelector('.task-page').innerHTML=section;await settle();
+  assert.equal(document.querySelector('[data-recovery-conflict]'),null);
 });

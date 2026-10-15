@@ -3,8 +3,16 @@ import test from 'node:test';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData} from '../../../src/data/projection-store.js';
 import {saveDoneOrder} from '../../../src/data/done-order.js';
+import {settle} from '../../support/helpers.cjs';
 
 const task=(id,status)=>({id,projectId:'p1',epicId:'e1',taskKey:`BIR-${id}`,title:id,description:'',status,position:1,deadline:null,createdAt:1_800_000_000_000,updatedAt:1_800_000_000_000,revision:1,assigneeIds:[],activeBlock:null});
+/** API methods whose answers wait in `calls` until the test settles them. */
+function held(){const calls=[];const api=(name)=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,signal:args.at(-1)?.signal,resolve,reject}));return {calls,api};}
+const counts={planning:1,inProgress:0,inReview:0,done:0,blocked:0};
+/** A Board read: empty columns unless `columns` gives one. */
+const boardColumns=(columns)=>({planning:{items:[],total:0},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[],total:0},counts,...columns});
+/** A Board read with `items` in Planning. */
+const boardView=(items=[task('one','planning')])=>boardColumns({planning:{items,nextCursor:null,total:items.length}});
 
 test('board reads all statuses with server-wide filters and appends only explicit next pages',async()=>{
   const calls=[];
@@ -122,13 +130,13 @@ test('a live read of the epic drawer waits for Load more instead of cancelling i
   const data=createLegacyData();data.epics.push({id:'e1',activity:[]});const epic=epicTasks(rows(6)),requests=held();
   const reads=createReadController({api:{...epic.api,epicTasks:(...args)=>args[1].cursor?requests.api('more')(...args):epic.api.epicTasks(...args)},data});
   await reads.epic('e1');
-  const more=reads.moreEpicTasks('e1');await new Promise(setImmediate);
-  const live=reads.epic('e1',{background:true});await new Promise(setImmediate);
+  const more=reads.moreEpicTasks('e1');await settle();
+  const live=reads.epic('e1',{background:true});await settle();
   assert.equal(requests.calls[0].signal.aborted,false,'the live read leaves Load more running');
   assert.deepEqual(epic.calls,['first'],'the live read has not started');
   requests.calls[0].resolve(await epic.api.epicTasks('e1',{cursor:'1:2'}));
   assert.equal((await more).stale,false);
-  while(!requests.calls[1])await new Promise(setImmediate);
+  while(!requests.calls[1])await settle();
   requests.calls[1].resolve(await epic.api.epicTasks('e1',{cursor:'1:2'}));
   assert.equal((await live).stale,false);
   assert.deepEqual(data.epicPageInfo.e1.taskIds,['row-0','row-1','row-2','row-3'],'the live read kept the page Load more added');
@@ -140,8 +148,8 @@ test('Load more in the epic drawer waits for a live read and goes on from what i
   const reads=createReadController({api:{...epic.api,epicActivity:async(_id,options)=>{if(options.background)await gate;return {items:[],nextCursor:null};}},data});
   await reads.epic('e1');
   epic.generation++;
-  const live=reads.epic('e1',{background:true});await new Promise(setImmediate);
-  const more=reads.moreEpicTasks('e1');await new Promise(setImmediate);
+  const live=reads.epic('e1',{background:true});await settle();
+  const more=reads.moreEpicTasks('e1');await settle();
   release();
   assert.equal((await live).stale,false,'Load more did not cancel the live read');
   assert.equal((await more).stale,false);
@@ -154,7 +162,7 @@ test('three Board pages survive targeted hints, navigation and a bootstrap gener
   const item=(id)=>({...task(String(id),'done'),position:id});
   const page=(offset)=>({items:[item(offset+1),item(offset+2)],nextCursor:offset<6?String(offset+2):null,total:8});
   const api={
-    boardView:async()=>{calls.push('view');return {planning:{items:[],total:0},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:page(0),counts:{planning:0,inProgress:0,inReview:0,done:8,blocked:0}};},
+    boardView:async()=>{calls.push('view');return boardColumns({done:page(0),counts:{planning:0,inProgress:0,inReview:0,done:8,blocked:0}});},
     board:async(_id,filter)=>{calls.push(`page:${filter.cursor}`);return page(Number(filter.cursor));},
     task:async id=>{calls.push(`task:${id}`);return {...item(Number(id)),title:'Changed',revision:2};},
     counts:async()=>{calls.push('counts');return {planning:0,inProgress:0,inReview:0,done:8,blocked:0};},
@@ -174,7 +182,7 @@ test('three Board pages survive targeted hints, navigation and a bootstrap gener
 
 test('Board hint removes deleted or filtered-out cards and ignores tasks beyond the loaded window',async()=>{
   const data=createLegacyData();let changed;
-  const api={boardView:async()=>({planning:{items:[task('one','planning')],nextCursor:'next',total:9},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[],total:0},counts:{planning:9,inProgress:0,inReview:0,done:0,blocked:0}}),task:async()=>changed,counts:async()=>({planning:9,inProgress:0,inReview:0,done:0,blocked:0})};
+  const api={boardView:async()=>boardColumns({planning:{items:[task('one','planning')],nextCursor:'next',total:9},counts:{planning:9,inProgress:0,inReview:0,done:0,blocked:0}}),task:async()=>changed,counts:async()=>({planning:9,inProgress:0,inReview:0,done:0,blocked:0})};
   const reads=createReadController({api,data});await reads.board('p1');
   changed={...task('far','planning'),position:99};await reads.patchBoard('p1',{},[{entityId:'far'}]);assert.equal(data.tasks.length,1);
   api.task=async()=>{throw {status:404};};await reads.patchBoard('p1',{},[{entityId:'one'}]);assert.equal(data.tasks.length,0);assert.equal(data.boardPageInfo.pages.planning.nextCursor,'next');
@@ -185,7 +193,7 @@ test('a newest-first Done reads, adopts and patches the Done column in completio
   const calls=[],data=createLegacyData();let changed;
   const done=(id,completedAt)=>({...task(id,'done'),completedAt});
   const api={
-    boardView:async(_project,filters)=>{calls.push(['view',filters]);return {planning:{items:[],total:0},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[done('later',300),done('earlier',200)],nextCursor:'done-next',total:9},counts:{planning:0,inProgress:0,inReview:0,done:9,blocked:0}};},
+    boardView:async(_project,filters)=>{calls.push(['view',filters]);return boardColumns({done:{items:[done('later',300),done('earlier',200)],nextCursor:'done-next',total:9},counts:{planning:0,inProgress:0,inReview:0,done:9,blocked:0}});},
     board:async(_project,filters)=>{calls.push(['page',filters]);return {items:[done('earliest',100)],nextCursor:'older',total:9};},
     task:async()=>changed,counts:async()=>({planning:0,inProgress:0,inReview:0,done:10,blocked:0}),
   };
@@ -211,7 +219,7 @@ test('a Board hint waits for foreground pagination instead of aborting or discar
   const data=createLegacyData();let release,signal;
   const gate=new Promise(resolve=>{release=resolve;});
   const counts={planning:3,inProgress:0,inReview:0,done:0,blocked:0};
-  const api={boardView:async()=>({planning:{items:[task('one','planning')],nextCursor:'next',total:3},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[],total:0},counts}),board:async(_id,_filter,options)=>{signal=options.signal;await gate;return {items:[task('two','planning')],nextCursor:'last',total:3};},counts:async()=>counts,task:async()=>({...task('one','planning'),title:'Updated'})};
+  const api={boardView:async()=>boardColumns({planning:{items:[task('one','planning')],nextCursor:'next',total:3},counts}),board:async(_id,_filter,options)=>{signal=options.signal;await gate;return {items:[task('two','planning')],nextCursor:'last',total:3};},counts:async()=>counts,task:async()=>({...task('one','planning'),title:'Updated'})};
   const reads=createReadController({api,data});await reads.board('p1');
   const page=reads.moreBoard('planning'),hint=reads.patchBoard('p1',{},[{entityId:'one'}]);assert.equal(signal.aborted,false);release();await Promise.all([page,hint]);
   assert.equal(data.tasks.length,2);assert.equal(data.boardPageInfo.pages.planning.nextCursor,'last');assert.equal(data.tasks.find(row=>row.internalId==='one').title,'Updated');
@@ -235,16 +243,12 @@ test('a stale Board cursor reads the Board again with one more page of that colu
   assert.equal(data.boardPageInfo.pages.planning.nextCursor,null);
 });
 
-function held(){const calls=[];const api=(name)=>(...args)=>new Promise((resolve,reject)=>calls.push({name,args,signal:args.at(-1)?.signal,resolve,reject}));return {calls,api};}
-const counts={planning:1,inProgress:0,inReview:0,done:0,blocked:0};
-const boardView=(items=[task('one','planning')])=>({planning:{items,nextCursor:null,total:items.length},inProgress:{items:[],total:0},inReview:{items:[],total:0},done:{items:[],total:0},counts});
-
 test('reads of different things never cancel each other',async()=>{
   const data=createLegacyData(),requests=held();
   const reads=createReadController({data,api:{boardView:async()=>boardView(),task:requests.api('task'),counts:requests.api('counts'),pool:requests.api('pool'),roadmap:requests.api('roadmap')}});
   await reads.board('p1');
   const opening=reads.task('BIR-1'),pool=reads.pool('p1','personal'),count=reads.counts('p1'),roadmap=reads.roadmap('p1'),patch=reads.patchBoard('p1',{},[{entityId:'one'}]);
-  await new Promise(setImmediate);
+  await settle();
   assert.deepEqual(requests.calls.map(call=>call.signal.aborted),requests.calls.map(()=>false));
   for(const call of requests.calls){
     if(call.name==='task')call.resolve({...task(call.args[0]==='one'?'one':'bir-1','planning'),taskKey:call.args[0]==='one'?'BIR-one':'BIR-1'});
@@ -270,10 +274,10 @@ test('a live Board read waits for the Board read someone started instead of repl
   const data=createLegacyData(),views=[];
   const reads=createReadController({data,api:{boardView:(_id,_filters,options)=>new Promise(resolve=>views.push({options,resolve}))}});
   const opening=reads.board('p1'),live=reads.board('p1',{},{background:true});
-  await new Promise(setImmediate);
+  await settle();
   assert.equal(views.length,1,'the live read has not started');assert.equal(views[0].options.signal.aborted,false);
   views[0].resolve(boardView());assert.equal((await opening).stale,false);
-  await new Promise(setImmediate);views[1].resolve(boardView([task('two','planning')]));
+  await settle();views[1].resolve(boardView([task('two','planning')]));
   assert.equal((await live).stale,false);assert.deepEqual(data.tasks.map(item=>item.internalId),['two']);
 });
 
@@ -281,8 +285,8 @@ test('a live Board patch that lands while a task is open still shows on the Boar
   const data=createLegacyData(),requests=held();let views=0;
   const reads=createReadController({data,api:{boardView:async()=>{views++;return boardView();},task:requests.api('task'),counts:async()=>counts}});
   await reads.board('p1');
-  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await new Promise(setImmediate);
-  const opening=reads.task('BIR-9');await new Promise(setImmediate);
+  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await settle();
+  const opening=reads.task('BIR-9');await settle();
   const [hint,open]=requests.calls;
   assert.equal(hint.signal.aborted,false,'opening a task leaves the live patch running');
   hint.resolve({...task('one','in_progress'),revision:2});open.resolve({...task('nine','planning'),taskKey:'BIR-9'});
@@ -295,7 +299,7 @@ test('a live read that spans a newer projection is dropped and the Board reads a
   const data=createLegacyData(),pending=[];let views=0;
   const reads=createReadController({data,api:{boardView:async()=>{views++;return boardView();},task:()=>new Promise(resolve=>pending.push(resolve)),counts:async()=>counts}});
   await reads.board('p1');
-  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await new Promise(setImmediate);
+  const patch=reads.patchBoard('p1',{},[{entityId:'one'}]);await settle();
   data.projectionGeneration++;pending[0]({...task('one','done'),revision:2});
   assert.equal((await patch).stale,true);assert.equal(data.tasks[0].state,'planning');
   await reads.board('p1',{},{skipUnchanged:true});assert.equal(views,2);
@@ -306,7 +310,7 @@ test('idle waits only for reads someone started',async()=>{
   const reads=createReadController({data,api:{roadmap:requests.api('roadmap'),counts:requests.api('counts')}});
   void reads.roadmap('p1',{background:true});const count=reads.counts('p1');
   let settled=false;const idle=reads.idle().then(()=>{settled=true;});
-  await new Promise(setImmediate);assert.equal(settled,false);
+  await settle();assert.equal(settled,false);
   requests.calls.find(call=>call.name==='counts').resolve(counts);await count;await idle;
   assert.equal(settled,true,'a live read in flight does not hold up idle');
 });
@@ -316,7 +320,7 @@ test('a live Board patch for filters the Board no longer shows does not bring th
   const reads=createReadController({data,api:{boardView:(_id,filters)=>new Promise(resolve=>views.push({filters,resolve})),task:async()=>({...task('one','done'),revision:2}),counts:async()=>counts}});
   const first=reads.board('p1');views[0].resolve(boardView());await first;
   const filtered=reads.board('p1',{search:'two'}),patch=reads.patchBoard('p1',{},[{entityId:'one'}]);
-  await new Promise(setImmediate);
+  await settle();
   views[1].resolve(boardView([task('two','planning')]));await filtered;
   assert.equal((await patch).stale,true);
   assert.equal(views.length,2,'no read of the old filters');assert.deepEqual(data.tasks.map(item=>item.internalId),['two']);

@@ -3,6 +3,7 @@ import test, {mock} from 'node:test';
 import {ApiError} from '../../../../src/data/api-client.js';
 import {createRecoveryController} from '../../../../src/features/recovery/controller.js';
 import {installCollaborationController} from '../../../../src/features/collaboration/controller.js';
+import {useGlobals,settle} from '../../../support/helpers.cjs';
 
 // The controller coalesces live reads with 60 ms timers. Tests that observe
 // that coalescing drive a mocked clock and let promise chains settle between
@@ -10,7 +11,6 @@ import {installCollaborationController} from '../../../../src/features/collabora
 let mockedClock=false;
 function useMockedClock(){mock.timers.enable({apis:['setTimeout']});mockedClock=true;}
 test.afterEach(()=>{if(mockedClock)mock.timers.reset();mockedClock=false;});
-const settle=()=>new Promise((resolve)=>setImmediate(resolve));
 async function delay(milliseconds){for(let elapsed=0;elapsed<milliseconds;elapsed+=10){mock.timers.tick(10);await settle();}}
 const tick=()=>mockedClock?delay(1):new Promise((resolve)=>setTimeout(resolve,0));
 
@@ -127,27 +127,25 @@ test('comment saves let the gateway compare changed intent instead of blindly re
   assert.equal(executes,1);assert.equal(retries,0);assert.equal(task.comments[0].text,'New intent');
 });
 
-test('an edited-comment conflict reviews the canonical value before an explicit latest-revision retry',async()=>{
-  const previous=globalThis.Recovery;let commandCalls=0,reviewed='';
-  try{
-    const t=fixture({facade:{commentEditor:()=>({})},api:{
-      comments:async()=>({items:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Latest saved',mentions:[],createdAt:20,editedAt:21,deletedAt:null,revision:3}],nextCursor:null}),
-      activity:async()=>({items:[],nextCursor:null}),
-    }});
-    t.data.tasks[0].comments=[{id:'c1',who:'u1',text:'Old',revision:1,ts:20_000}];
-    t.transport.commands.execute=async(_operation,_payload,options)=>{
-      commandCalls++;
-      if(options.expectedRevision===1)throw Object.assign(new Error('record changed; latest revision is 3'),{status:409,code:'revision_conflict'});
-      assert.equal(options.expectedRevision,3);
-      return {entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Keep mine',mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:4}],events:[{id:'a4'}]};
-    };
-    globalThis.Recovery={
-      isRevisionConflict:()=>true,
-      async resolveConflict(input){await input.reloadLatest();const latest=input.latestEntity();reviewed=input.target.latestValue(latest);return {saved:true,result:await input.retry(latest.revision)};},
-    };
-    const ok=await t.controller.saveComment({task:t.data.tasks[0],mode:'edit',commentId:'c1',revision:1,text:'Keep mine',mentions:[],interactionId:'edit-conflict'});
-    assert.equal(ok,true);assert.equal(reviewed,'Latest saved');assert.equal(commandCalls,2);assert.equal(t.data.tasks[0].comments[0].text,'Keep mine');
-  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
+test('an edited-comment conflict reviews the canonical value before an explicit latest-revision retry',async(testContext)=>{
+  let commandCalls=0,reviewed='';
+  const t=fixture({facade:{commentEditor:()=>({})},api:{
+    comments:async()=>({items:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Latest saved',mentions:[],createdAt:20,editedAt:21,deletedAt:null,revision:3}],nextCursor:null}),
+    activity:async()=>({items:[],nextCursor:null}),
+  }});
+  t.data.tasks[0].comments=[{id:'c1',who:'u1',text:'Old',revision:1,ts:20_000}];
+  t.transport.commands.execute=async(_operation,_payload,options)=>{
+    commandCalls++;
+    if(options.expectedRevision===1)throw Object.assign(new Error('record changed; latest revision is 3'),{status:409,code:'revision_conflict'});
+    assert.equal(options.expectedRevision,3);
+    return {entities:[{id:'c1',projectId:'p1',taskId:'opaque-task',authorId:'u1',authorName:'Nico',rootId:'c1',replyToId:null,content:'Keep mine',mentions:[],createdAt:20,editedAt:22,deletedAt:null,revision:4}],events:[{id:'a4'}]};
+  };
+  useGlobals(testContext,{Recovery:{
+    isRevisionConflict:()=>true,
+    async resolveConflict(input){await input.reloadLatest();const latest=input.latestEntity();reviewed=input.target.latestValue(latest);return {saved:true,result:await input.retry(latest.revision)};},
+  }});
+  const ok=await t.controller.saveComment({task:t.data.tasks[0],mode:'edit',commentId:'c1',revision:1,text:'Keep mine',mentions:[],interactionId:'edit-conflict'});
+  assert.equal(ok,true);assert.equal(reviewed,'Latest saved');assert.equal(commandCalls,2);assert.equal(t.data.tasks[0].comments[0].text,'Keep mine');
 });
 
 test('Inbox reads use server filters, counts and cursor pagination; bulk changes keep the same filter',async()=>{
@@ -259,28 +257,23 @@ test('a session change cancels queued projection reconciliation',async()=>{
   t.controller.dispose();
 });
 
-test('SSE lifecycle reports live-channel recovery without treating a healthy API as offline',async()=>{
+test('SSE lifecycle reports live-channel recovery without treating a healthy API as offline',async(testContext)=>{
   const lifecycle=[];let expired=0;
-  const previous=globalThis.Recovery;
-  globalThis.Recovery={liveConnected:()=>lifecycle.push('connected'),liveDisconnected:()=>lifecycle.push('disconnected'),sessionExpired:()=>{expired++;return true;}};
-  try{
-    const t=fixture({api:{me:async()=>{throw Object.assign(new Error('Ended'),{status:401});}}});
-    t.events.listeners.open({});
-    t.events.listeners.error({});await tick();
-    assert.deepEqual(lifecycle,['connected','disconnected']);assert.equal(expired,1);
-  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
+  useGlobals(testContext,{Recovery:{liveConnected:()=>lifecycle.push('connected'),liveDisconnected:()=>lifecycle.push('disconnected'),sessionExpired:()=>{expired++;return true;}}});
+  const t=fixture({api:{me:async()=>{throw Object.assign(new Error('Ended'),{status:401});}}});
+  t.events.listeners.open({});
+  t.events.listeners.error({});await tick();
+  assert.deepEqual(lifecycle,['connected','disconnected']);assert.equal(expired,1);
 });
 
-test('task access loss delegates to the shell state without a stale project toast',async()=>{
+test('task access loss delegates to the shell state without a stale project toast',async(testContext)=>{
   useMockedClock();
-  const previous=globalThis.Recovery,states=[],toasts=[];
-  globalThis.Recovery={handleRouteError:(error,options)=>states.push([error.status,options.background])};
-  try{
-    const t=fixture({api:{task:async()=>{throw Object.assign(new Error('project was not found'),{status:404,code:'not_found'});}},app:{toast:(...args)=>toasts.push(args)}});
-    t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
-    t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
-    assert.deepEqual(states,[[404,true]]);assert.deepEqual(toasts,[]);
-  }finally{if(previous===undefined)delete globalThis.Recovery;else globalThis.Recovery=previous;}
+  const states=[],toasts=[];
+  useGlobals(testContext,{Recovery:{handleRouteError:(error,options)=>states.push([error.status,options.background])}});
+  const t=fixture({api:{task:async()=>{throw Object.assign(new Error('project was not found'),{status:404,code:'not_found'});}},app:{toast:(...args)=>toasts.push(args)}});
+  t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
+  t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
+  assert.deepEqual(states,[[404,true]]);assert.deepEqual(toasts,[]);
 });
 
 test('older activity does not restart exhausted comments and retains reply context/counts',async()=>{
@@ -302,9 +295,9 @@ test('older activity does not restart exhausted comments and retains reply conte
   t.controller.dispose();
 });
 
-test('failed discussion loading after navigation cannot replace the current page',async()=>{
-  const previous=globalThis.Recovery,errors=[],toasts=[];let rejectComments;
-  globalThis.Recovery={handleRouteError:error=>errors.push(error)};
+test('failed discussion loading after navigation cannot replace the current page',async(testContext)=>{
+  const errors=[],toasts=[];let rejectComments;
+  useGlobals(testContext,{Recovery:{handleRouteError:error=>errors.push(error)}});
   const t=fixture({api:{comments:()=>new Promise((_resolve,reject)=>{rejectComments=reject;})},app:{toast:message=>toasts.push(message)}});
   try{
     t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
@@ -313,7 +306,7 @@ test('failed discussion loading after navigation cannot replace the current page
     rejectComments(Object.assign(new Error('No longer visible'),{status:403}));
     assert.deepEqual(await pending,{stale:true});assert.deepEqual(errors,[]);assert.deepEqual(toasts,[]);
     assert.equal(t.pages.length,1);assert.equal(t.pages[0][1].loading,true);
-  }finally{t.controller.dispose();globalThis.Recovery=previous;}
+  }finally{t.controller.dispose();}
 });
 
 test('task and Inbox hint bursts share reads and retain one follow-up during a slow read',async()=>{
@@ -481,35 +474,33 @@ test('Inbox append only publishes its fetched page and uses a busy control befor
 });
 
 
-test('SSE open plus reconcile performs one reload after reconnect',async()=>{
+test('SSE open plus reconcile performs one reload after reconnect',async(testContext)=>{
   useMockedClock();
   let reloads=0;const sources=[],timers=[];
   const t=fixture({app:{context:()=>({view:'board',projectId:'p1'})},api:{me:async()=>({})},transport:{reload:async()=>{reloads++;return {stale:false};}},eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){}};sources.push(source);return source;}});
-  const previous=globalThis.Recovery;
   const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{},getApp:()=>t.app,getAuth:()=>null,reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
-  globalThis.Recovery=recovery;
+  useGlobals(testContext,{Recovery:recovery});
   try{
     sources[0].listeners.error();await tick();timers.at(-1)();
     assert.equal(sources.length,2);assert.equal(sources[1].url,'/api/events');
     sources[1].listeners.open();sources[1].listeners.reconcile({data:'{}'});
     await delay(100);assert.equal(reloads,1);assert.equal(t.apiCalls.filter(call=>call[0]==='inbox').length,1);
-  }finally{t.controller.dispose();recovery.dispose();globalThis.Recovery=previous;}
+  }finally{t.controller.dispose();recovery.dispose();}
 });
 
 /** A page with streams that record their listeners, and the real recovery controller. */
-function streamingPage(overrides={}){
+function streamingPage(testContext,overrides={}){
   const sources=[],timers=[];let expires=0;
   const t=fixture({...overrides,eventSourceFactory:url=>{const source={url,listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},close(){this.closed=true;}};sources.push(source);return source;}});
-  const previous=globalThis.Recovery;
   const recovery=createRecoveryController({data:t.data,api:t.transport.api,gateway:{invalidate(){}},getApp:()=>t.app,getAuth:()=>({expire(){expires++;}}),reload:t.transport.reload,setTimer:callback=>{timers.push(callback);return timers.length;},clearTimer(){},online:()=>true,documentObject:null,windowObject:null});
-  globalThis.Recovery=recovery;
-  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();globalThis.Recovery=previous;}};
+  useGlobals(testContext,{Recovery:recovery});
+  return {...t,sources,recovery,get expires(){return expires;},restore(){t.controller.dispose();recovery.dispose();}};
 }
 
-test('a hidden tab whose stream comes back for someone who signed in elsewhere ends its session and reads nothing for them',async()=>{
+test('a hidden tab whose stream comes back for someone who signed in elsewhere ends its session and reads nothing for them',async(testContext)=>{
   useMockedClock();
   const visibility=new EventTarget();visibility.visibilityState='hidden';
-  const t=streamingPage({visibility});
+  const t=streamingPage(testContext,{visibility});
   try{
     visibility.visibilityState='visible';visibility.dispatchEvent(new Event('visibilitychange'));
     t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',userId:'u2'})});
@@ -519,11 +510,11 @@ test('a hidden tab whose stream comes back for someone who signed in elsewhere e
   }finally{t.restore();}
 });
 
-test('a stream for the person the tab shows goes on, and so does one from a server that names no one',async()=>{
+test('a stream for the person the tab shows goes on, and so does one from a server that names no one',async(testContext)=>{
   useMockedClock();
   for(const named of [{userId:'u1'},{}]){
     let reloads=0;
-    const t=streamingPage({app:{context:()=>({view:'board',projectId:'p1'})},transport:{reload:async()=>{reloads++;return {stale:false};}}});
+    const t=streamingPage(testContext,{app:{context:()=>({view:'board',projectId:'p1'})},transport:{reload:async()=>{reloads++;return {stale:false};}}});
     try{
       t.sources[0].listeners.reconcile({data:JSON.stringify({kind:'reconcile',after:'',...named})});
       await delay(90);
@@ -532,8 +523,8 @@ test('a stream for the person the tab shows goes on, and so does one from a serv
   }
 });
 
-test('a lost stream that finds someone else signed in ends this tab\'s session',async()=>{
-  const t=streamingPage({api:{me:async()=>({user:{id:'u2'},sessionId:'s9'})}});
+test('a lost stream that finds someone else signed in ends this tab\'s session',async(testContext)=>{
+  const t=streamingPage(testContext,{api:{me:async()=>({user:{id:'u2'},sessionId:'s9'})}});
   try{
     t.sources[0].listeners.error();for(let turn=0;turn<5&&!t.expires;turn++)await tick();
     assert.equal(t.expires,1);assert.equal(t.recovery.expired,true);

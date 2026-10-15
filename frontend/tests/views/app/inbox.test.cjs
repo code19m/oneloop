@@ -18,9 +18,8 @@ test('Inbox rows keep the actor, time and read state of their read through later
  }
 });
 
-const layout = w => { w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 }); };
-/** Boot with a fixed layout; `prepare` runs just before collaboration.js, to replace the collaboration controller. */
-const boot = (route = 'inbox', prepare, options) => bootApp({ route, media: () => true, setup: layout, beforeScript: (name, w) => { if (name === 'collaboration') prepare?.(w); }, ...options });
+/** Boot with a fixed layout; `collaboration` runs just before collaboration.js, to replace its controller. */
+const boot = (route = 'inbox', collaboration, options) => bootApp({ route, media: () => true, layout: true, collaboration, ...options });
 
 const seconds = milliseconds => Math.floor(milliseconds / 1000);
 /** A notification as the server lists it. */
