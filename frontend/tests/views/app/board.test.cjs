@@ -151,12 +151,14 @@ test('compact deadlines show the year when it differs and expose the complete da
  assert(t.d.querySelector('[data-task="BIR-079"] .dl').textContent.includes(String(year+1)));
 });
 
-test('multi-select filters keep keyboard position through toggles and return focus on Escape', () => {
+test('multi-select filters keep keyboard position through toggles, name the choice and return focus on Escape', () => {
  const t=boot('board'),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+ assert.match(trigger.textContent,/All tracks/);
  t.A.popMulti({preventDefault(){},currentTarget:trigger},'fTrack');
  const key=value=>t.d.dispatchEvent(new t.w.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));
  key('ArrowDown');const value=t.d.activeElement.dataset.v;assert(value);
  key('Enter');assert.equal(t.d.activeElement.dataset.v,value);assert.equal(t.d.activeElement.getAttribute('aria-pressed'),'true');assert(t.d.querySelector('.pop'));
+ assert.doesNotMatch(trigger.textContent,/All tracks/,'the trigger names the chosen track');
  key(' ');assert.equal(t.d.activeElement.dataset.v,value);assert.equal(t.d.activeElement.getAttribute('aria-pressed'),'false');
  key('Escape');assert(!t.d.querySelector('.pop'));assert.equal(t.d.activeElement,trigger);
 });
