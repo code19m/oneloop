@@ -140,6 +140,19 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
 #[tokio::test]
 async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
     let f = fixture().await;
+    // An open, unassigned task that the filters leave out.
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"Left out"}),
+                "http-other-task",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
     let created = f
         .service
         .execute(

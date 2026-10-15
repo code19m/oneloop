@@ -585,7 +585,7 @@ async fn operational_authorization_failure_closes_instead_of_dropping_a_hint() {
 
 #[tokio::test]
 async fn project_deletion_reconciles_former_members_without_disclosing_context() {
-    let (_root, db, _alice, app, runtime) = app().await;
+    let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
     db.transaction(|tx| {tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p2','Remaining','TWO',1,1)",[])?;Ok(())}).await.unwrap();
@@ -607,6 +607,14 @@ async fn project_deletion_reconciles_former_members_without_disclosing_context()
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1") && !reconcile.contains("Project"));
-    drop(body);
+    // No hint about the deleted project follows before the stream ends.
+    support::auth_service(&db).logout(&alice).await.unwrap();
+    drain(&runtime).await;
+    assert!(
+        timeout(Duration::from_secs(1), body.frame())
+            .await
+            .unwrap()
+            .is_none()
+    );
     receivers(&runtime, 0).await;
 }

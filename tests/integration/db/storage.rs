@@ -35,61 +35,65 @@ fn initialization_creates_private_directories_without_changing_existing_parent()
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelled_writer_keeps_its_permit_until_commit_and_does_not_block_reads() {
-    let root = support::scratch_dir();
-    let db = initialize(&root);
-    let (started, ready) = tokio::sync::oneshot::channel();
-    let (release, gate) = mpsc::channel();
-    let first = db.clone();
-    let write = tokio::spawn(async move {
-        first
-            .transaction(move |tx| {
-                tx.execute(
-                    "INSERT INTO app_metadata VALUES('first-writer','committed',1)",
-                    [],
-                )?;
-                let _ = started.send(());
-                gate.recv().unwrap();
-                Ok(())
-            })
-            .await
-    });
-    ready.await.unwrap();
-    write.abort();
-    let second = db.clone();
-    let mut following = tokio::spawn(async move {
-        second
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO app_metadata VALUES('second-writer','committed',1)",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-    });
-    let readers = query_one::<i64>(
-        &db,
-        "SELECT COUNT(*) FROM app_metadata WHERE key='first-writer'",
-        [],
-    )
-    .await;
-    assert_eq!(readers, 0);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(30), &mut following)
-            .await
-            .is_err()
-    );
-    release.send(()).unwrap();
-    following.await.unwrap().unwrap();
-    let count = query_one::<i64>(
-        &db,
-        "SELECT COUNT(*) FROM app_metadata WHERE key IN ('first-writer','second-writer')",
-        [],
-    )
-    .await;
-    assert_eq!(count, 2);
+// SQLite's busy wait ends at once here, so a second writer that got past the
+// permit would fail instead of waiting for the first writer's lock.
+#[test]
+fn cancelled_writer_keeps_its_permit_until_commit_and_does_not_block_reads() {
+    support::with_instant_busy_timeout(async {
+        let root = support::scratch_dir();
+        let db = initialize(&root);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, gate) = mpsc::channel();
+        let first = db.clone();
+        let write = tokio::spawn(async move {
+            first
+                .transaction(move |tx| {
+                    tx.execute(
+                        "INSERT INTO app_metadata VALUES('first-writer','committed',1)",
+                        [],
+                    )?;
+                    let _ = started.send(());
+                    gate.recv().unwrap();
+                    Ok(())
+                })
+                .await
+        });
+        ready.await.unwrap();
+        write.abort();
+        let second = db.clone();
+        let mut following = tokio::spawn(async move {
+            second
+                .transaction(|tx| {
+                    tx.execute(
+                        "INSERT INTO app_metadata VALUES('second-writer','committed',1)",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+        });
+        let readers = query_one::<i64>(
+            &db,
+            "SELECT COUNT(*) FROM app_metadata WHERE key='first-writer'",
+            [],
+        )
+        .await;
+        assert_eq!(readers, 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut following)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        following.await.unwrap().unwrap();
+        let count = query_one::<i64>(
+            &db,
+            "SELECT COUNT(*) FROM app_metadata WHERE key IN ('first-writer','second-writer')",
+            [],
+        )
+        .await;
+        assert_eq!(count, 2);
+    })
 }
 
 #[tokio::test]

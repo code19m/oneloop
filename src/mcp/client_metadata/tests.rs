@@ -358,19 +358,21 @@ async fn an_exchange_reads_one_bounded_response() {
 
 #[tokio::test]
 async fn documents_are_used_only_when_turned_on_and_the_cache_is_bounded() {
-    let off = ClientDocuments::new(false);
-    assert!(
-        off.document("alice", CLIENT_ID, accept_https_or_loopback)
-            .await
-            .is_err()
-    );
-    let on = ClientDocuments::new(true);
     let template = parse_document(
         CLIENT_ID,
         &document(serde_json::json!({})),
         accept_https_or_loopback,
     )
     .unwrap();
+    // The cache holds the document, so only the setting can refuse it.
+    let off = ClientDocuments::new(false);
+    off.insert_for_test(template.clone());
+    assert!(
+        off.document("alice", CLIENT_ID, accept_https_or_loopback)
+            .await
+            .is_err()
+    );
+    let on = ClientDocuments::new(true);
     on.insert_for_test(template.clone());
     assert_eq!(
         on.document("alice", CLIENT_ID, accept_https_or_loopback)
