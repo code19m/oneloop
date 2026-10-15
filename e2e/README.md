@@ -82,6 +82,9 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
   with `page.clock`.
 - Set up data through `command` or the API before `openApp`, or wait for the
   change to render when the page is already open.
+- Before you measure where something is, turn motion off with
+  `page.emulateMedia({ reducedMotion: 'reduce' })`. Sections grow with an
+  animation when their content loads, so a position can lag for a few frames.
 - Firefox runs with Cross-Origin-Opener-Policy process switching disabled; see
   `playwright.config.mjs`. The startup journey still checks the header.
 
