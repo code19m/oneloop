@@ -377,7 +377,7 @@ Object.assign(App, {
     let q = '';
     const row = (o) => `<button type="button" class="pop-opt multi${def.values().includes(o.v) ? ' on' : ''}" aria-pressed="${def.values().includes(o.v)}" data-v="${esc(o.v)}">
         <span class="chk">${def.values().includes(o.v) ? I.tick : ''}</span>
-        <span style="display:flex;flex-direction:column;min-width:0"><span class="l">${esc(o.l)}</span>${o.sub ? `<span class="s">${esc(o.sub)}</span>` : ''}</span></button>`;
+        <span class="pop-opt-text"><span class="l">${esc(o.l)}</span>${o.sub ? `<span class="s">${esc(o.sub)}</span>` : ''}</span></button>`;
     const paint = () => {
       const opts = q ? def.options.filter((o) => o.l.toLowerCase().includes(q) || (o.sub || '').toLowerCase().includes(q)) : def.options;
       const pinned = opts.filter((o) => o.pinned), rest = opts.filter((o) => !o.pinned);

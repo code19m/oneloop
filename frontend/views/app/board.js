@@ -54,7 +54,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
       const e = epicById(t.epicId);
       const b = taskBits(t);
       const av = (t.assignees || []).filter(userById);
-      const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar" style="width:18px;height:18px;font-size:var(--text-xs)">+${av.length - 3}</span>` : '');
+      const avs = av.slice(0, 3).map((a) => avatarHtml(a, 18)).join('') + (av.length > 3 ? `<span class="avatar">+${av.length - 3}</span>` : '');
       return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${esc(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
         <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
         <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
@@ -67,7 +67,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
         </div></div>`;
     }).join('');
     return `<section class="col" aria-labelledby="col-${c.key}" data-col="${esc(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
+      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
       </div>
       <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
   }).join('');
@@ -244,12 +244,12 @@ export function boardTopbarHtml() {
   const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
   return `<h1>Board</h1>
   <div class="right board-filters">
-    <input class="ctl" data-board-search style="width:170px" aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
+    <input class="ctl board-search" data-board-search aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
     ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
     ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
     ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
     <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono" data-pool-count style="font-size:var(--text-xs);color:var(--ink-ghost)">${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
     ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
   </div>`;
 }

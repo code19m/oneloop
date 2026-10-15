@@ -96,7 +96,7 @@ function renderAuth(mode) {
       <form novalidate ${UIAction.on('submit', 'login', UIAction.event)}>
         ${field('Username', `<input class="ctl mono" name="username" maxlength="32" autocomplete="username"${keptInput ? '' : ' autofocus'}>`)}
         ${field('Password', `<input class="ctl" type="password" name="password" autocomplete="current-password">`)}
-        <div class="modal-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Sign in</button></div>
+        <div class="modal-actions"><button class="btn primary wide" type="submit">Sign in</button></div>
       </form>`;
   return `<main class="auth-wrap" id="main" tabindex="-1"><div class="auth-card">
     <div class="logo" role="img" aria-label="oneloop">${I.logo}<span>${I.wordmark}</span></div>${window.Recovery?.expired?`<p class="auth-notice" role="alert">${keptInput?'Your session ended. Sign in again to keep what you typed.':'Your session ended. Sign in to continue.'}</p>`:''}${inner}</div></main>`;
@@ -137,10 +137,10 @@ function renderProfile() {
   const u = me();
   return `<div class="settings">
     <div class="section">
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+      <div class="avatar-row">
         ${avatarHtml(u.id, 56)}
-        <div style="display:flex;gap:8px">
-          <input type="file" id="avIn" accept="image/*" style="display:none" ${UIAction.on('change', 'setAvatar', UIAction.element)}>
+        <div class="avatar-actions">
+          <input type="file" id="avIn" accept="image/*" hidden ${UIAction.on('change', 'setAvatar', UIAction.element)}>
           <button class="btn" ${UIAction('chooseAvatar')}>${u.avatar ? 'Change avatar' : 'Upload avatar'}</button>
           ${u.avatar ? `<button class="btn" ${UIAction('removeAvatar')}>Remove</button>` : ''}
         </div>
@@ -156,7 +156,7 @@ function renderProfile() {
           ${field('New password', `<input class="ctl" type="password" name="pw" autocomplete="new-password">`)}
           ${field('Confirm', `<input class="ctl" type="password" name="pw2" autocomplete="new-password">`)}
         </div>
-        <div class="modal-actions" style="justify-content:flex-start;margin-top:4px"><button class="btn primary" type="submit">Change password</button></div>
+        <div class="modal-actions start"><button class="btn primary" type="submit">Change password</button></div>
       </form>
     </div>
     <div class="profile-access">${renderProfileAccess()}</div>
@@ -274,7 +274,7 @@ function renderTask() {
         <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value) : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
         <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
       <div class="tp-sec task-attachments">${window.Uploads?.attachmentHeader(t,canEdit) || '<h2>Attachments</h2>'}
-        ${canEdit ? `<input type="file" id="attIn" multiple style="display:none" ${UIAction.on('change', 'attachFiles', t.id, UIAction.element)}>` : ''}
+        ${canEdit ? `<input type="file" id="attIn" multiple hidden ${UIAction.on('change', 'attachFiles', t.id, UIAction.element)}>` : ''}
         ${atts}<div class="upload-list"></div></div>
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
@@ -326,12 +326,12 @@ function renderSettings() {
       <div class="project-fields">
         <div class="field-row">
           ${field('Name', `<input class="ctl" name="name" value="${esc(p.name)}" maxlength="60" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}
-          <div style="max-width:110px">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}</div>
+          <div class="prefix-field">${field('Task prefix', `<input class="ctl mono" name="key" value="${esc(p.key)}" maxlength="4" data-autosave ${UIAction.on('blur', 'updateProjectField', UIAction.element)} data-key="Enter" ${UIAction.on('keydown', 'leaveProjectField', UIAction.event, UIAction.element)}>`)}</div>
         </div>
       </div>
     </div>
     <div class="section">
-      <h2>Project access <span class="mono" style="font-size:var(--text-sm);color:var(--ink-ghost)">${members.length}</span></h2>
+      <h2>Project access <span class="mono subtle">${members.length}</span></h2>
       <input id="member-search" class="ctl" type="search" aria-label="Search project members" placeholder="Search members" value="${esc(memberWindow.query)}" data-member-search>
       <div class="member-access-list" aria-busy="${esc(!!D.adminUsers?.loading)}">
         ${matching.slice(0,memberWindow.limit).map(({ user: u, record: m }) => `
@@ -343,18 +343,18 @@ function renderSettings() {
                 <label class="permission-check"><input type="checkbox" data-autosave aria-label="${esc(u.name)}: manage Board" ${(m.permissions || []).includes('manage_board') ? 'checked' : ''} ${UIAction.on('change', 'setMemberPermission', u.id, 'manage_board', UIAction.checked, UIAction.element)}><span><b>Board</b></span></label>`}
             </div>
             <button class="row-x icon-button" type="button" title="Remove from project" aria-label="Remove ${esc(u.name)} from project" ${UIAction('removeMember', u.id)}>${I.close}</button>
-          </div>`).join('') || `<div class="empty-note" style="border:0;text-align:left;padding:4px 0">${query?'No matching members':'No members yet'}</div>`}
+          </div>`).join('') || `<div class="empty-note inline">${query?'No matching members':'No members yet'}</div>`}
       </div>
       ${matching.length>memberWindow.limit?'<button type="button" class="btn quiet" data-more-members>Load more members</button>':''}
-      <div style="margin-top:12px;width:260px">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
+      <div class="add-member">${D.adminUsers?.loading&&!D.adminUsers?.loaded ? '<span class="access-note" role="status">Loading users…</span>' : candidates.length
         ? selectHtml('addMember', { label:'Add member', value: '', placeholder: 'Add member…', search: true, options: candidates.map((u) => ({ v: u.id, l: `${u.name} · ${userHandle(u)}` })), pick: (v) => App.addMember(v) })
-        : D.adminUsers?.nextCursor ? '' : '<div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">No users to add</div>'}</div>
+        : D.adminUsers?.nextCursor ? '' : '<div class="mono subtle">No users to add</div>'}</div>
       ${D.adminUsers?.nextCursor ? `<button type="button" class="btn quiet" data-more-users ${UIAction('loadMoreUsers')} ${D.adminUsers.loading?'disabled':''}>Load more users</button>` : ''}
       ${D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
     </div>
     ${window.OneloopKnowledge?.settingsHtml(p.id) || ''}
-    <div class="section" style="border-color:color-mix(in srgb,var(--err) 25%,transparent)">
-      <h2 style="color:var(--err)">Danger zone</h2>
+    <div class="section danger-zone">
+      <h2>Danger zone</h2>
       <button class="btn danger" ${UIAction('deleteProject')}>Delete project</button>
     </div>
   </div>`;
@@ -374,9 +374,9 @@ function renderUsers() {
       ${awaiting ? '<p class="access-note" role="status">Loading users…</p>' : D.adminUsers?.error ? `<p class="access-note" role="alert">${esc(D.adminUsers.error)} <button type="button" class="btn quiet" ${UIAction('retryUsers')}>Retry</button></p>` : ''}
       ${listed.map((u) => `
         <button type="button" class="user-row clickable ${u.active ? '' : 'off'}" data-user-id="${esc(u.id)}" ${UIAction('openModal', 'user', u.id)}>${avatarHtml(u.id, 22)}
-          <span class="uname">${esc(u.name)}</span><span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${esc(userHandle(u))}</span>
+          <span class="uname">${esc(u.name)}</span><span class="mono subtle">${esc(userHandle(u))}</span>
           ${u.active ? '' : '<span class="tag-off">deactivated</span>'}
-          ${u.mustChange ? '<span class="tag-off" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? `<button class="btn quiet" ${UIAction('loadMoreUsers')}>Load more users</button>` : ''}
+          ${u.mustChange ? '<span class="tag-off warn">temporary password</span>' : ''}</button>`).join('')}${!awaiting && hasMore ? `<button class="btn quiet" ${UIAction('loadMoreUsers')}>Load more users</button>` : ''}
     </div>
   </div>`;
 }
@@ -392,7 +392,7 @@ function renderTopbar() {
     const t = taskById(state.taskId);
     if (!t) return '<h1>Board</h1>';
     return `<button class="btn icon" ${UIAction('nav', 'board')} title="Back to Board" aria-label="Back to Board"><span aria-hidden="true">←</span></button>
-    <h1 style="display:flex;align-items:center;gap:8px"><span class="mono">${esc(t.id)}</span></h1>
+    <h1 class="task-heading"><span class="mono">${esc(t.id)}</span></h1>
     ${taskStatusHtml(t)}<span class="task-save-status" role="status" aria-live="polite">${taskSaveFeedback?.id===t.id?taskSaveFeedback.saving?'Saving…':'Saved':''}</span>
     ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" ${UIAction('taskActions', UIAction.event, t.id)}>${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
   }
@@ -528,11 +528,11 @@ function renderContent() {
     <div class="side-scrim" ${UIAction('toggleSidebar', false)}></div>
     <nav class="sidebar" aria-label="Main navigation" ${window.innerWidth <= 900 && !state.sideOpen ? 'inert' : ''}>
       <div class="sidebar-brand has-inbox"><div class="logo" role="img" aria-label="oneloop">${I.logo}<span class="lbl">${I.wordmark}</span></div>${collaboration?.inboxNav(state.view) || ''}</div>
-      <div class="switcher"><button class="switcher-btn btn" style="border-color:rgb(var(--tone-rgb) / 0.06)" ${!project()&&!isAdmin()?'disabled':''} ${UIAction('projectMenu', UIAction.event)} title="${esc(p.name)}" aria-label="Project: ${esc(p.name)}" aria-expanded="${!!state.menu?.projectMenu}" aria-controls="project-switcher-menu">
+      <div class="switcher"><button class="switcher-btn btn" ${!project()&&!isAdmin()?'disabled':''} ${UIAction('projectMenu', UIAction.event)} title="${esc(p.name)}" aria-label="Project: ${esc(p.name)}" aria-expanded="${!!state.menu?.projectMenu}" aria-controls="project-switcher-menu">
         <span class="project-identity"><span class="avatar">${esc(p.name[0].toUpperCase())}</span><span class="lbl project-name">${esc(p.name)}</span></span><span class="lbl project-chevron">${I.chev}</span></button></div>
       <div class="nav">
         <button class="nav-item ${state.view === 'roadmap' ? 'on' : ''}" ${state.view === 'roadmap' ? 'aria-current="page"' : ''} ${UIAction('nav', 'roadmap')} title="Roadmap">${I.roadmap}<span class="lbl">Roadmap</span></button>
-        <button class="nav-item ${state.view === 'board' || state.view === 'task' ? 'on' : ''}" ${state.view === 'board' || state.view === 'task' ? 'aria-current="page"' : ''} ${UIAction('nav', 'board')} title="Board">${I.board}<span class="lbl">Board</span><span class="end lbl mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${c.open}</span></button>
+        <button class="nav-item ${state.view === 'board' || state.view === 'task' ? 'on' : ''}" ${state.view === 'board' || state.view === 'task' ? 'aria-current="page"' : ''} ${UIAction('nav', 'board')} title="Board">${I.board}<span class="lbl">Board</span><span class="end lbl mono subtle">${c.open}</span></button>
         <button class="nav-item ${state.view === 'knowledge' ? 'on' : ''}" ${state.view === 'knowledge' ? 'aria-current="page"' : ''} ${UIAction('nav', 'knowledge')} title="Knowledge">${I.knowledge}<span class="lbl">Knowledge</span></button>
         ${isAdmin() ? `<button class="nav-item ${state.view === 'settings' ? 'on' : ''}" ${UIAction('nav', 'settings')} title="Settings">${I.settings}<span class="lbl">Settings</span></button>` : ''}
       </div>
@@ -544,7 +544,7 @@ function renderContent() {
       <main id="main" tabindex="-1" class="content${['settings','profile','users','inbox','storage'].includes(state.view) ? ' form-content'+(['inbox','storage'].includes(state.view)?' workspace-content':'') : ''}">${view}</main>
 
     </div>
-    <div id="overlay-root" style="display:contents">${state.peek ? renderPeek() : ''}${renderModal()}${renderMenu()}</div>
+    <div id="overlay-root">${state.peek ? renderPeek() : ''}${renderModal()}${renderMenu()}</div>
     `);
   // Browsers drop a click when the pressed element leaves the document before
   // mouseup, even if it returns. So a render, such as the route-loading

@@ -141,7 +141,7 @@ const timelineWidth = (model, ppd, width) => Math.max(dayX(model.span, ppd), wid
 const goalCenter = (goal, ppd, timeline) => `${Math.max(6, Math.min(dayX(goal.at, ppd) - goal.width / 2, timeline - goal.width - 6)) + goal.width / 2}px`;
 
 /** Task counts arrive with the Roadmap's own read; until then, a placeholder. */
-const countsLoading = '<span style="color:var(--ink-faint)" aria-hidden="true">…</span><span class="sr-only">Loading task counts</span>';
+const countsLoading = '<span class="tone-faint" aria-hidden="true">…</span><span class="sr-only">Loading task counts</span>';
 
 function epicBar(item, ppd, top) {
   const e = item.epic, s = d(e.start);
@@ -153,9 +153,9 @@ function epicBar(item, ppd, top) {
 
   let meta;
   if (!counted && e.state !== 'done') meta = countsLoading;
-  else if (e.state === 'done') meta = `${counted && e.total ? e.done+'/'+e.total+' · ' : ''}<span style="color:var(--ok)">complete</span>`;
-  else if (ongoing && e.total === 0) meta = '<span style="color:var(--ink-faint)">ongoing</span>';
-  else if (ongoing) meta = `<span style="color:var(--ink-soft)">ongoing</span> · ${e.completedSinceStart ?? e.done} done · ${e.open ?? e.total - e.done} open`;
+  else if (e.state === 'done') meta = `${counted && e.total ? e.done+'/'+e.total+' · ' : ''}<span class="tone-ok">complete</span>`;
+  else if (ongoing && e.total === 0) meta = '<span class="tone-faint">ongoing</span>';
+  else if (ongoing) meta = `<span class="tone-soft">ongoing</span> · ${e.completedSinceStart ?? e.done} done · ${e.open ?? e.total - e.done} open`;
   else if (e.state === 'planning') meta = `${e.done}/${e.total} · starts ${humanShort(s)}`;
   else meta = `${e.done}/${e.total}`;
 
@@ -188,7 +188,7 @@ function showMilestoneTip(anchor, id) {
   mountRoadmapTip(anchor, 'milestone-tooltip', `<div class="epic-tip-title">${esc(milestone.name)}</div>
     <div class="epic-tip-track">Milestone · ${esc(project().name)}</div>
     <dl class="epic-tip-facts"><div><dt>Date</dt><dd>${esc(milestone.date)}</dd></div><div><dt>Timing</dt><dd>${timing}</dd></div></dl>
-    <div class="epic-tip-description">${milestone.desc ? esc(milestone.desc) : '<span style="color:var(--ink-ghost)">No description</span>'}</div>`);
+    <div class="epic-tip-description">${milestone.desc ? esc(milestone.desc) : '<span class="tone-ghost">No description</span>'}</div>`);
 }
 
 /** @type {number|null} */
@@ -269,7 +269,7 @@ export function renderRoadmap() {
         <div class="rm-axis-labels"><span class="rm-calendar-axis" style="${calendar}"></span>${msLabels}${todayPill}</div>
       </div>
       <span class="rm-calendar-lines" style="${calendarLines}"></span>${msHtml}${todayHtml}${lanes}
-      ${emptyProject ? `<div style="position:sticky;left:0;width:100%;padding:60px 0;text-align:center;color:var(--ink-ghost);font-size:var(--text-body)">No tracks yet.</div>` : ''}
+      ${emptyProject ? `<div class="rm-empty">No tracks yet.</div>` : ''}
       <div class="rm-month-row" style="height:${MONTH_ROW}px"><div class="rail-cell" style="width:${RAIL}px"></div><div class="rm-month-grid" style="${calendar}"></div></div>
     </div>
   </div>`;
@@ -298,7 +298,7 @@ function focusMovedTrack(id) {
 // ---------- epic drawer ----------
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
   `<div class="act-row"><span class="act-dot"></span><span class="act-text"><b>${esc(userById(a.who)?.name||a.actorName||a.who)}</b> ${esc(a.text.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,''))}</span><time class="act-time" datetime="${new Date(a.ts).toISOString()}" aria-label="${formatInstant(a.ts)}" data-tip="${esc(formatInstant(a.ts))}">${ago(a.ts)}</time></div>`).join('')
-  || '<div class="empty-note" style="border:0;text-align:left;padding:4px 0">nothing yet</div>';
+  || '<div class="empty-note inline">nothing yet</div>';
 
 function sparkline(weekly) {
   const max = Math.max(1,...weekly);
@@ -324,38 +324,38 @@ export function renderPeek() {
   const rows = eTasks.map((x) => {
     const [dot, m] = stateBits(x);
     return `<div class="task-row">${dot}<span class="tid">${esc(x.id)}</span><span class="tt" data-tip="${esc(x.title)}" data-tip-overflow>${esc(x.title)}</span><span class="tm">${m}</span></div>`;
-  }).join('') || '<div class="empty-note" style="margin:14px 0">no tasks yet</div>';
+  }).join('') || '<div class="empty-note peek-empty">no tasks yet</div>';
 
   const pct = e.total ? Math.round((e.done / e.total) * 100) : 0;
   const midBlock = e.counted === false ? '' : ongoing && e.weekly
-    ? `<div data-epic-throughput style="padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px">${sparkline(e.weekly)}
-        <div><div class="mono" style="font-size:var(--text-xs);color:var(--ink-soft)">${e.closedThisWeek} closed this week</div>
-        <div class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">${e.completedSinceStart ?? e.done} since ${humanShort(d(e.start))} · ${e.open ?? e.total - e.done} open</div></div></div>`
-    : e.total ? `<div style="padding:16px 20px;border-bottom:1px solid var(--line)">
-        <div style="position:relative;height:6px;background:rgb(var(--tone-rgb) / 0.07);border-radius:3px;overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></div></div>
-        <div class="mono" style="font-size:var(--text-xs);color:var(--ink-faint);margin-top:8px">${e.done} of ${e.total} tasks complete · ${pct}%</div></div>` : '';
+    ? `<div class="peek-throughput" data-epic-throughput>${sparkline(e.weekly)}
+        <div><div class="mono subtle tone-soft">${e.closedThisWeek} closed this week</div>
+        <div class="mono subtle">${e.completedSinceStart ?? e.done} since ${humanShort(d(e.start))} · ${e.open ?? e.total - e.done} open</div></div></div>`
+    : e.total ? `<div class="peek-progress">
+        <div class="peek-progress-track"><div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${e.state === 'done' ? 'var(--ok)' : 'var(--run)'}"></div></div>
+        <div class="mono subtle tone-faint peek-progress-label">${e.done} of ${e.total} tasks complete · ${pct}%</div></div>` : '';
 
   return `<div class="scrim" ${UIAction('closeOverlays')}></div>
   <aside class="peek" role="dialog" aria-modal="true" aria-labelledby="peek-title">
     <div class="peek-head">
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <span class="mono" style="font-size:var(--text-xs);letter-spacing:0.1em;color:var(--ink-ghost)">${esc(t ? t.name : '')}</span>
+      <div class="peek-heading">
+        <span class="mono subtle peek-track">${esc(t ? t.name : '')}</span>
         <button type="button" class="btn icon" aria-label="Close epic" ${UIAction('closeOverlays')}>${I.close}</button>
       </div>
-      <h2 id="peek-title" style="font-size:17px;font-weight:600;letter-spacing:-0.01em">${esc(e.title)}</h2>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <h2 id="peek-title" class="peek-title">${esc(e.title)}</h2>
+      <div class="peek-meta">
         <span class="chip idle">${ongoing ? 'Ongoing · ' : ''}${esc(epicStatus(e))}</span>
-        <span class="mono" style="font-size:var(--text-xs);color:var(--ink-faint)">${humanShort(d(e.start))} → ${e.end ? humanShort(d(e.end)) : '<span style="color:var(--ink-soft)">no end date</span>'}</span>
+        <span class="mono subtle tone-faint">${humanShort(d(e.start))} → ${e.end ? humanShort(d(e.end)) : '<span class="tone-soft">no end date</span>'}</span>
       </div>
     </div>
     <div class="peek-body">
     ${midBlock}
     ${e.desc ? descriptionReadHtml(e.desc,'epic-description-'+e.id) : ''}
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px">
-      <div style="display:flex;align-items:baseline;gap:7px"><span style="font-size:var(--text-body);font-weight:600;color:var(--ink)">Tasks</span><span class="mono" data-epic-task-total style="font-size:var(--text-xs);color:var(--ink-ghost)">${page?.loaded?page.tasksTotal:eTasks.length}</span></div>
+    <div class="peek-section-head">
+      <div class="peek-section-title"><span class="peek-label">Tasks</span><span class="mono subtle" data-epic-task-total>${page?.loaded?page.tasksTotal:eTasks.length}</span></div>
     </div>
     <div class="peek-rows">${rows}${page?.tasksCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicTasks', e.id)}>Load more tasks</button>`:''}
-      <div style="padding:14px 0 6px;font-size:var(--text-body);font-weight:600;color:var(--ink)">Activity</div>
+      <div class="peek-label peek-activity-label">Activity</div>
       ${actFeed(e.activity, page?.loaded?Number.MAX_SAFE_INTEGER:8)}
       ${page?.activityCursor?`<button class="btn quiet" ${UIAction('loadMoreEpicActivity', e.id)}>Load older activity</button>`:''}
     </div>
@@ -365,7 +365,7 @@ export function renderPeek() {
         ? `<button class="btn" ${UIAction('reopenEpic', e.id)}>Reopen</button>`
         : `<button class="btn" ${UIAction('closeEpic', e.id)}>Mark as done</button>`}
       <button class="btn" ${UIAction('openModal', 'epic', e.id)}>Edit epic</button>
-      <button class="btn danger" style="margin-left:auto" ${UIAction('deleteEpic', e.id)}>Delete</button>` : '<span class="access-note" style="margin:0">Read only</span>'}
+      <button class="btn danger" ${UIAction('deleteEpic', e.id)}>Delete</button>` : '<span class="access-note">Read only</span>'}
     </div>
   </aside>`;
 }
@@ -388,7 +388,7 @@ export function roadmapTopbarHtml() {
   <div class="right">
     ${roadmapScaleHtml()}
     <button class="btn quiet" ${UIAction('goToday')}>Today</button>
-    ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond" style="border-color:var(--ink-muted)"></span><span class="btn-label">Milestone</span></button>
+    ${canRoadmap() ? `<button class="btn roadmap-milestone" data-tip="Milestone" data-tip-overflow ${UIAction('openModal', 'milestone')}><span class="ms-diamond"></span><span class="btn-label">Milestone</span></button>
     <button class="btn primary" ${UIAction('openModal', 'epic')}>${I.plus} Epic</button>` : '<span class="read-only-pill">read only</span>'}
   </div>`;
 }

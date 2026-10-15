@@ -42,7 +42,7 @@ export function renderModal() {
       ${field('Name', `<input class="ctl" name="name" placeholder="Public launch" value="${esc(ms ? ms.name : '')}" maxlength="60" required autofocus>`)}
       ${field('Date', dateHtml('mDate', { name: 'date', value: ms ? ms.date : iso(today) }))}
       ${field('Goal', descriptionEditorHtml(ms?.desc,500), true)}
-      <div class="modal-actions">${ms ? `<button class="btn danger" type="button" style="margin-right:auto" ${UIAction('deleteMilestone', ms.id)}>Delete</button>` : ''}<button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
+      <div class="modal-actions">${ms ? `<button class="btn danger lead" type="button" ${UIAction('deleteMilestone', ms.id)}>Delete</button>` : ''}<button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${ms ? 'Save' : 'Create milestone'}</button></div>
     </form>`;
   } else if (m.type === 'track') {
     const t = m.id ? trackById(m.id) : null;
@@ -67,10 +67,10 @@ export function renderModal() {
     <form novalidate ${UIAction.on('submit', 'saveUser', UIAction.event, m.id || '')}>
       ${field('Username', `<input class="ctl mono" name="username" value="${esc(u ? userHandle(u) : '')}" ${u ? 'disabled' : 'autofocus'} maxlength="32">`)}
       ${field('Full name', `<input class="ctl" name="name" value="${esc(u ? u.name : '')}" maxlength="80" ${u ? 'autofocus' : ''}>`)}
-      <label class="check" style="margin-bottom:5px"><input type="checkbox" name="admin" ${u && u.admin ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Admin${lastAdmin ? ' <span class="mono" style="font-size:var(--text-xs);color:var(--ink-ghost)">· last active admin</span>' : ''}</label>
-      ${u ? `<label class="check" style="margin-bottom:14px"><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Active</label>` : ''}
+      <label class="check user-admin"><input type="checkbox" name="admin" ${u && u.admin ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Admin${lastAdmin ? ' <span class="mono subtle">· last active admin</span>' : ''}</label>
+      ${u ? `<label class="check user-active"><input type="checkbox" name="active" ${u.active ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Active</label>` : ''}
       <div class="modal-actions">
-        ${u ? `<button class="btn" type="button" style="margin-right:auto" ${UIAction('resetPassword', u.id)}>Reset password</button>` : ''}
+        ${u ? `<button class="btn lead" type="button" ${UIAction('resetPassword', u.id)}>Reset password</button>` : ''}
         <button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button>
         <button class="btn primary" type="submit">${u ? 'Save' : 'Create user'}</button>
       </div>

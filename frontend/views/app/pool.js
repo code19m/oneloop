@@ -93,9 +93,9 @@ export function poolViewHtml() {
   const canWritePool = state.poolTab === 'mine' || canBoard();
   const rows = pl.length?pl.map(poolRowHtml).join('')+poolReadNotice():poolReadNotice(true);
   return `<div class="pool-view"><div class="pool-head"><h2>Pool</h2>
-    <div class="seg" style="margin-left:auto">
-      <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" ${UIAction('setPoolTab', 'mine')}>My <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
-      <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" ${UIAction('setPoolTab', 'project')}>Team <span class="mono" style="font-size:var(--text-xs);opacity:.7">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
+    <div class="seg">
+      <button type="button" class="${state.poolTab === 'mine' ? 'on' : ''}" data-pool-tab="mine" aria-pressed="${state.poolTab === 'mine'}" ${UIAction('setPoolTab', 'mine')}>My <span class="mono tab-count">${D.poolPageInfo?.[`${state.projectId}:mine`]?.total ?? mine.length}</span></button>
+      <button type="button" class="${state.poolTab === 'project' ? 'on' : ''}" data-pool-tab="project" aria-pressed="${state.poolTab === 'project'}" ${UIAction('setPoolTab', 'project')}>Team <span class="mono tab-count">${D.poolPageInfo?.[`${state.projectId}:project`]?.total ?? proj.length}</span></button>
     </div>
     <button type="button" class="btn icon" aria-label="Close pool" title="Close pool" ${UIAction('closeOverlays')}>${I.close}</button>
   </div>
