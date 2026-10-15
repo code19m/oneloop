@@ -29,12 +29,6 @@ async fn retention_removes_only_dead_state_preserving_audit_families_and_cursor(
         "#, future=now+86400))?;
         Ok(())
     }).await.unwrap();
-    db.run(|conn| {
-        let mut plan = conn.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM login_throttles INDEXED BY login_throttles_expiry_idx WHERE blocked_until<=2000000000 AND window_started_at<=1999999100 LIMIT 500")?;
-        let details = plan.query_map([], |row| row.get::<_,String>(3))?.collect::<Result<Vec<_>,_>>()?.join(" ");
-        assert!(details.contains("window_started_at<?"), "must skip active windows: {details}");
-        Ok(())
-    }).await.unwrap();
     prune_login_throttles(&db, now).await.unwrap();
     prune_transient_state(&db, now).await.unwrap();
     db.run(|conn| {

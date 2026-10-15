@@ -815,5 +815,28 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
 
 use rusqlite::OptionalExtension;
 
+/// Test support: a migrated database in a new temporary folder.
+#[cfg(test)]
+pub(crate) fn test_database() -> (tempfile::TempDir, Connection) {
+    let root = tempfile::tempdir_in("target").expect("temporary folder");
+    migrate(root.path(), None).expect("migrated test database");
+    let connection = open_connection(&root.path().join(DATABASE_FILE)).expect("test database");
+    (root, connection)
+}
+
+/// Test support: the plan SQLite chooses for `sql`, one step per line.
+#[cfg(test)]
+pub(crate) fn query_plan(connection: &Connection, sql: &str) -> String {
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("statement to explain");
+    let parameters = vec![rusqlite::types::Value::Null; statement.parameter_count()];
+    statement
+        .query_map(rusqlite::params_from_iter(parameters), |row| row.get(3))
+        .and_then(|steps| steps.collect::<Result<Vec<String>, _>>())
+        .expect("query plan")
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests;
