@@ -1,6 +1,6 @@
-//! The one project access policy, shared by every service. Each check reads
-//! the current identity and access; private scopes never inherit
-//! administrator visibility. It also validates mentions.
+//! The one project access policy that every service uses, for browser
+//! sessions and apps alike. Each check reads current data. Mentions are
+//! checked here too, because they name project members.
 use crate::collaboration::{MentionKind, MentionToken};
 use crate::{
     AppError, AppResult,

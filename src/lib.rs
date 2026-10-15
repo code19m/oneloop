@@ -1,4 +1,5 @@
-//! Application composition for the shared browser and MCP services. Transport adapters never bypass domain authorization or validation.
+//! The oneloop server as a library. `application` builds the router that
+//! serves the web client, the browser API and MCP from the same services.
 
 #![warn(unreachable_pub)]
 
