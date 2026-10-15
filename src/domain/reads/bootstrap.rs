@@ -1,5 +1,7 @@
 //! The bootstrap: what the client needs to show its first view.
 
+use super::board::{board_counts_connection, board_page_with_total};
+use super::roadmap::{epics, milestones, tracks};
 use super::*;
 
 fn unread_notification_count(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<i64> {

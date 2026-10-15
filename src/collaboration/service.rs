@@ -4,9 +4,13 @@ mod activity;
 mod comments;
 mod inbox;
 
-use comments::*;
+use comments::{
+    create_comment, delete_comment, edit_comment, require_comment_owner_or_admin, restore_comment,
+    show_deleted_comment,
+};
+use inbox::{InboxChange, inbox_bulk_change, inbox_item_change};
+
 pub(crate) use inbox::enqueue_inbox_change_tx;
-use inbox::*;
 
 use std::collections::BTreeSet;
 

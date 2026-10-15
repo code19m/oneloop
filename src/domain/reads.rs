@@ -5,6 +5,13 @@ mod board;
 mod bootstrap;
 mod roadmap;
 
+use board::{
+    board_counts_connection, board_page_connection, board_page_with_total,
+    epic_task_page_connection,
+};
+use bootstrap::bootstrap_snapshot;
+use roadmap::{epics, milestones, tracks};
+
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,9 +32,6 @@ use super::{
 };
 
 pub(super) use board::task_view;
-use board::*;
-use bootstrap::*;
-use roadmap::*;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

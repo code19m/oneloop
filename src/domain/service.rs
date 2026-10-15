@@ -1,21 +1,25 @@
 //! Domain commands: one handler per operation, run once inside the shared
 //! command envelope, and the row helpers the handlers share.
-mod project;
-use project::*;
-mod membership;
-use membership::*;
-mod roadmap;
-use roadmap::*;
-mod ordering;
-use ordering::*;
-mod task;
-use task::*;
 mod block;
-use block::*;
+mod membership;
+mod ordering;
 mod pool;
-use pool::*;
+mod project;
+mod roadmap;
+mod task;
 mod validation;
-use validation::*;
+
+use block::{block_task, unblock_task, update_block_reason};
+use membership::{add_membership, remove_membership, update_membership};
+use pool::{
+    create_pool_item, delete_pool_item, promote_pool_item, require_pool_scope, update_pool_item,
+};
+use project::{create_project, delete_project, update_project};
+use roadmap::{
+    complete_epic, create_epic, create_milestone, create_track, delete_epic, delete_milestone,
+    delete_track, reopen_epic, reorder_track, update_epic, update_milestone, update_track,
+};
+use task::{create_task, delete_task, move_task, restore_task, update_task};
 
 use std::collections::{BTreeSet, HashSet};
 

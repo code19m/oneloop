@@ -1,4 +1,5 @@
 //! Blocking episodes preserve exact mention text and deliver only newly selected recipients.
+use super::ordering::task_append_position;
 use super::*;
 
 pub(super) fn block_task(

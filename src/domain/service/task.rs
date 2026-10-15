@@ -1,4 +1,6 @@
 //! Task mutations preserve required epic ownership, assignee eligibility and block completion guards.
+use super::ordering::{task_append_position, task_insert_position};
+use super::validation::optional_date;
 use super::*;
 
 pub(super) fn create_task(

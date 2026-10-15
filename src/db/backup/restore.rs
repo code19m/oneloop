@@ -1,5 +1,9 @@
 //! Restoring a backup into a new or empty data directory.
 
+use super::owner::{
+    OwnerLock, WorkOwner, claim_abandoned, names_claimed_file, reclaim_partial_copies,
+    remove_claimed_marker, remove_set_aside_markers,
+};
 use super::*;
 use crate::db::{RESTORE_MARKER, create_private_directories};
 

@@ -1,6 +1,7 @@
 //! The owner record of a backup's working folder or a restore's target, and
 //! the cleanup of work that an interrupted command left behind.
 
+use super::restore::RESTORE_WORKING_PREFIX;
 use super::*;
 use crate::db::{RESTORE_MARKER, private_file_options};
 

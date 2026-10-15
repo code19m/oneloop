@@ -1,4 +1,5 @@
 //! Private/team Pool commands preserve ownership and atomically promote into tasks.
+use super::task::create_task;
 use super::*;
 
 pub(super) fn create_pool_item(

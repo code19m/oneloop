@@ -1,3 +1,7 @@
+use super::owner::{
+    OWNER_FILE, OwnerLock, WorkOwner, claim_abandoned, host_name, reclaim_partial_copies,
+    remove_claimed_marker, set_aside_claimed_marker,
+};
 use super::*;
 
 #[test]
