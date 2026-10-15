@@ -1,6 +1,7 @@
 //! Connected apps: how OAuth grants and their tokens are issued, rotated and
 //! revoked, and when a grant still works.
 use super::*;
+use crate::access::can_read_project;
 
 /// An access token works for 15 minutes; the app refreshes it after that.
 pub(crate) const ACCESS_TOKEN_SECONDS: i64 = 15 * 60;
@@ -465,18 +466,16 @@ pub(crate) fn grant_is_current(
     now: i64,
 ) -> AppResult<bool> {
     Ok(connection
-        .prepare_cached(
+        .prepare_cached(concat!(
             "SELECT EXISTS(SELECT 1 FROM mcp_grants g JOIN users u ON u.id=g.user_id
              WHERE g.id=?1 AND g.revoked_at IS NULL AND g.expires_at>?2 AND u.is_active=1
                AND EXISTS(SELECT 1 FROM mcp_grant_projects WHERE grant_id=g.id)
-               AND NOT EXISTS(
-                 SELECT 1 FROM mcp_grant_projects gp
-                 LEFT JOIN projects p ON p.id=gp.project_id AND p.deleted_at IS NULL
-                 LEFT JOIN project_memberships m
-                   ON m.project_id=gp.project_id AND m.user_id=u.id
-                 WHERE gp.grant_id=g.id
-                   AND (p.id IS NULL OR (u.is_admin=0 AND m.user_id IS NULL))))",
-        )?
+               AND NOT EXISTS(SELECT 1 FROM mcp_grant_projects gp WHERE gp.grant_id=g.id
+                 AND NOT EXISTS(SELECT 1 FROM projects p
+                   WHERE p.id=gp.project_id AND p.deleted_at IS NULL AND ",
+            can_read_project!("u", "p.id"),
+            ")))"
+        ))?
         .query_row(rusqlite::params![grant_id, now], |row| row.get(0))?)
 }
 

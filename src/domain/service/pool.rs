@@ -283,11 +283,7 @@ pub(super) fn require_pool_scope(
     match scope {
         PoolScope::Team => require_project(tx, actor, project_id, Need::Board, destructive),
         PoolScope::Personal => {
-            require_project(tx, actor, project_id, Need::Read, destructive)?;
-            if !crate::access::can_read_private_pool(tx, actor)? {
-                return Err(AppError::Forbidden);
-            }
-            Ok(())
+            crate::access::require_private_pool(tx, actor, project_id, destructive)
         }
     }
 }

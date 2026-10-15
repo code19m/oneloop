@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::consent_page::{ConsentPresentation, consent_html};
 use super::*;
 use crate::{
-    access::McpScope,
+    access::{self, McpScope, Need},
     auth::{Actor, token::random_token},
     http::{auth::authenticate_headers, security::require_canonical_origin},
     mcp::client_metadata::ClientDocument,
@@ -584,24 +584,13 @@ fn parse_requested_scopes(raw: &str) -> Result<Vec<McpScope>, OAuthError> {
     Ok(set.into_iter().collect())
 }
 
+/// The projects the person may give an app, as `(id, name)`.
 async fn accessible_projects(state: &AppState, actor: &Actor) -> AppResult<Vec<(String, String)>> {
-    let actor = actor.clone();
-    state
-        .db
-        .run(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT p.id,p.name FROM projects p WHERE p.deleted_at IS NULL
-                   AND (?1=1 OR EXISTS(SELECT 1 FROM project_memberships m
-                                       WHERE m.project_id=p.id AND m.user_id=?2))
-                 ORDER BY p.name,p.id",
-            )?;
-            Ok(statement
-                .query_map(params![actor.is_admin, actor.user_id], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?)
-        })
-        .await
+    let projects = state.domain.projects(actor).await?;
+    Ok(projects
+        .into_iter()
+        .map(|project| (project.id, project.name))
+        .collect())
 }
 
 fn validate_selected_projects(
@@ -610,15 +599,13 @@ fn validate_selected_projects(
     projects: &[String],
 ) -> AppResult<()> {
     for id in projects {
-        let allowed: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2
-             WHERE p.id=?1 AND p.deleted_at IS NULL AND u.is_active=1
-               AND (u.is_admin=1 OR EXISTS(SELECT 1 FROM project_memberships m
-                                          WHERE m.project_id=p.id AND m.user_id=u.id)))",
-            params![id, actor.user_id],
-            |row| row.get(0),
-        )?;
-        if !allowed {
+        if !access::allowed(access::require_project(
+            connection,
+            actor,
+            id,
+            Need::Read,
+            false,
+        ))? {
             return Err(AppError::validation(
                 "project",
                 "contains an inaccessible project",

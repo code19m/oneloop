@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     Db,
-    access::{Need, require_project, validate_mentions},
+    access::{Need, is_active_member, require_project, validate_mentions},
     auth::Actor,
     clock::unix_now,
     collaboration::{
@@ -382,10 +382,7 @@ fn validate_assignees(
         if !unique.insert(id.clone()) {
             continue;
         }
-        let valid: bool = tx.query_row(IS_ACTIVE_MEMBER_SQL, params![id, project_id], |row| {
-            row.get(0)
-        })?;
-        if !valid {
+        if !is_active_member(tx, project_id, &id)? {
             return Err(AppError::validation(
                 "assigneeIds",
                 "every assignee must be an active project member",
@@ -492,8 +489,6 @@ const MOVE_TASK_SQL: &str = "UPDATE tasks SET status=?1,position=?2,completed_at
                      COALESCE(MAX(completion_order),0)+1 FROM tasks WHERE completion_order>0) ELSE 0 END,updated_at=?4,\
                      revision=revision+1 WHERE id=?5 AND revision=?6";
 
-const IS_ACTIVE_MEMBER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM users u JOIN project_memberships m ON m.user_id=u.id WHERE \
-                     u.id=?1 AND u.is_active=1 AND m.project_id=?2)";
 const ACTIVE_BLOCK_SQL: &str = "SELECT b.project_id,b.task_id,b.reason,b.revision FROM task_blocks b \
     JOIN tasks t ON t.id=b.task_id AND t.deleted_at IS NULL WHERE b.id=?1 AND b.resolved_at IS NULL";
 const POOL_ITEM_SQL: &str = "SELECT project_id,scope,owner_user_id,title,description,created_at,revision \

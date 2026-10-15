@@ -186,13 +186,7 @@ pub(crate) fn notify(
     let mut notified = direct.clone();
     snapshot_notification_tx(tx, actor, input(mentioned, false), direct, now)?;
     if has_everyone && !had_everyone {
-        let mut everyone: BTreeSet<String> = tx
-            .prepare_cached(
-                "SELECT m.user_id FROM project_memberships m JOIN users u ON u.id=m.user_id
-                 WHERE m.project_id=?1 AND u.is_active=1",
-            )?
-            .query_map([notice.project_id], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
+        let mut everyone = crate::access::active_members(tx, notice.project_id)?;
         everyone.remove(&actor.user_id);
         everyone.retain(|id| !notified.contains(id) && !previous.contains(id));
         notified.extend(everyone.iter().cloned());

@@ -8,7 +8,7 @@ use crate::{
 };
 use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// SQL that holds when the account in `$user`, an alias of a `users` row, may
 /// read the project in `$project`: the account is active, and an admin or a
@@ -31,6 +31,35 @@ macro_rules! can_read_project {
     };
 }
 pub(crate) use can_read_project;
+
+/// SQL for the people who may be assigned to project `?1`'s tasks, mentioned
+/// in it or reached by `@everyone`: its members whose accounts are active.
+macro_rules! active_members_sql {
+    () => {
+        "SELECT m.user_id FROM project_memberships m JOIN users u ON u.id=m.user_id
+         WHERE m.project_id=?1 AND u.is_active=1"
+    };
+}
+
+/// Whether the person may be assigned, mentioned or reached by `@everyone`
+/// in the project.
+pub(crate) fn is_active_member(conn: &Connection, project: &str, user: &str) -> AppResult<bool> {
+    Ok(conn
+        .prepare_cached(concat!(
+            "SELECT EXISTS(",
+            active_members_sql!(),
+            " AND m.user_id=?2)"
+        ))?
+        .query_row(params![project, user], |row| row.get(0))?)
+}
+
+/// Everyone `@everyone` reaches in the project.
+pub(crate) fn active_members(conn: &Connection, project: &str) -> AppResult<BTreeSet<String>> {
+    Ok(conn
+        .prepare_cached(active_members_sql!())?
+        .query_map([project], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum Need {
@@ -187,6 +216,18 @@ pub(crate) fn can_read_private_pool(conn: &Connection, actor: &Actor) -> AppResu
     allowed(require_scope(conn, actor, McpScope::MyPoolPrivate, None))
 }
 
+/// Access to the actor's own My Pool in the project: read access to the
+/// project, and for an app the `my_pool_private` scope.
+pub(crate) fn require_private_pool(
+    conn: &Connection,
+    actor: &Actor,
+    project: &str,
+    destructive: bool,
+) -> AppResult<()> {
+    require_project(conn, actor, project, Need::Read, destructive)?;
+    require_scope(conn, actor, McpScope::MyPoolPrivate, None)
+}
+
 pub(crate) fn require_project(
     conn: &Connection,
     actor: &Actor,
@@ -311,12 +352,9 @@ pub(crate) fn validate_mentions(
                 let user_id = token.user_id.as_deref().ok_or_else(|| {
                     AppError::validation("mentions", "user mention requires userId")
                 })?;
-                let member: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM project_memberships m JOIN users u ON u.id=m.user_id
-                     WHERE m.project_id=?1 AND m.user_id=?2 AND u.is_active=1)",
-                    params![project_id, user_id], |row| row.get(0),
-                )?;
-                if !member && !retained.iter().any(|id| id == user_id) {
+                if !is_active_member(tx, project_id, user_id)?
+                    && !retained.iter().any(|id| id == user_id)
+                {
                     return Err(AppError::validation(
                         "mentions",
                         "mentioned user is not an active project member",

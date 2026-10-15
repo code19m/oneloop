@@ -76,6 +76,8 @@ All notable changes to oneloop are recorded here. The format follows
   mention. Before, the mention was dropped and the person was not notified.
 - An epic's activity now comes in pages of up to 100 items, like all other
   activity, as the limits in the documentation say. It stopped at 50.
+- The page where you connect an AI app lists projects in the same order as
+  the app, without regard to upper and lower case.
 - In MCP, `execute_destructive_command` without `expectedRevision` now fails
   with `precondition_failed`, as edits do and as the documentation says.
   Before, the call was refused as invalid arguments.

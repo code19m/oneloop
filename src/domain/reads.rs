@@ -462,9 +462,9 @@ fn pool_page_connection(
     cursor: Option<&str>,
     limit: usize,
 ) -> AppResult<Page<PoolItemView>> {
-    require_project(connection, actor, project_id, Need::Read, false)?;
-    if scope == PoolScope::Personal && !crate::access::can_read_private_pool(connection, actor)? {
-        return Err(AppError::Forbidden);
+    match scope {
+        PoolScope::Team => require_project(connection, actor, project_id, Need::Read, false)?,
+        PoolScope::Personal => access::require_private_pool(connection, actor, project_id, false)?,
     }
     let (cursor_time, cursor_id) = parse_position_cursor(cursor)?;
     let own = &actor.user_id;
