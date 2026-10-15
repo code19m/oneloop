@@ -20,7 +20,8 @@ impl FileService {
         Ok(AttachmentList { items })
     }
 
-    /// An attachment the person may read.
+    /// An attachment the person may read. A connection without the
+    /// attachments permission is refused before the attachment is looked up.
     pub(crate) async fn attachment(
         &self,
         actor: &Actor,
@@ -30,6 +31,7 @@ impl FileService {
         let attachment_id = attachment_id.to_owned();
         self.db
             .run(move |connection| {
+                crate::access::require_scope(connection, &actor, "attachments", None)?;
                 let attachment = attachment_by_id(connection, &attachment_id)?.attachment;
                 require_file_access(connection, &actor, &attachment.project_id, false, false)?;
                 Ok(attachment)

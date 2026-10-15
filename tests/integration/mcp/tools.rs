@@ -225,6 +225,20 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
             .await,
         "not_found",
     );
+    // Without the attachments permission, a ticket is refused before the
+    // file or task is looked up.
+    for (tool, arguments) in [
+        (
+            "create_attachment_download",
+            json!({"attachmentId":"missing"}),
+        ),
+        (
+            "create_attachment_upload",
+            json!({"taskId":"missing","fileName":"a.txt","sizeBytes":1,"idempotencyKey":"no-scope"}),
+        ),
+    ] {
+        assert_tool_error(&read_mcp.call(tool, arguments).await, "forbidden");
+    }
 
     let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
 

@@ -22,7 +22,8 @@ fn check_upload(actor: &Actor, name: &str, size: u64, key: &str) -> AppResult<()
 impl FileService {
     /// Checks an upload as `begin_attachment_upload` will, before anything
     /// is reserved for it. `task` is the task's ID or key; the result is its
-    /// ID.
+    /// ID. A connection without the attachments permission is refused before
+    /// the task is looked up.
     pub(crate) async fn check_attachment_upload(
         &self,
         actor: &Actor,
@@ -36,6 +37,7 @@ impl FileService {
         let task = task.to_owned();
         self.db
             .run(move |connection| {
+                crate::access::require_scope(connection, &actor, "attachments", None)?;
                 let (task_id, project_id): (String, String) = connection
                     .query_row(
                         "SELECT id,project_id FROM tasks
