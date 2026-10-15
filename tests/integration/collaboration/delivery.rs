@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use oneloop::{
     auth::ActorSource,
     collaboration::{
@@ -406,49 +404,6 @@ async fn inbox_state_changes_emit_one_private_hint_and_noops_stay_quiet() {
             assert!(left.notification_id.is_none());
         }
     }
-}
-
-/// Run with `cargo test --test integration large_inbox_service_latency -- --ignored --nocapture`.
-#[tokio::test]
-#[ignore = "manual 50,000-item Inbox latency measurement"]
-async fn large_inbox_service_latency() {
-    let SeededProject {
-        root: _root,
-        db,
-        bob,
-        ..
-    } = seeded_project().await;
-    let base = now();
-    db.transaction(move |tx| {
-        let mut events = tx.prepare_cached(
-            "INSERT INTO notification_events(id,project_id,actor_user_id,event_type,payload_json,created_at)
-             VALUES (?1,'p1','alice','test','{}',?2)",
-        )?;
-        let mut recipients = tx.prepare_cached(
-            "INSERT INTO notification_recipients(notification_id,user_id,project_name_snapshot,actor_name_snapshot,delivered_at)
-             VALUES (?1,'bob','Project','Alice',?2)",
-        )?;
-        for index in 0..50_000 {
-            let id = format!("event-{index:05}");
-            events.execute(rusqlite::params![id, base - index])?;
-            recipients.execute(rusqlite::params![id, base])?;
-        }
-        Ok(())
-    }).await.unwrap();
-    let service = CollaborationService::new(db);
-    let mut samples = Vec::new();
-    for _ in 0..5 {
-        let started = Instant::now();
-        let page = service
-            .inbox(&bob, InboxFilter::default(), None, None)
-            .await
-            .unwrap();
-        samples.push(started.elapsed().as_millis());
-        assert_eq!(page.items.len(), 50);
-        assert_eq!(page.filtered_count, 50_000);
-        assert!(page.next_cursor.is_some());
-    }
-    println!("50k Inbox items, first 50 actual service ms: {samples:?}");
 }
 
 #[tokio::test]

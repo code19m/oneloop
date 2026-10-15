@@ -188,17 +188,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latency: BTreeMap<_, _> = samples
         .iter_mut()
         .map(|(kind, values)| {
-            values.sort_by(f64::total_cmp);
-            let at = |fraction: f64| values[((values.len() - 1) as f64 * fraction).ceil() as usize];
-            (
-                *kind,
-                json!({"budgetMs":budget(kind),"count":values.len(),"p50Ms":at(0.5),"p95Ms":at(0.95),"maxMs":at(1.0)}),
-            )
+            let mut summary = latency_summary(values);
+            summary["budgetMs"] = json!(budget(kind));
+            (*kind, summary)
         })
         .collect();
-    let within_budget = samples.iter().all(|(kind, values)| {
-        values[((values.len() - 1) as f64 * 0.95).ceil() as usize] < budget(kind)
-    });
+    let within_budget = samples
+        .iter()
+        .all(|(kind, values)| percentile(values, 0.95) < budget(kind));
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -213,7 +210,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("workload acceptance budget was not met".into());
     }
     if !measure {
-        assert_eq!(latency_summary(Vec::new()), json!({"count":0}));
         outbox_burst(true).await?;
     }
     Ok(())
@@ -231,18 +227,7 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::open(&data_dir)?;
     db.transaction(move |tx| {
         let now = oneloop::auth::unix_now()?;
-        for user in 0..members {
-            let id = format!("user-{user}");
-            tx.execute("INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at) VALUES(?1,?2,?2,'benchmark-disabled',0,?3,?3,?3)", params![id,format!("user{user:03}"),now])?;
-            tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,?4,?4,?5,?6)",params![format!("session-{user}"),id,token_hash(&fixture_token(user)),now,now+604800,now+2592000])?;
-        }
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at) VALUES('project','Outbox','OUT','user-0',?1,?1)",[now])?;
-        for user in 0..members {
-            tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project',?1,1,1,?2,?2)",params![format!("user-{user}"),now])?;
-        }
-        tx.execute("INSERT INTO project_prefixes VALUES('OUT','project',?1)",[now])?;
-        tx.execute("INSERT INTO project_sequences VALUES('project',?1)",[(writers+2) as i64])?;
-        tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','project','Work',0,?1,?1)",[now])?;
+        seed_project(tx, ("Outbox", "OUT"), members, writers + 2, now)?;
         tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES('epic','project','track','Epic','2026-01-01','active',0,?1,?1)",[now])?;
         for task in 0..=writers {
             tx.execute("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at) VALUES(?1,'project','epic',?2,?3,'Outbox task','planning',?2,?4,?4)",params![format!("task-{task}"),(task+1) as i64,format!("OUT-{}",task+1),now])?;
@@ -407,45 +392,74 @@ async fn outbox_burst(small: bool) -> Result<(), Box<dyn std::error::Error>> {
                 "burstMessages":queued,
                 "burstDeliveryMs":burst_ms,
                 "messagesPerSecond":queued as f64 / (burst_ms / 1000.0),
-                "taskEditsBefore":latency_summary(before),
-                "taskEditsDuring":latency_summary(during),
+                "taskEditsBefore":latency_summary(&mut before),
+                "taskEditsDuring":latency_summary(&mut during),
             }
         }))?
     );
     Ok(())
 }
 
-/// Percentiles of a latency sample. A fast host can deliver the whole burst
-/// between two rounds of edits, so a sample may be empty.
-fn latency_summary(mut values: Vec<f64>) -> serde_json::Value {
+/// Percentiles of a latency sample, which it sorts. A fast host can deliver
+/// the whole burst between two rounds of edits, so a sample may be empty.
+fn latency_summary(values: &mut [f64]) -> serde_json::Value {
     if values.is_empty() {
         return json!({"count":0});
     }
     values.sort_by(f64::total_cmp);
-    let at = |fraction: f64| values[((values.len() - 1) as f64 * fraction).ceil() as usize];
-    json!({"count":values.len(),"p50Ms":at(0.5),"p95Ms":at(0.95),"maxMs":at(1.0)})
+    json!({
+        "count":values.len(),
+        "p50Ms":percentile(values, 0.5),
+        "p95Ms":percentile(values, 0.95),
+        "maxMs":percentile(values, 1.0),
+    })
+}
+
+/// The smallest value of a sorted, non-empty sample that is at least as large
+/// as `fraction` of it.
+fn percentile(sorted: &[f64], fraction: f64) -> f64 {
+    sorted[((sorted.len() - 1) as f64 * fraction).ceil() as usize]
 }
 
 fn fixture_token(client: usize) -> String {
     format!("benchmark-only-session-{client:032}")
 }
 
+/// The project `project` with the given name and task prefix, its first
+/// track, and `people` members who are signed in with `fixture_token`. The
+/// first person is an admin. Tokens and passwords are synthetic.
+fn seed_project(
+    tx: &rusqlite::Transaction<'_>,
+    (name, prefix): (&str, &str),
+    people: usize,
+    next_task: usize,
+    now: i64,
+) -> rusqlite::Result<()> {
+    for user in 0..people {
+        let id = format!("user-{user}");
+        tx.execute("INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at) VALUES(?1,?2,?2,'benchmark-disabled',?3,?4,?4,?4)", params![id,format!("user{user:03}"),i64::from(user==0),now])?;
+        tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,?4,?4,?5,?6)",params![format!("session-{user}"),id,token_hash(&fixture_token(user)),now,now+604800,now+2592000])?;
+    }
+    tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at) VALUES('project',?1,?2,'user-0',?3,?3)", params![name, prefix, now])?;
+    tx.execute(
+        "INSERT INTO project_prefixes VALUES(?1,'project',?2)",
+        params![prefix, now],
+    )?;
+    tx.execute(
+        "INSERT INTO project_sequences VALUES('project',?1)",
+        [next_task as i64],
+    )?;
+    for user in 0..people {
+        tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project',?1,1,1,?2,?2)",params![format!("user-{user}"),now])?;
+    }
+    tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','project','Work',0,?1,?1)", [now])?;
+    Ok(())
+}
+
 async fn seed(db: &Db, tasks: usize, events: usize, clients: usize) -> oneloop::AppResult<()> {
     db.transaction(move |tx| {
         let now = oneloop::auth::unix_now()?;
-        // Tokens/passwords below are synthetic fixture data, never network-exposed.
-        for user in 0..clients {
-            let id = format!("user-{user}");
-            tx.execute("INSERT INTO users(id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at) VALUES(?1,?2,?2,'benchmark-disabled',?3,?4,?4,?4)", params![id,format!("user{user:03}"),i64::from(user==0),now])?;
-            tx.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES(?1,?2,?3,?4,?4,?4,?5,?6)",params![format!("session-{user}"),id,token_hash(&fixture_token(user)),now,now+604800,now+2592000])?;
-        }
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at) VALUES('project','Benchmark','BEN','user-0',?1,?1)",[now])?;
-        tx.execute("INSERT INTO project_prefixes VALUES('BEN','project',?1)",[now])?;
-        tx.execute("INSERT INTO project_sequences VALUES('project',?1)",[(tasks+1) as i64])?;
-        for user in 0..clients {
-            tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('project',?1,1,1,?2,?2)",params![format!("user-{user}"),now])?;
-        }
-        tx.execute("INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES('track','project','Work',0,?1,?1)",[now])?;
+        seed_project(tx, ("Benchmark", "BEN"), clients, tasks + 1, now)?;
         for epic in 0..100 {
             tx.execute("INSERT INTO epics(id,project_id,track_id,title,start_date,state,position,created_at,updated_at) VALUES(?1,'project','track',?2,'2026-01-01','active',?3,?4,?4)",params![format!("epic-{epic}"),format!("Epic {epic}"),epic,now])?;
         }

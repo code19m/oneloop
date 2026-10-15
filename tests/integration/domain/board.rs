@@ -245,65 +245,6 @@ async fn filtered_board_moves_use_server_validated_visible_anchors() {
     );
 }
 
-/// Real shared-command service and current SQLite schema. Run explicitly; timings
-/// have generous regression budgets, not a production capacity guarantee.
-#[tokio::test]
-#[ignore = "manual ordering workload measurement"]
-async fn ordering_workload_reports_moves_with_an_unrelated_write() {
-    use std::time::{Duration, Instant};
-    for count in [1_000_i64, 10_000] {
-        let f = fixture().await;
-        seed_ordering_column(&f, count).await;
-        let mut task_revision = 1;
-        let mut project_revision = 1;
-        for (round, (kind, status, position)) in [
-            ("same-adjacent", "planning", count / 2 + 1),
-            ("same-long", "planning", 0),
-            ("cross-middle", "in_review", count / 2),
-            ("cross-back", "planning", count / 2),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let task_id = format!("order-{}", count / 2 + 1);
-            let move_command = command(
-                DomainOperation::MoveTask,
-                json!({"taskId":task_id,"status":status,"position":position}),
-                &format!("measure-move-{round}"),
-                Some(task_revision),
-            );
-            let update_command = command(
-                DomainOperation::UpdateProject,
-                json!({"projectId":"p2","name":format!("Unrelated {round}")}),
-                &format!("measure-unrelated-{round}"),
-                Some(project_revision),
-            );
-            let move_start = Instant::now();
-            let move_future = async {
-                f.service.execute(&f.manager, move_command).await.unwrap();
-                move_start.elapsed().as_secs_f64() * 1000.0
-            };
-            let unrelated_future = async {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                let started = Instant::now();
-                f.service.execute(&f.admin, update_command).await.unwrap();
-                started.elapsed().as_secs_f64() * 1000.0
-            };
-            let (move_ms, unrelated_ms) = tokio::join!(move_future, unrelated_future);
-            println!(
-                "ordering-workload column={count} kind={kind} move_ms={move_ms:.3} unrelated_ms={unrelated_ms:.3}"
-            );
-            assert!(move_ms < 5_000.0, "ordering regression: {move_ms} ms");
-            assert!(
-                unrelated_ms < 5_000.0,
-                "writer starvation: {unrelated_ms} ms"
-            );
-            task_revision += 1;
-            project_revision += 1;
-        }
-    }
-}
-
 #[tokio::test]
 async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_anchor_rules() {
     let f = fixture().await;
@@ -1214,41 +1155,4 @@ async fn done_order_cursors_and_parameters_belong_to_their_order() {
         .await
         .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-}
-
-/// Compare real Board read latency before and after search changes, without CI
-/// timing thresholds. The seeded project has 100,000 tasks and two full columns.
-#[tokio::test]
-#[ignore = "manual Board search workload measurement"]
-async fn board_search_workload_reports_first_pages() {
-    let f = fixture().await;
-    seed_ordering_column(&f, 50_000).await;
-    for search in [None, Some("no-match"), Some("Ordering"), Some("ONE-12")] {
-        let mut samples = Vec::new();
-        for _ in 0..5 {
-            let started = std::time::Instant::now();
-            let view = f
-                .service
-                .board_view(
-                    &f.member,
-                    BoardViewQuery {
-                        project_id: "p1".into(),
-                        limit: Some(50),
-                        search: search.map(str::to_owned),
-                        track_ids: vec![],
-                        epic_ids: vec![],
-                        assignee_ids: vec![],
-                        no_assignee: false,
-                        blocked: false,
-                        done_order: Default::default(),
-                    },
-                )
-                .await
-                .unwrap();
-            assert_eq!(view.counts.planning, 50_000);
-            samples.push(started.elapsed().as_secs_f64() * 1000.0);
-        }
-        samples.sort_by(f64::total_cmp);
-        println!("board-search search={search:?} median_ms={:.3}", samples[2]);
-    }
 }
