@@ -12,6 +12,17 @@ use oneloop::{
 use super::initialize;
 use crate::support::{self, query_one};
 
+// The bundled SQLite must have the fix for the WAL reset bug (3.51.3), which
+// can corrupt a database in WAL mode.
+#[test]
+fn bundled_sqlite_has_the_wal_reset_fix() {
+    assert!(
+        rusqlite::version_number() >= 3_051_003,
+        "SQLite {} lacks the WAL reset fix",
+        rusqlite::version()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn initialization_creates_private_directories_without_changing_existing_parent() {

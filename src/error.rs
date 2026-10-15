@@ -318,24 +318,204 @@ impl IntoResponse for AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{ErrorKind, Write},
+        sync::{Arc, Mutex},
+    };
+
     use super::AppError;
-    use axum::{body::to_bytes, response::IntoResponse};
-    use serde_json::json;
+    use axum::{body::to_bytes, http::header::RETRY_AFTER, response::IntoResponse};
+    use rusqlite::ffi;
+    use serde_json::{Value, json};
+
+    /// Each kind of error as a client sees it. A server fault also names the
+    /// log entry with its cause, and private text never reaches the client.
+    #[tokio::test]
+    async fn errors_have_stable_http_responses() {
+        let sqlite = |code| {
+            AppError::from(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(code),
+                Some("private database".into()),
+            ))
+        };
+        let io = |kind| AppError::from(std::io::Error::new(kind, "private path"));
+        let busy = "The service is busy; try again shortly";
+        let full = "Server storage is full; ask an administrator to free space";
+        let failed = "The operation could not be completed";
+        for (error, status, code, message, retry_after, details) in [
+            (
+                AppError::validation("title", "must contain 1–140 characters"),
+                400,
+                "validation_failed",
+                "invalid title: must contain 1–140 characters",
+                None,
+                Some(json!({"field":"title","message":"must contain 1–140 characters"})),
+            ),
+            (
+                AppError::revision(3, 7),
+                409,
+                "revision_conflict",
+                "record changed since revision 3; latest revision is 7",
+                None,
+                Some(json!({"expectedRevision":3,"currentRevision":7})),
+            ),
+            (
+                AppError::RateLimited { retry_after: 42 },
+                429,
+                "rate_limited",
+                "too many attempts; try again later",
+                Some("42"),
+                None,
+            ),
+            (
+                sqlite(ffi::SQLITE_BUSY),
+                503,
+                "unavailable",
+                busy,
+                Some("1"),
+                None,
+            ),
+            (
+                sqlite(ffi::SQLITE_LOCKED),
+                503,
+                "unavailable",
+                busy,
+                Some("1"),
+                None,
+            ),
+            (
+                io(ErrorKind::StorageFull),
+                507,
+                "storage_full",
+                full,
+                None,
+                None,
+            ),
+            (
+                io(ErrorKind::QuotaExceeded),
+                507,
+                "storage_full",
+                full,
+                None,
+                None,
+            ),
+            (
+                sqlite(ffi::SQLITE_FULL),
+                507,
+                "storage_full",
+                full,
+                None,
+                None,
+            ),
+            (
+                AppError::Database("private database path".into()),
+                500,
+                "internal_error",
+                failed,
+                None,
+                None,
+            ),
+            (
+                AppError::internal("private detail"),
+                500,
+                "internal_error",
+                failed,
+                None,
+                None,
+            ),
+        ] {
+            let response = error.into_response();
+            assert_eq!(response.status(), status, "{code}");
+            let header = response.headers().get(RETRY_AFTER);
+            assert_eq!(
+                header.map(|value| value.to_str().unwrap()),
+                retry_after,
+                "{code}"
+            );
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let text = std::str::from_utf8(&body).unwrap();
+            assert!(!text.contains("private"), "{text}");
+            let error = &serde_json::from_str::<Value>(text).unwrap()["error"];
+            assert_eq!(error["code"], code);
+            assert_eq!(error.get("details"), details.as_ref(), "{code}");
+            match error.get("reference").and_then(Value::as_str) {
+                Some(reference) => {
+                    assert!(status >= 500 && uuid::Uuid::parse_str(reference).is_ok());
+                    assert_eq!(
+                        error["message"],
+                        format!("{message} (reference: {reference})")
+                    );
+                }
+                None => {
+                    assert!(status < 500, "{code}");
+                    assert_eq!(error["message"], message);
+                }
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
 
     #[tokio::test]
-    async fn validation_http_response_keeps_message_and_adds_machine_readable_details() {
-        let response =
-            AppError::validation("title", "must contain 1–140 characters").into_response();
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["error"]["code"], "validation_failed");
-        assert_eq!(
-            value["error"]["message"],
-            "invalid title: must contain 1–140 characters"
-        );
-        assert_eq!(
-            value["error"]["details"],
-            json!({"field":"title","message":"must contain 1–140 characters"})
-        );
+    async fn internal_cause_and_reference_are_logged_but_only_reference_reaches_client() {
+        // tracing caches per log call site whether any subscriber wants it. While
+        // only one subscriber exists, it asks just the current thread's, so a test
+        // on another thread could mark these call sites as never wanted. With a
+        // second subscriber alive, it asks them all.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        let capture = Capture(Arc::default());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .finish();
+        let responses = tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "request",
+                method = "POST",
+                route = "/api/test",
+                request_id = "request-check"
+            );
+            let _entered = span.enter();
+            [
+                (
+                    AppError::Io("Permission denied while storing a file".into()).into_response(),
+                    "Permission denied",
+                ),
+                (
+                    AppError::Unavailable(
+                        "data lease is busy at /private/data/.oneloop-data.lock".into(),
+                    )
+                    .into_response(),
+                    "/private/data/.oneloop-data.lock",
+                ),
+            ]
+        });
+        let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("/api/test") && log.contains("request-check"));
+        for (response, private) in responses {
+            let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(log.contains(private), "{log}");
+            assert!(log.contains(body["error"]["reference"].as_str().unwrap()));
+            assert!(!String::from_utf8_lossy(&bytes).contains(private));
+        }
     }
 }
