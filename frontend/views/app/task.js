@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* A task's page: its fields, block, attachments and activity, the drafts of
    fields not saved yet, and the save status in its top bar. */
 

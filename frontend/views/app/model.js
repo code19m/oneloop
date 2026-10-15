@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The state of the views and the projection they read: the open page, data
    lookups and permissions. */
 

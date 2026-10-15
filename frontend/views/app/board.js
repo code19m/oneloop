@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The Board: task columns, their filters, and moving tasks with optimistic
    saves that roll back when the server refuses. */
 

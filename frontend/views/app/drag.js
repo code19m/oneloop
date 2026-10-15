@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Dragging Board cards and Roadmap tracks with a pointer. A drag ends in the
    same drop handlers on any device. */
 
@@ -135,8 +135,8 @@ window.addEventListener('blur',()=>finishPointerDrag(false));
 
 document.addEventListener('click',event=>{if(event.detail>0 && suppressDragClick){suppressDragClick=false;event.preventDefault();event.stopImmediatePropagation();}},true);
 
-// Native HTML dragging would steal the pointer stream. Retain callable legacy
-// handlers only as a compatibility surface for the shared mutation model.
+// Native HTML dragging would steal the pointer stream, so the pointer code
+// above calls the drag handlers with events of its own.
 document.addEventListener('dragstart',event=>{if(event.target.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);
 
 Object.assign(App, {

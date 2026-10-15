@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The views' shell: it routes addresses and draws the page around the
    features in views/app/. frontend/src/app/boot.js imports it once DATA and
    the controllers are in place, and the view bridge then adds the

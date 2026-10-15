@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
    drawer, and moving tracks. */
 

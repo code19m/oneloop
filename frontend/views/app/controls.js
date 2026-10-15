@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Form controls: selects, date fields with a calendar, field errors and
    labels, and the cleaning of typed and pasted text. */
 

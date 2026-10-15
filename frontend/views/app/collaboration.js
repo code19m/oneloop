@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Comments and activity on a task's page, mentions in comments and block
    reasons, and the Inbox. Their reads and saves go through the
    collaboration controller in src/features/collaboration/. */

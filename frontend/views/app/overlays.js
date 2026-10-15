@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Layers above the page: popovers, menus, dialogs and their confirmations,
    and the Roadmap's rich tooltip. Each returns focus to where it opened. */
 

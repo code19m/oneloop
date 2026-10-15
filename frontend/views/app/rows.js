@@ -1,4 +1,4 @@
-// @ts-nocheck: TypeScript checks src/ only; see frontend/README.md.
+// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
 /* Redrawing a list in place: rows that stay keep their elements, so focus,
    a pressed button and loaded images survive. */
 

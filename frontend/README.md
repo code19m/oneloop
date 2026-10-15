@@ -16,9 +16,10 @@ tests/      Unit tests mirroring src/ and views/; support/ has the jsdom harness
 
 ## Where new code goes
 
-Add application logic to `src/` as ES modules with JSDoc types; preserve the
-DOM contracts in `views/`. Whole-app browser journeys live in
-[`../e2e/journeys/`](../e2e/README.md).
+A new page or feature goes in `src/features/<name>/` with its markup, as
+Knowledge does. Change `views/` only for the pages it already draws. Other
+application logic goes in `src/` as ES modules with JSDoc types. Whole-app
+browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
 
 - **Views.** `views/app.js` is the shell: routing, the render pipeline and the
   pages that have no module of their own. Each feature in `views/app/` keeps
@@ -32,8 +33,8 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   lookups) and `format.js` (text, dates and icons), and animate with the one
   motion engine, `UIMotion` from `src/app/motion.js`. A module reaches the render
   pipeline through `App`, such as `App.refresh()`, and never imports
-  `views/app.js`. TypeScript checks only `src/`, so each view module starts
-  with `// @ts-nocheck` and the views carry no JSDoc types.
+  `views/app.js`. The views are untyped. tsc reaches them through boot.js,
+  so each starts with `// @ts-nocheck`.
 - **Actions.** The view bridge, `src/app/view-bridge.js`, adds the
   server-backed `App` methods, such as `saveTask`, and wraps a few of the
   views' own, such as `nav`. To change an action that saves, start from its
@@ -60,15 +61,11 @@ DOM contracts in `views/`. Whole-app browser journeys live in
   counts until it saves.
 - **Tooltips.** Put a detail that only a hover would show, such as a full time
   or a name that may be cut off, in `data-tip` rather than `title`.
-  `src/app/tooltips.js` shows it on hover, keyboard focus and tap.
-  - Add `data-tip-overflow` to show it only while the text is cut off.
-  - Don't make an element focusable just for its tip, because a long list would
-    gain a Tab stop per row. Give the detail to screen readers through the
-    row's name or description instead, as the Board card does for a Blocked
-    reason.
-  - A tip inside a clickable row takes a tap only with `data-tip-tap`.
-  - `data-tip-keyboard` shows a tip on keyboard focus only, as a Board card's
-    title does for its Blocked reason.
+  [`src/app/tooltips.js`](src/app/tooltips.js) shows it and lists the other
+  `data-tip-*` attributes. Don't make an element focusable just for its tip,
+  because a long list would gain a Tab stop per row. Give screen readers the
+  detail through the row's name or description instead, as the Board card
+  does for a Blocked reason.
 
 The page's Content-Security-Policy enforces Trusted Types and refuses inline
 `<style>` elements:
