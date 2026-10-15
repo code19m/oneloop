@@ -124,12 +124,12 @@ crate::idempotency::operations! {
 }
 
 impl Operation {
-    /// Changes to a connected source name the revision they were based on;
-    /// the other commands take none.
+    /// Changes to a connected source name the revision they were based on.
     fn revision_rule(self) -> RevisionRule {
         match self {
+            Self::Connect => RevisionRule::Create,
             Self::Update | Self::Disconnect => RevisionRule::Existing,
-            Self::Connect | Self::Sync | Self::CreateDeployKey => RevisionRule::Create,
+            Self::Sync | Self::CreateDeployKey => RevisionRule::None,
         }
     }
 

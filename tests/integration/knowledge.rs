@@ -1433,12 +1433,6 @@ async fn commands_validate_locations_and_replay_retries() {
             StatusCode::BAD_REQUEST,
             "validation_failed",
         ),
-        (
-            "knowledge.sync",
-            Some(1),
-            StatusCode::BAD_REQUEST,
-            "validation_failed",
-        ),
     ] {
         let (actual, body) = fixture
             .command(
@@ -1452,6 +1446,23 @@ async fn commands_validate_locations_and_replay_retries() {
             (actual, body["error"]["code"].as_str()),
             (status, Some(code)),
             "{operation} {revision:?}"
+        );
+    }
+    // Asking for a sync or a deploy key changes no record with a revision.
+    for operation in ["knowledge.sync", "knowledge.deploy-key.create"] {
+        let (status, body) = fixture
+            .command(
+                &fixture.admin,
+                operation,
+                json!({"projectId": "p1"}),
+                Some(1),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["details"],
+            json!({"field": "expectedRevision", "message": "is not accepted for this operation"}),
+            "{operation}"
         );
     }
 }

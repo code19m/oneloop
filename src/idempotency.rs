@@ -63,6 +63,8 @@ pub(crate) enum RevisionRule {
     ExistingInput,
     /// A revision is optional.
     Optional,
+    /// It changes no record that has a revision, so a revision is refused.
+    None,
 }
 
 impl RevisionRule {
@@ -77,6 +79,10 @@ impl RevisionRule {
             (Self::Create, Some(_)) => Err(AppError::validation(
                 "expectedRevision",
                 "must be omitted when creating a new record",
+            )),
+            (Self::None, Some(_)) => Err(AppError::validation(
+                "expectedRevision",
+                "is not accepted for this operation",
             )),
             (_, Some(value)) if value < 1 => Err(AppError::validation(
                 "expectedRevision",
