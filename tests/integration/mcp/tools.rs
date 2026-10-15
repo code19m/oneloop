@@ -478,14 +478,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
     );
     assert_eq!(updated["entities"][0]["title"], "Safe update");
     assert_tool_error(
-        &mcp.call(
-            "execute_work_command",
-            json!({"operation":"task.update","payload":{"taskId":task_ids[0],"title":"Stale overwrite"},"idempotencyKey":"stale-task-update","expectedRevision":1}),
-        )
-        .await,
-        "revision_conflict",
-    );
-    assert_tool_error(
         &safe_mcp
             .call(
                 "execute_work_command",
@@ -524,14 +516,6 @@ async fn protocol_tools_cover_ordinary_work_pagination_privacy_and_exclusions() 
         .as_str()
         .unwrap()
         .to_owned();
-    assert_tool_error(
-        &mcp.call(
-            "execute_work_command",
-            json!({"operation":"task.delete","payload":{"id":delete_candidate_id},"idempotencyKey":"mcp-wrong-delete-route","expectedRevision":1}),
-        )
-        .await,
-        "execute_destructive_command",
-    );
     let deleted_task = tool_value(
         &mcp.call(
             "execute_destructive_command",

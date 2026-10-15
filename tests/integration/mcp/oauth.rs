@@ -220,29 +220,24 @@ async fn registration_quota_expires_old_caller_entries() {
 #[tokio::test]
 async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() {
     let (_dir, _db, app, session, _user) = fixture().await;
-    let metadata = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/.well-known/oauth-protected-resource/mcp")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(metadata.status(), StatusCode::OK);
-    assert_eq!(
-        body_json(metadata).await["resource"],
-        "http://127.0.0.1:8080/mcp"
-    );
-    let metadata = body_json(
+    let get = |path: &str| {
         app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-authorization-server")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+    };
+    // Clients look for the resource metadata at both addresses.
+    for path in [
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-protected-resource",
+    ] {
+        let metadata = get(path).await.unwrap();
+        assert_eq!(metadata.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            body_json(metadata).await["resource"],
+            "http://127.0.0.1:8080/mcp"
+        );
+    }
+    let metadata = body_json(
+        get("/.well-known/oauth-authorization-server")
             .await
             .unwrap(),
     )
@@ -252,6 +247,19 @@ async fn discovery_pkce_and_consent_lead_to_an_authenticated_protocol_session() 
         true
     );
     assert_eq!(metadata["issuer"], "http://127.0.0.1:8080");
+    assert_eq!(
+        metadata["code_challenge_methods_supported"],
+        json!(["S256"])
+    );
+    // The Connect page loads these.
+    for (path, content_type) in [
+        ("/mcp/assets/consent.js", "text/javascript; charset=utf-8"),
+        ("/mcp/assets/consent.css", "text/css; charset=utf-8"),
+    ] {
+        let response = get(path).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+    }
     let missing = app
         .clone()
         .oneshot(
