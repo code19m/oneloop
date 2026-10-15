@@ -242,10 +242,7 @@ impl FileService {
             None => self.capacity_usage().await?.total(),
         };
         *used = Some(current);
-        let threshold = self
-            .storage_limit_bytes
-            .saturating_mul(CLEANUP_HIGH_PERCENT)
-            / 100;
+        let threshold = self.high_watermark();
         if current >= threshold {
             return Ok(false);
         }

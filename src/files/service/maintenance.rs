@@ -4,8 +4,14 @@ use super::*;
 
 /// Cleanup starts when used storage reaches this share of the limit, and
 /// frees space down to the lower one.
-pub(super) const CLEANUP_HIGH_PERCENT: u64 = 80;
+const CLEANUP_HIGH_PERCENT: u64 = 80;
 const CLEANUP_LOW_PERCENT: u64 = 70;
+
+/// `percent` of `limit`, exact for any limit.
+fn share_of(limit: u64, percent: u64) -> u64 {
+    // At most the limit, so the result fits.
+    (u128::from(limit) * u128::from(percent) / 100) as u64
+}
 
 /// Bytes of stored files, from a covering index.
 const STORED_BYTES_SQL: &str = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
@@ -71,6 +77,16 @@ struct DeletionCompletion {
 }
 
 impl FileService {
+    /// Used storage from which cleanup runs.
+    pub(super) fn high_watermark(&self) -> u64 {
+        share_of(self.storage_limit_bytes, CLEANUP_HIGH_PERCENT)
+    }
+
+    /// Used storage that cleanup frees space down to.
+    fn low_watermark(&self) -> u64 {
+        share_of(self.storage_limit_bytes, CLEANUP_LOW_PERCENT)
+    }
+
     /// Only call before accepting traffic while holding the server lock.
     pub(crate) async fn recover_interrupted_uploads(&self) -> AppResult<()> {
         let now = unix_now()?;
@@ -319,12 +335,7 @@ impl FileService {
         &self,
         usage: &CapacityUsage,
     ) -> AppResult<FileRuntimeReport> {
-        if usage.total()
-            < self
-                .storage_limit_bytes
-                .saturating_mul(CLEANUP_HIGH_PERCENT)
-                / 100
-        {
+        if usage.total() < self.high_watermark() {
             return Ok(FileRuntimeReport::default());
         }
         if usage.preview_bytes == 0 {
@@ -349,7 +360,6 @@ impl FileService {
     pub async fn storage_usage(&self, actor: &Actor) -> AppResult<StorageUsage> {
         actor.require_admin()?;
         let actor = actor.clone();
-        let limit = self.storage_limit_bytes;
         let (permanent, temporary, pending_deletion, cleaned, projects, recent_cleanup) = self
             .db
             .run(move |connection| {
@@ -433,7 +443,7 @@ impl FileService {
             .await?;
         let capacity = self.capacity_usage().await?;
         Ok(StorageUsage {
-            budget_bytes: limit,
+            budget_bytes: self.storage_limit_bytes,
             used_bytes: capacity.total(),
             reserved_bytes: capacity.reserved_bytes,
             staging_bytes: capacity.staging_bytes,
@@ -442,16 +452,15 @@ impl FileService {
             temporary_bytes: temporary,
             pending_deletion_bytes: pending_deletion,
             cleaned_records: cleaned,
-            high_watermark_bytes: limit * CLEANUP_HIGH_PERCENT / 100,
-            low_watermark_bytes: limit * CLEANUP_LOW_PERCENT / 100,
+            high_watermark_bytes: self.high_watermark(),
+            low_watermark_bytes: self.low_watermark(),
             projects,
             recent_cleanup,
         })
     }
 
     pub async fn cleanup_to_low_watermark(&self) -> AppResult<FileRuntimeReport> {
-        let target = self.storage_limit_bytes.saturating_mul(CLEANUP_LOW_PERCENT) / 100;
-        self.cleanup_files(Some(target), 0).await
+        self.cleanup_files(Some(self.low_watermark()), 0).await
     }
 
     pub(super) async fn cleanup_for_deficit(&self, deficit: u64) -> AppResult<FileRuntimeReport> {

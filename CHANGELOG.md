@@ -86,6 +86,9 @@ All notable changes to oneloop are recorded here. The format follows
 - On a 320-pixel-wide screen, the Roadmap header shows the whole **Epic**
   button. Before, part of it was cut off. Screen readers still read the
   Roadmap heading there.
+- With a very large `ONELOOP_STORAGE_LIMIT`, above about 200 PiB, the storage
+  page for administrators shows the right cleanup points of 80% and 70%.
+  Before, it showed wrong values.
 
 ### Security
 

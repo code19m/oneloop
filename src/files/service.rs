@@ -10,7 +10,7 @@ mod detect;
 pub(crate) use detect::classify_bytes;
 use detect::{preview_kind_from_metadata, validate_original_name};
 mod maintenance;
-use maintenance::{CLEANUP_HIGH_PERCENT, require_capacity};
+use maintenance::require_capacity;
 mod read;
 pub use read::ReadMode;
 mod thumbnail;
