@@ -1,4 +1,5 @@
-// Tests for the service templates in deploy/ that the launcher tests don't cover.
+// Tests for the templates in deploy/ that the launcher tests don't cover, and for
+// the image build's list of files.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -45,4 +46,16 @@ test('the launchd plist is well-formed XML', t => {
   const result = spawnSync('python3', ['-c', 'import plistlib, sys; plistlib.load(open(sys.argv[1], "rb"))', plist], {encoding: 'utf8', timeout: 10000});
   if (result.error?.code === 'ENOENT') return t.skip('python3 is not installed');
   assert.equal(result.status, 0, result.stderr);
+});
+
+// src/http/assets.rs lists the web client's folders. The image build must send
+// each one, or the image embeds nothing from it and still builds, and the nginx
+// example compresses each one.
+test('the image build and the nginx example name every web client folder', () => {
+  const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+  const folders = JSON.parse(read('src/http/assets.rs').match(/const ASSET_DIRS: \[&str; \d+\] = (\[.*\]);/)[1]).sort();
+  const sent = [...read('.dockerignore').matchAll(/^!frontend\/(\w+)\/\*\*$/gm)].map(match => match[1]);
+  assert.deepEqual(sent.sort(), folders, '.dockerignore');
+  const compressed = read('deploy/nginx/oneloop.conf.example').match(/\(\?:([\w|]+)\)\//)[1].split('|');
+  assert.deepEqual(compressed.sort(), folders, 'deploy/nginx/oneloop.conf.example');
 });
