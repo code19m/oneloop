@@ -672,6 +672,25 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
         .await
         .unwrap();
     drain(&runtime).await;
+    fn context(item: &oneloop::collaboration::InboxItem) -> [Option<&str>; 9] {
+        [
+            item.project_id.as_deref(),
+            item.project_name.as_deref(),
+            item.task_id.as_deref(),
+            item.task_key.as_deref(),
+            item.task_title.as_deref(),
+            item.comment_id.as_deref(),
+            item.actor_name.as_deref(),
+            item.actor_user_id.as_deref(),
+            item.excerpt.as_deref(),
+        ]
+    }
+    let delivered = service
+        .inbox(&fixture.bob, InboxFilter::default(), None, None)
+        .await
+        .unwrap();
+    assert!(delivered.items[0].destination_available);
+    assert!(context(&delivered.items[0]).iter().all(Option::is_some));
     fixture
         .db
         .run(|connection| {
@@ -689,9 +708,7 @@ async fn access_revocation_redacts_delivered_inbox_context_and_stops_pending_del
         .unwrap();
     assert_eq!(retained.items.len(), 1);
     assert!(!retained.items[0].destination_available);
-    assert!(retained.items[0].project_name.is_none());
-    assert!(retained.items[0].task_key.is_none());
-    assert!(retained.items[0].excerpt.is_none());
+    assert_eq!(context(&retained.items[0]), [None; 9]);
 
     fixture.db.run(|connection| {
         connection.execute(

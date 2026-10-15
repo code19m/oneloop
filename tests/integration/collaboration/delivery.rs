@@ -792,34 +792,18 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
             rusqlite::params![now() - 91 * 86_400, notification_id])?;
         Ok(())
     }).await.unwrap();
-    let expired = service
-        .inbox(
-            &bob,
-            InboxFilter {
-                archived: true,
-                ..InboxFilter::default()
-            },
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(expired.filtered_count, 0);
     for purge in [false, true] {
         if purge {
             assert_eq!(service.purge_archived(now()).await.unwrap(), 1);
         }
-        let bootstrap = oneloop::domain::DomainService::new(db.clone(), crate::support::utc())
-            .bootstrap(&bob, Default::default())
-            .await
-            .unwrap();
-        assert_eq!(bootstrap.notifications.len(), 1, "purge={purge}");
-        assert!(
-            bootstrap
-                .notifications
-                .iter()
-                .all(|item| item["id"] != expired_id)
-        );
+        for (archived, shown) in [(false, 1), (true, 0)] {
+            let filter = InboxFilter {
+                archived,
+                ..InboxFilter::default()
+            };
+            let page = service.inbox(&bob, filter, None, None).await.unwrap();
+            assert_eq!(page.items.len(), shown, "purge={purge} archived={archived}");
+        }
         for operation in [
             "inbox.restore",
             "inbox.archive",

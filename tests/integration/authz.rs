@@ -13,9 +13,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
-use crate::support::{
-    self, SeededProject, TestInstance, browser_actor, database, now, seeded_project,
-};
+use crate::support::{self, SeededProject, TestInstance, database, now, seeded_project};
 
 #[tokio::test]
 async fn project_reads_recheck_a_cached_admin_role() {
@@ -70,60 +68,6 @@ async fn account_administration_rechecks_a_cached_admin_role() {
             .await,
         Err(AppError::Forbidden)
     ));
-}
-
-#[tokio::test]
-async fn bootstrap_redacts_all_inaccessible_notification_context() {
-    let (_root, db) = database();
-    let timestamp = now();
-    db.run(move |connection| {
-        connection.execute_batch(&format!(
-            r#"
-            INSERT INTO users
-                (id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
-            VALUES
-                ('recipient','recipient','Recipient','x',{timestamp},{timestamp},{timestamp}),
-                ('actor','actor','Sensitive Actor Name','x',{timestamp},{timestamp},{timestamp});
-            INSERT INTO sessions
-                (id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-            VALUES
-                ('recipient-session','recipient','recipient-token',{timestamp},{timestamp},{timestamp},{expiry},{expiry});
-            INSERT INTO projects(id,name,task_prefix,created_at,updated_at)
-            VALUES ('secret-project','Secret Project','SEC',{timestamp},{timestamp});
-            INSERT INTO project_memberships(project_id,user_id,created_at,updated_at)
-            VALUES ('secret-project','recipient',{timestamp},{timestamp});
-            INSERT INTO notification_events
-                (id,project_id,actor_user_id,event_type,payload_json,created_at)
-            VALUES
-                ('notification','secret-project','actor','discussion.mention','{{}}',{timestamp});
-            INSERT INTO notification_recipients
-                (notification_id,user_id,project_name_snapshot,task_key_snapshot,task_title_snapshot,
-                 actor_name_snapshot,excerpt_snapshot,delivered_at)
-            VALUES
-                ('notification','recipient','Secret Project','SEC-001','Hidden task',
-                 'Sensitive Actor Name','Hidden excerpt',{timestamp});
-            DELETE FROM project_memberships
-            WHERE project_id='secret-project' AND user_id='recipient';
-            "#,
-            expiry = timestamp + 86_400,
-        ))?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let actor = browser_actor("recipient", "recipient", "recipient-session", timestamp);
-    let bootstrap = DomainService::new(db, crate::support::utc())
-        .bootstrap(&actor, BootstrapQuery::default())
-        .await
-        .unwrap();
-    assert_eq!(bootstrap.notifications.len(), 1);
-    let notification = &bootstrap.notifications[0];
-    assert_eq!(notification["destinationAvailable"], false);
-    assert!(notification["projectName"].is_null());
-    assert!(notification["taskTitle"].is_null());
-    assert!(notification["excerpt"].is_null());
-    assert!(notification["actorName"].is_null());
 }
 
 #[tokio::test]

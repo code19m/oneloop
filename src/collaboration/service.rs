@@ -33,7 +33,7 @@ use super::{
     record_activity_tx, snapshot_notification_tx,
 };
 
-pub(crate) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
+const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 const COMMENT_MAX: usize = 2_000;
 const DEFAULT_PAGE_SIZE: usize = 50;
 /// Deleted comments whose text the Undo window no longer needs.

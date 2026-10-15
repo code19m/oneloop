@@ -19,9 +19,9 @@ use crate::{
 };
 
 use super::{
-    BlockView, BoardCounts, BoardView, BootstrapPageInfo, BootstrapView, DomainService,
-    EpicSummary, EpicView, MembershipView, MilestoneView, Page, PoolItemView, ProjectView,
-    SessionView, TaskView, TrackView, UserView,
+    BlockView, BoardCounts, BoardView, BootstrapView, DomainService, EpicSummary, EpicView,
+    MembershipView, MilestoneView, Page, PoolItemView, ProjectView, SessionView, TaskView,
+    TrackView, UserView,
 };
 
 const PAGE_SIZE: usize = 50;
@@ -118,17 +118,17 @@ impl DomainService {
         query: BootstrapQuery,
     ) -> AppResult<BootstrapView> {
         actor.require_ready()?;
-        if query
-            .view
-            .as_deref()
-            .is_some_and(|view| !["board", "roadmap", "task", "metadata"].contains(&view))
-        {
+        // Without a view, the bootstrap has only what every view needs.
+        let view = query.view.clone().unwrap_or_else(|| "metadata".into());
+        if !["board", "roadmap", "task", "metadata"].contains(&view.as_str()) {
             return Err(AppError::validation("view", "unknown initial view"));
         }
         let actor = actor.clone();
         let time_zone = self.time_zone.clone();
         self.db
-            .snapshot(move |connection| bootstrap_snapshot(connection, &actor, query, &time_zone))
+            .snapshot(move |connection| {
+                bootstrap_snapshot(connection, &actor, query, view, &time_zone)
+            })
             .await
     }
 
@@ -252,7 +252,7 @@ impl DomainService {
                     connection,
                     &actor,
                     &query.project_id,
-                    Some(query.scope.as_str()),
+                    query.scope,
                     query.cursor.as_deref(),
                     page_limit(query.limit),
                 )
@@ -1333,20 +1333,20 @@ fn pool_page_connection(
     connection: &rusqlite::Connection,
     actor: &Actor,
     project_id: &str,
-    scope: Option<&str>,
+    scope: super::PoolScope,
     cursor: Option<&str>,
     limit: usize,
 ) -> AppResult<Page<PoolItemView>> {
     require_project(connection, actor, project_id, Need::Read, false)?;
-    if scope.is_some_and(|s| s != "personal" && s != "team") {
-        return Err(AppError::validation("scope", "must be personal or team"));
-    }
-    if scope != Some("team") && !crate::access::can_read_private_pool(connection, actor)? {
+    if scope == super::PoolScope::Personal
+        && !crate::access::can_read_private_pool(connection, actor)?
+    {
         return Err(AppError::Forbidden);
     }
     let (cursor_time, cursor_id) = parse_position_cursor(cursor)?;
     let own = &actor.user_id;
-    let predicate = "project_id=?1 AND ((scope='personal' AND owner_user_id=?2) OR scope='team') AND (?3 IS NULL OR scope=?3)";
+    let scope = scope.as_str();
+    let predicate = "project_id=?1 AND scope=?3 AND (scope='team' OR owner_user_id=?2)";
     let total = connection.query_row(
         &format!("SELECT COUNT(*) FROM pool_items WHERE {predicate}"),
         params![project_id, own, scope],
@@ -1393,89 +1393,6 @@ fn pool_page_connection(
     })
 }
 
-fn notifications(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    limit: usize,
-    archive_cutoff: i64,
-) -> AppResult<Vec<Value>> {
-    let mut s=connection.prepare_cached("SELECT e.id,e.project_id,e.event_type,e.task_id,e.comment_id,e.block_id,e.created_at,
-        r.project_name_snapshot,r.task_key_snapshot,r.task_title_snapshot,r.actor_name_snapshot,
-        r.excerpt_snapshot,r.read_at,r.archived_at,
-        (p.id IS NOT NULL AND p.deleted_at IS NULL AND t.id IS NOT NULL AND t.deleted_at IS NULL
-         AND (?3 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.project_id=p.id AND m.user_id=?1))
-         AND (?4 IS NULL OR (EXISTS(SELECT 1 FROM mcp_grant_projects gp WHERE gp.grant_id=?4 AND gp.project_id=p.id)
-              AND EXISTS(SELECT 1 FROM mcp_grant_scopes gs WHERE gs.grant_id=?4 AND gs.scope='project_read'))))
-        FROM notification_events e JOIN notification_recipients r ON r.notification_id=e.id
-        LEFT JOIN projects p ON p.id=e.project_id LEFT JOIN tasks t ON t.id=e.task_id AND t.project_id=p.id
-        WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL
-        AND (r.archived_at IS NULL OR r.archived_at>?5)
-        ORDER BY e.created_at DESC,e.id DESC LIMIT ?2")?;
-    let rows = s
-        .query_map(
-            params![
-                actor.user_id,
-                limit as i64,
-                actor.is_admin,
-                actor.mcp_grant_id(),
-                archive_cutoff
-            ],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, String>(7)?,
-                    r.get::<_, Option<String>>(8)?,
-                    r.get::<_, Option<String>>(9)?,
-                    r.get::<_, Option<String>>(10)?,
-                    r.get::<_, Option<String>>(11)?,
-                    r.get::<_, Option<i64>>(12)?,
-                    r.get::<_, Option<i64>>(13)?,
-                    r.get::<_, bool>(14)?,
-                ))
-            },
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut result = Vec::with_capacity(rows.len());
-    for row in rows {
-        let available = row.14;
-        result.push(json!({
-        "id":row.0,
-        "projectId":if available{row.1}else{None},
-        "eventType":row.2,
-        "taskId":if available{row.3}else{None},
-        "commentId":if available{row.4}else{None},
-        "blockId":if available{row.5}else{None},
-        "createdAt":row.6,
-        "projectName":if available{Some(row.7)}else{None},
-        "taskKey":if available{row.8}else{None},
-        "taskTitle":if available{row.9}else{None},
-        "actorName":if available{row.10}else{None},
-        "excerpt":if available{row.11}else{None},
-        "destinationAvailable":available,
-        "readAt":row.12,
-        "archivedAt":row.13
-        }));
-    }
-    Ok(result)
-}
-fn notification_count(
-    connection: &rusqlite::Connection,
-    actor: &Actor,
-    archive_cutoff: i64,
-) -> AppResult<i64> {
-    Ok(connection.query_row(
-        "SELECT COUNT(*) FROM notification_recipients WHERE user_id=?1 AND delivered_at IS NOT NULL
-         AND (archived_at IS NULL OR archived_at>?2)",
-        params![actor.user_id, archive_cutoff],
-        |r| r.get(0),
-    )?)
-}
 fn unread_notification_count(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<i64> {
     Ok(connection.query_row(
         "SELECT COUNT(*) FROM notification_recipients WHERE user_id=?1 AND delivered_at IS NOT \
@@ -1483,74 +1400,6 @@ fn unread_notification_count(connection: &rusqlite::Connection, actor: &Actor) -
         [&actor.user_id],
         |row| row.get(0),
     )?)
-}
-fn browser_sessions(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<Value>> {
-    let current = match &actor.source {
-        ActorSource::BrowserSession { session_id } => Some(session_id.as_str()),
-        _ => None,
-    };
-    let mut s=connection.prepare_cached("SELECT id,created_at,last_activity_at,absolute_expires_at,client_name,client_ip,\
-                     user_agent FROM sessions WHERE user_id=?1 AND revoked_at IS NULL AND \
-                     idle_expires_at>unixepoch() AND absolute_expires_at>unixepoch() ORDER BY last_activity_at \
-                     DESC,id DESC")?;
-    Ok(s.query_map([&actor.user_id], |r| {
-        let id: String = r.get(0)?;
-        Ok(json!({
-        "id":id,
-        "createdAt":r.get::<_,i64>(1)?,
-        "lastActivityAt":r.get::<_,i64>(2)?,
-        "absoluteExpiresAt":r.get::<_,i64>(3)?,
-        "clientName":r.get::<_,Option<String>>(4)?,
-        "clientIp":r.get::<_,Option<String>>(5)?,
-        "userAgent":r.get::<_,Option<String>>(6)?,
-        "current":current==Some(id.as_str())
-        }))
-    })?
-    .collect::<Result<Vec<_>, _>>()?)
-}
-fn app_grants(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<Value>> {
-    let mut s=connection.prepare_cached("SELECT id,client_name,created_at,updated_at,expires_at,last_used_at,revision FROM \
-                     mcp_grants WHERE user_id=?1 AND revoked_at IS NULL ORDER BY updated_at DESC,id DESC")?;
-    let rows = s
-        .query_map([&actor.user_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut result = Vec::with_capacity(rows.len());
-    for row in rows {
-        let mut projects = connection.prepare_cached(
-            "SELECT project_id FROM mcp_grant_projects WHERE grant_id=?1 ORDER BY project_id",
-        )?;
-        let project_ids = projects
-            .query_map([&row.0], |r| r.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
-        let mut scopes = connection.prepare_cached(
-            "SELECT scope FROM mcp_grant_scopes WHERE grant_id=?1 ORDER BY scope",
-        )?;
-        let scope_names = scopes
-            .query_map([&row.0], |r| r.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
-        result.push(json!({
-        "id":row.0,
-        "clientName":row.1,
-        "createdAt":row.2,
-        "updatedAt":row.3,
-        "expiresAt":row.4,
-        "lastUsedAt":row.5,
-        "revision":row.6,
-        "projectIds":project_ids,
-        "scopes":scope_names
-        }));
-    }
-    Ok(result)
 }
 
 fn page_limit(value: Option<usize>) -> usize {
@@ -1611,6 +1460,7 @@ fn bootstrap_snapshot(
     connection: &rusqlite::Connection,
     actor: &Actor,
     query: BootstrapQuery,
+    view: String,
     time_zone: &TimeZone,
 ) -> AppResult<BootstrapView> {
     let actor = refresh_actor_connection(connection, actor)?;
@@ -1642,9 +1492,6 @@ fn bootstrap_snapshot(
             resource: "project",
         });
     }
-    let legacy = query.view.is_none();
-    let now = unix_now()?;
-    let archive_cutoff = now.saturating_sub(crate::collaboration::ARCHIVE_RETENTION_SECONDS);
     let mut result = BootstrapView {
         limits: crate::files::FileLimits::default(),
         time_zone: time_zone.name().into(),
@@ -1661,31 +1508,9 @@ fn bootstrap_snapshot(
         epics: Vec::new(),
         milestones: Vec::new(),
         tasks: Vec::new(),
-        pool: Vec::new(),
-        notifications: if legacy {
-            notifications(connection, &actor, 50, archive_cutoff)?
-        } else {
-            Vec::new()
-        },
         inbox_unread_count: unread_notification_count(connection, &actor)?,
-        browser_sessions: if legacy {
-            browser_sessions(connection, &actor)?
-        } else {
-            Vec::new()
-        },
-        app_grants: if legacy {
-            app_grants(connection, &actor)?
-        } else {
-            Vec::new()
-        },
-        page_info: BootstrapPageInfo {
-            tasks_truncated: false,
-            tasks_next_cursor: None,
-            notifications_truncated: legacy
-                && notification_count(connection, &actor, archive_cutoff)? > 50,
-        },
         selected_project_id: selected.clone(),
-        view: query.view.clone(),
+        view,
         done_order: None,
         board_counts: None,
         board_pages: Default::default(),
@@ -1696,12 +1521,12 @@ fn bootstrap_snapshot(
         result.memberships = memberships(connection, project_id)?;
         result.users = users(connection, &actor, project_id)?;
         result.tracks = tracks(connection, project_id)?;
-        // The Roadmap, and the legacy full projection, show epic task counts.
-        let summary = legacy || query.view.as_deref() == Some("roadmap");
-        result.epics = epics(connection, project_id, time_zone, summary.then_some(now))?;
+        // Only the Roadmap shows epic task counts.
+        let counted_at = (result.view == "roadmap").then(unix_now).transpose()?;
+        result.epics = epics(connection, project_id, time_zone, counted_at)?;
         result.milestones = milestones(connection, project_id)?;
         let counts = board_counts_connection(connection, project_id)?;
-        if legacy || query.view.as_deref() == Some("board") {
+        if result.view == "board" {
             result.done_order = Some(query.done_order);
             for (status, total) in [
                 (super::TaskStatus::Planning, counts.planning),
@@ -1727,7 +1552,6 @@ fn bootstrap_snapshot(
                     },
                     Some(total),
                 )?;
-                result.page_info.tasks_truncated |= page.next_cursor.is_some();
                 result.board_pages.insert(
                     status.as_str().into(),
                     super::PageSummary {
@@ -1743,10 +1567,6 @@ fn bootstrap_snapshot(
             result.tasks.push(task_view(connection, id)?);
         }
         result.board_counts = Some(counts);
-        if legacy {
-            result.pool =
-                pool_page_connection(connection, &actor, project_id, None, None, PAGE_SIZE)?.items;
-        }
         let mut statement = connection.prepare_cached(
             "SELECT scope,COUNT(*) FROM pool_items WHERE project_id=?1 AND (scope='team' OR \
                      owner_user_id=?2) GROUP BY scope",

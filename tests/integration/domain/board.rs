@@ -580,8 +580,6 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
             .get("description")
             .is_none()
     );
-    assert!(snapshot.browser_sessions.is_empty());
-    assert!(snapshot.pool.is_empty());
     let detail = f.service.task(&f.member, "batch-0".into()).await.unwrap();
     assert_eq!(detail.description.as_deref(), Some("Detail only"));
     let page = f
