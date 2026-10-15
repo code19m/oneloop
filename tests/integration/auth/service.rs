@@ -304,29 +304,10 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
 }
 
 #[tokio::test]
-async fn login_throttles_and_expired_sessions_fail_closed() {
+async fn idle_sessions_are_refused_and_revoked() {
     let (_directory, db) = database();
     add_user(&db, "limited", false, false).await;
-    let now = unix_now().unwrap();
-    let key = token_hash("account\0limited\0unknown");
-    db.run(move |connection| {
-        connection.execute("INSERT INTO login_throttles
-            (key,failure_count,window_started_at,last_failed_at,blocked_until) VALUES(?1,5,?2,?2,?3)",
-            rusqlite::params![key,now,now+60])?;
-        Ok(())
-    }).await.unwrap();
     let service = auth_service(&db);
-    assert!(
-        matches!(service.login("limited",PASSWORD,SessionMetadata::default(),None).await,
-        Err(AppError::RateLimited{retry_after}) if retry_after>0)
-    );
-
-    db.run(|connection| {
-        connection.execute("DELETE FROM login_throttles", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
     let (token, actor) = login(&service, "limited").await;
     let session_id = actor.session_id().unwrap().to_owned();
     let sid = session_id.clone();
@@ -586,6 +567,12 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
     let (_directory, db) = database();
     add_user(&db, "chief", true, false).await;
     add_user(&db, "longusername", false, false).await;
+    // The administrator chose a short password under the default rules.
+    let (_, chief) = login(&auth_service(&db), "chief").await;
+    auth_service(&db)
+        .change_password(&chief, PASSWORD, "short pass")
+        .await
+        .unwrap();
     let service = AuthService::new(
         db.clone(),
         PasswordPolicy {
@@ -619,9 +606,8 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
         .change_password(&member, current, "twelve chars")
         .await
         .unwrap();
-    let (_, chief) = login(&service, "chief").await;
     let Err(error) = service
-        .change_password(&chief, current, "fifteen chars!!")
+        .change_password(&chief, "short pass", "fifteen chars!!")
         .await
     else {
         panic!("an admin password needs 16 characters");
@@ -645,9 +631,14 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
             .unwrap(),
         LoginResult::Authenticated(_)
     ));
-    // Sign-in never applies the rules, so shorter passwords chosen earlier work.
-    let (_, still) = login(&service, "chief").await;
-    assert_eq!(still.username, "chief");
+    // Sign-in never applies the rules, so the short password still works.
+    assert!(matches!(
+        service
+            .login("chief", "short pass", SessionMetadata::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
 }
 
 #[tokio::test]

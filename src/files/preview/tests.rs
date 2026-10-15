@@ -59,11 +59,20 @@ proptest! {
         assert_no_nested_navigation(format!("<p {attrs}>text</p><{tag} http-equiv=refresh src=https://example.com>ok</{tag}>").as_bytes());
     }
     #[test]
-    fn arbitrary_bytes_produce_bounded_utf8(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
-        let output = sanitize_html_preview(&bytes);
+    fn generated_markup_produces_bounded_utf8(source in "[<>='\"/ a-zé\t\n]{0,4096}") {
+        let output = sanitize_html_preview(source.as_bytes());
         prop_assert!(std::str::from_utf8(&output).is_ok());
-        prop_assert!(output.len() <= bytes.len().saturating_mul(4).max(128));
+        prop_assert!(output.len() <= source.len().saturating_mul(4));
     }
+}
+
+#[test]
+fn invalid_utf8_gets_a_notice_instead_of_the_bytes() {
+    let output = String::from_utf8(sanitize_html_preview(b"<p>caf\xe9</p>")).unwrap();
+    assert!(
+        output.contains("This HTML file is not valid UTF-8."),
+        "{output}"
+    );
 }
 
 #[test]

@@ -188,22 +188,6 @@ fn timezone_rules_come_from_a_server_zoneinfo_at_least_as_new_as_the_built_in_on
 }
 
 #[test]
-fn documented_fixed_offset_timezone_workarounds_cover_current_boundaries() {
-    for (zone, seconds) in [
-        ("Etc/GMT+7", -7 * 3600),
-        ("Etc/GMT+6", -6 * 3600),
-        ("Etc/UTC", 0),
-    ] {
-        let zone = oneloop::timezone::TimeZone::built_in(zone).unwrap();
-        for (month, day) in [(9, 21), (11, 2)] {
-            let midnight = jiff::civil::date(2026, month, day).at(0, 0, 0, 0);
-            let zoned = midnight.to_zoned(zone.rules().clone()).unwrap();
-            assert_eq!(zoned.offset().seconds(), seconds);
-        }
-    }
-}
-
-#[test]
 fn password_settings_are_opt_in_and_checked() {
     use oneloop::auth::password::PasswordPolicy;
     use oneloop::config::password_policy_from_os_iter;

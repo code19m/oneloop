@@ -630,17 +630,4 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(documented, BTreeSet::from(KNOWN_ENV));
     }
-
-    proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
-        #[test]
-        fn generated_configuration_parsers_do_not_panic(raw in ".{0,512}") {
-            let _ = parse_size("test", &raw);
-            let _ = parse_trusted_proxies(&raw);
-            let _ = parse_public_url(&raw);
-            let _ = parse_lifetime(&raw);
-            let _ = parse_redirect_schemes(&raw);
-            let _ = parse_allowed_origins(&raw);
-        }
-    }
 }

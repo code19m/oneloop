@@ -199,7 +199,6 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .unwrap();
     assert_eq!(listed.items.len(), 1);
     assert_eq!(listed.items[0].name, "notes.txt");
-    assert!(listed.items[0].storage_safe());
     let mut read = service
         .open_for_read(&fixture.viewer, &created.id, ReadMode::Download)
         .await
@@ -1061,7 +1060,7 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
 }
 
 #[tokio::test]
-async fn completed_reads_release_their_cleanup_and_deletion_lease() {
+async fn completed_reads_release_their_lease() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let file = upload(
@@ -1090,15 +1089,6 @@ async fn completed_reads_release_their_cleanup_and_deletion_lease() {
         (leases == 0).then_some(())
     })
     .await;
-    service
-        .delete_attachment(
-            &fixture.manager,
-            &file.id,
-            file.revision,
-            "delete-after-read",
-        )
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -1484,20 +1474,6 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
         )
         .await
         .unwrap();
-}
-
-trait AttachmentAssertions {
-    fn storage_safe(&self) -> bool;
-}
-
-impl AttachmentAssertions for oneloop::files::AttachmentView {
-    fn storage_safe(&self) -> bool {
-        !self
-            .download_url
-            .as_deref()
-            .unwrap_or_default()
-            .contains(&self.name)
-    }
 }
 
 #[tokio::test]

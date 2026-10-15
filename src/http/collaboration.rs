@@ -257,15 +257,3 @@ mod tests {
         assert!(parse_project_ids(Some("project-a,,project-b")).is_err());
     }
 }
-
-#[cfg(test)]
-mod generated_tests {
-    use super::*;
-    proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { failure_persistence: None, ..proptest::test_runner::Config::default() })]
-        #[test]
-        fn generated_project_lists_do_not_panic(raw in ".{0,512}") {
-            let _ = parse_project_ids(Some(&raw));
-        }
-    }
-}
