@@ -258,15 +258,18 @@ impl Fixture {
     }
 
     async fn get(&self, cookie: &str, uri: &str) -> Response {
+        self.get_with(cookie, uri, &[]).await
+    }
+
+    /// A GET with more request headers.
+    async fn get_with(&self, cookie: &str, uri: &str, headers: &[(&str, &str)]) -> Response {
+        let mut request = Request::builder().uri(uri).header(header::COOKIE, cookie);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
         self.app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header(header::COOKIE, cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
@@ -566,18 +569,12 @@ async fn files_follow_the_attachment_safety_rules() {
         .to_owned();
     assert!(body_bytes(response).await.starts_with(b"# Handbook"));
     let unchanged = fixture
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/projects/p1/knowledge/text?path=README.md")
-                .header(header::COOKIE, &fixture.member)
-                .header(header::IF_NONE_MATCH, &etag)
-                .body(Body::empty())
-                .unwrap(),
+        .get_with(
+            &fixture.member,
+            "/api/projects/p1/knowledge/text?path=README.md",
+            &[("if-none-match", &etag)],
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
 
     let image = fixture
@@ -626,6 +623,19 @@ async fn files_follow_the_attachment_safety_rules() {
         body_bytes(download).await.as_ref(),
         b"#!/bin/sh\necho ready\n"
     );
+    // Downloads are never cached, so they ignore validators.
+    let download = fixture
+        .get_with(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=run.sh",
+            &[("if-none-match", "*")],
+        )
+        .await;
+    assert_eq!(download.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(download).await.as_ref(),
+        b"#!/bin/sh\necho ready\n"
+    );
 
     let preview = fixture
         .get(
@@ -646,18 +656,12 @@ async fn files_follow_the_attachment_safety_rules() {
     }
 
     let script = fixture
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/projects/p1/knowledge/download?path=run.sh")
-                .header(header::COOKIE, &fixture.member)
-                .header("sec-fetch-dest", "script")
-                .body(Body::empty())
-                .unwrap(),
+        .get_with(
+            &fixture.member,
+            "/api/projects/p1/knowledge/download?path=run.sh",
+            &[("sec-fetch-dest", "script")],
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(script.status(), StatusCode::FORBIDDEN);
     let outsider = fixture
         .get(

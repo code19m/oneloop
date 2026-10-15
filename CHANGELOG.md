@@ -89,6 +89,9 @@ All notable changes to oneloop are recorded here. The format follows
 - With a very large `ONELOOP_STORAGE_LIMIT`, above about 200 PiB, the storage
   page for administrators shows the right cleanup points of 80% and 70%.
   Before, it showed wrong values.
+- A Knowledge file download now always sends the file, as an attachment
+  download does. Before, a download request with `If-None-Match` could get an
+  empty "not modified" answer.
 
 ### Security
 

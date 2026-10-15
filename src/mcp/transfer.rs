@@ -22,6 +22,7 @@ use crate::{
     auth::{Actor, ActorSource, refresh_actor_connection, revoke_unless_current, token},
     clock::unix_now,
     files::{ReadMode, UploadDeadline},
+    http::file_response::{self, Caching, Disposition},
 };
 
 /// How long a ticket works.
@@ -306,9 +307,7 @@ async fn download(State(state): State<AppState>, headers: HeaderMap) -> AppResul
         .await?;
     // A ticket works once, so the response is always the whole file, and it
     // offers no ranges.
-    let mut response = crate::http::files::file_response(read, &HeaderMap::new(), true).await?;
-    response.headers_mut().remove(header::ACCEPT_RANGES);
-    Ok(response)
+    file_response::leased(read, None, Disposition::Attachment, Caching::NoStore).await
 }
 
 #[derive(serde::Serialize)]

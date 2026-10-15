@@ -1,9 +1,8 @@
-//! Knowledge reads for the browser. File responses follow the attachment
-//! rules: detected types only, `nosniff`, downloads as attachments and HTML
-//! only through the sandboxed preview.
+//! Knowledge reads for the browser. Files are served as attachments are, and
+//! HTML only through the sandboxed preview.
 
 use super::{
-    files::{content_disposition, html_preview_response, require_safe_file_destination, validator},
+    file_response::{self, Caching, Disposition},
     input::ApiQuery,
 };
 
@@ -11,8 +10,8 @@ use axum::{
     Extension, Json, Router,
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::HeaderMap,
+    response::Response,
     routing::get,
 };
 use serde::Deserialize;
@@ -119,12 +118,12 @@ async fn html_preview(
     ApiQuery(query): ApiQuery<PreviewQuery>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
     let bytes = state
         .knowledge
         .html_preview(&actor, &project_id, &query.path)
         .await?;
-    Ok(html_preview_response(bytes))
+    Ok(file_response::html_preview(bytes))
 }
 
 async fn file(
@@ -135,50 +134,34 @@ async fn file(
     headers: HeaderMap,
     mode: FileMode,
 ) -> AppResult<Response> {
-    require_safe_file_destination(&headers)?;
+    file_response::require_safe_destination(&headers)?;
+    let download = mode == FileMode::Download;
+    // Downloads are never cached, so a validator never applies to them.
+    let validator = if download {
+        None
+    } else {
+        file_response::validator(&headers)
+    };
     let read = state
         .knowledge
-        .file(&actor, &project_id, &query.path, mode, validator(&headers))
+        .file(&actor, &project_id, &query.path, mode, validator)
         .await?;
-    let mut response = match read.body {
-        Some(body) => {
-            let length = body.len();
-            // Streamed, so a client that stops reading holds one chunk.
-            let mut response = Response::new(Body::from_stream(body.into_stream()));
-            let headers = response.headers_mut();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(&read.media_type)
-                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-            );
-            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
-            headers.insert(
-                header::CONTENT_DISPOSITION,
-                content_disposition(&read.name, mode == FileMode::Download)?,
-            );
-            response
-        }
-        None => StatusCode::NOT_MODIFIED.into_response(),
+    let Some(body) = read.body else {
+        return Ok(file_response::not_modified(read.etag));
     };
-    let headers = response.headers_mut();
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    if mode == FileMode::Download {
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-store"),
-        );
+    let (disposition, caching) = if download {
+        (Disposition::Attachment, Caching::NoStore)
     } else {
-        headers.insert(
-            header::ETAG,
-            HeaderValue::from_str(&read.etag).expect("checksum ETag"),
-        );
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-cache"),
-        );
-    }
-    Ok(response)
+        (Disposition::Inline, Caching::Revalidate(read.etag))
+    };
+    let length = body.len();
+    // Streamed, so a client that stops reading holds one chunk.
+    file_response::full(
+        Body::from_stream(body.into_stream()),
+        length,
+        &read.media_type,
+        &read.name,
+        disposition,
+        caching,
+    )
 }

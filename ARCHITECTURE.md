@@ -88,7 +88,9 @@ small hints over SSE, and clients then fetch what changed.
   endpoint for domain, comment, Inbox and Knowledge writes. `auth` (accounts
   and sessions) and `files` (uploads, file changes, previews and storage) have
   their own REST routes for reads and writes. `domain`, `collaboration` and
-  `knowledge` serve reads. `security` checks host and origin, resolves client
+  `knowledge` serve reads. `file_response` sends file bytes for attachments,
+  avatars, Knowledge and MCP downloads with one set of safe headers, ranges
+  and cache rules. `security` checks host and origin, resolves client
   addresses through trusted proxies and sets headers. `assets` serves the
   embedded client under `/v/<hash>/` URLs; the hash names the embedded files,
   so browsers can keep them for good. `server` bounds connections and shutdown.
