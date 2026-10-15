@@ -29,13 +29,6 @@ export const state = {
  * @type {import('../../src/data/contracts.js').LegacyApp}
  */
 export const App = {};
-/** Addresses the views drew themselves, which the address listener then skips once. */
-export const locallyRenderedHashes = [];
-export function setLocalHash(hash) {
-  if (location.hash === hash) return;
-  location.hash = hash;
-  locallyRenderedHashes.push(location.href);
-}
 
 // ---------- project-scoped accessors ----------
 export const project = () => D.projects.find((p) => p.id === state.projectId && canReadProject(p.id));

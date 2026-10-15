@@ -251,14 +251,16 @@ test('Back with typed text puts the address back and asks; Discard then goes wit
   type(t.d.getElementById('cmtIn'), 'Half a thought');
   await back(t);
   assert.equal(ask(t).querySelector('h2').textContent, 'Discard changes?');
-  assert.equal(t.w.location.hash, '#/task/BIR-079', 'the address shows the page that still shows');
+  await waitFor(() => t.w.location.hash === '#/task/BIR-079', 'the address shows the page that still shows');
   t.d.querySelector('[data-confirm-cancel]').click();
   assert.equal(t.A.context().view, 'task'); assert.equal(t.d.getElementById('cmtIn').value, 'Half a thought');
   await back(t);
   assert(ask(t));
-  t.d.querySelector('[data-confirm-accept]').click(); await settle();
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => t.A.context().view !== 'task', 'Discard leaves the task');
   assert.equal(ask(t), null, 'Discard asks once');
-  assert.equal(t.w.location.hash, '#/roadmap'); assert.equal(t.A.context().view, 'roadmap');
+  // Cancel left history as it was, so Back still leads to the Board.
+  assert.equal(t.w.location.hash, '#/board'); assert.equal(t.A.context().view, 'board');
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {

@@ -78,6 +78,9 @@ All notable changes to oneloop are recorded here. The format follows
 - When someone else renamed a milestone while you edited its name, the
   question about the change now shows their name. Before, it showed no saved
   value.
+- When you press **Back** or **Forward** with text you haven't sent and then
+  **Cancel**, the browser history stays as it was. Before, the next **Back**
+  skipped a page.
 
 ### Security
 

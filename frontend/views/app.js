@@ -21,8 +21,8 @@ import {
 } from './app/forms.js';
 import {
   App, D, canBoard, canReadProject, canReadTask, collaboration, counts, epicById, epics,
-  hasPermission, instanceNow, isAdmin, locallyRenderedHashes, me, poolItems, project,
-  projectMembers, report, runtime, setLocalHash, state, taskById, tasks, trackById, userById,
+  hasPermission, instanceNow, isAdmin, me, poolItems, project,
+  projectMembers, report, runtime, state, taskById, tasks, trackById, userById,
   userHandle, visibleProjects,
 } from './app/model.js';
 import {
@@ -782,37 +782,68 @@ function resolveRoute() {
   }
   state.view=['roadmap','board','settings','profile','users','inbox','storage'].includes(route)?route:'notfound';
 }
+// Each history entry the views reach keeps its place in history.state, so
+// that Cancel after Back or Forward can step back to the entry that shows.
+const placeOf = () => history.state?.oneloopPlace;
+const markPlace = place => history.replaceState({ ...history.state, oneloopPlace: place }, '');
+if (typeof placeOf() !== 'number') markPlace(0);
+/** The place of the entry whose page shows. */
+let shownPlace = placeOf();
+/** Addresses the views drew themselves, which the address listener then skips once. */
+const locallyRenderedHashes = [];
+function setLocalHash(hash) {
+  if (location.hash === hash) return;
+  location.hash = hash;
+  markPlace(++shownPlace);
+  locallyRenderedHashes.push(location.href);
+}
 /** The address Discard let through, which routes without asking again. */
 let discardedFor = null;
+/** The address Cancel stepped back to, which changes nothing. */
+let returningTo = null;
 /** Go to an address that the person already chose to leave typed text for. */
 function followAddress(hash) { discardedFor = new URL(hash, location.href).href; location.hash = hash; }
 /**
- * Back, Forward or an address typed by hand: a field that saves itself saves
- * first, as no browser blurs it here. If typed text would still be lost, the
- * old address comes back while oneloop asks; Discard goes on.
+ * Back, Forward or an address typed by hand (`typed`): a field that saves
+ * itself saves first, as no browser blurs it here. If typed text would still
+ * be lost, the old address comes back while oneloop asks; Discard goes on.
  */
-function mayFollowAddress(event) {
+function mayFollowAddress(event, typed) {
   if (event.newURL === discardedFor) { discardedFor = null; return true; }
   const active = document.activeElement;
   if (active?.matches?.('[data-autosave]')) active.blur();
   if (!window.Recovery?.hasUnsavedInput?.({ leaving:false })) return true;
-  const { oldURL, newURL } = event;
-  history.replaceState(history.state, '', oldURL);
-  askToDiscard(() => {
-    discardedFor = newURL;
-    history.replaceState(history.state, '', newURL);
-    window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL }));
-  });
+  const { oldURL, newURL } = event, steps = placeOf() - shownPlace;
+  if (typed || !steps) {
+    // A new entry: it shows the old address until Discard.
+    shownPlace = placeOf();
+    history.replaceState(history.state, '', oldURL);
+    askToDiscard(() => {
+      discardedFor = newURL;
+      history.replaceState(history.state, '', newURL);
+      window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL }));
+    });
+  } else {
+    // Back or Forward: step back now, so the entries keep their addresses.
+    returningTo = oldURL;
+    history.go(-steps);
+    askToDiscard(() => { discardedFor = newURL; history.go(steps); });
+  }
   return false;
 }
 window.addEventListener('hashchange',(event)=>{
+  if(event.newURL===returningTo){returningTo=null;event.stopImmediatePropagation();return;}
   // Local navigation already painted its destination. Consume only that
   // exact history event, so external hashes and Back/Forward still route.
   const index=locallyRenderedHashes.indexOf(event.newURL);
   if(index!==-1){locallyRenderedHashes.splice(index,1);window.Recovery?.clearPageError();return;}
   if(event.newURL && event.newURL!==location.href)return;
+  // An entry without a place is new: a link, or an address typed by hand.
+  const typed=typeof placeOf()!=='number';
+  if(typed)markPlace(shownPlace+1);
   // Staying keeps the page, so the route loader must not load the new one either.
-  if(!mayFollowAddress(event)){event.stopImmediatePropagation();return;}
+  if(!mayFollowAddress(event,typed)){event.stopImmediatePropagation();return;}
+  shownPlace=placeOf();
   window.Recovery?.clearPageError();
   state.peek=null;state.modal=null;state.menu=null;resolveRoute();render();
 });
