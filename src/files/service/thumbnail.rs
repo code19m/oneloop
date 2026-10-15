@@ -200,7 +200,8 @@ impl FileService {
     }
 
     /// Makes every queued thumbnail now, as the worker would, and returns how
-    /// many it wrote.
+    /// many it wrote. For deterministic tests.
+    #[doc(hidden)]
     pub async fn make_queued_thumbnails(&self) -> u64 {
         self.make_thumbnails_until(|| false).await
     }
