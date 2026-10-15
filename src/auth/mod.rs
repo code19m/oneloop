@@ -17,14 +17,17 @@ pub use token::hash as token_hash;
 pub mod password;
 pub(crate) mod token;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{LazyLock, OnceLock},
+    time::Duration,
+};
 
 use rusqlite::{OptionalExtension, Transaction};
 use serde::Serialize;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::{
+    blocking::{Lane, Turn},
     db::Db,
     error::{AppError, AppResult},
 };
@@ -524,36 +527,15 @@ fn login_ip_throttle_key(client_ip: Option<&str>) -> Option<String> {
     login_address_bucket(client_ip).map(|bucket| token_hash(&format!("ip\0{bucket}")))
 }
 
-// Shared across AuthService instances/routes. Waiting requests do not enqueue
-// Argon2 jobs in Tokio's blocking pool. Four workers may overshoot a newly set
-// account delay by at most three in-flight attempts; this is not an exact cap.
-async fn password_work_permit() -> AppResult<Arc<OwnedSemaphorePermit>> {
-    static PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        PERMITS
-            .get_or_init(|| Arc::new(Semaphore::new(4)))
-            .clone()
-            .acquire_owned(),
-    )
-    .await
-    .map_err(|_| AppError::Unavailable("password workers are busy; try again shortly".into()))?
-    .map(Arc::new)
-    .map_err(|_| AppError::internal("password worker admission closed"))
-}
+// Shared across AuthService instances and routes. Waiting requests do not
+// queue Argon2 jobs on Tokio's blocking threads. Four jobs may overshoot a
+// newly set account delay by at most three attempts; this is not an exact cap.
+static PASSWORD_WORK: LazyLock<Lane> = LazyLock::new(|| Lane::new("password work", 4));
 
-async fn password_work<T: Send + 'static>(
-    permit: &Arc<OwnedSemaphorePermit>,
-    work: impl FnOnce() -> AppResult<T> + Send + 'static,
-) -> AppResult<T> {
-    let permit = permit.clone();
-    tokio::task::spawn_blocking(move || {
-        // Cancellation cannot release admission while non-cancellable hash work runs.
-        let _permit = permit;
-        work()
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("password worker stopped: {error}")))?
+/// A turn for password hashing and checks. Callers keep it through their
+/// sign-in bookkeeping, so that waiting attempts see the delays it records.
+async fn password_turn() -> AppResult<Turn> {
+    PASSWORD_WORK.turn_within(Duration::from_secs(10)).await
 }
 
 fn dummy_password_hash() -> String {
@@ -713,32 +695,4 @@ struct McpAuthentication {
     must_change_password: bool,
     token_last_used: Option<i64>,
     grant_last_used: Option<i64>,
-}
-
-#[cfg(test)]
-mod password_work_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn cancelled_request_keeps_its_permit_until_hash_work_stops() {
-        let semaphore = Arc::new(Semaphore::new(1));
-        let permit = Arc::new(semaphore.clone().acquire_owned().await.unwrap());
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-        let request = tokio::spawn(async move {
-            password_work(&permit, move || {
-                started_tx.send(()).unwrap();
-                finish_rx.recv().unwrap();
-                Ok(())
-            })
-            .await
-        });
-        started_rx.await.unwrap();
-        request.abort();
-        assert!(request.await.unwrap_err().is_cancelled());
-        assert!(semaphore.clone().try_acquire_owned().is_err());
-        finish_tx.send(()).unwrap();
-        // Completion, rather than request cancellation, makes room for new work.
-        let _available = semaphore.acquire_owned().await.unwrap();
-    }
 }

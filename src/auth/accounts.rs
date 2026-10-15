@@ -10,9 +10,9 @@ impl AuthService {
     ) -> AppResult<IssuedSession> {
         actor.require_ready()?;
         let session_id = actor.session_id().ok_or(AppError::Forbidden)?.to_owned();
-        let permit = password_work_permit().await?;
+        let turn = password_turn().await?;
         let verified_hash = self
-            .verify_current_password(actor, password, "password", &permit)
+            .verify_current_password(actor, password, "password", &turn)
             .await?;
         let token = token::random_token(32)?;
         let new_token_hash = token_hash(&token);
@@ -57,12 +57,12 @@ impl AuthService {
     ) -> AppResult<IssuedSession> {
         let session_id = actor.session_id().ok_or(AppError::Forbidden)?.to_owned();
         self.policy.check(new, &actor.username, actor.is_admin)?;
-        let permit = password_work_permit().await?;
+        let turn = password_turn().await?;
         let verified_hash = self
-            .verify_current_password(actor, current, "currentPassword", &permit)
+            .verify_current_password(actor, current, "currentPassword", &turn)
             .await?;
         let new_owned = new.to_owned();
-        let new_hash = password_work(&permit, move || hash_password(&new_owned)).await?;
+        let new_hash = turn.run(move || hash_password(&new_owned)).await??;
         let user_id = actor.user_id.clone();
         let token = token::random_token(32)?;
         let new_token_hash = token_hash(&token);
@@ -130,7 +130,7 @@ impl AuthService {
         actor: &Actor,
         supplied: &str,
         field: &'static str,
-        permit: &Arc<OwnedSemaphorePermit>,
+        turn: &Turn,
     ) -> AppResult<String> {
         let hash = self.password_hash_for_session(actor).await?;
         let throttle_key = token_hash(&format!("password-confirmation\0{}", actor.user_id));
@@ -138,7 +138,10 @@ impl AuthService {
             .await?;
         let verified_hash = hash.clone();
         let supplied = supplied.to_owned();
-        let valid = password_work(permit, move || verify_password(&supplied, &hash)).await?;
+        let valid = turn
+            .clone()
+            .run(move || verify_password(&supplied, &hash))
+            .await??;
         if !valid {
             self.record_login_failure(throttle_key, unix_now()?, &PASSWORD_CONFIRMATION_RULE)
                 .await?;
@@ -260,9 +263,10 @@ impl AuthService {
         let username = normalize_username(username)?;
         let display_name = normalize_display_name(display_name)?;
         let password_for_hash = temporary_password.clone();
-        let permit = password_work_permit().await?;
-        let password_hash =
-            password_work(&permit, move || hash_password(&password_for_hash)).await?;
+        let turn = password_turn().await?;
+        let password_hash = turn
+            .run(move || hash_password(&password_for_hash))
+            .await??;
         let actor_id = actor.user_id.clone();
         let actor_for_tx = actor.clone();
         let user = self
@@ -390,9 +394,10 @@ impl AuthService {
         }
         let password = self.policy.temporary_password()?;
         let password_for_hash = password.clone();
-        let permit = password_work_permit().await?;
-        let password_hash =
-            password_work(&permit, move || hash_password(&password_for_hash)).await?;
+        let turn = password_turn().await?;
+        let password_hash = turn
+            .run(move || hash_password(&password_for_hash))
+            .await??;
         let user_id = user_id.to_owned();
         let actor_id = actor.user_id.clone();
         let now = unix_now()?;
