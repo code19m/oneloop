@@ -1,4 +1,5 @@
 use super::*;
+use oneloop::command::Operation as _;
 
 #[tokio::test]
 async fn block_reason_edits_invalidate_existing_inboxes_even_after_mentions_are_removed() {

@@ -127,7 +127,6 @@ async fn skipped_local_dates_do_not_break_roadmap_or_bootstrap() {
 
 #[tokio::test]
 async fn pool_pages_continue_from_their_cursor() {
-    use oneloop::domain::{PoolQuery, PoolScope};
     let f = fixture().await;
     // One item more than a page, all from the same second, so IDs order them.
     f.db.transaction(|tx| {
