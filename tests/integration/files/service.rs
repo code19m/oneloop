@@ -1809,7 +1809,7 @@ async fn high_watermark_admission_does_not_walk_originals() {
 }
 
 #[tokio::test]
-async fn deletion_backlog_drains_in_bounded_batches() {
+async fn a_deletion_backlog_larger_than_one_batch_drains() {
     let f = Fixture::new().await;
     let store = oneloop::files::FileStore::new(f.db.layout().clone());
     // One file more than a deletion batch of 200.

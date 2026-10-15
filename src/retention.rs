@@ -97,14 +97,17 @@ mod tests {
     #[test]
     fn indexed_prunes_read_their_retention_indexes() {
         let (_root, connection) = migrated_connection();
+        let mut checked = 0;
         for (sql, _) in PRUNES {
             for table in ["sessions", "mcp_tokens", "mcp_grants"] {
                 if sql.starts_with(&format!("DELETE FROM {table} ")) {
                     let plan = query_plan(&connection, sql);
                     assert!(plan.contains(&format!("{table}_retention_idx")), "{plan}");
+                    checked += 1;
                 }
             }
         }
+        assert_eq!(checked, 3, "a prune of an indexed table was not found");
         // Active windows and blocks are skipped by the index, not read.
         let plan = query_plan(&connection, PRUNE_LOGIN_THROTTLES_SQL);
         assert!(plan.contains("window_started_at<?"), "{plan}");

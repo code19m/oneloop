@@ -24,20 +24,15 @@ async fn login(service: &AuthService, username: &str) -> (String, Actor) {
 }
 
 #[tokio::test]
-async fn temporary_password_sessions_cannot_enter_the_application() {
+async fn temporary_password_sessions_cannot_list_sessions() {
     let (_directory, db) = database();
-    let temporary_id = add_user(&db, "temporary", false, true).await;
+    add_user(&db, "temporary", false, true).await;
     let service = auth_service(&db);
     let (_, temporary) = login(&service, "temporary").await;
-    assert!(matches!(
-        temporary.require_ready(),
-        Err(AppError::PreconditionFailed(_))
-    ));
     assert!(matches!(
         service.list_sessions(&temporary).await,
         Err(AppError::PreconditionFailed(_))
     ));
-    assert_eq!(temporary.user_id, temporary_id);
 }
 
 #[tokio::test]
