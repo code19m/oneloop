@@ -15,6 +15,9 @@ export const runtime = () => window.OneloopRuntime;
 export const report = (error) => runtime().report(error);
 export const instanceNow = () => runtime()?.now?.() ?? Date.now();
 
+/** The Board's first page of each column, which a read from the server also starts at. */
+export const firstBoardPages = () => ({ planning: 50, progress: 50, review: 50, done: 50 });
+
 export const state = {
   sideOpen: false,
   view: (location.hash.replace('#/', '') || 'roadmap'),
@@ -26,7 +29,7 @@ export const state = {
   rmScrollLeft: null, rmScrollTop: 0,
   boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
   peek: null, modal: null, menu: null,
-  boardLimits:{planning:50,progress:50,review:50,done:50}, usersLimit:50,
+  boardLimits: firstBoardPages(), usersLimit:50,
 };
 /**
  * The actions that markup and the view bridge call by name. Each part of the
@@ -78,6 +81,13 @@ export const projectMembers = () => ((project() || {}).members || [])
   .map((m) => userById(m.userId))
   .filter((u) => u && u.active);
 export const activeAdmins = () => D.users.filter((u) => u.admin && u.active);
+/** The project's open blocked tasks, as the server counts them once it has. */
+export const blockedCount = () => D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter((t) => t.block && t.state !== 'done').length;
+/** Items in both of the project's Pools, as the server counts them once both are read. */
+export const poolTotal = () => {
+  const mine = D.poolPageInfo?.[`${state.projectId}:mine`]?.total, team = D.poolPageInfo?.[`${state.projectId}:project`]?.total;
+  return Number.isFinite(mine) && Number.isFinite(team) ? mine + team : poolItems().length;
+};
 export const counts = () => {
   const aggregate = D.projectTaskCounts?.[state.projectId];
   if (aggregate) return { open:aggregate.open, done:aggregate.done };

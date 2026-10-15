@@ -11,7 +11,7 @@ import { accountTopbarHtml, renderProfile, renderSettings, renderUsers } from '.
 import { mountAttachments } from './app/attachments.js';
 import {
   boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch, clearFilterMotion,
-  renderBoard,
+  renderBoard, resetBoardFilters,
 } from './app/board.js';
 import { beforeCollaborationRender, inboxHtml, inboxNav, mountCollaboration } from './app/collaboration.js';
 import { field, resetFieldIds } from './app/controls.js';
@@ -22,8 +22,8 @@ import {
 } from './app/format.js';
 import { mountDescription, sizeDescription, sizeDescriptionEditors } from './app/forms.js';
 import {
-  App, D, canBoard, canReadProject, canReadTask, counts, epicById, hasPermission, instanceNow, isAdmin,
-  knowledge, me, poolItems, project, recovery, report, runtime, state, taskById, tasks, trackById,
+  App, D, blockedCount, canBoard, canReadProject, canReadTask, counts, epicById, hasPermission, instanceNow,
+  isAdmin, knowledge, me, poolTotal, project, recovery, report, runtime, state, taskById, trackById,
   visibleProjects,
 } from './app/model.js';
 import {
@@ -329,15 +329,13 @@ Object.assign(App, {
   refreshCounts() {
     const badge=document.querySelector('.sidebar .nav-item[title="Board"] .end');
     const open=String(counts().open);if(badge&&badge.textContent!==open)badge.textContent=open;
-    const blocked=document.querySelector('.blocked-filter-count');
-    const blockedCount=String(D.projectTaskCounts?.[state.projectId]?.blocked??tasks().filter(task=>task.block&&task.state!=='done').length);
-    if(blocked&&blocked.textContent!==blockedCount)blocked.textContent=blockedCount;
-    const mine=D.poolPageInfo?.[`${state.projectId}:mine`]?.total,team=D.poolPageInfo?.[`${state.projectId}:project`]?.total;
-    const poolTotal=Number.isFinite(mine)&&Number.isFinite(team)?mine+team:poolItems().length;
-    document.querySelectorAll('[data-pool-count]').forEach(el=>{if(el.textContent!==String(poolTotal))el.textContent=String(poolTotal);});
+    const blocked=document.querySelector('.blocked-filter-count'),blockedText=String(blockedCount());
+    if(blocked&&blocked.textContent!==blockedText)blocked.textContent=blockedText;
+    const pool=String(poolTotal());
+    document.querySelectorAll('[data-pool-count]').forEach(el=>{if(el.textContent!==pool)el.textContent=pool;});
   },
   followAddress,
-  selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){knowledge.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
+  selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){knowledge.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
   nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash('#/' + v); render(); },
   require(permission) {
     if (hasPermission(permission)) return true;
@@ -433,7 +431,7 @@ function resolveRoute() {
     const projectId=knowledge.route(route,state.projectId);
     if(projectId&&projectId!==state.projectId){
       if(!visibleProjects().some(project=>project.id===projectId)){state.view='notfound';return;}
-      state.projectId=projectId;state.rmScrollLeft=null;state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;
+      state.projectId=projectId;state.rmScrollLeft=null;resetBoardFilters();
     }
     state.view='knowledge';return;
   }

@@ -7,7 +7,7 @@ import { patchBoardRow } from './board.js';
 import { optionalMark } from './controls.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
-import { App, D, canBoard, me, poolItems, report, runtime, state } from './model.js';
+import { App, D, canBoard, me, poolItems, poolTotal, report, runtime, state } from './model.js';
 import { closePop, stampOverlays } from './overlays.js';
 
 function poolRowHtml(p) {
@@ -79,8 +79,8 @@ function updatePool({ completeItemId } = {}) {
   input.hidden = state.poolTab === 'project' && !canBoard();
   view.querySelector('.pool-capture').hidden=input.hidden;
   if(tabChanged){input.value='';resetPoolCapture();view.querySelectorAll('.pool-description-editor').forEach(el=>el.remove());view.querySelectorAll('.pool-note-toggle').forEach(el=>el.setAttribute('aria-expanded','false'));}
-  const mineTotal=D.poolPageInfo?.[`${state.projectId}:mine`]?.total,teamTotal=D.poolPageInfo?.[`${state.projectId}:project`]?.total;
-  document.querySelectorAll('[data-pool-count]').forEach((el) => { el.textContent = Number.isFinite(mineTotal)&&Number.isFinite(teamTotal)?mineTotal+teamTotal:poolItems().length; });
+  const total=poolTotal();
+  document.querySelectorAll('[data-pool-count]').forEach((el) => { el.textContent = total; });
   list.dataset.poolScope = state.poolTab;
   if (!tabChanged) list.scrollTop = listScroll;
   if (tabChanged) UIMotion.fade(list);

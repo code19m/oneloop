@@ -9,12 +9,12 @@ import {
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import {
-  I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort,
-  instanceDateKey, instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
+  I, STATUS, UIAction, avatarHtml, d, esc, formatInstant, humanInstant, humanShort, instanceDateKey,
+  instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
-  App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, recovery, report,
-  runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
+  App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal,
+  projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { announce } from './toasts.js';
 
@@ -135,10 +135,16 @@ export function patchBoardRow(current, next) {
   return current;
 }
 
+/** Show the Board unfiltered, from the first page of each column, as for another project. */
+export function resetBoardFilters() {
+  state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false;
+  state.boardLimits = firstBoardPages();
+}
+
 function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
   if (!fromServer) cancelBoardSearch();
   App.updateDocumentTitle();
-  if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
+  if(reset) state.boardLimits = firstBoardPages();
   if(!fromServer){runtime().filterBoard(App.context().board).catch(report);return;}
   const board = document.querySelector('.board');
   if (!board || state.view !== 'board') return;
@@ -248,8 +254,8 @@ export function boardTopbarHtml() {
     ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
     ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
     ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
-    <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${D.projectTaskCounts?.[state.projectId]?.blocked ?? tasks().filter(t=>t.block && t.state!=='done').length}</span></button>
-    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${Number.isFinite(D.poolPageInfo?.[`${state.projectId}:mine`]?.total)&&Number.isFinite(D.poolPageInfo?.[`${state.projectId}:project`]?.total)?D.poolPageInfo[`${state.projectId}:mine`].total+D.poolPageInfo[`${state.projectId}:project`].total:poolItems().length}</span></button>
+    <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${blockedCount()}</span></button>
+    <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${poolTotal()}</span></button>
     ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
   </div>`;
 }
@@ -504,7 +510,7 @@ Object.assign(App, {
     UIMotion.layout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
-  clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).catch(report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
