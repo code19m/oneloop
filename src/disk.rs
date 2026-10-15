@@ -160,6 +160,26 @@ mod tests {
     }
 
     #[test]
+    fn of_two_reservations_at_once_only_one_that_fits_passes() {
+        let root = tempfile::tempdir().unwrap();
+        let reservations = Reservations::default();
+        // Each takes three quarters of the free space, so one fits and two
+        // don't, unless other programs change the free space by a quarter.
+        let bytes = fs4::available_space(root.path()).unwrap() / 4 * 3;
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let attempts = [(); 2].map(|()| {
+            let disk = DiskAdmission::new(root.path(), 0, reservations.clone());
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                disk.reserve(bytes).ok()
+            })
+        });
+        let reserved = attempts.map(|attempt| attempt.join().unwrap());
+        assert_eq!(reserved.iter().flatten().count(), 1);
+    }
+
+    #[test]
     fn cleanup_keeps_the_reservation_until_all_owners_and_temporary_bytes_are_gone() {
         let root = tempfile::tempdir_in("target").unwrap();
         let reservations = Reservations::default();

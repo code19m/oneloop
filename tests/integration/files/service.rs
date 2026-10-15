@@ -2240,34 +2240,6 @@ async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     assert_eq!(body, b"abcd");
 }
 
-#[tokio::test]
-async fn concurrent_upload_reservations_protect_the_disk_floor() {
-    let f = Fixture::new().await;
-    f.store().ensure_directories().await.unwrap();
-    let free = fs4::available_space(f.db.layout().root()).unwrap();
-    let service = FileService::new(
-        f.db.clone(),
-        100 * 1024 * 1024,
-        free.saturating_sub(35 * 1024 * 1024),
-    );
-    let size = oneloop::files::MAX_ATTACHMENT_BYTES;
-    let (a, b) = tokio::join!(
-        service.begin_attachment_upload(&f.manager, "task", "a.bin", size, false, "floor-a"),
-        service.begin_attachment_upload(&f.manager, "task", "b.bin", size, false, "floor-b"),
-    );
-    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
-    for result in [a, b] {
-        match result {
-            Ok(AttachmentUpload::Pending(upload)) => upload.abort().await.unwrap(),
-            Err(AppError::Rule {
-                kind: oneloop::error::RuleKind::StorageFull,
-                ..
-            }) => {}
-            _ => panic!("unexpected reservation outcome"),
-        }
-    }
-}
-
 fn restore(key: &str, expected_revision: i64) -> AttachmentRestore {
     AttachmentRestore {
         expected_revision,
