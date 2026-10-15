@@ -70,9 +70,10 @@ impl CollaborationService {
     ) -> AppResult<ActivityPage> {
         let project_id = project_id.to_owned();
         let task_id = task_id.map(str::to_owned);
-        let cursor: Option<TimeCursor> = cursor.map(paging::decode).transpose()?;
+        let cursor = cursor.map(str::to_owned);
         let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
             require_project(connection, actor, &project_id, Need::Read, false)?;
             let task_id = task_id.as_deref();
             let mut items = project_feed(
@@ -109,9 +110,10 @@ impl CollaborationService {
         limit: Option<usize>,
     ) -> AppResult<ActivityPage> {
         let epic_id = epic_id.to_owned();
-        let cursor: Option<TimeCursor> = cursor.map(paging::decode).transpose()?;
+        let cursor = cursor.map(str::to_owned);
         let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
             access::require_epic(connection, actor, &epic_id, Need::Read, false)?;
             let items = feed(
                 connection,

@@ -108,13 +108,13 @@ impl DomainService {
         actor: &Actor,
         query: BootstrapQuery,
     ) -> AppResult<BootstrapView> {
-        // Without a view, the bootstrap has only what every view needs.
-        let view = query.view.clone().unwrap_or_else(|| "metadata".into());
-        if !["board", "roadmap", "task", "metadata"].contains(&view.as_str()) {
-            return Err(AppError::validation("view", "unknown initial view"));
-        }
         let time_zone = self.time_zone.clone();
         access::read(&self.db, actor, move |connection, actor| {
+            // Without a view, the bootstrap has only what every view needs.
+            let view = query.view.clone().unwrap_or_else(|| "metadata".into());
+            if !["board", "roadmap", "task", "metadata"].contains(&view.as_str()) {
+                return Err(AppError::validation("view", "unknown initial view"));
+            }
             bootstrap_snapshot(connection, actor, query, view, &time_zone)
         })
         .await

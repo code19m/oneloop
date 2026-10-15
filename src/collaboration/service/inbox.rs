@@ -38,9 +38,10 @@ impl CollaborationService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> AppResult<InboxPage> {
-        let cursor: Option<TimeCursor> = cursor.map(paging::decode).transpose()?;
+        let cursor = cursor.map(str::to_owned);
         let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         access::read(&self.db, actor, move |connection, actor| {
+            let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
             access::require_scope(connection, actor, McpScope::InboxPrivate, None)?;
             validate_inbox_projects(connection, actor, &filter.project_ids)?;
             let unread_count: i64 = connection.query_row(
