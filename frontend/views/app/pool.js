@@ -7,7 +7,7 @@ import { optionalMark } from './controls.js';
 import { exitVisual, fadeContent, uiAnimate } from './effects.js';
 import { I, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
-import { App, D, canBoard, invoke, me, poolItems, state } from './model.js';
+import { App, D, canBoard, me, poolItems, report, runtime, state } from './model.js';
 import { closePop, stampOverlays } from './overlays.js';
 
 function poolRowHtml(p) {
@@ -159,8 +159,8 @@ Object.assign(App, {
     state.poolTab = k;
     updatePool();
     list.scrollTop = App._poolScroll[k] || 0;
-    invoke('pool.select',{scope:k});
+    runtime().selectPool(k).catch(report);
   },
-  loadMorePool(){invoke('pool.more',{scope:state.poolTab});},
-  retryPool(){invoke('pool.select',{scope:state.poolTab});},
+  loadMorePool(){runtime().loadMorePool(state.poolTab).catch(report);},
+  retryPool(){runtime().selectPool(state.poolTab).catch(report);},
 });

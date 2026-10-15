@@ -22,9 +22,9 @@ import {
 } from './app/forms.js';
 import {
   App, D, canBoard, canReadProject, canReadTask, collaboration, counts, epicById, epics,
-  hasPermission, instanceNow, invoke, isAdmin, locallyRenderedHashes, me, poolItems, project,
-  projectMembers, setLocalHash, state, taskById, tasks, trackById, userById, userHandle,
-  visibleProjects,
+  hasPermission, instanceNow, isAdmin, locallyRenderedHashes, me, poolItems, project,
+  projectMembers, report, runtime, setLocalHash, state, taskById, tasks, trackById, userById,
+  userHandle, visibleProjects,
 } from './app/model.js';
 import {
   POP, askConfirmation, askToDiscard, closePop, dismissMenu, hideEpicTip, overlayKey,
@@ -236,7 +236,7 @@ function refreshTaskActivity(id,preserveComments=true) {
 }
 
 // A title or description that is not saved yet stays as typed, with Save.
-const taskDraft = (t, field) => window.OneloopRuntime?.taskDraft?.(t.internalId, field) || null;
+const taskDraft = (t, field) => runtime()?.taskDraft?.(t.internalId, field) || null;
 function taskDraftNote(t, field) {
   if (!taskDraft(t, field)?.unsaved) return '';
   if (!canBoard()) return `<p class="save-feedback" data-draft-note="${UIEscape(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
@@ -292,7 +292,7 @@ function msHtml(key, taskId, disabled) {
     icon: () => { const a = (taskById(taskId)?.assignees || []).filter(userById); return a.length ? `<span class="avs">${a.slice(0, 3).map((x) => avatarHtml(x, 16)).join('')}</span>` : I.person; },
     options: projectMembers().map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) })),
     values: () => taskById(taskId)?.assignees || [],
-    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} invoke('task.assignees',{taskId:t.internalId,assigneeIds:t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]}); },
+    toggle: (v) => { clearTaskSaved();if (!App.require('manage_board') || window.Recovery&&!Recovery.ensureOnline()) return; const t = taskById(taskId); if(!t){App.toast('This task is no longer available','error');return;} if(!(t.assignees||[]).includes(v)&&!projectMembers().some(u=>u.id===v)){App.toast('This person is no longer a project member','error');return;} runtime().setAssignees(t.internalId,t.assignees.includes(v)?t.assignees.filter(id=>id!==v):[...t.assignees,v]).catch(report); },
     summary: () => { const a = taskById(taskId)?.assignees || []; return a.length ? a.map((x) => (userById(x) || { name: x }).name).join(', ') : 'Unassigned'; },
     onClose: () => render(),
   });
@@ -434,7 +434,7 @@ function render(){
   // Text typed into a task field whose edit rights just ended stays as a Not saved draft.
   if(focused&&state.view==='task'&&!active.disabled&&!active.readOnly&&!canBoard()){
     const field=active.matches('.tp-title')?'title':active.id==='task-description'?'desc':null,t=taskById(state.taskId);
-    if(field&&t)window.OneloopRuntime?.keepTaskDraft?.(t.id,field,active.value);
+    if(field&&t)runtime()?.keepTaskDraft?.(t.id,field,active.value);
   }
   const focusedControl=preserve&&!focused&&active?.closest('#app')?rememberOpener(active):null;
   // The page heading and main area outlast any content render of the same page, such as
@@ -733,7 +733,7 @@ Object.assign(App, {
   // menus
   projectMenu(ev) {
     const r = ev.currentTarget.getBoundingClientRect();
-    const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => invoke('workspace.select',{projectId:p.id}) }));
+    const items = visibleProjects().map((p) => ({ label: p.name, projectId:p.id, projectName:p.name, fn: () => runtime().selectProject(p.id).catch(report) }));
     if (isAdmin()) items.push({ sep: true }, { label: 'New project', icon:I.plus, fn: () => { state.modal = { type: 'project' }; renderOverlays(); } });
     App._openMenu(items, r.left, r.bottom + 6, { projectMenu: true, trigger:ev.currentTarget });
   },
@@ -856,7 +856,7 @@ window.Uploads?.bind(App,{confirm:askConfirmation,task:taskById,canRead:id=>canR
 setInterval(()=>{
   const key=instanceDateKey(instanceNow());if(key===iso(today))return;today.setTime(+d(key));
   if(!D.session||me()?.mustChange)return;
-  if (state.view==='roadmap'||state.peek) window.OneloopRuntime.invoke('date.rollover',{}).catch(()=>{});
+  if (state.view==='roadmap'||state.peek) runtime().dateChanged().catch(()=>{});
   if(state.view==='task'){
     const late=overdue(taskById(state.taskId)),row=document.querySelector('.task-property-date');
     row?.classList.toggle('late',late);const label=row?.querySelector('.task-overdue');if(label)label.hidden=!late;

@@ -27,7 +27,7 @@ for(const replacement of [null,'modal','drawer'])test(`epic reopening updates it
 test('selecting another project from a task leaves its route and displays the selected Board',async()=>{
  const t=bootApp({route:'task/BIR-079'});
  const destination=t.D.projects.find(project=>project.id!==t.A.context().projectId),read=name=>t.reads.calls.filter(call=>call[0]===name).map(call=>call[1]);
- await t.bridge.invoke('workspace.select',{projectId:destination.id});
+ await t.bridge.selectProject(destination.id);
  assert.equal(t.w.location.hash,'#/board');assert.equal(t.A.context().view,'board');assert.equal(t.A.context().projectId,destination.id);
  assert.equal(t.d.querySelector('.task-page'),null);assert(t.d.querySelector('.board'));
  assert.deepEqual(read('board'),[destination.id]);assert.deepEqual(read('task'),[]);

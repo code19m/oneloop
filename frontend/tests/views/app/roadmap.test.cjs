@@ -15,7 +15,8 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function withRuntime(route) {
   const calls = [], reports = [], requests = [];
   const t = bootApp({ route });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
+  const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTrack', 'dateChanged'].map(name => [name, hold(name)])), report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
@@ -248,7 +249,7 @@ test('a track move paints at once, sends one optimistic command and skips a no-o
   const t=withRuntime('roadmap'),ordered=()=>t.D.tracks.filter((item)=>item.projectId===t.D.projects[0].id).sort((left,right)=>left.order-right.order),before=ordered(),moved=before[0],target=before[1];
   t.A._drag={kind:'track',id:moved.id};t.A._laneBefore=false;
   t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);
-  assert.equal(ordered()[1],moved);assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'track.reorder');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._roadmapMovePending);
+  assert.equal(ordered()[1],moved);assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTrack');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._roadmapMovePending);
   t.requests[0].resolve({});await tick();assert.equal(t.A._roadmapMovePending,false);
 
   const calls=t.calls.length;t.A._drag={kind:'track',id:moved.id};t.A._laneBefore=false;

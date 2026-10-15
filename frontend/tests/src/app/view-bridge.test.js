@@ -48,7 +48,7 @@ test('a save uses the editor focus revision even after live data advances',async
   const recovery={revisionKey:()=> 'task:opaque-1',expectedRevision:()=>1,captureEditor:()=>null,finishRevision:(key)=>{finished=key;}};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,recovery});
   state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:2,assignees:[]});
-  await state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']});
+  await state.bridge.setAssignees('ONE-1',['u2']);
   assert.equal(options.expectedRevision,1);assert.equal(finished,'task:opaque-1');
 });
 
@@ -175,8 +175,8 @@ test('rapid assignee toggles serialize the latest intent without an intermediate
   const recovery={revisionKey:(item)=>`task:${item.internalId}`,expectedRevision:(_key,fallback)=>fallback,finishRevision(){},captureEditor:()=>null};
   const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway,recovery});
   const item={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1,assignees:[]};state.data.tasks.push(item);
-  const first=state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']});
-  const second=state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2','u3']});
+  const first=state.bridge.setAssignees('ONE-1',['u2']);
+  const second=state.bridge.setAssignees('ONE-1',['u2','u3']);
   assert.equal(requests.length,1);assert.deepEqual(requests[0].payload.assigneeIds,['u2']);assert.equal(requests[0].options.expectedRevision,1);
   Object.assign(item,{revision:2,assignees:['u2']});releaseFirst({entities:[],events:[]});
   while(requests.length<2)await new Promise((resolve)=>setTimeout(resolve,0));
@@ -189,7 +189,7 @@ test('rapid assignee toggles serialize the latest intent without an intermediate
 test('unchanged assignees stay quiet without issuing a command',async()=>{
   let writes=0;const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:async()=>{writes++;return {entities:[],events:[]};}}});
   const item={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1,assignees:['u2']};state.data.tasks.push(item);
-  const result=await state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']});
+  const result=await state.bridge.setAssignees('ONE-1',['u2']);
   assert.equal(writes,0);assert.deepEqual(item.assignees,['u2']);assert.deepEqual(state.paints,[]);assert.deepEqual(state.saved,[]);assert.equal(result,undefined);
 });
 
@@ -199,14 +199,14 @@ test('failed assignee saves retain the canonical list loaded during conflict rec
   const reads={task:async()=>{const item=state.data.tasks[0];Object.assign(item,{revision:2,assignees:['u3']});return {stale:false,task:item};}};
   state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:async()=>{throw failure;}},reads,recovery:{isRevisionConflict:()=>false,handleCommandFailure:async()=>{}}});
   const item={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1,assignees:['u1']};state.data.tasks.push(item);
-  await assert.rejects(state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']}),failure);
+  await assert.rejects(state.bridge.setAssignees('ONE-1',['u2']),failure);
   assert.deepEqual(item.assignees,['u3']);assert.equal(item.revision,2);
 });
 
 test('an old assignee response cannot mutate a same-id task in a replacement session',async()=>{
   let release;const state=fixture({view:'task',taskId:'ONE-1',projectId:'p1',board:{}},{gateway:{execute:()=>new Promise((resolve)=>{release=resolve;})}});
   state.data.tasks.push({id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:1,assignees:[]});
-  const pending=state.bridge.invoke('task.assignees',{taskId:'ONE-1',assigneeIds:['u2']});
+  const pending=state.bridge.setAssignees('ONE-1',['u2']);
   const replacement={id:'ONE-1',internalId:'opaque-1',projectId:'p1',epicId:'e1',revision:8,assignees:['u9']};
   state.data.session={id:'s2',userId:'u2'};state.data.tasks.splice(0,state.data.tasks.length,replacement);release({entities:[],events:[]});
   await pending;assert.deepEqual(replacement.assignees,['u9']);assert.equal(replacement.revision,8);
@@ -302,8 +302,8 @@ test('an accepted create closes successfully even when refreshing the view fails
 test('only the latest project selection may apply a completed bootstrap',async()=>{
   const first=deferred(),second=deferred(),selected=[];
   const state=fixture({view:'board',projectId:'p1',board:{}},{reloadBootstrap:({projectId})=>projectId==='p1'?first.promise:second.promise,app:{selectProject:id=>selected.push(id)}});
-  const a=state.bridge.invoke('workspace.select',{projectId:'p1'});
-  const b=state.bridge.invoke('workspace.select',{projectId:'p2'});
+  const a=state.bridge.selectProject('p1');
+  const b=state.bridge.selectProject('p2');
   second.resolve({stale:false});await b;first.resolve({stale:true});await a;
   assert.deepEqual(selected,['p2']);
 });
@@ -323,7 +323,7 @@ test('a delayed task read cannot leave a newer Profile route',async()=>{
 
 test('Pool read actions rely on in-place read callbacks without whole-app refreshes',async()=>{
   const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:async()=>({stale:false}),morePool:async()=>({stale:false})}});
-  await state.bridge.invoke('pool.open',{});await state.bridge.invoke('pool.select',{scope:'mine'});await state.bridge.invoke('pool.more',{scope:'mine'});
+  await state.bridge.openPool();await state.bridge.selectPool('mine');await state.bridge.loadMorePool('mine');
   assert.deepEqual(state.paints,[]);
 });
 
@@ -331,9 +331,9 @@ test('choosing a Done order saves it and reads the Board again with the same fil
   t.after(()=>saveDoneOrder('manual',undefined));
   const reads=[],board={search:'checkout',trackIds:[],epicIds:[],assigneeIds:[],blocked:false};
   const state=fixture({view:'board',projectId:'p1',board},{reads:{board:async(...args)=>{reads.push([...args,savedDoneOrder(undefined)]);return {stale:false};}}});
-  await state.bridge.invoke('board.doneOrder',{order:'completed'});
+  await state.bridge.setDoneOrder('completed');
   assert.deepEqual(reads,[['p1',board,'completed']]);
-  await state.bridge.invoke('board.doneOrder',{order:'anything'});
+  await state.bridge.setDoneOrder('anything');
   assert.equal(reads.at(-1)[2],'manual');
 });
 
@@ -470,7 +470,7 @@ test('admin revision conflict reloads through the affected page and retries with
 test('opening the Pool reads both scopes side by side',async()=>{
   const requested=[],pending=[];
   const state=fixture({view:'board',projectId:'p1',board:{}},{reads:{pool:(_project,scope)=>{requested.push(scope);return new Promise(resolve=>pending.push(resolve));}}});
-  const opening=state.bridge.invoke('pool.open',{});
+  const opening=state.bridge.openPool();
   assert.deepEqual(requested,['personal','team'],'a slow scope does not hold up the other');
   pending[0]({stale:true});pending[1]({stale:false});
   assert.equal((await opening).stale,true);

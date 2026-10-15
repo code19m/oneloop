@@ -61,7 +61,8 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function withRuntime(route = 'board') {
   const calls = [], reports = [], requests = [];
   const t = bootApp({ route });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke(action, payload) { calls.push([action, payload]); const request = deferred(); requests.push(request); return request.promise; }, report(error) { reports.push(error); } };
+  const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTask', 'moveTrack', 'setDoneOrder', 'filterBoard', 'loadMoreBoard'].map(name => [name, hold(name)])), report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };
 }
 const transfer = (type, id) => ({ types: [type], getData(value) { return value === type ? id : ''; }, setData() {}, effectAllowed: '', dropEffect: '' });
@@ -77,7 +78,7 @@ function recordingBoard(reduced) {
       w.Element.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 500, width: 300, height: 500 });
     },
   });
-  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, invoke: () => Promise.resolve({}), report: () => {} };
+  t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(['moveTask', 'setDoneOrder', 'filterBoard', 'loadMoreBoard'].map(name => [name, () => Promise.resolve({})])), report: () => {} };
   return { ...t, animations };
 }
 
@@ -109,7 +110,7 @@ test('an unchanged Board refresh keeps cards, empty states, focus and Load more 
 
 test('Board text search coalesces typing, respects composition, flushes Enter or clear and cancels on navigation', t => {
   const board = recordingBoard(true), calls = [];
-  board.w.OneloopRuntime.invoke = (action, query) => { calls.push({ action, query }); return Promise.resolve({}); };
+  board.w.OneloopRuntime = { ...board.w.OneloopRuntime, filterBoard(query) { calls.push({ query }); return Promise.resolve({}); } };
   t.mock.timers.enable({ apis: ['setTimeout'] });
   board.A.setBoardQ('composing', { isComposing: true }); t.mock.timers.tick(220); assert.equal(calls.length, 0);
   for (const text of ['s', 'se', 'see', 'seed']) { board.A.setBoardQ(text, { isComposing: false }); t.mock.timers.tick(40); }
@@ -212,7 +213,7 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=null;
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'progress');
   assert.equal(task.state,'progress');assert(t.d.querySelector(`[data-col="progress"] [data-task="${task.id}"]`));
-  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'task.move');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._boardMovePending);
+  assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTask');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A._boardMovePending);
   t.requests[0].resolve({});await tick();assert.equal(t.A._boardMovePending,false);
 
   const calls=t.calls.length;t.A._drag={kind:'task',id:task.id};t.A._dropBefore=task.id;
@@ -230,7 +231,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   t.A._drag={kind:'task',id:task.id,offsetX:0,offsetY:0};t.A._dropBefore=before.at(-1);
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
   assert.deepEqual(done(),[task.id,...before]);
-  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['task.move',['optimistic','status','taskId']]],'the server keeps the manual order');
+  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['moveTask',['optimistic','status','taskId']]],'the server keeps the manual order');
   t.requests[0].resolve({});await tick();
   const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
   t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move'),stopPropagation(){}},card.dataset.task);
@@ -242,7 +243,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   assert.equal(t.calls.length,1,'reordering Done sends nothing');
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').dataset.action,'toggleDoneOrder');
   t.A.toggleDoneOrder();
-  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'manual'}]));
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','manual']));
 });
 
 test('the manual Done order keeps the drop position and reordering', () => {
@@ -254,7 +255,7 @@ test('the manual Done order keeps the drop position and reordering', () => {
   t.A.dropTask({preventDefault(){},clientX:0,clientY:0,dataTransfer:transfer('text/task',task.id)},'done');
   assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
   t.A.toggleDoneOrder();
-  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['board.doneOrder',{order:'completed'}]));
+  assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','completed']));
 });
 
 test('a rejected Board move rolls back its card', async () => {
@@ -312,7 +313,7 @@ test('Move to a column that does not show its end puts the card at its top, in v
   assert.equal(shown.length, 50);
   const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
   t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['task.move', 'done', 0, undefined]]);
+  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]]);
   assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
   assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
 });

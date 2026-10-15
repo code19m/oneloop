@@ -5,7 +5,7 @@
 import { exitVisual } from './effects.js';
 import { I, esc, setHTML } from './format.js';
 import {
-  App, D, canReadProject, epicById, invoke, isAdmin, me, state, taskById, trackById,
+  App, D, canReadProject, epicById, isAdmin, me, report, runtime, state, taskById, trackById,
 } from './model.js';
 
 export function overlayKey(selector) {
@@ -341,7 +341,7 @@ Object.assign(App, {
     if (['project', 'user', 'knowledge'].includes(type) && !isAdmin()) return;
     state.sideOpen = false;
     state.modal = { type, id, epicId, trackId: null }; state.menu = null; if (type === 'pool') App._poolScroll = {}; App.refreshOverlays();
-    if(type==='pool')invoke('pool.open');
+    if(type==='pool')runtime().openPool().catch(report);
   },
   // A Roadmap tooltip never shows over a menu, so one Escape closes the menu.
   _openMenu(items, x, y, options = /** @type {{projectMenu?:boolean, [key:string]:any}} */ ({})) { items.forEach((it, i) => { it.i = i; });const trigger=options.trigger||document.activeElement;hideEpicTip();dismissMenu(false);state.menu = { items, x: Math.max(x, 8), y, trigger, ...options };const template=document.createElement('template');setHTML(template,renderMenu());document.getElementById('overlay-root').append(template.content);trigger?.setAttribute('aria-expanded','true');trigger?.setAttribute('aria-controls',options.projectMenu?'project-switcher-menu':'action-menu');placeMenu();document.querySelector('#overlay-root > .menu button')?.focus({preventScroll:true}); },

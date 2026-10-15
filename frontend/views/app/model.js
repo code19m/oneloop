@@ -4,9 +4,11 @@
 
 export const D = window.DATA;
 export const collaboration=window.Collab;
-export const instanceNow = () => window.OneloopRuntime?.now?.() ?? Date.now();
-/** Run a server-backed action of the runtime; it reports a failure itself. */
-export const invoke = (action, payload = {}) => window.OneloopRuntime.invoke(action, payload).catch(window.OneloopRuntime.report);
+/** The view bridge's server-backed functions, which boot.js installs once the views have loaded. */
+export const runtime = () => window.OneloopRuntime;
+/** Report a failed runtime call as a failed save is reported. */
+export const report = (error) => runtime().report(error);
+export const instanceNow = () => runtime()?.now?.() ?? Date.now();
 
 export const state = {
   sideOpen: false,
@@ -21,7 +23,11 @@ export const state = {
   peek: null, modal: null, menu: null,
   boardLimits:{planning:50,progress:50,review:50,done:50}, usersLimit:50,
 };
-/** The actions that markup and the view bridge call by name. Each part of the views adds its own. */
+/**
+ * The actions that markup and the view bridge call by name. Each part of the
+ * views adds its own. boot.js, which is type-checked, sees this type.
+ * @type {import('../../src/data/contracts.js').LegacyApp}
+ */
 export const App = {};
 /** Addresses the views drew themselves, which the address listener then skips once. */
 export const locallyRenderedHashes = [];

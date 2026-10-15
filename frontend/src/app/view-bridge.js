@@ -891,37 +891,48 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
       pruneDrafts();
       drafts.set(draftKey(item.internalId,field),{taskId:item.internalId,field,value:next,base:recovery?.expectedRevision?.(recovery?.revisionKey?.(item),item.revision)??item.revision,scope:sessionScope(),unsaved:true,retryOnline:false});
     },
-    async invoke(action,payload){
-      if(action==='date.rollover')return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});
-      if(action==='task.assignees'){const item=task(payload.taskId);if(!item)return skipped();return saveAssignees(item,payload.assigneeIds);}
-      if(action==='task.move'){const item=task(payload.taskId),body={taskId:item.internalId,status:wireStatus(payload.status)};for(const key of ['position','beforeTaskId','afterTaskId'])if(payload[key]!==undefined)body[key]=payload[key];return execute('task.move',body,item,payload.optimistic?null:'Task moved',{skipNoChange:!!payload.optimistic,paint:!payload.optimistic});}
-      if(action==='track.reorder'){const item=track(payload.trackId);return execute('track.reorder',{trackId:item.id,position:payload.position},item,payload.optimistic?null:'Track reordered',{skipNoChange:!!payload.optimistic,paint:!payload.optimistic});}
-      if(action==='board.doneOrder'){saveDoneOrder(payload.order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);}
-      if(action==='board.filter'){
-        const result=await reads.board(context().projectId,payload,{skipUnchanged:true});
-        const empty=!payload.search&&!payload.blocked&&!(payload.trackIds||[]).length&&!(payload.epicIds||[]).length&&!(payload.assigneeIds||[]).length;
-        if(empty&&!result.stale)app.refresh();
-        return result;
-      }
-      if(action==='board.more'){const result=await reads.moreBoard(payload.status);if(!result.stale)app.acceptMoreBoard(payload.status);return result;}
-      if(action==='pool.open'){
-        const projectId=context().projectId;
-        returnCaptures();
-        const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
-        return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
-      }
-      if(action==='pool.select'){returnCaptures();return reads.pool(context().projectId,payload.scope==='project'?'team':'personal');}
-      if(action==='pool.more')return reads.morePool(context().projectId,payload.scope==='project'?'team':'personal');
-      if(action==='workspace.select'){
-        if(!await mayLeavePage())return {stale:true};
-        const generation=++projectGeneration,scope=sessionScope();
-        routeGeneration++;
-        const loaded=await reloadBootstrap({projectId:payload.projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});
-        if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
-        app.selectProject(payload.projectId);
-        return loadCurrentRoute({reuseBootstrap:true});
-      }
-      throw new TypeError(`Unknown production action: ${action}`);
+    /** Load the Roadmap again in the background after the instance's date changed. */
+    async dateChanged(){return reads.roadmap(context().projectId,{background:true}).catch((/** @type {any} */ error)=>{recovery?.refreshFailed?.(error);throw error;});},
+    /** @param {string} taskId @param {string[]} assigneeIds */
+    async setAssignees(taskId,assigneeIds){const item=task(taskId);if(!item)return skipped();return saveAssignees(item,assigneeIds);},
+    /**
+     * Move a task to `status`, at `position` or before or after another task.
+     * An `optimistic` move already shows, so it paints nothing and says nothing.
+     * @param {{taskId:string,status:string,position?:number,beforeTaskId?:string,afterTaskId?:string,optimistic?:boolean}} move
+     */
+    async moveTask(move){const item=task(move.taskId),body={taskId:item.internalId,status:wireStatus(move.status)};for(const key of ['position','beforeTaskId','afterTaskId'])if(move[key]!==undefined)body[key]=move[key];return execute('task.move',body,item,move.optimistic?null:'Task moved',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
+    /** @param {{trackId:string,position:number,optimistic?:boolean}} move */
+    async moveTrack(move){const item=track(move.trackId);return execute('track.reorder',{trackId:item.id,position:move.position},item,move.optimistic?null:'Track reordered',{skipNoChange:!!move.optimistic,paint:!move.optimistic});},
+    /** @param {string} order `completed` lists the newest Done task first; anything else keeps the manual order. */
+    async setDoneOrder(order){saveDoneOrder(order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);},
+    /** @param {{search?:string,blocked?:boolean,trackIds?:string[],epicIds?:string[],assigneeIds?:string[]}} filters */
+    async filterBoard(filters){
+      const result=await reads.board(context().projectId,filters,{skipUnchanged:true});
+      const empty=!filters.search&&!filters.blocked&&!(filters.trackIds||[]).length&&!(filters.epicIds||[]).length&&!(filters.assigneeIds||[]).length;
+      if(empty&&!result.stale)app.refresh();
+      return result;
+    },
+    /** @param {string} status */
+    async loadMoreBoard(status){const result=await reads.moreBoard(status);if(!result.stale)app.acceptMoreBoard(status);return result;},
+    async openPool(){
+      const projectId=context().projectId;
+      returnCaptures();
+      const results=await Promise.all(['personal','team'].map(scope=>reads.pool(projectId,scope)));
+      return {stale:results.some(result=>result?.stale)||context().projectId!==projectId};
+    },
+    /** @param {string} scope `mine` or `project`, as the Pool's tabs name them */
+    async selectPool(scope){returnCaptures();return reads.pool(context().projectId,scope==='project'?'team':'personal');},
+    /** @param {string} scope */
+    async loadMorePool(scope){return reads.morePool(context().projectId,scope==='project'?'team':'personal');},
+    /** Switch to another project, once typed text may be left. @param {string} projectId */
+    async selectProject(projectId){
+      if(!await mayLeavePage())return {stale:true};
+      const generation=++projectGeneration,scope=sessionScope();
+      routeGeneration++;
+      const loaded=await reloadBootstrap({projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});
+      if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
+      app.selectProject(projectId);
+      return loadCurrentRoute({reuseBootstrap:true});
     },
     loadCurrentRoute,
     report,

@@ -287,7 +287,7 @@ test('switching projects with typed text asks first, and Cancel stays', async ()
   const loads = [];
   const t = bootApp({ route: 'task/BIR-079', reloadBootstrap: async scope => { loads.push(scope); return { stale: false }; } });
   type(t.d.getElementById('cmtIn'), 'Half a thought');
-  const switching = t.bridge.invoke('workspace.select', { projectId: 'p2' });
+  const switching = t.bridge.selectProject('p2');
   await settle();
   assert(ask(t)); t.d.querySelector('[data-confirm-cancel]').click();
   assert.deepEqual(await switching, { stale: true });

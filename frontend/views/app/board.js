@@ -9,8 +9,8 @@ import {
   instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
-  App, D, canBoard, epicById, epics, instanceNow, invoke, me, poolItems, projectMembers, state,
-  taskById, tasks, trackById, tracks, userById, userHandle,
+  App, D, canBoard, epicById, epics, instanceNow, me, poolItems, projectMembers, report, runtime,
+  state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { announce } from './toasts.js';
 
@@ -140,7 +140,7 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
   if (!fromServer) cancelBoardSearch();
   App.updateDocumentTitle();
   if(reset) state.boardLimits = {planning:50,progress:50,review:50,done:50};
-  if(!fromServer){invoke('board.filter',App.context().board);return;}
+  if(!fromServer){runtime().filterBoard(App.context().board).catch(report);return;}
   const board = document.querySelector('.board');
   if (!board || state.view !== 'board') return;
   const snapshot = boardSnapshot();
@@ -351,9 +351,9 @@ function rollbackTaskMove(change) {
 function submitTaskMove(change,onRollback=()=>App.refresh()) {
   if (!change) return;
   const pending={};App._boardMovePending=pending;
-  window.OneloopRuntime.invoke('task.move',change.payload).catch((error)=>{
+  runtime().moveTask(change.payload).catch((error)=>{
     if(!error?.uncertain&&rollbackTaskMove(change)&&state.view==='board'&&state.projectId===change.projectId)onRollback();
-    window.OneloopRuntime.report(error);
+    report(error);
   }).finally(()=>{if(App._boardMovePending===pending)App._boardMovePending=false;});
 }
 
@@ -488,9 +488,9 @@ Object.assign(App, {
     animateLayout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${UIEscape(id)}"]`),from);
     submitTaskMove(change,()=>{const rollbackBefore=motionRects('.card[data-task]');App.refreshBoard({animate:false});animateLayout(rollbackBefore,'.card[data-task]');});
   },
-  clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};invoke('board.filter',App.context().board);},
-  toggleDoneOrder(){invoke('board.doneOrder',{order:doneNewest()?'manual':'completed'});},
-  loadMoreBoard(col){invoke('board.more',{status:col});},
+  clearBoardFilters(){cancelBoardSearch();state.boardTracks=[];state.boardEpics=[];state.boardAssignees=[];state.boardQ='';state.boardBlocked=false;state.boardLimits={planning:50,progress:50,review:50,done:50};runtime().filterBoard(App.context().board).catch(report);},
+  toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
+  loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
     event.stopPropagation(); // The card around the button would open the task.
     if(App._boardMovePending)return;
