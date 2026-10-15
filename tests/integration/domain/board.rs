@@ -140,45 +140,43 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
 #[tokio::test]
 async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
     let f = fixture().await;
-    // An open, unassigned task that the filters leave out.
-    f.service
-        .execute(
-            &f.manager,
-            command(
-                DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":"e1","title":"Left out"}),
-                "http-other-task",
-                None,
-            ),
-        )
-        .await
-        .unwrap();
-    let created = f
-        .service
-        .execute(
-            &f.manager,
-            command(
-                DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":"e1","title":"Filtered","assigneeIds":["u3"]}),
-                "http-task",
-                None,
-            ),
-        )
-        .await
-        .unwrap();
-    let task_id = created.entities[0]["id"].as_str().unwrap().to_owned();
-    f.service
-        .execute(
-            &f.manager,
-            command(
-                DomainOperation::BlockTask,
-                json!({"taskId":task_id,"reason":"Waiting"}),
-                "http-block",
-                Some(1),
-            ),
-        )
-        .await
-        .unwrap();
+    // The first task matches; each other one is left out by one filter only.
+    let mut ids = Vec::new();
+    for (key, assignees, blocked) in [
+        ("http-task", json!(["u3"]), true),
+        ("http-unblocked", json!(["u3"]), false),
+        ("http-unassigned", json!([]), true),
+    ] {
+        let created = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":key,"assigneeIds":assignees}),
+                    key,
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+        if blocked {
+            f.service
+                .execute(
+                    &f.manager,
+                    command(
+                        DomainOperation::BlockTask,
+                        json!({"taskId":id,"reason":"Waiting"}),
+                        &format!("{key}-block"),
+                        Some(1),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        ids.push(id);
+    }
     let response = router(&f)
         .oneshot(signed_in_get(
             "u1",
@@ -190,7 +188,7 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
     let body = body_bytes(response).await;
     let value: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["total"], 1);
-    assert_eq!(value["items"][0]["id"], task_id);
+    assert_eq!(value["items"][0]["id"], ids[0]);
     assert!(value["nextCursor"].is_null());
 }
 
