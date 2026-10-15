@@ -1012,7 +1012,7 @@ async fn changing_the_location_clears_files_and_missing_branches_and_folders_fai
             &fixture.admin,
             "knowledge.update",
             update("missing", "docs"),
-            Some(revision - 1),
+            Some(revision + 1),
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -1414,13 +1414,55 @@ async fn commands_validate_locations_and_replay_retries() {
         .command(&fixture.admin, "knowledge.connect", payload, None)
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "one source per project");
-    let (status, _) = fixture
-        .command(
-            &fixture.admin,
+    for (operation, revision, status, code) in [
+        (
             "knowledge.update",
-            json!({"projectId": "p1"}),
             None,
-        )
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "updates need a revision");
+            StatusCode::PRECONDITION_FAILED,
+            "precondition_failed",
+        ),
+        (
+            "knowledge.disconnect",
+            None,
+            StatusCode::PRECONDITION_FAILED,
+            "precondition_failed",
+        ),
+        (
+            "knowledge.disconnect",
+            Some(0),
+            StatusCode::BAD_REQUEST,
+            "validation_failed",
+        ),
+    ] {
+        let (actual, body) = fixture
+            .command(
+                &fixture.admin,
+                operation,
+                json!({"projectId": "p1"}),
+                revision,
+            )
+            .await;
+        assert_eq!(
+            (actual, body["error"]["code"].as_str()),
+            (status, Some(code)),
+            "{operation} {revision:?}"
+        );
+    }
+    // Asking for a sync or a deploy key changes no record with a revision.
+    for operation in ["knowledge.sync", "knowledge.deploy-key.create"] {
+        let (status, body) = fixture
+            .command(
+                &fixture.admin,
+                operation,
+                json!({"projectId": "p1"}),
+                Some(1),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["error"]["details"],
+            json!({"field": "expectedRevision", "message": "is not accepted for this operation"}),
+            "{operation}"
+        );
+    }
 }

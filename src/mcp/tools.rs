@@ -1,4 +1,3 @@
-use crate::clock::unix_now as now;
 use std::collections::BTreeSet;
 
 use axum::http::request::Parts;
@@ -11,10 +10,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::transfer;
+
 use crate::{
     AppError, AppState,
     access::{McpRoute, McpTool},
-    auth::{Actor, McpScope},
+    auth::Actor,
     collaboration::{CollaborationCommand, CollaborationOperation, InboxFilter},
     domain::{
         BoardQuery, CommandEnvelope, DomainOperation, MembershipView, PageQuery, PoolQuery,
@@ -1093,7 +1094,7 @@ impl OneloopMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<UploadTicketInput>,
     ) -> Result<Json<TransferTicket>, ToolError> {
-        let ticket = create_transfer(&self.state, &actor(&parts)?, input).await?;
+        let ticket = transfer::issue_upload(&self.state, &actor(&parts)?, input).await?;
         Ok(Json(ticket))
     }
 
@@ -1112,7 +1113,7 @@ impl OneloopMcp {
         Parameters(input): Parameters<DownloadTicketInput>,
     ) -> Result<Json<TransferTicket>, ToolError> {
         let ticket =
-            create_download_transfer(&self.state, &actor(&parts)?, &input.attachment_id).await?;
+            transfer::issue_download(&self.state, &actor(&parts)?, &input.attachment_id).await?;
         Ok(Json(ticket))
     }
 }
@@ -1495,149 +1496,6 @@ async fn project_members(
             Ok((memberships, users))
         })
         .await
-}
-
-async fn create_transfer(
-    state: &AppState,
-    actor: &Actor,
-    input: UploadTicketInput,
-) -> crate::AppResult<TransferTicket> {
-    state
-        .auth
-        .require_mcp_scope(actor, McpScope::Attachments)
-        .await?;
-    let grant = actor.mcp_grant_id().ok_or(AppError::Forbidden)?.to_owned();
-    crate::files::validate_original_name(&input.file_name)?;
-    crate::idempotency::validate_key(&input.idempotency_key)?;
-    let task = state.domain.task(actor, input.task_id.clone()).await?;
-    state
-        .auth
-        .require_board_management(actor, &task.project_id)
-        .await?;
-    if input.size_bytes == 0 || input.size_bytes > crate::files::MAX_ATTACHMENT_BYTES {
-        return Err(AppError::validation(
-            "sizeBytes",
-            format!(
-                "must contain 1 byte to {} MiB",
-                crate::files::MAX_ATTACHMENT_BYTES / (1024 * 1024)
-            ),
-        ));
-    }
-    let token = crate::auth::token::random_token(32)?;
-    let hash = crate::auth::token::hash(&token);
-    let now = now()?;
-    // The caller may name the task by its key; the ticket keeps its ID.
-    let task = task.id;
-    let name = input.file_name;
-    let size = input.size_bytes;
-    let content_length = size;
-    let temporary = input.temporary;
-    let key = input.idempotency_key;
-    state
-        .db
-        .transaction(move |c| {
-            c.execute(
-                "DELETE FROM mcp_file_transfers WHERE expires_at<=?1 OR consumed_at IS NOT NULL",
-                [now],
-            )?;
-            c.execute(
-                "INSERT INTO mcp_file_transfers
-                 (token_hash,grant_id,direction,task_id,file_name,size_bytes,is_ephemeral,
-                  idempotency_key,created_at,expires_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                rusqlite::params![
-                    hash,
-                    grant,
-                    "upload",
-                    task,
-                    name,
-                    i64::try_from(size)
-                        .map_err(|_| AppError::validation("sizeBytes", "is too large"))?,
-                    temporary,
-                    key,
-                    now,
-                    now + 300
-                ],
-            )?;
-            Ok(())
-        })
-        .await?;
-    Ok(TransferTicket {
-        url: format!("{}/mcp/files/upload", state.config.base_url()),
-        method: "PUT".into(),
-        authorization: format!("Bearer {token}"),
-        expires_in: 300,
-        content_length,
-    })
-}
-
-async fn create_download_transfer(
-    state: &AppState,
-    actor: &Actor,
-    attachment_id: &str,
-) -> crate::AppResult<TransferTicket> {
-    state
-        .auth
-        .require_mcp_scope(actor, McpScope::Attachments)
-        .await?;
-    let grant = actor.mcp_grant_id().ok_or(AppError::Forbidden)?.to_owned();
-    let token = crate::auth::token::random_token(32)?;
-    let hash = crate::auth::token::hash(&token);
-    let now = now()?;
-    let attachment = attachment_id.to_owned();
-    let task_id = state
-        .db
-        .run({
-            let id = attachment.clone();
-            move |c| {
-                c.query_row(
-                    "SELECT task_id FROM task_attachments WHERE id=?1",
-                    [id],
-                    |r| r.get::<_, String>(0),
-                )
-                .map_err(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => AppError::NotFound {
-                        resource: "attachment",
-                    },
-                    other => other.into(),
-                })
-            }
-        })
-        .await?;
-    let listed = state
-        .files
-        .list_attachments(actor, &task_id)
-        .await?
-        .items
-        .into_iter()
-        .find(|item| item.id == attachment)
-        .ok_or(AppError::NotFound {
-            resource: "attachment",
-        })?
-        .size;
-    state
-        .db
-        .transaction(move |c| {
-            c.execute(
-                "DELETE FROM mcp_file_transfers WHERE expires_at<=?1 OR consumed_at IS NOT NULL",
-                [now],
-            )?;
-            c.execute(
-                "INSERT INTO mcp_file_transfers
-                 (token_hash,grant_id,direction,attachment_id,created_at,expires_at)
-                 VALUES(?1,?2,'download',?3,?4,?5)",
-                rusqlite::params![hash, grant, attachment, now, now + 300],
-            )?;
-            Ok(())
-        })
-        .await?;
-    Ok(TransferTicket {
-        url: format!("{}/mcp/files/download", state.config.base_url()),
-        method: "GET".into(),
-        authorization: format!("Bearer {token}"),
-        expires_in: 300,
-        content_length: listed,
-    })
 }
 
 fn object_output_schema() -> std::sync::Arc<serde_json::Map<String, Value>> {

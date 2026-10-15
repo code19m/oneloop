@@ -193,7 +193,7 @@ thumbnail a moment after the upload.
 
 | Limit | Value |
 | --- | --- |
-| Folder | 5,000 files, 5,000 subfolders and 100 MiB of files to show; a larger folder doesn't sync |
+| Folder | 5,000 files, links and files left out included; 5,000 subfolders; and 100 MiB of files to show. A larger folder doesn't sync |
 | File | Files over 10 MiB are left out |
 | Sync disk use | 300 MiB for the folder's files and Git's copy of them, files left out included; a larger folder doesn't sync |
 | Free disk space | A download reserves 400 MiB on top of `ONELOOP_DISK_MIN_FREE`; a check that finds no new commit needs none |

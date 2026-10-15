@@ -1,7 +1,52 @@
 //! Account avatars use bounded decoding and shared private-file storage.
 use super::*;
 
+const AVATAR_SIDE: u32 = 256;
+/// Avatar uploads under way at once; each keeps its image in memory until it
+/// is decoded. More are told to retry.
+const AVATAR_UPLOADS: usize = 4;
+/// How long an avatar upload waits for the decodes before it, thumbnails
+/// included. The slowest decode the limits allow takes about a second on a
+/// laptop, and a few seconds on a small server.
+const AVATAR_DECODE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A place for one avatar upload, kept from its first byte through its
+/// decode, while the upload keeps its image in memory.
+pub struct AvatarSlot {
+    uploaders: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    user_id: String,
+}
+
+impl Drop for AvatarSlot {
+    fn drop(&mut self) {
+        self.uploaders
+            .lock()
+            .expect("avatar uploads lock")
+            .remove(&self.user_id);
+    }
+}
+
 impl FileService {
+    /// A place for an avatar upload, taken before its bytes arrive. A
+    /// person has one place at most, so no one can take them all. When all
+    /// are taken, the upload is told to retry at once.
+    pub fn avatar_slot(&self, actor: &Actor) -> AppResult<AvatarSlot> {
+        let mut uploaders = self.avatar_uploaders.lock().expect("avatar uploads lock");
+        if uploaders.contains(&actor.user_id) {
+            return Err(AppError::RateLimited { retry_after: 1 });
+        }
+        if uploaders.len() >= AVATAR_UPLOADS {
+            return Err(AppError::Unavailable(
+                "avatar processing is busy; retry shortly".into(),
+            ));
+        }
+        uploaders.insert(actor.user_id.clone());
+        Ok(AvatarSlot {
+            uploaders: self.avatar_uploaders.clone(),
+            user_id: actor.user_id.clone(),
+        })
+    }
+
     pub async fn upload_avatar(
         &self,
         actor: &Actor,
@@ -191,7 +236,7 @@ impl FileService {
         let user_id_tx = user_id.clone();
         let lease_id = Uuid::now_v7().to_string();
         let lease_id_tx = lease_id.clone();
-        let (row, unchanged) = self
+        let (row, etag, modified) = self
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
@@ -228,7 +273,7 @@ impl FileService {
                     .ok_or(AppError::NotFound { resource: "avatar" })?;
                 let etag = file_etag(&row.2, false);
                 if etag_matches(validator.as_deref(), &etag) {
-                    return Ok((row, Some(etag)));
+                    return Ok((row, etag, false));
                 }
                 tx.execute(
                     "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
@@ -241,13 +286,13 @@ impl FileService {
                         now + FILE_LEASE_SECONDS
                     ],
                 )?;
-                Ok((row, None))
+                Ok((row, etag, true))
             })
             .await?;
-        if let Some(etag) = unchanged {
+        if !modified {
             return Ok(ConditionalRead::NotModified(etag));
         }
-        let (key, size, checksum, blob_id) = row;
+        let (key, size, _, _) = row;
         let file = match File::open(self.store.file_path(&key)?).await {
             Ok(file) => file,
             Err(_) => {
@@ -261,30 +306,49 @@ impl FileService {
                 db: self.db.clone(),
                 lease_id: Some(lease_id),
             },
-            attachment: AttachmentView {
-                id: blob_id,
-                project_id: String::new(),
-                task_id: String::new(),
-                name: "avatar.png".into(),
-                size: size as u64,
-                media_type: "image/png".into(),
-                checksum,
-                is_ephemeral: false,
-                position: 0,
-                uploaded_by: user_id,
-                uploaded_at: 0,
-                last_accessed_at: 0,
-                state: BlobState::Available,
-                revision: 1,
-                preview_kind: Some(PreviewKind::Image),
-                download_url: None,
-                content_url: None,
-                thumbnail_url: None,
-                source_url: None,
-                html_preview_url: None,
-            },
+            name: "avatar.png".into(),
+            size: size as u64,
             media_type: "image/png".into(),
             byte_limit: None,
+            etag,
         })))
     }
+}
+
+fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
+    let format = image::guess_format(bytes)
+        .map_err(|_| AppError::validation("avatar", "must be a valid PNG, JPEG or WebP image"))?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+    ) {
+        return Err(AppError::validation(
+            "avatar",
+            "must be a PNG, JPEG or WebP image",
+        ));
+    }
+    let (image, _) =
+        decode::decode_untrusted(Cursor::new(bytes), bytes.len() as u64).map_err(|_| {
+            AppError::validation(
+                "avatar",
+                "image data is invalid, or too large to process safely",
+            )
+        })?;
+    let normalized = image
+        .resize_to_fill(
+            AVATAR_SIDE,
+            AVATAR_SIDE,
+            image::imageops::FilterType::Lanczos3,
+        )
+        .to_rgba8();
+    let mut output = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut output)
+        .write_image(
+            &normalized,
+            AVATAR_SIDE,
+            AVATAR_SIDE,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|_| AppError::validation("avatar", "image could not be normalized"))?;
+    Ok(output)
 }

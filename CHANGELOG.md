@@ -10,6 +10,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 - `ONELOOP_TRUSTED_PROXIES` now ignores empty items, such as a trailing
   comma, like the other lists. Before, oneloop refused to start.
+- A Knowledge change or disconnect without `expectedRevision` now gets 412
+  `precondition_failed`, like other edits, instead of 400. A revision below 1
+  gets 400.
+- An MCP download now names the file in its `Content-Disposition` header, as
+  a browser download does.
 
 ### Fixed
 
@@ -20,6 +25,9 @@ All notable changes to oneloop are recorded here. The format follows
   shows that it is too large. Before, a folder with many deep subfolders
   could make search use gigabytes of memory, and a sync could fill the disk
   with folders.
+- Links and other files that a Knowledge sync leaves out now count toward
+  the folder's 5,000 files. Before, a folder of many such files could sync
+  and fill the disk with them.
 - Knowledge search now says when some files are searched by name only,
   because their text doesn't fit in the search index. Before, a word in such
   a file gave "No results" without a reason. In MCP, `search_knowledge` and

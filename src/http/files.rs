@@ -10,7 +10,6 @@ use axum::{
     routing::{get, patch, post, put},
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
@@ -20,7 +19,7 @@ use crate::{
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
         ConditionalRead, FileRead, MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead,
-        UploadDeadline, UploadStart,
+        UploadDeadline,
     },
 };
 
@@ -106,90 +105,59 @@ async fn upload_attachment(
         ));
     }
     let deadline = UploadDeadline::new();
-    let mut pending = None;
-    let mut replay = None;
-    let envelope = async {
-        let mut found = false;
+    let mut upload = None;
+    let received = async {
         while let Some(mut field) = deadline
             .read(multipart.next_field())
             .await?
             .map_err(|error| multipart_error(error, "file", "invalid multipart upload"))?
         {
-            if found || field.name() != Some("file") {
+            if upload.is_some() || field.name() != Some("file") {
                 return Err(AppError::validation("file", "upload exactly one file"));
             }
-            found = true;
             let name = field
                 .file_name()
                 .ok_or_else(|| AppError::validation("file", "filename is required"))?
                 .to_owned();
-            match state
-                .files
-                .begin_attachment_upload(
-                    &actor,
-                    &task_id,
-                    &name,
-                    declared_size,
-                    query.ephemeral,
-                    &idempotency_key,
-                )
-                .await?
-            {
-                UploadStart::Replayed(view) => replay = Some(*view),
-                UploadStart::Pending(upload) => pending = Some(upload),
-            }
-            let mut received = 0_u64;
-            let mut replay_hash = Sha256::new();
+            let started = upload.insert(
+                state
+                    .files
+                    .begin_attachment_upload(
+                        &actor,
+                        &task_id,
+                        &name,
+                        declared_size,
+                        query.ephemeral,
+                        &idempotency_key,
+                    )
+                    .await?,
+            );
             while let Some(chunk) = deadline.read(field.chunk()).await?.map_err(|error| {
                 multipart_error(error, "file", "upload stream ended unexpectedly")
             })? {
-                received = received.saturating_add(chunk.len() as u64);
-                if received > declared_size {
-                    return Err(AppError::validation(
-                        "file",
-                        "received more bytes than declared",
-                    ));
-                }
-                if let Some(upload) = pending.as_mut() {
-                    upload.write_chunk(&chunk).await?;
-                } else {
-                    replay_hash.update(&chunk);
-                }
+                started.write_chunk(&chunk).await?;
             }
-            if let Some(view) = &replay
-                && hex::encode(replay_hash.finalize()) != view.checksum
-                && received == declared_size
-            {
-                return Err(AppError::rule(
-                    crate::error::RuleKind::IdempotencyKeyReused,
-                    "idempotency key was already used for different file bytes",
-                ));
-            }
-            if received != declared_size {
-                return Err(AppError::validation(
-                    "file",
-                    format!("declared {declared_size} bytes but received {received}"),
-                ));
-            }
-        }
-        if !found {
-            return Err(AppError::validation("file", "file field is required"));
         }
         Ok(())
     }
     .await;
-    if let Err(error) = envelope {
-        if let Some(upload) = pending
-            && let Err(cleanup_error) = upload.abort().await
-        {
-            tracing::warn!(error=%cleanup_error, "upload abort failed; reconciliation will retry");
+    let upload = match (received, upload) {
+        (Ok(()), Some(upload)) => upload,
+        (Ok(()), None) => return Err(AppError::validation("file", "file field is required")),
+        (Err(error), upload) => {
+            if let Some(upload) = upload
+                && let Err(cleanup_error) = upload.abort().await
+            {
+                tracing::warn!(error=%cleanup_error, "upload abort failed; reconciliation will retry");
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    let (status, view) = if let Some(upload) = pending {
-        (StatusCode::CREATED, upload.finish().await?)
+    };
+    let (view, created) = upload.finish().await?;
+    let status = if created {
+        StatusCode::CREATED
     } else {
-        (StatusCode::OK, replay.expect("validated replay"))
+        StatusCode::OK
     };
     Ok((status, Json(view)).into_response())
 }
@@ -536,8 +504,7 @@ async fn conditional_file_response(
             (StatusCode::NOT_MODIFIED.into_response(), etag)
         }
         crate::files::ConditionalRead::Modified(read) => {
-            let etag =
-                crate::files::file_etag(&read.attachment.checksum, read.byte_limit.is_some());
+            let etag = read.etag.clone();
             // A stale If-Range requires the whole representation, not a partial body.
             let mut headers = headers.clone();
             if headers
@@ -560,14 +527,14 @@ async fn conditional_file_response(
     Ok(response)
 }
 
-async fn file_response(
+pub(crate) async fn file_response(
     mut read: FileRead,
     request_headers: &HeaderMap,
     attachment: bool,
 ) -> AppResult<Response> {
-    let full_size = read.byte_limit.map_or(read.attachment.size, |limit| {
-        read.attachment.size.min(limit)
-    });
+    let full_size = read
+        .byte_limit
+        .map_or(read.size, |limit| read.size.min(limit));
     let range = if request_headers.get_all(header::RANGE).iter().count() > 1 {
         SingleRange::Ignore
     } else {
@@ -623,7 +590,7 @@ async fn file_response(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        content_disposition(&read.attachment.name, attachment)?,
+        content_disposition(&read.name, attachment)?,
     );
     if status == StatusCode::PARTIAL_CONTENT {
         headers.insert(

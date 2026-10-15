@@ -72,7 +72,8 @@ small hints over SSE, and clients then fetch what changed.
   out.
 - `files/`: `FileService` handles attachments and avatars: upload admission,
   capacity and cleanup, previews and thumbnails, read leases and crash
-  recovery. `FileStore` owns the bytes on disk.
+  recovery, with one submodule per job. `FileStore` owns the bytes on disk,
+  and `preview` cleans HTML before an attachment or a Knowledge file shows it.
 - `knowledge/`: `KnowledgeService` shows one folder of a Git repository per
   project, read-only. Its commands manage the source, and each connect or
   change starts a new source generation; results from an older one are
@@ -94,10 +95,12 @@ small hints over SSE, and clients then fetch what changed.
 - `mcp/`: `OneloopMcp` in `tools` defines the tools, `oauth` implements
   registration, the Connect page and tokens, `client_metadata` fetches client
   ID metadata documents from public addresses only, `cors` answers clients
-  that run in a web page, and `mod.rs` wires the transport and file transfer
-  endpoints.
+  that run in a web page, `transfer` issues and claims the one-use tickets
+  that move file bytes, and `mod.rs` wires the transport.
 - `idempotency.rs`: one retry ledger shared by browser and MCP writes, and
-  `Envelope`, which runs each domain and discussion command once around it.
+  `Envelope`, which runs each command, and each reorder, deletion and restore
+  of an attachment, once around it. Uploads use the ledger directly, because
+  their bytes arrive between two transactions.
 - `input.rs`: reads command payloads into typed input, with errors that name
   the field. `text.rs`: validation for display text such as titles and
   comments.

@@ -1,5 +1,6 @@
 //! Authenticated file reads use leases and revalidate live parent access before serving bytes.
 use super::*;
+use crate::files::sanitized_html_preview;
 
 impl FileService {
     pub async fn open_for_read(
@@ -63,7 +64,9 @@ impl FileService {
                     params![now, attachment_id],
                 )?;
                 let etag = file_etag(&stored.attachment.checksum, mode == ReadMode::Source);
-                if etag_matches(validator.as_deref(), &etag) { return Ok((stored, Some(etag))); }
+                if etag_matches(validator.as_deref(), &etag) {
+                    return Ok((stored, etag, false));
+                }
                 tx.execute(
                     "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
                      VALUES (?1,?2,?3,?4,?5,?6)",
@@ -76,11 +79,11 @@ impl FileService {
                         now + FILE_LEASE_SECONDS
                     ],
                 )?;
-                Ok((stored, None))
+                Ok((stored, etag, true))
             })
             .await?;
-        let (stored, unchanged) = stored;
-        if let Some(etag) = unchanged {
+        let (stored, etag, modified) = stored;
+        if !modified {
             return Ok(ConditionalRead::NotModified(etag));
         }
         let path = self
@@ -112,9 +115,11 @@ impl FileService {
                 db: self.db.clone(),
                 lease_id: Some(lease_id),
             },
-            attachment: stored.attachment,
+            name: stored.attachment.name,
+            size: stored.attachment.size,
             media_type,
             byte_limit,
+            etag,
         })))
     }
 
@@ -126,7 +131,7 @@ impl FileService {
         let read = self
             .open_for_read(actor, attachment_id, ReadMode::HtmlPreview)
             .await?;
-        let mut bytes = Vec::with_capacity(read.attachment.size as usize);
+        let mut bytes = Vec::with_capacity(read.size as usize);
         read.file
             .take(MAX_HTML_PREVIEW_BYTES + 1)
             .read_to_end(&mut bytes)

@@ -2,6 +2,74 @@
 //! deletion jobs that are safe to run twice.
 use super::*;
 
+/// Cleanup starts when used storage reaches this share of the limit, and
+/// frees space down to the lower one.
+pub(super) const CLEANUP_HIGH_PERCENT: u64 = 80;
+const CLEANUP_LOW_PERCENT: u64 = 70;
+
+/// Bytes of stored files, from a covering index.
+const STORED_BYTES_SQL: &str = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
+     WHERE state IN ('pending','available','deleting')";
+
+/// Stored bytes and the bytes that uploads under way have reserved.
+const CAPACITY_USED_SQL: &str = "SELECT
+       coalesce((SELECT sum(size_bytes) FROM file_blobs
+                 WHERE state IN ('pending','available','deleting')),0) +
+       coalesce((SELECT sum(size_bytes) FROM upload_reservations
+                 WHERE committed_at IS NULL AND expires_at>?1),0)";
+
+/// The available files of tasks and attachments deleted up to `?1`, and
+/// files that nothing refers to: their blob, key and deletion reason. Deleted
+/// tasks are few, so their files are found from the deleted tasks.
+const DELETION_CANDIDATES_SQL: &str = "SELECT b.id,b.storage_key,'manual' FROM tasks t
+     CROSS JOIN task_attachments a ON a.task_id=t.id
+     JOIN file_blobs b ON b.id=a.blob_id
+     WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
+     UNION ALL
+     SELECT b.id,b.storage_key,'manual' FROM task_attachments a
+     JOIN file_blobs b ON b.id=a.blob_id
+     WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
+     UNION ALL
+     SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
+     WHERE b.state='available'
+       AND NOT EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=b.id)
+       AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)";
+
+#[derive(Default)]
+pub(super) struct CapacityUsage {
+    blob_bytes: u64,
+    reserved_bytes: u64,
+    staging_bytes: u64,
+    preview_bytes: u64,
+    unreserved_staging_bytes: u64,
+}
+
+impl CapacityUsage {
+    pub(super) fn total(&self) -> u64 {
+        self.blob_bytes
+            .saturating_add(self.reserved_bytes)
+            .saturating_add(self.preview_bytes)
+            .saturating_add(self.unreserved_staging_bytes)
+    }
+
+    fn non_database_bytes(&self) -> u64 {
+        self.preview_bytes
+            .saturating_add(self.unreserved_staging_bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UploadCleanupDecision {
+    PreserveCommitted,
+    RemoveUncommitted,
+}
+
+struct DeletionCompletion {
+    cleanup_run_id: Option<String>,
+    reason: String,
+    activity: Option<(DeleteActivityContext, Option<Actor>)>,
+}
+
 impl FileService {
     /// Only call before accepting traffic while holding the server lock.
     pub(crate) async fn recover_interrupted_uploads(&self) -> AppResult<()> {
@@ -711,21 +779,7 @@ impl FileService {
     ) -> AppResult<Vec<(String, String, String)>> {
         self.db
             .run(move |connection| {
-                let mut statement = connection.prepare(
-                    "SELECT b.id,b.storage_key,'manual' FROM tasks t
-                 CROSS JOIN task_attachments a ON a.task_id=t.id
-                 JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'
-                 UNION ALL
-                 SELECT b.id,b.storage_key,'manual' FROM task_attachments a
-                 JOIN file_blobs b ON b.id=a.blob_id
-                 WHERE a.deleted_at IS NOT NULL AND a.deleted_at<=?1 AND b.state='available'
-                 UNION ALL
-                 SELECT b.id,b.storage_key,'orphan' FROM file_blobs b
-                 WHERE b.state='available'
-                   AND NOT EXISTS(SELECT 1 FROM task_attachments a WHERE a.blob_id=b.id)
-                   AND NOT EXISTS(SELECT 1 FROM users u WHERE u.avatar_blob_id=b.id)",
-                )?;
+                let mut statement = connection.prepare(DELETION_CANDIDATES_SQL)?;
                 Ok(statement
                     .query_map([restorable_after], |row| {
                         Ok((
@@ -847,12 +901,7 @@ impl FileService {
         let (blob_bytes, reserved_bytes, staging_keys) = self
             .db
             .run(move |connection| {
-                let blob: i64 = connection.query_row(
-                    "SELECT coalesce(sum(size_bytes),0) FROM file_blobs
-                     WHERE state IN ('pending','available','deleting')",
-                    [],
-                    |r| r.get(0),
-                )?;
+                let blob: i64 = connection.query_row(STORED_BYTES_SQL, [], |r| r.get(0))?;
                 let mut statement = connection.prepare(
                     "SELECT staging_key,size_bytes FROM upload_reservations
                      WHERE committed_at IS NULL AND expires_at>?1",
@@ -930,15 +979,7 @@ pub(super) fn require_capacity(
     size: u64,
     limit: u64,
 ) -> AppResult<()> {
-    let used: i64 = tx.query_row(
-        "SELECT
-           coalesce((SELECT sum(size_bytes) FROM file_blobs
-                     WHERE state IN ('pending','available','deleting')),0) +
-           coalesce((SELECT sum(size_bytes) FROM upload_reservations
-                     WHERE committed_at IS NULL AND expires_at>?1),0)",
-        [now],
-        |row| row.get(0),
-    )?;
+    let used: i64 = tx.query_row(CAPACITY_USED_SQL, [now], |row| row.get(0))?;
     if (used.max(0) as u64)
         .saturating_add(non_database_bytes)
         .saturating_add(size)
@@ -969,4 +1010,281 @@ fn release_upload_rows(
         params![idempotency_id, reservation_id],
     )?;
     Ok(())
+}
+
+impl FileService {
+    pub(super) async fn regular_files(&self, root: PathBuf) -> AppResult<Vec<(PathBuf, u64)>> {
+        self.scans
+            .run(move || {
+                let mut files = Vec::new();
+                walk_regular_files_blocking(root, |path, size| {
+                    files.push((path, size));
+                    Ok(())
+                })?;
+                Ok(files)
+            })
+            .await?
+    }
+
+    pub(super) async fn unreferenced_files(
+        &self,
+        root: PathBuf,
+        referenced: HashSet<String>,
+    ) -> AppResult<Vec<PathBuf>> {
+        self.scans
+            .run(move || {
+                let mut orphans = Vec::new();
+                walk_regular_files_blocking(root.clone(), |path, _| {
+                    let key = path
+                        .strip_prefix(&root)
+                        .map_err(|_| AppError::internal("file escaped storage root"))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !referenced.contains(&key) {
+                        orphans.push(path);
+                    }
+                    Ok(())
+                })?;
+                Ok(orphans)
+            })
+            .await?
+    }
+
+    async fn tree_bytes(&self, root: PathBuf) -> AppResult<u64> {
+        self.scans
+            .run(move || {
+                let mut total = 0_u64;
+                walk_regular_files_blocking(root, |_, size| {
+                    total = total.saturating_add(size);
+                    Ok(())
+                })?;
+                Ok(total)
+            })
+            .await?
+    }
+}
+
+fn walk_regular_files_blocking(
+    root: PathBuf,
+    mut visit: impl FnMut(PathBuf, u64) -> AppResult<()>,
+) -> AppResult<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error)
+                if error
+                    .io_error()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(AppError::Io(error.to_string())),
+        };
+        if entry.file_type().is_symlink() {
+            return Err(AppError::Io(format!(
+                "symbolic link found in managed file storage: {}",
+                entry.path().display()
+            )));
+        }
+        if entry.file_type().is_file() {
+            let size = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(error)
+                    if error
+                        .io_error()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(AppError::Io(error.to_string())),
+            };
+            visit(entry.into_path(), size)?;
+        }
+    }
+    Ok(())
+}
+
+struct DeletionJob {
+    id: String,
+    blob_id: String,
+    storage_key: String,
+}
+
+fn finish_deletion_job(tx: &Transaction<'_>, job: &DeletionJob) -> AppResult<bool> {
+    // The delete is the completion claim. Rollback restores it on any failure.
+    // Concurrent workers may unlink twice, but metadata/activity change once.
+    let completion = tx
+        .query_row(
+            "DELETE FROM file_deletion_jobs WHERE id=?1 RETURNING cleanup_run_id,
+                actor_user_id,actor_mcp_grant_id,actor_name,project_id,task_id,attachment_id,attachment_name,reason",
+            [&job.id],
+            deletion_completion_row,
+        )
+        .optional()?;
+    let Some(completion) = completion else {
+        return Ok(false);
+    };
+    if let Some(run) = completion.cleanup_run_id {
+        tx.execute(
+            "UPDATE storage_cleanup_runs SET files=files+1,
+            bytes=bytes+coalesce((SELECT size_bytes FROM file_blobs WHERE id=?2),0)
+            WHERE id=?1",
+            params![run, job.blob_id],
+        )?;
+    }
+    let blob = &job.blob_id;
+    let reason = &completion.reason;
+    let now = unix_now()?;
+    if reason == "cleanup" {
+        let attachment: Option<(String, u64)> = tx
+            .query_row(
+                "SELECT a.id,b.size_bytes FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id WHERE a.blob_id=?1",
+                [&blob],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64)),
+            )
+            .optional()?;
+        tx.execute(
+            "UPDATE file_blobs SET state='cleaned',storage_key=NULL,cleaned_at=?1 WHERE id=?2",
+            params![now, blob],
+        )?;
+        tx.execute(
+            "UPDATE task_attachments SET updated_at=?1,revision=revision+1 WHERE blob_id=?2",
+            params![now, blob],
+        )?;
+        if let Some((attachment, size)) = attachment {
+            record_system_cleanup(tx, &attachment, size, now)?;
+        }
+    } else if let Some((attachment, actor)) = completion.activity {
+        // Only jobs that 0.1.0-rc.2 or earlier queued name an attachment:
+        // migration 0003 filled it in, and since Undo the deletion itself
+        // records the activity. Remove this branch when upgrades from rc.2
+        // end.
+        record_attachment_deletion(tx, &attachment, actor.as_ref(), now)?;
+        tx.execute(
+            "UPDATE idempotency_keys SET state='succeeded',updated_at=?1
+             WHERE operation='attachment.delete' AND resource_type='attachment' AND resource_id=?2",
+            params![now, attachment.id],
+        )?;
+        tx.execute("DELETE FROM task_attachments WHERE blob_id=?1", [&blob])?;
+        tx.execute("DELETE FROM file_blobs WHERE id=?1", [&blob])?;
+    } else {
+        tx.execute("DELETE FROM task_attachments WHERE blob_id=?1", [&blob])?;
+        tx.execute("DELETE FROM file_blobs WHERE id=?1", [&blob])?;
+    }
+    Ok(true)
+}
+
+fn deletion_completion_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeletionCompletion> {
+    let activity = if let Some(id) = row.get::<_, Option<String>>(6)? {
+        let actor = if let Some(user_id) = row.get::<_, Option<String>>(1)? {
+            Some(Actor {
+                user_id,
+                username: String::new(),
+                display_name: row.get(3)?,
+                is_admin: false,
+                must_change_password: false,
+                authenticated_at: 0,
+                source: row.get::<_, Option<String>>(2)?.map_or_else(
+                    || ActorSource::BrowserSession {
+                        session_id: String::new(),
+                    },
+                    |grant_id| ActorSource::McpGrant { grant_id },
+                ),
+            })
+        } else {
+            None
+        };
+        Some((
+            DeleteActivityContext {
+                id,
+                project_id: row.get(4)?,
+                task_id: row.get(5)?,
+                name: row.get(7)?,
+            },
+            actor,
+        ))
+    } else {
+        None
+    };
+    Ok(DeletionCompletion {
+        cleanup_run_id: row.get(0)?,
+        reason: row.get(8)?,
+        activity,
+    })
+}
+
+fn record_system_cleanup(
+    tx: &Transaction<'_>,
+    attachment_id: &str,
+    size: u64,
+    now: i64,
+) -> AppResult<()> {
+    let row: (String, String, String, i64) = tx.query_row(
+        "SELECT project_id,task_id,original_name,revision FROM task_attachments WHERE id=?1",
+        [attachment_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    record_system_activity_tx(
+        tx,
+        ActivityInput {
+            project_id: Some(&row.0),
+            entity_type: "attachment",
+            entity_id: attachment_id,
+            task_id: Some(&row.1),
+            event_type: "attachment.cleaned",
+            // Cleanup is a distinct lifecycle event. Leaving it unstructured
+            // closes any open retention chain and prevents cleanup from being
+            // folded into ordinary attachment edits.
+            field_key: None,
+            before: Some(json!("available")),
+            after: Some(json!("cleaned")),
+            metadata: json!({"name":row.2,"size":size}),
+            entity_revision: Some(row.3),
+        },
+        now,
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The query plan of `sql`, one step per line.
+    fn plan(connection: &rusqlite::Connection, sql: &str, values: impl rusqlite::Params) -> String {
+        connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(values, |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+    }
+
+    #[test]
+    fn file_queries_use_their_indexes() {
+        let root = tempfile::tempdir().unwrap();
+        crate::db::migrate(root.path(), None).unwrap();
+        let connection = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+        for (sql, values) in [(STORED_BYTES_SQL, vec![]), (CAPACITY_USED_SQL, vec![0])] {
+            let plan = plan(&connection, sql, rusqlite::params_from_iter(values));
+            assert!(
+                plan.contains("COVERING INDEX file_blobs_state_size_idx"),
+                "{sql}\n{plan}"
+            );
+        }
+        // Deleted tasks are few; their files must not be found by scanning
+        // every stored file.
+        let plan = plan(&connection, DELETION_CANDIDATES_SQL, [0]);
+        assert!(
+            plan.contains("SCAN t USING INDEX tasks_deleted_idx")
+                && !plan.contains("file_blobs_cleanup_idx"),
+            "{plan}"
+        );
+    }
 }

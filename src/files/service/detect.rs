@@ -266,3 +266,12 @@ pub(super) fn valid_text_reader(mut reader: impl std::io::Read) -> std::io::Resu
         }
     }
 }
+
+/// The media type and preview kind of complete file contents, decided as for
+/// uploads: by content first, with the name only choosing among text formats.
+pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<PreviewKind>) {
+    let media = detected_media_type(bytes, detect_preview(name, bytes));
+    let preview = preview_kind_from_metadata(name, &media)
+        .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
+    (media, preview)
+}

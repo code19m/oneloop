@@ -285,33 +285,6 @@ impl AuthService {
         }
     }
 
-    /// For MCP upload tickets, which are issued before the upload checks.
-    pub(crate) async fn require_board_management(
-        &self,
-        actor: &Actor,
-        project_id: &str,
-    ) -> AppResult<()> {
-        let actor = actor.clone();
-        let project_id = project_id.to_owned();
-        let allowed = self
-            .db
-            .run(move |connection| {
-                crate::access::allowed(crate::access::require_project(
-                    connection,
-                    &actor,
-                    &project_id,
-                    crate::access::Need::Board,
-                    false,
-                ))
-            })
-            .await?;
-        if allowed {
-            Ok(())
-        } else {
-            Err(AppError::Forbidden)
-        }
-    }
-
     pub async fn require_mcp_scope(&self, actor: &Actor, scope: McpScope) -> AppResult<()> {
         let actor = actor.clone();
         self.db

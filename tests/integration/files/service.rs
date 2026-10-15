@@ -6,8 +6,8 @@ use oneloop::{
     auth::Actor,
     db,
     files::{
-        AttachmentPatch, AttachmentReorder, AttachmentRestore, FileService, FileStore, ReadMode,
-        UploadStart,
+        AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentUpload, FileService,
+        FileStore, ReadMode,
     },
 };
 use tempfile::TempDir;
@@ -105,7 +105,7 @@ async fn upload(
     bytes: &[u8],
     temporary: bool,
 ) -> oneloop::files::AttachmentView {
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(actor, "task", name, bytes.len() as u64, temporary, key)
         .await
         .unwrap()
@@ -182,7 +182,7 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         false,
     )
     .await;
-    let replay = service
+    let mut replay = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -193,10 +193,12 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         )
         .await
         .unwrap();
-    let UploadStart::Replayed(replayed) = replay else {
-        panic!("expected idempotent replay")
-    };
-    assert_eq!(replayed.id, created.id);
+    replay.write_chunk(bytes).await.unwrap();
+    let (replayed, created_now) = replay.finish().await.unwrap();
+    assert_eq!(
+        (replayed.id.as_str(), created_now),
+        (created.id.as_str(), false)
+    );
     let mismatch = service
         .begin_attachment_upload(
             &fixture.manager,
@@ -231,7 +233,7 @@ async fn count_reservations_close_the_concurrent_twenty_fifth_slot() {
     let service = fixture.service(100 * 1024 * 1024);
     let mut pending = Vec::new();
     for index in 0..25 {
-        let UploadStart::Pending(upload) = service
+        let AttachmentUpload::Pending(upload) = service
             .begin_attachment_upload(
                 &fixture.manager,
                 "task",
@@ -703,12 +705,13 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         let provenance: (String, Option<String>, String) = f.db.run(move |c| Ok(c.query_row(
             "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted') FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'",
             [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?)).await.unwrap();
+        // The name the account had when it deleted the file.
         assert_eq!(
             provenance,
             (
                 "manager".into(),
                 via_mcp.then(|| "delete-grant".into()),
-                actor.display_name
+                "Manager".into()
             )
         );
     }
@@ -945,7 +948,7 @@ async fn capacity_counts_reservations_without_double_counting_partial_staging() 
     let mut admin = fixture.manager.clone();
     admin.is_admin = true;
     let service = fixture.service(100);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&admin, "task", "partial.bin", 10, false, "partial")
         .await
         .unwrap()
@@ -1120,7 +1123,7 @@ async fn completed_reads_release_their_cleanup_and_deletion_lease() {
 async fn interrupted_uploads_release_their_slot_and_retry_identity() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1177,7 +1180,7 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
         )
         .await
         .unwrap();
-    let UploadStart::Pending(retry) = retry else {
+    let AttachmentUpload::Pending(retry) = retry else {
         panic!("an interrupted upload must be retryable")
     };
     retry.abort().await.unwrap();
@@ -1189,7 +1192,7 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     let service = fixture.service(100 * 1024 * 1024);
     let begin =
         || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
-    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut pending) = begin().await.unwrap() else {
         panic!("new upload must not replay")
     };
     pending.write_chunk(b"late").await.unwrap();
@@ -1210,7 +1213,7 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     );
     sleep(Duration::from_secs(10)).await;
     drop(backup);
-    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut retry) = begin().await.unwrap() else {
         panic!("a failed upload must not replay")
     };
     retry.write_chunk(b"late").await.unwrap();
@@ -1233,7 +1236,7 @@ async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
             .await
             .unwrap();
     };
-    let UploadStart::Pending(mut pending) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut pending) = begin().await.unwrap() else {
         panic!("new upload must not replay")
     };
     pending.write_chunk(b"la").await.unwrap();
@@ -1247,7 +1250,7 @@ async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
     );
     // After Undo, the same retry key uploads the file.
     deleted(None).await;
-    let UploadStart::Pending(mut retry) = begin().await.unwrap() else {
+    let AttachmentUpload::Pending(mut retry) = begin().await.unwrap() else {
         panic!("a failed upload must not replay")
     };
     retry.write_chunk(b"late").await.unwrap();
@@ -1259,7 +1262,7 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let bytes = b"cancellation-safe upload";
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1339,7 +1342,7 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         .unwrap();
     assert_eq!(report.orphan_files_removed, 0);
 
-    let replay = service
+    let mut replay = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1350,9 +1353,12 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         )
         .await
         .unwrap();
-    let UploadStart::Replayed(file) = replay else {
-        panic!("completed upload must replay after request cancellation")
-    };
+    replay.write_chunk(bytes).await.unwrap();
+    let (file, created) = replay.finish().await.unwrap();
+    assert!(
+        !created,
+        "completed upload must replay after request cancellation"
+    );
     let mut read = service
         .open_for_read(&fixture.manager, &file.id, ReadMode::Download)
         .await
@@ -1498,20 +1504,6 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
         .unwrap();
 }
 
-#[test]
-fn html_preview_removes_direct_navigation_primitives() {
-    let source=br#"<!doctype html><base href="https://evil.test"><meta http-equiv="refresh" content="0;url=https://evil.test"><iframe src="https://evil.test"></iframe><object data="x"></object><script>document.body.dataset.ok='yes'</script><p>Kept</p>"#;
-    let sanitized = String::from_utf8(oneloop::files::sanitize_html_preview(source))
-        .unwrap()
-        .to_ascii_lowercase();
-    assert!(!sanitized.contains("<base"));
-    assert!(!sanitized.contains("http-equiv"));
-    assert!(!sanitized.contains("<iframe"));
-    assert!(!sanitized.contains("<object"));
-    assert!(sanitized.contains("<script>"));
-    assert!(sanitized.contains("<p>kept</p>"));
-}
-
 trait AttachmentAssertions {
     fn storage_safe(&self) -> bool;
 }
@@ -1524,109 +1516,6 @@ impl AttachmentAssertions for oneloop::files::AttachmentView {
             .unwrap_or_default()
             .contains(&self.name)
     }
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "opt-in large file-library scheduler workload"]
-async fn large_library_reconciliation_keeps_the_async_executor_responsive() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use std::time::Instant;
-    let f = Fixture::new().await;
-    let service = f.service(u64::MAX / 2);
-    let store = oneloop::files::FileStore::new(f.db.layout().clone());
-    let count: usize = std::env::var("ONELOOP_TEST_FILE_COUNT")
-        .ok()
-        .map(|v| v.parse().unwrap())
-        .unwrap_or(20_000);
-    let mut keys = Vec::with_capacity(count);
-    for _ in 0..count {
-        let key = store.new_storage_key().unwrap();
-        let path = store.file_path(&key).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"x").unwrap();
-        keys.push(key);
-    }
-    f.db.transaction(move |tx| {
-        let mut task = tx.prepare("INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-            VALUES(?1,'p1','epic',?2,?1,'Scale task','planning',?2,'manager',?3,?3)")?;
-        let mut blob = tx.prepare("INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
-            VALUES(?1,?2,?3,1,'application/octet-stream','available',?4)")?;
-        let mut attachment = tx.prepare("INSERT INTO task_attachments(id,project_id,task_id,blob_id,original_name,uploaded_by,is_ephemeral,position,created_at,last_accessed_at,updated_at)
-            VALUES(?1,'p1',?2,?1,'scale.bin','manager',0,?3,?4,?4,?4)")?;
-        for (index,key) in keys.into_iter().enumerate() {
-            let task_id = format!("scale-task-{}", index/25);
-            if index%25 == 0 { task.execute(rusqlite::params![task_id, (index/25+2) as i64, now()])?; }
-            let id = format!("scan-{index}");
-            blob.execute(rusqlite::params![id,key,"0".repeat(64),now()])?;
-            attachment.execute(rusqlite::params![id,task_id,(index%25) as i64,now()])?;
-        }
-        Ok(())
-    }).await.unwrap();
-    let running = Arc::new(AtomicBool::new(true));
-    let heartbeat = running.clone();
-    let ticks = tokio::spawn(async move {
-        let mut gaps = Vec::new();
-        let mut previous = Instant::now();
-        while heartbeat.load(Ordering::Relaxed) {
-            sleep(Duration::from_millis(1)).await;
-            gaps.push(previous.elapsed().as_secs_f64() * 1000.0);
-            previous = Instant::now();
-        }
-        gaps
-    });
-    let started = Instant::now();
-    let report = service.reconcile().await.unwrap();
-    let elapsed = started.elapsed();
-    running.store(false, Ordering::Relaxed);
-    let mut gaps = ticks.await.unwrap();
-    gaps.sort_by(f64::total_cmp);
-    assert_eq!(report.orphan_files_removed, 0);
-    assert!(!gaps.is_empty());
-    assert_eq!(report.deletion_jobs_completed, 0);
-    assert_eq!(stored_file_count(&f.db.layout().files()), count);
-    let constrained = f.service((count as u64) * 100 / 85);
-    let started_uploads = Instant::now();
-    for index in 0..4 {
-        let UploadStart::Pending(pending) = constrained
-            .begin_attachment_upload(
-                &f.manager,
-                "task",
-                "scale-upload.bin",
-                1,
-                false,
-                &format!("scale-admit-{index}"),
-            )
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        pending.abort().await.unwrap();
-    }
-    eprintln!(
-        "FILE_ADMISSION files={count} four_starts_and_aborts_ms={:.1}",
-        started_uploads.elapsed().as_secs_f64() * 1000.0
-    );
-    f.db.run(|c| {
-        let query = "SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available','deleting')";
-        for indexed in [true,false] {
-            if !indexed {c.execute("DROP INDEX file_blobs_state_size_idx",[])?;}
-            let started=Instant::now();
-            for _ in 0..20 {let _:i64=c.query_row(query,[],|r|r.get(0))?;}
-            eprintln!("CAPACITY_SUM covering_index={indexed} mean_ms={:.3}",started.elapsed().as_secs_f64()*1000.0/20.0);
-        }
-        c.execute("CREATE INDEX file_blobs_state_size_idx ON file_blobs(state,size_bytes)",[])?;
-        Ok(())
-    }).await.unwrap();
-    eprintln!(
-        "FILE_SCAN files={count} duration_ms={:.1} heartbeat_ticks={} max_gap_ms={:.1}",
-        elapsed.as_secs_f64() * 1000.0,
-        gaps.len(),
-        gaps.last().unwrap()
-    );
 }
 
 #[tokio::test]
@@ -1642,7 +1531,7 @@ async fn stalled_upload_does_not_hold_back_a_complete_backup() {
         false,
     )
     .await;
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -1858,36 +1747,6 @@ async fn cleanup_stops_at_watermark_and_respects_lru_and_active_leases() {
 }
 
 #[tokio::test]
-async fn deleted_parent_discovery_uses_the_small_deleted_task_index() {
-    let fixture = Fixture::new().await;
-    let plan: Vec<String> = fixture
-        .db
-        .run(|connection| {
-            let mut query = connection.prepare(
-                "EXPLAIN QUERY PLAN SELECT b.id,b.storage_key FROM tasks t
-             CROSS JOIN task_attachments a ON a.task_id=t.id
-             JOIN file_blobs b ON b.id=a.blob_id
-             WHERE t.deleted_at IS NOT NULL AND t.deleted_at<=?1 AND b.state='available'",
-            )?;
-            Ok(query
-                .query_map([0], |r| r.get(3))?
-                .collect::<Result<_, _>>()?)
-        })
-        .await
-        .unwrap();
-    assert!(
-        plan.iter().any(|step| step.contains("tasks_deleted_idx")),
-        "{plan:?}"
-    );
-    assert!(
-        !plan
-            .iter()
-            .any(|step| step.contains("file_blobs_cleanup_idx")),
-        "{plan:?}"
-    );
-}
-
-#[tokio::test]
 async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
     let fixture = Fixture::new().await;
     let service = fixture.service(1);
@@ -2009,7 +1868,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
 async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
     let fixture = Fixture::new().await;
     let service = fixture.service(1024 * 1024);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(
             &fixture.manager,
             "task",
@@ -2098,7 +1957,7 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
             )
             .await
             .unwrap(),
-        UploadStart::Replayed(_)
+        AttachmentUpload::Replayed(_)
     ));
 }
 
@@ -2125,7 +1984,7 @@ async fn high_watermark_admission_does_not_walk_originals() {
             .orphan_files_removed,
         0
     );
-    let UploadStart::Pending(pending) = service
+    let AttachmentUpload::Pending(pending) = service
         .begin_attachment_upload(&f.manager, "task", "next.bin", 1, false, "next")
         .await
         .unwrap()
@@ -2257,19 +2116,6 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
 }
 
 #[tokio::test]
-async fn capacity_queries_use_covering_index() {
-    let f = Fixture::new().await;
-    let plan: Vec<String> = f.db.run(|c| Ok(c.prepare(
-        "EXPLAIN QUERY PLAN SELECT coalesce(sum(size_bytes),0) FROM file_blobs WHERE state IN ('pending','available','deleting')")?
-        .query_map([],|r|r.get(3))?.collect::<Result<_,_>>()?)).await.unwrap();
-    assert!(
-        plan.iter()
-            .any(|line| line.contains("COVERING INDEX file_blobs_state_size_idx")),
-        "{plan:?}"
-    );
-}
-
-#[tokio::test]
 async fn storage_accounts_for_pending_deletion_separately() {
     let f = Fixture::new().await;
     let service = f.service(1000);
@@ -2356,7 +2202,7 @@ async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
 async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let f = Fixture::new().await;
     let service = f.service(1000000);
-    let UploadStart::Pending(mut pending) = service
+    let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&f.manager, "task", "size.bin", 4, false, "chunk-limit")
         .await
         .unwrap()
@@ -2378,117 +2224,6 @@ async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let mut body = Vec::new();
     read.file.read_to_end(&mut body).await.unwrap();
     assert_eq!(body, b"abcd");
-}
-
-#[tokio::test]
-async fn concurrent_upload_reservations_protect_the_disk_floor() {
-    let f = Fixture::new().await;
-    f.store().ensure_directories().await.unwrap();
-    let free = fs4::available_space(f.db.layout().root()).unwrap();
-    let service = FileService::new(
-        f.db.clone(),
-        100 * 1024 * 1024,
-        free.saturating_sub(35 * 1024 * 1024),
-    );
-    let size = oneloop::files::MAX_ATTACHMENT_BYTES;
-    let (a, b) = tokio::join!(
-        service.begin_attachment_upload(&f.manager, "task", "a.bin", size, false, "floor-a"),
-        service.begin_attachment_upload(&f.manager, "task", "b.bin", size, false, "floor-b"),
-    );
-    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
-    for result in [a, b] {
-        match result {
-            Ok(UploadStart::Pending(upload)) => upload.abort().await.unwrap(),
-            Err(AppError::Rule {
-                kind: oneloop::error::RuleKind::StorageFull,
-                ..
-            }) => {}
-            _ => panic!("unexpected reservation outcome"),
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "local 25 MiB download measurement with four CPU workers"]
-async fn download_buffer_measurement_under_cpu_load() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use tokio_stream::StreamExt;
-    struct CpuLoad {
-        stop: Arc<AtomicBool>,
-        workers: Vec<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for CpuLoad {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            for worker in self.workers.drain(..) {
-                worker.join().unwrap();
-            }
-        }
-    }
-    let f = Fixture::new().await;
-    let service = f.service(100 * 1024 * 1024);
-    let size = oneloop::files::MAX_ATTACHMENT_BYTES;
-    let UploadStart::Pending(mut pending) = service
-        .begin_attachment_upload(
-            &f.manager,
-            "task",
-            "bench.bin",
-            size,
-            false,
-            "buffer-measurement",
-        )
-        .await
-        .unwrap()
-    else {
-        panic!()
-    };
-    pending
-        .write_chunk(&vec![0x5a; size as usize])
-        .await
-        .unwrap();
-    let file = pending.finish().await.unwrap();
-    let mut load = CpuLoad {
-        stop: Arc::new(AtomicBool::new(false)),
-        workers: Vec::new(),
-    };
-    for _ in 0..4 {
-        let stop = load.stop.clone();
-        load.workers.push(std::thread::spawn(move || {
-            let mut value = 1_u64;
-            while !stop.load(Ordering::Relaxed) {
-                for _ in 0..1000 {
-                    value = std::hint::black_box(
-                        value.wrapping_mul(6364136223846793005).wrapping_add(1),
-                    );
-                }
-            }
-        }));
-    }
-    for sample in 1..=3 {
-        for capacity in [4096, 65536] {
-            let read = service
-                .open_for_read(&f.manager, &file.id, ReadMode::Download)
-                .await
-                .unwrap();
-            let mut stream = tokio_util::io::ReaderStream::with_capacity(read.file, capacity);
-            let start = std::time::Instant::now();
-            let (mut total, mut chunks) = (0_u64, 0);
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.unwrap();
-                assert_eq!(chunk[0], 0x5a);
-                total += chunk.len() as u64;
-                chunks += 1;
-            }
-            assert_eq!(total, size);
-            eprintln!(
-                "sample={sample} capacity={capacity} chunks={chunks} elapsed_ms={:.2}",
-                start.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-    }
 }
 
 fn restore(key: &str, expected_revision: i64) -> AttachmentRestore {

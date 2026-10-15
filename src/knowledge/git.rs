@@ -960,11 +960,13 @@ fn tree_size(root: &Path) -> u64 {
 }
 
 /// Regular files from `git ls-tree -r -z`, as repository and folder-relative
-/// paths. Links, submodules and names that are not plain UTF-8 are left out,
-/// but the checkout still creates their folders, so those count too.
+/// paths. Links, submodules and unsafe or non-UTF-8 names are left out, but
+/// the checkout still creates them and their folders, so they count toward
+/// the file and folder limits.
 fn select_files(listing: &[u8], folder: &str, limits: Limits) -> Result<Vec<Selected>, SyncError> {
     let prefix = folder_prefix(folder);
     let mut files = Vec::new();
+    let mut checked_out = 0;
     let mut folders = HashSet::new();
     for record in listing
         .split(|byte| *byte == 0)
@@ -993,6 +995,16 @@ fn select_files(listing: &[u8], folder: &str, limits: Limits) -> Result<Vec<Sele
                 "the folder has more subfolders than the limit",
             ));
         }
+        // The checkout creates every file, also one the sync leaves out.
+        if kind == "blob" {
+            if checked_out == limits.max_files {
+                return Err(SyncError::new(
+                    Failure::TooLarge,
+                    "the folder has more files than the limit",
+                ));
+            }
+            checked_out += 1;
+        }
         if kind != "blob" || !matches!(mode, "100644" | "100755") {
             continue;
         }
@@ -1004,12 +1016,6 @@ fn select_files(listing: &[u8], folder: &str, limits: Limits) -> Result<Vec<Sele
         };
         if !valid_relative_path(relative) {
             continue;
-        }
-        if files.len() == limits.max_files {
-            return Err(SyncError::new(
-                Failure::TooLarge,
-                "the folder has more files than the limit",
-            ));
         }
         files.push(Selected {
             repository_path: format!("{prefix}{relative}"),
@@ -1594,12 +1600,13 @@ pub(super) mod tests {
 
     #[test]
     fn folders_with_too_many_files_fail() {
+        // Files the sync leaves out are checked out too, so they count.
         let many = listing(&[
             ("100644", "blob", "a.md"),
-            ("100644", "blob", "b.md"),
-            ("100644", "blob", "c.md"),
+            ("120000", "blob", "link"),
+            ("100644", "blob", "tab\tname.md"),
         ]);
-        assert_eq!(select_files(&many, "", limits(3, 0)).unwrap().len(), 3);
+        assert_eq!(select_files(&many, "", limits(3, 0)).unwrap().len(), 1);
         assert_eq!(
             select_files(&many, "", limits(2, 0)).err().unwrap().failure,
             Failure::TooLarge

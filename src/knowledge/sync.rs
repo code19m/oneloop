@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     AppResult,
-    auth::unix_now,
+    clock::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
     disk::DiskReservation,
 };
@@ -785,7 +785,7 @@ mod tests {
                 ..
             })
         );
-        if let Ok(crate::files::UploadStart::Pending(upload)) = upload {
+        if let Ok(crate::files::AttachmentUpload::Pending(upload)) = upload {
             upload.abort().await.unwrap();
         }
         shutdown.send(true).unwrap();
@@ -808,7 +808,7 @@ mod tests {
                     )
                     .await
                 {
-                    Ok(crate::files::UploadStart::Pending(upload)) => break upload,
+                    Ok(crate::files::AttachmentUpload::Pending(upload)) => break upload,
                     Err(crate::AppError::Rule {
                         kind: crate::error::RuleKind::StorageFull,
                         ..
