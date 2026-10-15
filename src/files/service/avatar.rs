@@ -1,5 +1,26 @@
 //! Account avatars use bounded decoding and shared private-file storage.
-use super::*;
+
+use std::{collections::HashSet, io::Cursor};
+
+use image::{ImageEncoder, ImageFormat};
+use rusqlite::{OptionalExtension, params};
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs::{self, OpenOptions},
+    io::AsyncWriteExt,
+};
+use uuid::Uuid;
+
+use super::{
+    ConditionalRead, FileRead, FileService, capacity::require_capacity, decode, etag_matches,
+    file_etag, insert_read_lease, log_cleanup_failure,
+};
+use crate::{
+    AppError, AppResult,
+    auth::{Actor, refresh_actor_connection},
+    clock::unix_now,
+    files::{FileStore, MAX_AVATAR_BYTES},
+};
 
 const AVATAR_SIDE: u32 = 256;
 /// Avatar uploads under way at once; each keeps its image in memory until it
@@ -217,6 +238,19 @@ impl FileService {
         Ok(())
     }
 
+    async fn remove_pending_blob(&self, blob_id: &str) -> AppResult<()> {
+        let blob_id = blob_id.to_owned();
+        self.db
+            .transaction(move |connection| {
+                connection.execute(
+                    "DELETE FROM file_blobs WHERE id=?1 AND state='pending'",
+                    [blob_id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     /// The change is saved, so a failure here must not report it as failed:
     /// reconciliation deletes files that nothing refers to.
     async fn forget_old_avatar(&self, blob_id: &str) {
@@ -275,17 +309,7 @@ impl FileService {
                 if etag_matches(validator.as_deref(), &etag) {
                     return Ok((row, etag, false));
                 }
-                tx.execute(
-                    "INSERT INTO file_leases(id,blob_id,lease_kind,owner,created_at,expires_at)
-                     VALUES(?1,?2,'preview',?3,?4,?5)",
-                    params![
-                        lease_id_tx,
-                        row.3,
-                        actor.user_id,
-                        now,
-                        now + FILE_LEASE_SECONDS
-                    ],
-                )?;
+                insert_read_lease(tx, &lease_id_tx, &row.3, "preview", &actor.user_id, now)?;
                 Ok((row, etag, true))
             })
             .await?;
@@ -293,19 +317,9 @@ impl FileService {
             return Ok(ConditionalRead::NotModified(etag));
         }
         let (key, size, _, _) = row;
-        let file = match File::open(self.store.file_path(&key)?).await {
-            Ok(file) => file,
-            Err(_) => {
-                self.release_file_lease(lease_id).await?;
-                return Err(AppError::NotFound { resource: "avatar" });
-            }
-        };
+        let file = self.open_leased(&key, lease_id, "avatar").await?;
         Ok(ConditionalRead::Modified(Box::new(FileRead {
-            file: LeasedFile {
-                file,
-                db: self.db.clone(),
-                lease_id: Some(lease_id),
-            },
+            file,
             name: "avatar.png".into(),
             size: size as u64,
             media_type: "image/png".into(),
@@ -351,4 +365,60 @@ fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {
         )
         .map_err(|_| AppError::validation("avatar", "image could not be normalized"))?;
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::ActorSource;
+
+    #[tokio::test(start_paused = true)]
+    async fn image_decodes_run_one_at_a_time() {
+        let (_root, db) = crate::db::migrated_db();
+        let service = FileService::new(db, 1_000_000, 0);
+        // A thumbnail decode holds the only turn, so avatar uploads wait.
+        let held = service.decodes.turn().await;
+        let person = |name: &str| Actor {
+            user_id: name.into(),
+            username: name.into(),
+            display_name: name.into(),
+            is_admin: false,
+            must_change_password: false,
+            authenticated_at: 0,
+            source: ActorSource::BrowserSession {
+                session_id: name.into(),
+            },
+        };
+        let upload = |actor: Actor| {
+            let service = service.clone();
+            let slot = service.avatar_slot(&actor).unwrap();
+            tokio::spawn(async move { service.upload_avatar(&actor, slot, vec![1]).await })
+        };
+        let waiting = ["a", "b", "c", "d"].map(|name| upload(person(name)));
+        // Only a few are under way; holding their images in memory, more are
+        // turned away.
+        assert!(matches!(
+            service.avatar_slot(&person("e")),
+            Err(AppError::Unavailable(_))
+        ));
+        // Those that wait outlast a slow decode, then decode their own image.
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        assert!(waiting.iter().all(|upload| !upload.is_finished()));
+        drop(held);
+        for upload in waiting {
+            let result = upload.await.unwrap();
+            assert!(
+                matches!(result, Err(AppError::Validation { .. })),
+                "{result:?}"
+            );
+        }
+        // A decode that doesn't end turns an upload away after a while.
+        let _held = service.decodes.turn().await;
+        let actor = person("a");
+        let slot = service.avatar_slot(&actor).unwrap();
+        assert!(matches!(
+            service.upload_avatar(&actor, slot, vec![1]).await,
+            Err(AppError::Unavailable(_))
+        ));
+    }
 }

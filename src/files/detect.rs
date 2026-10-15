@@ -1,5 +1,10 @@
-//! Conservative preview sniffing and display-safe original filename validation.
-use super::*;
+//! The content rules that attachments and Knowledge files share: media types
+//! and previews detected from the bytes, and safe original file names.
+
+use std::path::Path;
+
+use super::{MAX_HTML_PREVIEW_BYTES, PreviewKind};
+use crate::{AppError, AppResult};
 
 pub(super) fn preview_kind_from_metadata(name: &str, media: &str) -> Option<PreviewKind> {
     if media.starts_with("image/") {
@@ -274,4 +279,39 @@ pub(crate) fn classify_bytes(name: &str, bytes: &[u8]) -> (String, Option<Previe
     let preview = preview_kind_from_metadata(name, &media)
         .filter(|kind| *kind != PreviewKind::Html || bytes.len() as u64 <= MAX_HTML_PREVIEW_BYTES);
     (media, preview)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_inspection_preserves_utf8_across_every_chunk_boundary() {
+        struct Chunks<'a> {
+            bytes: &'a [u8],
+            size: usize,
+        }
+        impl std::io::Read for Chunks<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.bytes.len().min(self.size).min(out.len());
+                out[..n].copy_from_slice(&self.bytes[..n]);
+                self.bytes = &self.bytes[n..];
+                Ok(n)
+            }
+        }
+        for size in 1..=8 {
+            for bytes in ["aé世界👩‍💻\r\n\t\u{c}".as_bytes(), b"plain", b""] {
+                assert!(valid_text_reader(Chunks { bytes, size }).unwrap());
+            }
+            for bytes in [
+                b"a\xe2\x82".as_slice(),
+                b"a\xff",
+                b"a\0",
+                b"a\xe2X\x82",
+                b"a\x7f\x01",
+            ] {
+                assert!(!valid_text_reader(Chunks { bytes, size }).unwrap());
+            }
+        }
+    }
 }

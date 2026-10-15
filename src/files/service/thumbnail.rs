@@ -1,13 +1,35 @@
 //! Thumbnails of image attachments. Requests only queue work; one background
 //! job at a time decodes within the avatar limits and shares their decode lane.
-use super::*;
-use std::{collections::VecDeque, sync::Mutex};
+
+use std::{
+    collections::{HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use image::{
-    DynamicImage,
+    DynamicImage, ImageEncoder,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
 };
-use tokio::sync::{Notify, watch};
+use rusqlite::{OptionalExtension, params};
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{Notify, watch},
+};
+use uuid::Uuid;
+
+use super::{
+    ConditionalRead, FileService, ReadMode, attachment_by_id, decode, etag_matches,
+    log_cleanup_failure, require_file_access,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    clock::unix_now,
+    disk::DiskReservation,
+    files::{BlobState, PreviewKind, detect},
+};
 
 /// A thumbnail fits in a square of this many pixels. Smaller images keep
 /// their size.

@@ -2,10 +2,12 @@
 //! The JPEG and WebP decoders take no allocation limit, so an estimate from
 //! the file's header refuses an image before any pixels are decoded when the
 //! decode would need more memory than one decode may use.
-use super::*;
+
 use std::io::{BufRead, Read, Seek, SeekFrom};
 
-use image::{DynamicImage, ImageDecoder, ImageError, metadata::Orientation};
+use image::{
+    DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits, metadata::Orientation,
+};
 
 /// The longest side of an image the server decodes.
 pub(super) const MAX_SIDE: u32 = 8192;
@@ -292,6 +294,7 @@ fn within_sides(width: u64, height: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageEncoder;
 
     /// A JPEG that ends after its frame header: enough for the estimate.
     fn jpeg_header(marker: u8, width: u16, height: u16, sampling: &[u8]) -> Vec<u8> {

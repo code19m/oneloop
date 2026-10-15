@@ -1,5 +1,26 @@
 //! Attachment metadata: the list, retention, order, deletion and Undo.
-use super::*;
+
+use std::collections::HashMap;
+
+use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use super::{
+    ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id, occupied_slots,
+    record_attachment_deletion, require_file_access, stored_file_row, task_project,
+};
+use crate::{
+    AppError, AppResult,
+    auth::Actor,
+    clock::unix_now,
+    collaboration::{ActivityInput, record_activity_tx},
+    files::{
+        AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
+        BlobState, MAX_ATTACHMENTS_PER_TASK, StoredFile,
+    },
+    idempotency::{Envelope, Resource},
+};
 
 impl FileService {
     pub async fn list_attachments(
