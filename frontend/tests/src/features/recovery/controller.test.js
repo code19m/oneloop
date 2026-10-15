@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
-import {createRecoveryController,isRevisionConflict,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
+import {createRecoveryController,leaveUnavailableProject,presentDomConflict} from '../../../../src/features/recovery/controller.js';
 import {createBuildMonitor} from '../../../../src/app/build-info.js';
 import {useGlobals,settle} from '../../../support/helpers.cjs';
 const {JSDOM}=createRequire(import.meta.url)('../../../support/dom.cjs');
@@ -21,8 +21,10 @@ function fixture(overrides={}){
 }
 
 test('recognizes revision conflicts by their code, not their wording',()=>{
-  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);
-  assert.equal(isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),false);
+  const {controller}=fixture();
+  assert.equal(controller.isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);
+  assert.equal(controller.isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'conflict'})),false);
+  controller.dispose();
 });
 
 test('conflict review can use latest without writing or retry mine at the latest revision',async()=>{

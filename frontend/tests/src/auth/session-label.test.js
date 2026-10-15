@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sessionBrowserLabel, sessionDateLabel, sessionDateTimeLabel, sessionDeviceLabel, userAgentLabel } from '../../../src/auth/session-label.js';
+import { sessionBrowserLabel, sessionDateLabel, sessionDateTimeLabel, sessionDeviceLabel } from '../../../src/auth/session-label.js';
 
 const chromeMac='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 
 test('session labels summarize browsers and platforms without exposing user-agent strings',()=>{
-  assert.equal(userAgentLabel(chromeMac),'Chrome on macOS');
-  assert.equal(userAgentLabel('Mozilla/5.0 (Android 14; Mobile; rv:146.0) Gecko/146.0 Firefox/146.0'),'Firefox on Android');
-  assert.equal(userAgentLabel('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0'),'Edge on Windows');
-  assert.equal(userAgentLabel('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'),'Safari on iOS');
+  for(const [userAgent,label] of [
+    [chromeMac,'Chrome on macOS'],
+    ['Mozilla/5.0 (Android 14; Mobile; rv:146.0) Gecko/146.0 Firefox/146.0','Firefox on Android'],
+    ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0','Edge on Windows'],
+    ['Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1','Safari on iOS'],
+  ])assert.equal(sessionDeviceLabel({userAgent}),label,userAgent);
   assert.equal(sessionDeviceLabel({clientName:chromeMac,userAgent:chromeMac}),'Chrome on macOS');
   assert.equal(sessionBrowserLabel({clientName:chromeMac,userAgent:chromeMac}),null);
   assert.equal(sessionDeviceLabel({clientName:'Work Mac',userAgent:chromeMac}),'Work Mac');

@@ -29,7 +29,7 @@ export function isFormRetryPending(form) {
 
 /** Keep text fields usable while a server-specified retry delay blocks another submit. */
 /** @param {any} form @param {unknown} error */
-export function holdFormRetry(form, error) {
+function holdFormRetry(form, error) {
   const value = /** @type {any} */ (error);
   if (!form || ![429,503].includes(value?.status) && !['rate_limited','unavailable'].includes(value?.code)) return 0;
   const delay = retryDelayMs(error);

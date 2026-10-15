@@ -128,7 +128,7 @@ export function highlight(/** @type {string} */ value, /** @type {string[]} */ w
 }
 
 /** What an administrator can do about a failed sync. */
-export const FAILURES = Object.freeze({
+const FAILURES = Object.freeze({
   git_unavailable: 'The server can’t run Git 2.31 or later, or SSH.',
   auth_failed: 'The repository refused the access token or deploy key.',
   repository_not_found: 'The repository wasn’t found, or the credentials can’t read it.',

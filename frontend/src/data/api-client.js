@@ -40,8 +40,8 @@ export function prepareCommand(operation, payload, { expectedRevision, idempoten
 }
 
 // Internal bounds include receiving and decoding the response body.
-export const REQUEST_TIMEOUT_MS = 30_000;
-export const UPLOAD_TIMEOUT_MS = 300_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 300_000;
 
 /** A cancellation race also bounds transports that do not settle after abort. */
 function requestDeadline(signal, timeoutMs) {

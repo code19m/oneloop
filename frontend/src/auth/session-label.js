@@ -16,7 +16,7 @@ function looksLikeUserAgent(value) {
 }
 
 /** @param {string} userAgent */
-export function userAgentLabel(userAgent) {
+function userAgentLabel(userAgent) {
   const value=text(userAgent);
   if (!value) return 'Browser';
   const browser=/\bEdg(?:A|iOS)?\//i.test(value) ? 'Edge'

@@ -7,7 +7,7 @@ const EDITOR_ROOT = '.modal,.task-page,.peek,.settings,.workspace-page';
 const EDITOR_REVISIONS = new WeakMap();
 
 /** @param {unknown} error */
-export function isRevisionConflict(error) {
+function isRevisionConflict(error) {
   return error instanceof ApiError && error.code === 'revision_conflict';
 }
 
@@ -51,7 +51,7 @@ const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUIL
  * @param {Document} doc @param {WeakMap<Element,string>} committed what each autosaved field last saved
  * @param {(element:Element)=>boolean} [skip] @param {Iterable<Element>} [roots]
  */
-export function hasTypedInput(doc, committed, skip = () => false, roots = doc.querySelectorAll(EDITOR_ROOT)) {
+function hasTypedInput(doc, committed, skip = () => false, roots = doc.querySelectorAll(EDITOR_ROOT)) {
   const active=doc.activeElement;
   for (const root of roots) for (const element of root.querySelectorAll('input,textarea,select')) {
     if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) || element.disabled || skip(element)) continue;
@@ -69,7 +69,7 @@ export function hasTypedInput(doc, committed, skip = () => false, roots = doc.qu
  * leaves out controls that keep their own state.
  * @param {Document} [doc] @param {{changedOnly?:boolean,skip?:(element:Element)=>boolean}} [options]
  */
-export function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>false} = {}) {
+function captureOpenEditor(doc = document, {changedOnly=false, skip=()=>false} = {}) {
   const active=doc.activeElement;
   const candidates=[...doc.querySelectorAll(EDITOR_ROOT)];
   const root=active?.closest?.(EDITOR_ROOT) ?? candidates.find((candidate)=>candidate.querySelector('form:focus-within')) ?? candidates.find((candidate)=>EDITOR_REVISIONS.has(candidate)) ?? null;
@@ -105,7 +105,7 @@ const sameEditor = (doc, rootClass) => [...doc.querySelectorAll(EDITOR_ROOT)].fi
  * reports an input event, so the page reacts as if the person typed it.
  * @param {ReturnType<typeof captureOpenEditor>} snapshot @param {Document} [doc] @param {{notify?:boolean}} [options]
  */
-export function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
+function restoreOpenEditor(snapshot, doc = document, {notify=false} = {}) {
   if (!snapshot) return null;
   const root=sameEditor(doc,snapshot.rootClass);
   if (!root) return null;
@@ -135,7 +135,7 @@ export function restoreOpenEditor(snapshot, doc = document, {notify=false} = {})
  * or name in the editor of the same kind.
  * @param {Element|null} element @returns {()=>Element|null}
  */
-export function relocator(element) {
+function relocator(element) {
   const root=element?.closest?.(EDITOR_ROOT),key=root?controlKey(root,element):null;
   if(!key)return ()=>null;
   const rootClass=[...root.classList];
@@ -148,7 +148,7 @@ const promptHost = (field) => field?.closest('.field,.task-title-field,.tp-sec,.
 /** Conflict prompts waiting for an answer. @type {Set<{check:()=>boolean,cancel:()=>void}>} */
 const openPrompts = new Set();
 /** Put prompts that a redraw removed back beside their redrawn fields at once, before the page restores focus. */
-export function keepConflictPrompts() { for (const prompt of [...openPrompts]) prompt.check(); }
+function keepConflictPrompts() { for (const prompt of [...openPrompts]) prompt.check(); }
 
 /**
  * Ask whether to use the latest saved value or keep the person's change. A
