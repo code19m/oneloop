@@ -960,8 +960,9 @@ fn tree_size(root: &Path) -> u64 {
 }
 
 /// Regular files from `git ls-tree -r -z`, as repository and folder-relative
-/// paths. Links, submodules and names that are not plain UTF-8 are left out,
-/// but the checkout still creates their folders, so those count too.
+/// paths. Links, submodules and unsafe or non-UTF-8 names are left out, but
+/// the checkout still creates them and their folders, so they count toward
+/// the file and folder limits.
 fn select_files(listing: &[u8], folder: &str, limits: Limits) -> Result<Vec<Selected>, SyncError> {
     let prefix = folder_prefix(folder);
     let mut files = Vec::new();
