@@ -19,7 +19,7 @@ use crate::{
 
 /// Read routes of the core domain. Its writes go through `/api/commands`, which
 /// `commands` shares with discussions, the Inbox and Knowledge.
-pub fn read_router() -> Router<AppState> {
+pub(crate) fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/projects/{project_id}/board", get(board))

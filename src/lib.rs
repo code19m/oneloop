@@ -14,7 +14,7 @@ mod disk;
 pub mod domain;
 pub mod error;
 pub mod files;
-pub mod http;
+mod http;
 mod idempotency;
 mod input;
 pub mod knowledge;

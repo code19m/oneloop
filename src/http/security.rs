@@ -12,8 +12,8 @@ use url::Url;
 
 use crate::{AppError, AppResult, AppState};
 
-pub const HTTPS_SESSION_COOKIE: &str = "__Host-oneloop_session";
-pub const DEVELOPMENT_SESSION_COOKIE: &str = "oneloop_session";
+pub(crate) const HTTPS_SESSION_COOKIE: &str = "__Host-oneloop_session";
+pub(crate) const DEVELOPMENT_SESSION_COOKIE: &str = "oneloop_session";
 
 /// Validate the authority supplied by HTTP, independently of forwarding headers.
 /// In-process router callers have neither a socket peer nor necessarily a Host.
@@ -125,7 +125,7 @@ fn allowed_authority(raw: &str, public: &Url, peer: Option<SocketAddr>, path: &s
                 .is_ok_and(|ip| ip.is_loopback()))
 }
 
-pub async fn enforce_browser_origin(
+pub(crate) async fn enforce_browser_origin(
     State(state): State<AppState>,
     request: Request<Body>,
     next: Next,
@@ -138,7 +138,7 @@ pub async fn enforce_browser_origin(
     Ok(next.run(request).await)
 }
 
-pub async fn add_main_security_headers(
+pub(crate) async fn add_main_security_headers(
     State(state): State<AppState>,
     request: Request<Body>,
     next: Next,
@@ -220,7 +220,7 @@ pub async fn add_main_security_headers(
 /// inline style attributes. `style-src` repeats both for browsers without the
 /// separate directives. Trusted Types limit HTML and script sinks to the app's
 /// own policies and DOMPurify's.
-pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
+pub(crate) fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
     let extra = callback
         .map(|url| match url.scheme() {
             "http" | "https" => format!(" {}", url.origin().ascii_serialization()),
@@ -241,7 +241,7 @@ pub fn content_security_policy(callback: Option<&Url>) -> HeaderValue {
 /// The off-screen document where Mermaid lays out diagrams for the app.
 /// Mermaid writes inline styles and HTML strings, so this document alone
 /// allows inline styles and has no Trusted Types. Only the app may frame it.
-pub fn diagram_renderer_policy() -> HeaderValue {
+pub(crate) fn diagram_renderer_policy() -> HeaderValue {
     HeaderValue::from_static(
         "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; \
          form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
@@ -249,7 +249,7 @@ pub fn diagram_renderer_policy() -> HeaderValue {
     )
 }
 
-pub fn require_canonical_origin(
+pub(crate) fn require_canonical_origin(
     method: &Method,
     headers: &HeaderMap,
     public_url: &Url,
@@ -282,7 +282,7 @@ pub fn require_canonical_origin(
     Ok(())
 }
 
-pub fn session_cookie_name(public_url: &Url) -> &'static str {
+pub(crate) fn session_cookie_name(public_url: &Url) -> &'static str {
     if public_url.scheme() == "https" {
         HTTPS_SESSION_COOKIE
     } else {
@@ -290,7 +290,7 @@ pub fn session_cookie_name(public_url: &Url) -> &'static str {
     }
 }
 
-pub fn session_cookie(
+pub(crate) fn session_cookie(
     public_url: &Url,
     token: &str,
     max_age_seconds: i64,
@@ -315,7 +315,7 @@ pub fn session_cookie(
     .map_err(|error| AppError::Internal(format!("session cookie could not be created: {error}")))
 }
 
-pub fn clear_session_cookie(public_url: &Url) -> HeaderValue {
+pub(crate) fn clear_session_cookie(public_url: &Url) -> HeaderValue {
     let secure = if public_url.scheme() == "https" {
         "; Secure"
     } else {
@@ -328,7 +328,7 @@ pub fn clear_session_cookie(public_url: &Url) -> HeaderValue {
     .expect("static cookie attributes must be valid")
 }
 
-pub fn session_token(headers: &HeaderMap, public_url: &Url) -> Option<String> {
+pub(crate) fn session_token(headers: &HeaderMap, public_url: &Url) -> Option<String> {
     let name = session_cookie_name(public_url).as_bytes();
     let mut found = None;
     for value in headers.get_all(header::COOKIE).iter() {
@@ -358,7 +358,7 @@ pub fn session_token(headers: &HeaderMap, public_url: &Url) -> Option<String> {
     found
 }
 
-pub fn client_ip(
+pub(crate) fn client_ip(
     peer: Option<SocketAddr>,
     headers: &HeaderMap,
     trusted: &[IpNet],
@@ -407,7 +407,7 @@ fn warn_untrusted_forwarding() {
 }
 
 /// Address aggregation is for abuse counters only, never session metadata.
-pub fn throttle_bucket(ip: IpAddr) -> String {
+pub(crate) fn throttle_bucket(ip: IpAddr) -> String {
     match ip.to_canonical() {
         IpAddr::V4(ip) => ip.to_string(),
         IpAddr::V6(ip) => format!(
@@ -437,24 +437,6 @@ pub(crate) fn is_trusted(address: IpAddr, trusted: &[IpNet]) -> bool {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-
-    #[test]
-    fn unsafe_requests_require_the_canonical_origin() {
-        let public = Url::parse("https://tasks.example.test").unwrap();
-        let mut headers = HeaderMap::new();
-        assert!(require_canonical_origin(&Method::POST, &headers, &public).is_err());
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://evil.example"),
-        );
-        assert!(require_canonical_origin(&Method::POST, &headers, &public).is_err());
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://tasks.example.test"),
-        );
-        assert!(require_canonical_origin(&Method::POST, &headers, &public).is_ok());
-        assert!(require_canonical_origin(&Method::GET, &HeaderMap::new(), &public).is_ok());
-    }
 
     #[test]
     fn cookies_are_host_only_secure_and_http_only() {

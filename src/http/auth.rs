@@ -28,7 +28,7 @@ use super::security::{
 // for field names, the longest username/display name and session metadata.
 const ACCOUNT_BODY_LIMIT: usize = 2 * 6 * crate::auth::password::MAX_PASSWORD_BYTES + 4096;
 
-pub fn router() -> Router<AppState> {
+pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/login", post(login))
         .route("/logout", post(logout))
@@ -44,7 +44,7 @@ pub fn router() -> Router<AppState> {
         .layer(middleware::from_fn(auth_no_store))
 }
 
-pub fn users_router() -> Router<AppState> {
+pub(crate) fn users_router() -> Router<AppState> {
     Router::new()
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{id}", patch(update_user))
@@ -56,7 +56,7 @@ pub fn users_router() -> Router<AppState> {
 /// Checks the origin of every account route and signs in every one except
 /// login and logout, which handle sessions themselves. Handlers take the
 /// signed-in `Actor` from the request extensions.
-pub async fn account_boundary(
+pub(crate) async fn account_boundary(
     State(state): State<AppState>,
     mut request: Request<Body>,
     next: Next,
@@ -82,7 +82,7 @@ async fn auth_no_store(request: Request<Body>, next: Next) -> Response {
     response
 }
 
-pub async fn require_actor(
+pub(crate) async fn require_actor(
     State(state): State<AppState>,
     mut request: Request<Body>,
     next: Next,
@@ -114,7 +114,7 @@ pub async fn require_actor(
     Ok(next.run(request).await)
 }
 
-pub async fn authenticate_headers(
+pub(crate) async fn authenticate_headers(
     state: &AppState,
     headers: &HeaderMap,
     meaningful: bool,
@@ -351,7 +351,7 @@ async fn revoke_connected_app(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthResponse {
+pub(crate) struct AuthResponse {
     user: AuthUserResponse,
     session_id: String,
     authenticated_at: i64,

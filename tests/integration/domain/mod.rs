@@ -7,10 +7,10 @@ mod tasks;
 
 use std::collections::HashSet;
 
-use axum::{Extension, body::Body};
+use axum::body::Body;
 use oneloop::{
     AppError, AppState, Db,
-    auth::{Actor, ActorSource},
+    auth::{Actor, ActorSource, token_hash},
     collaboration::CollaborationService,
     domain::{
         BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation,
@@ -40,7 +40,7 @@ async fn fixture() -> Fixture {
     db.transaction(move|tx|{
         for (id,username,name,admin) in [("u1","manager","Manager",false),("u2","member","Member",false),("u3","assignee","Assignee",false),("admin","admin","Admin",true)]{
             tx.execute("INSERT INTO users (id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at) VALUES (?1,?2,?3,'hash',?4,?5,?5,?5)",params![id,username,name,admin,now])?;
-            tx.execute("INSERT INTO sessions (id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES (?1,?2,?3,?4,?4,?4,?5,?5)",params![format!("s-{id}"),id,format!("h-{id}"),now,now+3600])?;
+            tx.execute("INSERT INTO sessions (id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at) VALUES (?1,?2,?3,?4,?4,?4,?5,?5)",params![format!("s-{id}"),id,token_hash(&session_token(id)),now,now+3600])?;
         }
         for (id,name,prefix) in [("p1","Project One","ONE"),("p2","Project Two","TWO")]{
             tx.execute("INSERT INTO projects (id,name,task_prefix,created_by,created_at,updated_at) VALUES (?1,?2,?3,'admin',?4,?4)",params![id,name,prefix,now])?;
@@ -70,6 +70,27 @@ async fn fixture() -> Fixture {
         member: actor("u2", "Member"),
         admin,
     }
+}
+
+fn session_token(user_id: &str) -> String {
+    format!("{user_id}-session-token-for-domain-tests")
+}
+
+fn router(f: &Fixture) -> axum::Router {
+    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
+    oneloop::application(AppState::new(config, f.db.clone())).router
+}
+
+/// A GET request signed in as the fixture user `user_id`, such as `u2`.
+fn signed_in_get(user_id: &str, uri: &str) -> axum::http::Request<Body> {
+    axum::http::Request::builder()
+        .uri(uri)
+        .header(
+            "cookie",
+            format!("oneloop_session={}", session_token(user_id)),
+        )
+        .body(Body::empty())
+        .unwrap()
 }
 
 fn command(
