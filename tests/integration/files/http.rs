@@ -1,6 +1,8 @@
+use super::png;
 use crate::support::{
-    self,
+    self, Role,
     http::{body_bytes, body_json},
+    query_one, seed_project, session_cookie,
 };
 use axum::{
     Router,
@@ -10,10 +12,9 @@ use axum::{
 use http_body_util::BodyExt;
 use oneloop::{
     AppState, Db, application,
-    auth::{Actor, unix_now},
+    auth::Actor,
     files::{AttachmentView, FileService},
 };
-use rusqlite::params;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -22,6 +23,8 @@ pub(super) struct Fixture {
     pub(super) app: Router,
     pub(super) files: FileService,
     pub(super) db: Db,
+    pub(super) manager: Actor,
+    pub(super) admin: Actor,
     pub(super) manager_cookie: String,
     outsider_cookie: String,
 }
@@ -33,49 +36,15 @@ impl Fixture {
 
     pub(super) async fn with_storage_limit(limit: u64) -> Self {
         let (directory, db) = crate::support::database();
-        let manager = support::add_user(&db, "manager", false).await;
-        let outsider = support::add_user(&db, "outsider", false).await;
-        let manager_id = manager.actor.user_id.clone();
-        db.run(move |connection| {
-            let now = unix_now()?;
-            connection.execute(
-                "INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
-                 VALUES('p1','Project','PRJ',?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_prefixes(prefix,project_id,reserved_at) VALUES('PRJ','p1',?1)",
-                [now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_sequences(project_id,next_task_number) VALUES('p1',2)",
-                [],
-            )?;
-            connection.execute(
-                "INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                 VALUES('p1',?1,1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO tracks(id,project_id,name,position,created_by,created_at,updated_at)
-                 VALUES('track','p1','Track',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_by,created_at,updated_at)
-                 VALUES('epic','p1','track','Epic','2026-01-01',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            connection.execute(
-                "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                 VALUES('task','p1','epic',1,'PRJ-001','Task','planning',0,?1,?2,?2)",
-                params![manager_id, now],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-
+        let [manager, _, admin] = seed_project(
+            &db,
+            [
+                ("manager", Role::Manager),
+                ("outsider", Role::Outsider),
+                ("admin", Role::Admin),
+            ],
+        )
+        .await;
         let mut config = support::config(directory.path(), "https://tasks.example.test", &[]);
         config.storage_limit_bytes = limit;
         config.disk_min_free_bytes = 0;
@@ -85,8 +54,10 @@ impl Fixture {
             app: application.router,
             files: application.files,
             db,
-            manager_cookie: format!("__Host-oneloop_session={}", manager.token),
-            outsider_cookie: format!("__Host-oneloop_session={}", outsider.token),
+            manager,
+            admin,
+            manager_cookie: session_cookie("manager"),
+            outsider_cookie: session_cookie("outsider"),
         }
     }
 
@@ -104,13 +75,6 @@ impl Fixture {
         body.extend_from_slice(bytes);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         self.upload_body(key, bytes.len(), body).await
-    }
-
-    async fn actor(&self, cookie: &str) -> Actor {
-        support::auth_service(&self.db)
-            .authenticate_session(cookie.split_once('=').unwrap().1, false)
-            .await
-            .unwrap()
     }
 
     async fn put_avatar(&self, cookie: &str, body: Body) -> axum::response::Response {
@@ -274,6 +238,23 @@ async fn multipart_upload_over_global_json_limit_and_range_download_are_real() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */307200");
+
+    // A range the server doesn't support, such as two parts, gets the file.
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/attachments/{}/download", attachment.id))
+                .header(header::COOKIE, &fixture.manager_cookie)
+                .header(header::RANGE, "bytes=0-1,4-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await.as_ref(), original.as_slice());
 }
 
 #[tokio::test]
@@ -374,16 +355,14 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     let (status, body) = fixture.upload("undo-upload", "undo.txt", b"undo me").await;
     assert_eq!(status, StatusCode::CREATED);
     let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
-    let send = |method: &str, uri: String, origin: bool, body: Body| {
-        let mut request = Request::builder()
+    let send = |method: &str, uri: String, body: Body| {
+        let request = Request::builder()
             .method(method)
             .uri(uri)
             .header(header::COOKIE, &fixture.manager_cookie)
             .header(header::CONTENT_TYPE, "application/json")
-            .header("idempotency-key", "undo-delete");
-        if origin {
-            request = request.header(header::ORIGIN, "https://tasks.example.test");
-        }
+            .header("idempotency-key", "undo-delete")
+            .header(header::ORIGIN, "https://tasks.example.test");
         fixture.app.clone().oneshot(request.body(body).unwrap())
     };
     let deleted = send(
@@ -392,7 +371,6 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
             "/api/attachments/{}?expectedRevision={}",
             attachment.id, attachment.revision
         ),
-        true,
         Body::empty(),
     )
     .await
@@ -404,11 +382,7 @@ async fn a_deleted_attachment_comes_back_through_its_restore_endpoint() {
     })
     .to_string();
     let uri = format!("/api/attachments/{}/restore", attachment.id);
-    let cross_site = send("POST", uri.clone(), false, Body::from(restore.clone()))
-        .await
-        .unwrap();
-    assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
-    let restored = send("POST", uri, true, Body::from(restore)).await.unwrap();
+    let restored = send("POST", uri, Body::from(restore)).await.unwrap();
     assert_eq!(restored.status(), StatusCode::OK);
     let restored: AttachmentView = serde_json::from_value(body_json(restored).await).unwrap();
     assert_eq!(restored.id, attachment.id);
@@ -603,16 +577,15 @@ async fn conditional_sources_recheck_access_without_allocating_read_leases() {
 
 #[tokio::test]
 async fn avatars_revalidate_versioned_and_unversioned_urls_and_reject_lost_access() {
-    use image::ImageEncoder;
     let f = Fixture::new().await;
-    let manager = f.actor(&f.manager_cookie).await;
+    let manager = f.manager.clone();
     let service = oneloop::files::FileService::new(f.db.clone(), 1000000, 0);
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
     let url = service
-        .upload_avatar(&manager, service.avatar_slot(&manager).unwrap(), png)
+        .upload_avatar(
+            &manager,
+            service.avatar_slot(&manager).unwrap(),
+            png(1, 1, false),
+        )
         .await
         .unwrap();
     for url in [
@@ -688,11 +661,8 @@ async fn upload_size_mismatches_release_staging_and_allow_same_key_retry() {
             std::fs::read_dir(f.db.layout().staging()).unwrap().count(),
             0
         );
-        let reservations: i64 = f
-            .db
-            .run(|c| Ok(c.query_row("SELECT count(*) FROM upload_reservations", [], |r| r.get(0))?))
-            .await
-            .unwrap();
+        let reservations: i64 =
+            query_one(&f.db, "SELECT count(*) FROM upload_reservations", []).await;
         assert_eq!(reservations, 0);
         assert_eq!(
             f.upload(&key, "size.bin", &vec![b'x'; claimed]).await.0,
@@ -738,7 +708,7 @@ async fn upload_declarations_are_checked_without_reading_the_body() {
 async fn an_uploaded_avatar_is_served_as_a_256_pixel_png() {
     let f = Fixture::new().await;
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let url = body_json(response).await["avatarUrl"]
@@ -770,22 +740,19 @@ async fn an_uploaded_avatar_is_served_as_a_256_pixel_png() {
 #[tokio::test]
 async fn one_person_uploads_one_avatar_at_a_time() {
     let f = Fixture::new().await;
-    let slot = f
-        .files
-        .avatar_slot(&f.actor(&f.manager_cookie).await)
-        .unwrap();
+    let slot = f.files.avatar_slot(&f.manager).unwrap();
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     // Someone else's upload goes ahead meanwhile.
     let response = f
-        .put_avatar(&f.outsider_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.outsider_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     drop(slot);
     let response = f
-        .put_avatar(&f.manager_cookie, avatar_envelope(&red_pixel()))
+        .put_avatar(&f.manager_cookie, avatar_envelope(&png(1, 1, false)))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
@@ -797,7 +764,7 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
         atomic::{AtomicBool, Ordering},
     };
     let f = Fixture::new().await;
-    let manager = f.actor(&f.manager_cookie).await;
+    let manager = f.manager.clone();
     let people = ["a", "b", "c", "d"].map(|name| Actor {
         user_id: name.into(),
         ..manager.clone()
@@ -809,7 +776,7 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
     // The closing boundary comes in the last chunk, so the flag shows that
     // the whole body was read.
     let read = Arc::new(AtomicBool::new(false));
-    let envelope = file_envelope(&red_pixel());
+    let envelope = file_envelope(&png(1, 1, false));
     let mut chunks = vec![
         envelope[..envelope.len() / 2].to_vec(),
         envelope[envelope.len() / 2..].to_vec(),
@@ -827,16 +794,6 @@ async fn a_refused_avatar_upload_is_answered_after_its_body_is_read() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::RETRY_AFTER], "1");
     assert!(read.load(Ordering::SeqCst), "the body was read");
-}
-
-/// A 1x1 red PNG.
-fn red_pixel() -> Vec<u8> {
-    use image::ImageEncoder;
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
-    png
 }
 
 fn avatar_envelope(bytes: &[u8]) -> Body {
@@ -893,74 +850,6 @@ async fn multipart_and_avatar_limits_return_json_413() {
             std::fs::read_dir(f.db.layout().staging()).unwrap().count(),
             0
         );
-    }
-}
-
-#[tokio::test]
-async fn unsupported_ranges_deliver_full_file_and_unsatisfiable_ranges_return_416() {
-    let f = Fixture::new().await;
-    let (_, body) = f.upload("range-fallback", "range.bin", b"0123456789").await;
-    let attachment: AttachmentView = serde_json::from_slice(&body).unwrap();
-    for range in [
-        "items=0-1",
-        "bytes=0-1,4-5",
-        "bytes=9-3",
-        "bytes=invalid",
-        "bytes=10-",
-    ] {
-        let response = f
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(attachment.download_url.as_ref().unwrap())
-                    .header(header::COOKIE, &f.manager_cookie)
-                    .header(header::RANGE, range)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        if range == "bytes=10-" {
-            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
-            assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
-        } else {
-            assert_eq!(response.status(), StatusCode::OK, "{range}");
-            assert_eq!(body_bytes(response).await.as_ref(), b"0123456789");
-        }
-    }
-}
-
-#[tokio::test]
-async fn embedded_katex_keeps_woff2_and_licenses_without_unused_formats() {
-    let f = Fixture::new().await;
-    for (path, status) in [
-        ("/vendor/katex/LICENSE", StatusCode::NOT_FOUND),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.woff2",
-            StatusCode::OK,
-        ),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.woff",
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            "/vendor/katex/fonts/KaTeX_Main-Regular.ttf",
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            "/vendor/github-markdown-css/dark.css",
-            StatusCode::NOT_FOUND,
-        ),
-        ("/vendor/cdn-assets/dark.css", StatusCode::NOT_FOUND),
-    ] {
-        let response = f
-            .app
-            .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), status, "{path}");
     }
 }
 

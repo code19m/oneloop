@@ -1268,9 +1268,7 @@ mod tests {
 
     #[test]
     fn file_queries_use_their_indexes() {
-        let root = tempfile::tempdir().unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let connection = crate::db::open_connection(&root.path().join("oneloop.sqlite3")).unwrap();
+        let (_root, connection) = crate::db::migrated_connection();
         for (sql, values) in [(STORED_BYTES_SQL, vec![]), (CAPACITY_USED_SQL, vec![0])] {
             let plan = plan(&connection, sql, rusqlite::params_from_iter(values));
             assert!(

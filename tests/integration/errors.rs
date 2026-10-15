@@ -80,8 +80,7 @@ async fn busy_data_lease_returns_a_safe_retryable_http_error() {
     use tower::ServiceExt;
     let (root, db) = crate::support::database();
     let session = crate::support::add_user(&db, "person", false).await;
-    let config = crate::support::config(root.path(), "http://127.0.0.1:18710", &[]);
-    let app = oneloop::application(oneloop::AppState::new(config, db)).router;
+    let app = crate::support::app(root.path(), &db, "http://127.0.0.1:18710", &[]).router;
     let lock_path = root.path().join(".oneloop-data.lock");
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -153,24 +152,30 @@ async fn application_errors_have_stable_json_and_hide_internal_details() {
     assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response.headers()[axum::http::header::RETRY_AFTER], "42");
 
-    let response = AppError::Database("secret database path".to_owned()).into_response();
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
-    );
-    let bytes = body_bytes(response).await;
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(body.contains("internal_error"));
-    assert!(!body.contains("secret database path"));
-    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let reference = json["error"]["reference"].as_str().unwrap();
-    assert!(uuid::Uuid::parse_str(reference).is_ok());
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains(reference)
-    );
+    for error in [
+        AppError::Database("secret database path".to_owned()),
+        AppError::internal("secret database path"),
+    ] {
+        let response = error.into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let bytes = body_bytes(response).await;
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("internal_error"));
+        assert!(!body.contains("secret database path"));
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["error"].get("details").is_none());
+        let reference = json["error"]["reference"].as_str().unwrap();
+        assert!(uuid::Uuid::parse_str(reference).is_ok());
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(reference)
+        );
+    }
 }
 
 #[tokio::test]

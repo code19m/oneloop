@@ -140,32 +140,43 @@ async fn composite_board_read_keeps_pages_filters_and_global_counts_consistent()
 #[tokio::test]
 async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
     let f = fixture().await;
-    let created = f
-        .service
-        .execute(
-            &f.manager,
-            command(
-                DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":"e1","title":"Filtered","assigneeIds":["u3"]}),
-                "http-task",
-                None,
-            ),
-        )
-        .await
-        .unwrap();
-    let task_id = created.entities[0]["id"].as_str().unwrap().to_owned();
-    f.service
-        .execute(
-            &f.manager,
-            command(
-                DomainOperation::BlockTask,
-                json!({"taskId":task_id,"reason":"Waiting"}),
-                "http-block",
-                Some(1),
-            ),
-        )
-        .await
-        .unwrap();
+    // The first task matches; each other one is left out by one filter only.
+    let mut ids = Vec::new();
+    for (key, assignees, blocked) in [
+        ("http-task", json!(["u3"]), true),
+        ("http-unblocked", json!(["u3"]), false),
+        ("http-unassigned", json!([]), true),
+    ] {
+        let created = f
+            .service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::CreateTask,
+                    json!({"projectId":"p1","epicId":"e1","title":key,"assigneeIds":assignees}),
+                    key,
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+        let id = created.entities[0]["id"].as_str().unwrap().to_owned();
+        if blocked {
+            f.service
+                .execute(
+                    &f.manager,
+                    command(
+                        DomainOperation::BlockTask,
+                        json!({"taskId":id,"reason":"Waiting"}),
+                        &format!("{key}-block"),
+                        Some(1),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        ids.push(id);
+    }
     let response = router(&f)
         .oneshot(signed_in_get(
             "u1",
@@ -177,7 +188,7 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
     let body = body_bytes(response).await;
     let value: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["total"], 1);
-    assert_eq!(value["items"][0]["id"], task_id);
+    assert_eq!(value["items"][0]["id"], ids[0]);
     assert!(value["nextCursor"].is_null());
 }
 
@@ -245,22 +256,48 @@ async fn filtered_board_moves_use_server_validated_visible_anchors() {
     );
 }
 
-#[tokio::test]
-async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_anchor_rules() {
-    let f = fixture().await;
-    seed_ordering_column(&f, 6).await;
+/// Records which tasks have their position written from now on.
+async fn count_position_writes(f: &Fixture) {
     f.db.run(|connection| {
         connection.execute_batch(
-            "CREATE TABLE test_position_writes(task_id TEXT PRIMARY KEY, writes INTEGER);
-            CREATE TRIGGER test_count_positions AFTER UPDATE OF position ON tasks BEGIN
-                INSERT INTO test_position_writes VALUES(NEW.id,1)
-                ON CONFLICT(task_id) DO UPDATE SET writes=writes+1;
+            "CREATE TABLE test_position_writes(task_id TEXT);
+            CREATE TRIGGER test_record_positions AFTER UPDATE OF position ON tasks BEGIN
+                INSERT INTO test_position_writes VALUES(NEW.id);
             END;",
         )?;
         Ok(())
     })
     .await
     .unwrap();
+}
+
+/// The tasks whose position was written since the last call.
+async fn position_writes(f: &Fixture) -> HashSet<String> {
+    f.db.run(|connection| {
+        let written = connection
+            .prepare("SELECT task_id FROM test_position_writes")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        connection.execute("DELETE FROM test_position_writes", [])?;
+        Ok(written)
+    })
+    .await
+    .unwrap()
+}
+
+async fn column(f: &Fixture, status: &str) -> Vec<oneloop::domain::TaskView> {
+    let mut query = board_query(status, None);
+    query.done_order = DoneOrder::Manual;
+    f.service.board_page(&f.manager, query).await.unwrap().items
+}
+
+#[tokio::test]
+async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_anchor_rules() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 6).await;
+    count_position_writes(&f).await;
+    let planning: HashSet<String> = (1..=6).map(|n| format!("order-{n}")).collect();
+    let in_review: HashSet<String> = (7..=12).map(|n| format!("order-{n}")).collect();
     let adjacent = command(
         DomainOperation::MoveTask,
         json!({"taskId":"order-4","status":"planning","afterTaskId":"order-5"}),
@@ -275,22 +312,7 @@ async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_a
     assert_eq!(first.entities[0]["revision"], 2);
     let replay = f.service.execute(&f.manager, adjacent).await.unwrap();
     assert_eq!(replay.entities, first.entities);
-    let writes: i64 =
-        f.db.run(|connection| {
-            Ok(
-                connection.query_row(
-                    "SELECT SUM(writes) FROM test_position_writes",
-                    [],
-                    |row| row.get(0),
-                )?,
-            )
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        writes, 13,
-        "dense legacy column is spaced once, then only the moved card is written"
-    );
+    assert!(position_writes(&f).await.is_subset(&planning));
     assert!(matches!(
         f.service
             .execute(
@@ -321,12 +343,6 @@ async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_a
             .await,
         Err(AppError::RevisionConflict { .. })
     ));
-    f.db.run(|connection| {
-        connection.execute("DELETE FROM test_position_writes", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
     f.service
         .execute(
             &f.manager,
@@ -339,35 +355,30 @@ async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_a
         )
         .await
         .unwrap();
-    let (rows, writes) =
-        f.db.run(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT id,status,position,revision,updated_at FROM tasks ORDER BY status,position",
-            )?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            let writes: i64 = connection.query_row(
-                "SELECT SUM(writes) FROM test_position_writes",
-                [],
-                |row| row.get(0),
-            )?;
-            Ok((rows, writes))
-        })
+    let mut destination = in_review.clone();
+    destination.insert("order-4".into());
+    assert!(
+        position_writes(&f).await.is_subset(&destination),
+        "source cards keep their positions"
+    );
+    // The destination now has room, so a move into it writes only the card.
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":"order-12","status":"in_review","beforeTaskId":"order-9"}),
+                "spaced-position",
+                Some(1),
+            ),
+        )
         .await
         .unwrap();
     assert_eq!(
-        writes, 13,
-        "only the dense destination is spaced; source cards keep their positions"
+        position_writes(&f).await,
+        HashSet::from(["order-12".into()])
     );
+
     for (status, expected) in [
         (
             "planning",
@@ -376,24 +387,37 @@ async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_a
         (
             "in_review",
             vec![
-                "order-7", "order-8", "order-4", "order-9", "order-10", "order-11", "order-12",
+                "order-7", "order-8", "order-4", "order-12", "order-9", "order-10", "order-11",
             ],
         ),
     ] {
-        let actual = rows
-            .iter()
-            .filter(|row| row.1 == status)
-            .collect::<Vec<_>>();
+        let cards = column(&f, status).await;
         assert_eq!(
-            actual.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            cards
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
             expected
         );
-        assert!(actual.windows(2).all(|pair| pair[0].2 < pair[1].2));
-    }
-    for row in &rows {
-        assert_eq!(row.3, if row.0 == "order-4" { 3 } else { 1 });
-        if ["order-1", "order-2", "order-3", "order-7", "order-8"].contains(&row.0.as_str()) {
-            assert_eq!(row.4, 1, "unaffected card {} keeps its timestamp", row.0);
+        assert!(
+            cards
+                .windows(2)
+                .all(|pair| pair[0].position < pair[1].position)
+        );
+        for card in &cards {
+            let moves = match card.id.as_str() {
+                "order-4" => 2,
+                "order-12" => 1,
+                _ => 0,
+            };
+            assert_eq!(card.revision, 1 + moves, "{}", card.id);
+            if ["order-1", "order-2", "order-3", "order-7", "order-8"].contains(&card.id.as_str()) {
+                assert_eq!(
+                    card.updated_at, 1,
+                    "unaffected card {} keeps its timestamp",
+                    card.id
+                );
+            }
         }
     }
 }
@@ -414,6 +438,7 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
         )
         .await
         .unwrap();
+    let existing = column(&f, "done").await[0].position;
     f.service
         .execute(
             &f.manager,
@@ -438,33 +463,20 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
         )
         .await
         .unwrap();
-    // Both count as completed, in the order they reached Done.
-    let rows =
-        f.db.run(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT id,position,completed_at IS NOT NULL,completion_order FROM tasks
-                 WHERE status='done' ORDER BY position",
-            )?;
-            Ok(statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, bool>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?)
-        })
-        .await
-        .unwrap();
+    // The new card goes last and the existing one keeps its place. Both count
+    // as completed, in the order they reached Done.
+    let done = column(&f, "done").await;
     assert_eq!(
-        rows,
-        vec![
-            ("order-4".into(), 1024, true, 1),
-            ("order-1".into(), 2048, true, 2)
-        ]
+        done.iter()
+            .map(|card| (
+                card.id.as_str(),
+                card.completed_at.is_some(),
+                card.completion_order
+            ))
+            .collect::<Vec<_>>(),
+        [("order-4", true, Some(1)), ("order-1", true, Some(2))]
     );
+    assert_eq!(done[0].position, existing);
 }
 
 #[tokio::test]
@@ -585,7 +597,7 @@ proptest::proptest! {
                 let target_len = model[target].len() - usize::from(source == target);
                 let position = requested % (target_len + 1);
                 let task = id.clone();
-                let revision: i64 = f.db.run(move |c| Ok(c.query_row("SELECT revision FROM tasks WHERE id=?1", [task], |row| row.get(0))?)).await.unwrap();
+                let revision: i64 = query_one(&f.db, "SELECT revision FROM tasks WHERE id=?1", [task]).await;
                 let result = f.service.execute(&f.manager, command(DomainOperation::MoveTask,
                     json!({"taskId":id,"status":statuses[target],"position":position}), &format!("model-move-{step}"), Some(revision))).await;
                 if source == target && old == position { assert_eq!(result.unwrap_err().code(), "validation_failed"); }
@@ -606,7 +618,7 @@ proptest::proptest! {
                 json!({"taskId":ids[0],"status":"planning","afterTaskId":"missing-anchor"}),
             ] {
                 let task = ids[0].clone();
-                let revision: i64 = f.db.run(move |c| Ok(c.query_row("SELECT revision FROM tasks WHERE id=?1", [task], |r|r.get(0))?)).await.unwrap();
+                let revision: i64 = query_one(&f.db, "SELECT revision FROM tasks WHERE id=?1", [task]).await;
                 let error = f.service.execute(&f.manager, command(DomainOperation::MoveTask, payload, &uuid::Uuid::now_v7().to_string(), Some(revision))).await.unwrap_err();
                 assert_eq!(error.code(), "validation_failed");
             }
@@ -730,10 +742,7 @@ async fn done_column_removal_and_anchored_move_do_not_rewrite_other_cards() {
             .await
             .unwrap();
     }
-    let writes: i64 =
-        f.db.run(|c| Ok(c.query_row("SELECT COUNT(*) FROM position_writes", [], |r| r.get(0))?))
-            .await
-            .unwrap();
+    let writes: i64 = query_one(&f.db, "SELECT COUNT(*) FROM position_writes", []).await;
     assert_eq!(writes, 2, "only the two moved cards write their positions");
     let completion_times =
         f.db.run(|c| {

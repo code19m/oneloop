@@ -14,15 +14,15 @@ use axum::{
     response::Response,
 };
 use http_body_util::BodyExt;
-use oneloop::{AppState, Db, application, auth::unix_now, knowledge::KnowledgeService};
-use rusqlite::params;
+use oneloop::{AppState, Db, application, knowledge::KnowledgeService};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::support::{
-    self,
+    self, Role,
     http::{body_bytes, body_json},
+    query_one, session_cookie,
 };
 
 const ORIGIN: &str = "https://tasks.example.test";
@@ -189,24 +189,15 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let (directory, db) = support::database();
-        let admin = support::add_user(&db, "admin", true).await;
-        let member = support::add_user(&db, "member", false).await;
-        let outsider = support::add_user(&db, "outsider", false).await;
-        let member_id = member.actor.user_id.clone();
-        db.run(move |connection| {
-            let now = unix_now()?;
-            connection.execute(
-                "INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p1','Project','PRJ',?1,?1)",
-                [now],
-            )?;
-            connection.execute(
-                "INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1',?1,?2,?2)",
-                params![member_id, now],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+        support::seed_project(
+            &db,
+            [
+                ("admin", Role::Admin),
+                ("member", Role::Member),
+                ("outsider", Role::Outsider),
+            ],
+        )
+        .await;
         let mut config = support::config(directory.path(), ORIGIN, &[]);
         config.disk_min_free_bytes = 0;
         let mut state = AppState::new(config, db.clone());
@@ -216,9 +207,9 @@ impl Fixture {
             app: application(state.clone()).router,
             state,
             db,
-            admin: cookie(&admin.token),
-            member: cookie(&member.token),
-            outsider: cookie(&outsider.token),
+            admin: session_cookie("admin"),
+            member: session_cookie("member"),
+            outsider: session_cookie("outsider"),
         }
     }
 
@@ -320,21 +311,13 @@ impl Fixture {
 
     async fn events(&self, event_type: &str) -> i64 {
         let event_type = event_type.to_owned();
-        self.db
-            .run(move |connection| {
-                Ok(connection.query_row(
-                    "SELECT count(*) FROM activity_events WHERE project_id='p1' AND event_type=?1",
-                    [event_type],
-                    |row| row.get(0),
-                )?)
-            })
-            .await
-            .unwrap()
+        query_one(
+            &self.db,
+            "SELECT count(*) FROM activity_events WHERE project_id='p1' AND event_type=?1",
+            [event_type],
+        )
+        .await
     }
-}
-
-fn cookie(token: &str) -> String {
-    format!("__Host-oneloop_session={token}")
 }
 
 #[tokio::test]
@@ -439,17 +422,12 @@ async fn legacy_binary_markdown_is_not_previewed_or_indexed_across_resyncs() {
             .unwrap();
         assert!(found.documents.is_empty(), "{phase}");
     }
-    let repaired: Option<String> = fixture
-        .db
-        .run(|c| {
-            Ok(c.query_row(
-                "SELECT preview_kind FROM knowledge_files WHERE path='binary.md'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let repaired: Option<String> = query_one(
+        &fixture.db,
+        "SELECT preview_kind FROM knowledge_files WHERE path='binary.md'",
+        [],
+    )
+    .await;
     assert!(
         repaired.is_none(),
         "a full resync repairs metadata even when bytes are unchanged"
@@ -564,35 +542,8 @@ async fn administrators_connect_a_folder_and_members_read_its_files() {
 async fn files_follow_the_attachment_safety_rules() {
     let fixture = Fixture::new().await;
     let repository = handbook();
-    repository.write("docs/binary.md", &[0xff, 0xfe, 0, 1]);
-    repository.commit(SECOND);
     fixture.connect(&repository).await;
     fixture.state.knowledge.sync_due().await;
-
-    let actor = fixture
-        .state
-        .auth
-        .authenticate_session(fixture.member.split_once('=').unwrap().1, false)
-        .await
-        .unwrap();
-    let binary = fixture
-        .state
-        .knowledge
-        .read_text(&actor, "p1", "binary.md", None)
-        .await
-        .unwrap();
-    assert!(binary.content.is_none() && binary.kind.is_none());
-    assert!(binary.note.unwrap().contains("not text"));
-    assert_eq!(
-        fixture
-            .get(
-                &fixture.member,
-                "/api/projects/p1/knowledge/text?path=binary.md"
-            )
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
 
     let response = fixture
         .get(
@@ -1133,17 +1084,12 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
     assert_eq!(source["hasToken"], true);
     assert_eq!(source["repository"], "git.example.test/team/docs");
     assert_eq!(source["transport"], "https");
-    let stored: Vec<u8> = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT token_ciphertext FROM knowledge_sources WHERE project_id='p1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let stored: Vec<u8> = query_one(
+        &fixture.db,
+        "SELECT token_ciphertext FROM knowledge_sources WHERE project_id='p1'",
+        [],
+    )
+    .await;
     assert!(
         !stored
             .windows(token.len())
@@ -1255,17 +1201,12 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         created["entities"][0]["publicKey"], public,
         "the key is kept"
     );
-    let private: Vec<u8> = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT private_key_ciphertext FROM knowledge_deploy_keys WHERE project_id='p1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let private: Vec<u8> = query_one(
+        &fixture.db,
+        "SELECT private_key_ciphertext FROM knowledge_deploy_keys WHERE project_id='p1'",
+        [],
+    )
+    .await;
     assert!(!private.windows(7).any(|window| window == b"OPENSSH"));
 
     let (status, _) = fixture
@@ -1287,18 +1228,8 @@ async fn credentials_stay_encrypted_and_disconnecting_removes_them() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(fixture.view(&fixture.admin).await["state"], "unconnected");
-    let remaining: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT count(*) FROM knowledge_sources)+(SELECT count(*) FROM knowledge_deploy_keys)
-                       +(SELECT count(*) FROM knowledge_files)",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let remaining: i64 = query_one(&fixture.db, "SELECT (SELECT count(*) FROM knowledge_sources)+(SELECT count(*) FROM knowledge_deploy_keys)
+                       +(SELECT count(*) FROM knowledge_files)", []).await;
     assert_eq!(remaining, 0);
     assert_eq!(fixture.events("knowledge.disconnected").await, 1);
 }

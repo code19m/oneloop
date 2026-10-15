@@ -15,26 +15,8 @@ use oneloop::files::{AttachmentView, FileStore};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-use super::http::Fixture;
-use crate::support::{self, http::body_bytes};
-
-fn png(width: u32, height: u32, transparent: bool) -> Vec<u8> {
-    let pixels = (0..width * height)
-        .flat_map(|index| {
-            [
-                (index % 251) as u8,
-                90,
-                160,
-                if transparent { 128 } else { 255 },
-            ]
-        })
-        .collect::<Vec<_>>();
-    let mut bytes = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut bytes)
-        .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
-        .unwrap();
-    bytes
-}
+use super::{http::Fixture, png};
+use crate::support::http::body_bytes;
 
 /// A JPEG whose left half is red and right half blue, stored with `exif`.
 fn jpeg(width: u32, height: u32, exif: Option<Vec<u8>>) -> Vec<u8> {
@@ -213,7 +195,9 @@ async fn reading(pipe: &Path) -> rustix::fd::OwnedFd {
     }
 }
 
-/// Waits up to 10 seconds for `condition`.
+/// Waits up to 10 seconds for `condition`. Unlike `support::eventually`, it
+/// returns false instead of failing, so a test can first release a worker
+/// that waits on a pipe; the test runtime cannot shut down while it waits.
 async fn within_seconds(mut condition: impl FnMut() -> bool) -> bool {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !condition() {
@@ -396,14 +380,13 @@ async fn removing_a_deleted_image_removes_its_thumbnail() {
 #[tokio::test]
 async fn thumbnails_count_as_previews_and_come_back_after_storage_cleanup() {
     let fixture = Fixture::new().await;
-    let admin = support::add_user(&fixture.db, "admin", true).await;
     let attachment = fixture
         .attach("counted", "counted.png", &png(500, 500, false))
         .await;
     fixture.files.make_queued_thumbnails().await;
     let thumbnail = fixture.thumbnail_file(&attachment);
     let size = std::fs::metadata(&thumbnail).unwrap().len();
-    let usage = fixture.files.storage_usage(&admin.actor).await.unwrap();
+    let usage = fixture.files.storage_usage(&fixture.admin).await.unwrap();
     assert_eq!(usage.preview_bytes, size);
     assert_eq!(usage.used_bytes, attachment.size + size);
 

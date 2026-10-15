@@ -1,12 +1,10 @@
 use super::*;
-use crate::{Db, auth::ActorSource};
+use crate::auth::ActorSource;
 use serde_json::json;
 
 #[tokio::test]
 async fn ledger_restarts_failed_requests_and_isolates_browser_and_grant_keys() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (_root, db) = crate::db::migrated_db();
     db.transaction(|tx| {
         tx.execute_batch("INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at) VALUES('actor','actor','Actor','hash',1,1,1);
             INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at) VALUES('grant','actor','client','Client',1,1,9999999999);")?;

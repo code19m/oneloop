@@ -507,9 +507,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_batch_takes_ready_messages_until_its_time_is_up() {
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let db = Db::open(root.path()).unwrap();
+        let (_root, db) = crate::db::migrated_db();
         db.run(|connection| {
             for index in 0..70 {
                 connection.execute(

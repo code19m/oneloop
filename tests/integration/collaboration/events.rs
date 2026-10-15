@@ -5,8 +5,8 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oneloop::{
-    AppState, Db,
-    auth::{Actor, token_hash},
+    Db,
+    auth::Actor,
     collaboration::{ActivityInput, CollaborationRuntime, record_activity_tx},
     domain::DomainService,
 };
@@ -14,23 +14,15 @@ use serde_json::json;
 use tokio::time::{Duration, timeout};
 use tower::ServiceExt;
 
-use crate::support::{self, SeededProject, now, seeded_project};
+use crate::support::{
+    self, Role, SeededProject, command, drain, now, query_one, seeded_project, session_cookie,
+};
 
 async fn app() -> (tempfile::TempDir, Db, Actor, Router, CollaborationRuntime) {
     let SeededProject {
         root, db, alice, ..
     } = seeded_project().await;
-    db.transaction(|tx| {
-        tx.execute(
-            "UPDATE sessions SET token_hash=?1 WHERE id='sa'",
-            [token_hash("alice-token-at-least-thirty-two-characters")],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let config = support::config(root.path(), "https://tasks.example.test", &[]);
-    let application = oneloop::application(AppState::new(config, db.clone()));
+    let application = support::app(root.path(), &db, "https://tasks.example.test", &[]);
     (
         root,
         db,
@@ -41,15 +33,15 @@ async fn app() -> (tempfile::TempDir, Db, Actor, Router, CollaborationRuntime) {
 }
 
 async fn events(app: &Router, uri: &str) -> axum::response::Response {
-    events_as(app, uri, "alice-token-at-least-thirty-two-characters").await
+    events_as(app, uri, &session_cookie("alice")).await
 }
 
-async fn events_as(app: &Router, uri: &str, token: &str) -> axum::response::Response {
+async fn events_as(app: &Router, uri: &str, cookie: &str) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
                 .uri(uri)
-                .header("cookie", format!("__Host-oneloop_session={token}"))
+                .header("cookie", cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -58,36 +50,12 @@ async fn events_as(app: &Router, uri: &str, token: &str) -> axum::response::Resp
 }
 
 /// Adds `count` members of project `p1` who are signed in, and returns their
-/// session tokens.
+/// session cookies.
 async fn signed_in_members(db: &Db, count: usize) -> Vec<String> {
-    let tokens: Vec<String> = (0..count)
-        .map(|index| format!("member-{index}-token-at-least-thirty-two-characters"))
-        .collect();
-    let rows = tokens.clone();
-    db.transaction(move |tx| {
-        let now = now();
-        for (index, token) in rows.iter().enumerate() {
-            let id = format!("member-{index}");
-            tx.execute(
-                "INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
-                 VALUES(?1,?1,?1,'x',?2,?2,?2)",
-                rusqlite::params![id, now],
-            )?;
-            tx.execute(
-                "INSERT INTO project_memberships(project_id,user_id,created_at,updated_at) VALUES('p1',?1,?2,?2)",
-                rusqlite::params![id, now],
-            )?;
-            tx.execute(
-                "INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-                 VALUES(?1,?1,?2,?3,?3,?3,?4,?4)",
-                rusqlite::params![id, token_hash(token), now, now + 86_400],
-            )?;
-        }
-        Ok(())
-    })
-    .await
-    .unwrap();
-    tokens
+    let ids: Vec<String> = (0..count).map(|index| format!("member-{index}")).collect();
+    let people: Vec<_> = ids.iter().map(|id| (id.as_str(), Role::Member)).collect();
+    support::add_people(db, &people).await;
+    ids.iter().map(|id| session_cookie(id)).collect()
 }
 
 async fn frame(body: &mut Body) -> String {
@@ -173,10 +141,7 @@ async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shu
         .oneshot(
             Request::builder()
                 .uri("/api/events")
-                .header(
-                    "cookie",
-                    "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
-                )
+                .header("cookie", &session_cookie("alice"))
                 .header("last-event-id", "bad cursor")
                 .body(Body::empty())
                 .unwrap(),
@@ -277,7 +242,7 @@ async fn lagging_streams_reconcile_and_shutdown_cancels_a_blocked_sender() {
     })
     .await
     .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     drop((left, right));
     let mut reconciled = false;
     for _ in 0..3 {
@@ -298,9 +263,9 @@ async fn three_hundred_streams_deliver_without_exhausting_database_admission() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut bodies = Vec::new();
     // Each person may keep sixteen streams open.
-    for token in signed_in_members(&db, 20).await {
+    for cookie in signed_in_members(&db, 20).await {
         for _ in 0..15 {
-            let response = events_as(&app, "/api/events", &token).await;
+            let response = events_as(&app, "/api/events", &cookie).await;
             assert_eq!(response.status(), StatusCode::OK);
             let mut body = response.into_body();
             frame(&mut body).await;
@@ -317,10 +282,7 @@ async fn three_hundred_streams_deliver_without_exhausting_database_admission() {
             app.oneshot(
                 Request::builder()
                     .uri("/api/inbox")
-                    .header(
-                        "cookie",
-                        "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
-                    )
+                    .header("cookie", &session_cookie("alice"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -403,8 +365,7 @@ async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
         })
         .await
         .unwrap();
-    let config = support::config(root.path(), "https://tasks.example.test", &[]);
-    let application = oneloop::application(AppState::new(config, traced));
+    let application = support::app(root.path(), &traced, "https://tasks.example.test", &[]);
     let (app, runtime) = (application.router, application.collaboration);
     let mut oldest = events(&app, "/api/events").await.into_body();
     frame(&mut oldest).await;
@@ -434,7 +395,7 @@ async fn a_stream_with_a_full_queue_still_says_it_was_replaced() {
     })
     .await
     .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     support::eventually("the stream's queue is full", async || {
         (CHECKS.load(Ordering::SeqCst) >= 63).then_some(())
     })
@@ -499,10 +460,7 @@ async fn pages_of_other_sites_cannot_open_streams() {
             .oneshot(
                 Request::builder()
                     .uri("/api/events")
-                    .header(
-                        "cookie",
-                        "__Host-oneloop_session=alice-token-at-least-thirty-two-characters",
-                    )
+                    .header("cookie", &session_cookie("alice"))
                     .header("sec-fetch-site", site)
                     .body(Body::empty())
                     .unwrap(),
@@ -518,26 +476,26 @@ async fn membership_removal_reconciles_and_session_revocation_closes_stream() {
     let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
-    let mut admin = support::browser_actor("dave", "Dave", "sd", now());
+    let mut admin = support::browser_actor("dave", "Dave", "s-dave", now());
     admin.is_admin = true;
     DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::RemoveMembership,
-                payload: json!({"projectId":"p1","userId":"alice"}),
-                idempotency_key: "remove-http".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::RemoveMembership,
+                json!({"projectId":"p1","userId":"alice"}),
+                "remove-http",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1"));
     support::auth_service(&db).logout(&alice).await.unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     assert!(
         timeout(Duration::from_secs(1), body.frame())
             .await
@@ -552,18 +510,14 @@ async fn periodic_revalidation_closes_idle_revoked_session_without_extending_it(
     let (_root, db, _alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
-    let before: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id='sa'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let before: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
+        [],
+    )
+    .await;
     db.transaction(|tx| {
-        tx.execute("UPDATE sessions SET revoked_at=1 WHERE id='sa'", [])?;
+        tx.execute("UPDATE sessions SET revoked_at=1 WHERE id='s-alice'", [])?;
         Ok(())
     })
     .await
@@ -598,16 +552,12 @@ async fn periodic_revalidation_closes_idle_revoked_session_without_extending_it(
         timeout(Duration::from_secs(5), closed).await.unwrap();
     }
     receivers(&runtime, 0).await;
-    let after: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id='sa'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let after: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id='s-alice'",
+        [],
+    )
+    .await;
     assert_eq!(before, after);
 }
 
@@ -635,28 +585,36 @@ async fn operational_authorization_failure_closes_instead_of_dropping_a_hint() {
 
 #[tokio::test]
 async fn project_deletion_reconciles_former_members_without_disclosing_context() {
-    let (_root, db, _alice, app, runtime) = app().await;
+    let (_root, db, alice, app, runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();
     frame(&mut body).await;
     db.transaction(|tx| {tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES('p2','Remaining','TWO',1,1)",[])?;Ok(())}).await.unwrap();
-    let mut admin = support::browser_actor("dave", "Dave", "sd", now());
+    let mut admin = support::browser_actor("dave", "Dave", "s-dave", now());
     admin.is_admin = true;
     DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::DeleteProject,
-                payload: json!({"projectId":"p1","confirmedName":"Project"}),
-                idempotency_key: "delete-http".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::DeleteProject,
+                json!({"projectId":"p1","confirmedName":"Project"}),
+                "delete-http",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let reconcile = frame(&mut body).await;
     assert!(reconcile.contains("event: reconcile"));
     assert!(!reconcile.contains("p1") && !reconcile.contains("Project"));
-    drop(body);
+    // No hint about the deleted project follows before the stream ends.
+    support::auth_service(&db).logout(&alice).await.unwrap();
+    drain(&runtime).await;
+    assert!(
+        timeout(Duration::from_secs(1), body.frame())
+            .await
+            .unwrap()
+            .is_none()
+    );
     receivers(&runtime, 0).await;
 }

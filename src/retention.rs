@@ -92,11 +92,11 @@ const PRUNE_LOGIN_THROTTLES_SQL: &str = "DELETE FROM login_throttles WHERE rowid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{query_plan, test_database};
+    use crate::db::{migrated_connection, query_plan};
 
     #[test]
     fn indexed_prunes_read_their_retention_indexes() {
-        let (_root, connection) = test_database();
+        let (_root, connection) = migrated_connection();
         for (sql, _) in PRUNES {
             for table in ["sessions", "mcp_tokens", "mcp_grants"] {
                 if sql.starts_with(&format!("DELETE FROM {table} ")) {

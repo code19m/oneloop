@@ -2,9 +2,8 @@ use super::*;
 
 #[tokio::test(start_paused = true)]
 async fn image_decodes_run_one_at_a_time() {
-    let root = tempfile::tempdir().unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let service = FileService::new(Db::open(root.path()).unwrap(), 1_000_000, 0);
+    let (_root, db) = crate::db::migrated_db();
+    let service = FileService::new(db, 1_000_000, 0);
     // A thumbnail decode holds the only turn, so avatar uploads wait.
     let held = service.decodes.turn().await;
     let person = |name: &str| Actor {
@@ -53,9 +52,7 @@ async fn image_decodes_run_one_at_a_time() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_gets_the_data_lock_while_reconciliation_scans_for_orphans() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (_root, db) = crate::db::migrated_db();
     let service = FileService::new(db.clone(), 1_000_000, 0);
     let stored = async |name: &[u8]| {
         let key = service.store.new_storage_key().unwrap();
@@ -97,9 +94,7 @@ async fn a_command_gets_the_data_lock_while_reconciliation_scans_for_orphans() {
 
 #[tokio::test]
 async fn recovery_scan_does_not_lock_publication_and_rechecks_old_snapshots() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (_root, db) = crate::db::migrated_db();
     let service = FileService::new(db.clone(), 1000000, 0);
     let key = service.store.new_storage_key().unwrap();
     let path = service.store.prepare_file_parent(&key).await.unwrap();
@@ -130,9 +125,7 @@ async fn recovery_scan_does_not_lock_publication_and_rechecks_old_snapshots() {
 
 #[tokio::test]
 async fn the_purge_claim_keeps_files_restored_since_its_scan() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (_root, db) = crate::db::migrated_db();
     let service = FileService::new(db.clone(), 1_000_000, 0);
     let window = crate::domain::UNDO_WINDOW_SECONDS;
     let deleted_at = unix_now().unwrap() - window - 1;

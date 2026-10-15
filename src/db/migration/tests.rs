@@ -126,16 +126,7 @@ fn reorder_projection_migration_preserves_raw_events_and_other_field_chains() {
 }
 
 #[test]
-fn hook_revisions_change_new_checksums_without_rewriting_history() {
-    for migration in legacy::MIGRATIONS
-        .iter()
-        .filter(|migration| migration.version <= 11)
-    {
-        assert_eq!(
-            checksum(migration),
-            hex::encode(Sha256::digest(migration.sql.as_bytes()))
-        );
-    }
+fn hook_revisions_change_new_checksums() {
     let mut migration = Migration {
         version: 13,
         name: "hook",

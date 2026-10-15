@@ -3,17 +3,20 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use oneloop::{
-    AppError, AppState, Db, application,
+    AppError, Db,
     auth::{Actor, ActorSource},
-    collaboration::{CollaborationCommand, CollaborationService},
-    domain::{BootstrapQuery, CommandEnvelope, DomainOperation, DomainService},
+    collaboration::CollaborationService,
+    domain::{BootstrapQuery, DomainOperation, DomainService},
     files::FileService,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
-use crate::support::{self, SeededProject, TestInstance, database, now, seeded_project};
+use crate::support::{
+    self, Role, SeededProject, TestInstance, collaboration_command, command, database, now,
+    seed_project, seeded_project,
+};
 
 #[tokio::test]
 async fn project_reads_recheck_a_cached_admin_role() {
@@ -23,12 +26,12 @@ async fn project_reads_recheck_a_cached_admin_role() {
     let project = DomainService::new(db.clone(), crate::support::utc())
         .execute(
             &instance.owner.actor,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::CreateProject,
-                payload: json!({"name":"Private project","taskPrefix":"PRV"}),
-                idempotency_key: "private-project".into(),
-                expected_revision: None,
-            },
+            command(
+                oneloop::domain::DomainOperation::CreateProject,
+                json!({"name":"Private project","taskPrefix":"PRV"}),
+                "private-project",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -73,36 +76,18 @@ async fn account_administration_rechecks_a_cached_admin_role() {
 #[tokio::test]
 async fn mcp_admin_cannot_moderate_another_authors_comment() {
     let (_root, db) = database();
+    seed_project(&db, [("member", Role::Member), ("admin", Role::Admin)]).await;
     let timestamp = now();
     db.run(move |connection| {
         connection.execute_batch(&format!(
             r#"
-            INSERT INTO users
-                (id,username,display_name,password_hash,is_admin,password_changed_at,created_at,updated_at)
-            VALUES
-                ('member','member','Member','x',0,{timestamp},{timestamp},{timestamp}),
-                ('admin','admin','Admin','x',1,{timestamp},{timestamp},{timestamp});
-            INSERT INTO projects(id,name,task_prefix,created_at,updated_at)
-            VALUES ('project','Project','PRJ',{timestamp},{timestamp});
-            INSERT INTO project_prefixes(prefix,project_id,reserved_at)
-            VALUES ('PRJ','project',{timestamp});
-            INSERT INTO project_sequences(project_id,next_task_number) VALUES ('project',2);
-            INSERT INTO project_memberships(project_id,user_id,created_at,updated_at)
-            VALUES ('project','member',{timestamp},{timestamp});
-            INSERT INTO tracks(id,project_id,name,position,created_at,updated_at)
-            VALUES ('track','project','Track',0,{timestamp},{timestamp});
-            INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
-            VALUES ('epic','project','track','Epic','2026-09-20',0,{timestamp},{timestamp});
-            INSERT INTO tasks
-                (id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
-            VALUES ('task','project','epic',1,'PRJ-001','Task','planning',0,{timestamp},{timestamp});
             INSERT INTO comments
                 (id,project_id,task_id,author_id,root_id,content,created_at)
-            VALUES ('comment','project','task','member','comment','Original comment',{timestamp});
+            VALUES ('comment','p1','task','member','comment','Original comment',{timestamp});
             INSERT INTO mcp_grants
                 (id,user_id,client_id,client_name,created_at,updated_at,expires_at)
             VALUES ('grant','admin','client','Assistant',{timestamp},{timestamp},{expiry});
-            INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES ('grant','project');
+            INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES ('grant','p1');
             INSERT INTO mcp_grant_scopes(grant_id,scope)
             VALUES ('grant','project_read'),('grant','discussion');
             "#,
@@ -127,12 +112,12 @@ async fn mcp_admin_cannot_moderate_another_authors_comment() {
     let result = CollaborationService::new(db)
         .execute(
             &mcp_admin,
-            CollaborationCommand {
-                operation: "discussion.comment.edit".into(),
-                payload: json!({"commentId":"comment","content":"Moderated through MCP"}),
-                idempotency_key: "mcp-admin-comment-moderation".into(),
-                expected_revision: Some(1),
-            },
+            collaboration_command(
+                "discussion.comment.edit",
+                json!({"commentId":"comment","content":"Moderated through MCP"}),
+                "mcp-admin-comment-moderation",
+                Some(1),
+            ),
         )
         .await;
     assert!(matches!(result, Err(AppError::Forbidden)));
@@ -141,8 +126,7 @@ async fn mcp_admin_cannot_moderate_another_authors_comment() {
 #[tokio::test]
 async fn malformed_auth_json_uses_the_structured_error_contract_without_echoing_secrets() {
     let (root, db) = database();
-    let config = support::config(root.path(), "http://127.0.0.1:8080", &[]);
-    let app = application(AppState::new(config, db)).router;
+    let app = support::app(root.path(), &db, "http://127.0.0.1:8080", &[]).router;
     let secret = "never-echo-this-password";
     let response = app
         .oneshot(
@@ -239,7 +223,7 @@ async fn browser_role_matrix_uses_current_identity_across_service_boundaries() {
     ] {
         db.transaction(move |tx| {
             tx.execute("UPDATE users SET is_active=?1,is_admin=?2,must_change_password=?3 WHERE id='alice'", rusqlite::params![active,admin,!ready])?;
-            tx.execute("UPDATE sessions SET revoked_at=?1 WHERE id='sa'", [(!valid_session).then_some(1)])?;
+            tx.execute("UPDATE sessions SET revoked_at=?1 WHERE id='s-alice'", [(!valid_session).then_some(1)])?;
             tx.execute("DELETE FROM project_memberships WHERE user_id='alice'", [])?;
             if member { tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,manage_roadmap,created_at,updated_at) VALUES('p1','alice',?1,?2,1,1)", rusqlite::params![board,roadmap])?; }
             Ok(())
@@ -310,7 +294,6 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
     actor.source = ActorSource::McpGrant {
         grant_id: "g".into(),
     };
-    let auth = support::auth_service(&db);
     let domain = DomainService::new(db.clone(), crate::support::utc());
     let discussion = CollaborationService::new(db.clone());
     let files = FileService::new(db.clone(), 1 << 30, 0);
@@ -364,15 +347,18 @@ async fn mcp_scope_and_stale_grant_matrix_intersects_all_services() {
             missing != "roadmap_manage",
             "{missing}: roadmap"
         );
-        for (scope, name) in [
-            (oneloop::auth::McpScope::Discussion, "discussion"),
-            (oneloop::auth::McpScope::Destructive, "destructive"),
-            (oneloop::auth::McpScope::InboxPrivate, "inbox_private"),
-            (oneloop::auth::McpScope::MyPoolPrivate, "my_pool_private"),
-        ] {
+        // Real grants always hold project_read; only discussion gates comments.
+        if missing != "project_read" {
+            let comment = collaboration_command(
+                "discussion.comment.create",
+                json!({"taskId":"task","content":"Hello"}),
+                &format!("comment-without-{missing}"),
+                None,
+            );
             assert_eq!(
-                auth.require_mcp_scope(&actor, scope).await.is_ok(),
-                missing != name
+                discussion.execute(&actor, comment).await.is_ok(),
+                missing != "discussion",
+                "{missing}: comment"
             );
         }
         db.transaction(move |tx| {
@@ -449,13 +435,11 @@ async fn may_change(domain: &DomainService, actor: &Actor, area: Area) -> bool {
             json!({"trackId":"track","name":"Changed"}),
         ),
     };
-    let command = CommandEnvelope {
-        operation,
-        payload,
-        idempotency_key: uuid::Uuid::now_v7().to_string(),
-        expected_revision: Some(99),
-    };
-    match domain.execute(actor, command).await {
+    let key = uuid::Uuid::now_v7().to_string();
+    match domain
+        .execute(actor, command(operation, payload, &key, Some(99)))
+        .await
+    {
         Err(AppError::RevisionConflict { .. }) => true,
         Err(
             AppError::Forbidden

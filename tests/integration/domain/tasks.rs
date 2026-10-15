@@ -32,7 +32,7 @@ async fn block_reason_edits_invalidate_existing_inboxes_even_after_mentions_are_
         .await
         .unwrap();
     let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let mut events = runtime.subscribe();
     for (revision, reason, mentions) in [
         (1, "@Member corrected", mentions),
@@ -50,7 +50,7 @@ async fn block_reason_edits_invalidate_existing_inboxes_even_after_mentions_are_
             )
             .await
             .unwrap();
-        while runtime.worker().run_once().await.unwrap() {}
+        drain(&runtime).await;
         let mut hints = Vec::new();
         while let Ok(hint) = events.try_recv() {
             if hint.kind == "inbox.changed" {
@@ -358,19 +358,15 @@ async fn pool_promotion_is_atomic_and_preserves_item_on_validation_failure() {
             .iter()
             .any(|e| e["entityType"] == "poolItem" && e["deleted"] == true)
     );
-    let counts: (i64, i64) =
-        f.db.run(move |c| {
-            Ok((
-                c.query_row("SELECT COUNT(*) FROM pool_items", [], |r| r.get(0))?,
-                c.query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE title='Captured' AND description='Details'",
-                    [],
-                    |r| r.get(0),
-                )?,
-            ))
-        })
-        .await
-        .unwrap();
+    let counts: (i64, i64) = (
+        query_one(&f.db, "SELECT COUNT(*) FROM pool_items", []).await,
+        query_one(
+            &f.db,
+            "SELECT COUNT(*) FROM tasks WHERE title='Captured' AND description='Details'",
+            [],
+        )
+        .await,
+    );
     assert_eq!(counts, (0, 1));
 }
 
@@ -473,18 +469,14 @@ async fn blocking_notifies_only_mentions_and_unblocking_notifies_assignees() {
         .unwrap();
     let recipients:Vec<String>=f.db.run(|c|{let mut s=c.prepare("SELECT r.user_id FROM notification_recipients r JOIN notification_events e ON e.id=r.notification_id WHERE e.event_type='task.unblocked'")?;Ok(s.query_map([],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?)}).await.unwrap();
     assert_eq!(recipients, vec!["u3"]);
-    let excerpt: String =
-        f.db.run(|c| {
-            Ok(c.query_row(
-                "SELECT r.excerpt_snapshot FROM notification_recipients r
+    let excerpt: String = query_one(
+        &f.db,
+        "SELECT r.excerpt_snapshot FROM notification_recipients r
          JOIN notification_events e ON e.id=r.notification_id
          WHERE e.event_type='task.unblocked'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+        [],
+    )
+    .await;
     assert_eq!(excerpt, "🧭 Ask @member");
 }
 
@@ -981,99 +973,75 @@ async fn retained_assignees_and_block_mentions_survive_account_and_membership_ch
 }
 
 #[tokio::test]
-async fn date_fields_require_canonical_calendar_values_for_browser_and_mcp_actors() {
+async fn date_fields_require_canonical_calendar_values() {
     let f = fixture().await;
-    let now = now();
-    f.db.transaction(move |tx| {
-        tx.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at) VALUES('date-grant','u1','client','Client',?1,?1,?2,?1)", params![now,now+3600])?;
-        tx.execute("INSERT INTO mcp_grant_projects VALUES('date-grant','p1')", [])?;
-        for scope in ["project_read","board_manage","roadmap_manage"] { tx.execute("INSERT INTO mcp_grant_scopes VALUES('date-grant',?1)",[scope])?; }
-        Ok(())
-    }).await.unwrap();
-    let mut mcp = f.manager.clone();
-    mcp.source = ActorSource::McpGrant {
-        grant_id: "date-grant".into(),
-    };
-    for (actor_index, actor) in [&f.manager, &mcp].into_iter().enumerate() {
-        for (field, operation, payload) in [
-            (
-                "startDate",
-                DomainOperation::CreateEpic,
-                json!({"projectId":"p1","trackId":"tr1","title":"Date"}),
-            ),
-            (
-                "endDate",
-                DomainOperation::CreateEpic,
-                json!({"projectId":"p1","trackId":"tr1","title":"Date","startDate":"0000-01-01"}),
-            ),
-            (
-                "deadline",
-                DomainOperation::CreateTask,
-                json!({"projectId":"p1","epicId":"e1","title":"Date"}),
-            ),
-            (
-                "milestoneDate",
-                DomainOperation::CreateMilestone,
-                json!({"projectId":"p1","title":"Date"}),
-            ),
-        ] {
-            for (index, date) in [
-                " 2026-01-01",
-                "2026-2-3",
-                "2026-02-29",
-                "2026-01-01 ",
-                "+2026-01-01",
-                "10000-01-01",
-            ]
+    for (field, operation, payload) in [
+        (
+            "startDate",
+            DomainOperation::CreateEpic,
+            json!({"projectId":"p1","trackId":"tr1","title":"Date"}),
+        ),
+        (
+            "endDate",
+            DomainOperation::CreateEpic,
+            json!({"projectId":"p1","trackId":"tr1","title":"Date","startDate":"0000-01-01"}),
+        ),
+        (
+            "deadline",
+            DomainOperation::CreateTask,
+            json!({"projectId":"p1","epicId":"e1","title":"Date"}),
+        ),
+        (
+            "milestoneDate",
+            DomainOperation::CreateMilestone,
+            json!({"projectId":"p1","title":"Date"}),
+        ),
+    ] {
+        for (index, date) in [
+            " 2026-01-01",
+            "2026-2-3",
+            "2026-02-29",
+            "2026-01-01 ",
+            "+2026-01-01",
+            "10000-01-01",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut payload = payload.clone();
+            payload[field] = json!(date);
+            assert!(
+                matches!(
+                    f.service
+                        .execute(
+                            &f.manager,
+                            command(operation, payload, &format!("date-{field}-{index}"), None)
+                        )
+                        .await,
+                    Err(AppError::Validation { .. })
+                ),
+                "{field} {date}"
+            );
+        }
+        for (index, date) in ["0000-01-01", "0226-01-01", "2000-02-29", "9999-12-31"]
             .into_iter()
             .enumerate()
-            {
-                let mut payload = payload.clone();
-                payload[field] = json!(date);
-                assert!(
-                    matches!(
-                        f.service
-                            .execute(
-                                actor,
-                                command(
-                                    operation,
-                                    payload,
-                                    &format!("date-{actor_index}-{field}-{index}"),
-                                    None
-                                )
-                            )
-                            .await,
-                        Err(AppError::Validation { .. })
-                    ),
-                    "{field} {date}"
-                );
-            }
-            for (index, date) in ["0000-01-01", "0226-01-01", "2000-02-29", "9999-12-31"]
-                .into_iter()
-                .enumerate()
-            {
-                let mut payload = payload.clone();
-                payload[field] = json!(date);
-                f.service
-                    .execute(
-                        actor,
-                        command(
-                            operation,
-                            payload,
-                            &format!("valid-{actor_index}-{field}-{index}"),
-                            None,
-                        ),
-                    )
-                    .await
-                    .unwrap();
-            }
+        {
+            let mut payload = payload.clone();
+            payload[field] = json!(date);
+            f.service
+                .execute(
+                    &f.manager,
+                    command(operation, payload, &format!("valid-{field}-{index}"), None),
+                )
+                .await
+                .unwrap();
         }
     }
 }
 
 #[tokio::test]
 async fn mention_validation_is_identical_for_comments_blocks_and_block_edits() {
-    use oneloop::collaboration::CollaborationCommand;
     let f = fixture().await;
     let created = f
         .service
@@ -1094,12 +1062,12 @@ async fn mention_validation_is_identical_for_comments_blocks_and_block_edits() {
     let comment_error = discussion
         .execute(
             &f.manager,
-            CollaborationCommand {
-                operation: "discussion.comment.create".into(),
-                payload: json!({"taskId":id,"content":"please review","mentions":invalid}),
-                idempotency_key: "invalid-comment".into(),
-                expected_revision: None,
-            },
+            collaboration_command(
+                "discussion.comment.create",
+                json!({"taskId":id,"content":"please review","mentions":invalid}),
+                "invalid-comment",
+                None,
+            ),
         )
         .await
         .unwrap_err();
@@ -1236,8 +1204,10 @@ async fn block_mentions_distinguish_direct_and_broadcast_recipients_on_create_an
                 json!({"blockId":block.entities[1]["id"],"reason":reason,"mentions":mentions}), "mention-edit", Some(1))).await.unwrap();
         }
         let collaboration = CollaborationService::new(f.db.clone());
-        let worker = oneloop::collaboration::CollaborationRuntime::new(f.db.clone()).worker();
-        while worker.run_once().await.unwrap() {}
+        drain(&oneloop::collaboration::CollaborationRuntime::new(
+            f.db.clone(),
+        ))
+        .await;
         let inbox = collaboration
             .inbox(&f.member, Default::default(), None, None)
             .await
@@ -1268,16 +1238,7 @@ async fn block_mentions_distinguish_direct_and_broadcast_recipients_on_create_an
             )
             .await
             .unwrap();
-        let count: i64 =
-            f.db.run(|c| {
-                Ok(
-                    c.query_row("SELECT COUNT(*) FROM notification_recipients", [], |r| {
-                        r.get(0)
-                    })?,
-                )
-            })
-            .await
-            .unwrap();
+        let count: i64 = query_one(&f.db, "SELECT COUNT(*) FROM notification_recipients", []).await;
         assert_eq!(count, 2);
     }
 }

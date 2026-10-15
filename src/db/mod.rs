@@ -817,8 +817,18 @@ use rusqlite::OptionalExtension;
 
 /// Test support: a migrated database in a new temporary folder.
 #[cfg(test)]
-pub(crate) fn test_database() -> (tempfile::TempDir, Connection) {
-    let root = tempfile::tempdir_in("target").expect("temporary folder");
+pub(crate) fn migrated_db() -> (tempfile::TempDir, Db) {
+    let root = tempfile::tempdir().expect("temporary folder");
+    migrate(root.path(), None).expect("migrated test database");
+    let db = Db::open(root.path()).expect("test database");
+    (root, db)
+}
+
+/// Test support: one connection to a migrated database in a new temporary
+/// folder.
+#[cfg(test)]
+pub(crate) fn migrated_connection() -> (tempfile::TempDir, Connection) {
+    let root = tempfile::tempdir().expect("temporary folder");
     migrate(root.path(), None).expect("migrated test database");
     let connection = open_connection(&root.path().join(DATABASE_FILE)).expect("test database");
     (root, connection)

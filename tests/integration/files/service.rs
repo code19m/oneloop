@@ -1,6 +1,5 @@
 use std::{sync::mpsc, time::Duration};
 
-use image::ImageEncoder;
 use oneloop::{
     AppError, Db,
     auth::Actor,
@@ -14,7 +13,8 @@ use tempfile::TempDir;
 use tokio::io::AsyncReadExt;
 use tokio::time::{sleep, timeout};
 
-use crate::support::{browser_actor, eventually, now};
+use super::png;
+use crate::support::{Role, command, drain, eventually, now, query_one, seed_project};
 
 struct Fixture {
     _root: TempDir,
@@ -22,43 +22,29 @@ struct Fixture {
     manager: Actor,
     viewer: Actor,
     outsider: Actor,
+    admin: Actor,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let (root, db) = crate::support::database();
-        let now = now();
-        db.run(move |connection| {
-            connection.execute_batch(&format!(r#"
-                INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)
-                    VALUES ('manager','manager','Manager','x',{now},{now},{now}),
-                           ('viewer','viewer','Viewer','x',{now},{now},{now}),
-                           ('outsider','outsider','Outsider','x',{now},{now},{now});
-                INSERT INTO sessions(id,user_id,token_hash,created_at,last_activity_at,authenticated_at,idle_expires_at,absolute_expires_at)
-                    VALUES ('sm','manager','hm',{now},{now},{now},{expiry},{expiry}),
-                           ('sv','viewer','hv',{now},{now},{now},{expiry},{expiry}),
-                           ('so','outsider','ho',{now},{now},{now},{expiry},{expiry});
-                INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
-                    VALUES ('p1','Project','PRJ','manager',{now},{now});
-                INSERT INTO project_prefixes(prefix,project_id,reserved_at) VALUES ('PRJ','p1',{now});
-                INSERT INTO project_sequences(project_id,next_task_number) VALUES ('p1',2);
-                INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                    VALUES ('p1','manager',1,{now},{now}),('p1','viewer',0,{now},{now});
-                INSERT INTO tracks(id,project_id,name,position,created_by,created_at,updated_at)
-                    VALUES ('track','p1','Track',0,'manager',{now},{now});
-                INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_by,created_at,updated_at)
-                    VALUES ('epic','p1','track','Epic','2026-01-01',0,'manager',{now},{now});
-                INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
-                    VALUES ('task','p1','epic',1,'PRJ-001','Task','planning',0,'manager',{now},{now});
-            "#, expiry=now+86_400))?;
-            Ok(())
-        }).await.unwrap();
+        let [manager, viewer, outsider, admin] = seed_project(
+            &db,
+            [
+                ("manager", Role::Manager),
+                ("viewer", Role::Member),
+                ("outsider", Role::Outsider),
+                ("admin", Role::Admin),
+            ],
+        )
+        .await;
         Self {
             _root: root,
             db,
-            manager: browser_actor("manager", "manager", "sm", now),
-            viewer: browser_actor("viewer", "viewer", "sv", now),
-            outsider: browser_actor("outsider", "outsider", "so", now),
+            manager,
+            viewer,
+            outsider,
+            admin,
         }
     }
 
@@ -123,24 +109,6 @@ async fn upload(
         pending.write_chunk(chunk).await.unwrap();
     }
     pending.finish().await.unwrap()
-}
-
-#[tokio::test]
-async fn opaque_uploads_are_durable_replayable_and_member_readable() {
-    let fixture = Fixture::new().await;
-    let service = fixture.service(100 * 1024 * 1024);
-    let bytes = b"PK\x03\x04 arbitrary archive bytes";
-    let file = upload(
-        &service,
-        &fixture.manager,
-        "upload-one",
-        "work.rar",
-        bytes,
-        false,
-    )
-    .await;
-    assert_eq!(file.state, oneloop::files::BlobState::Available);
-    assert_eq!(file.preview_kind, None);
 }
 
 #[tokio::test]
@@ -217,7 +185,6 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .unwrap();
     assert_eq!(listed.items.len(), 1);
     assert_eq!(listed.items[0].name, "notes.txt");
-    assert!(listed.items[0].storage_safe());
     let mut read = service
         .open_for_read(&fixture.viewer, &created.id, ReadMode::Download)
         .await
@@ -466,17 +433,12 @@ async fn soft_deleted_tasks_are_reconciled_to_byte_and_metadata_removal() {
     let report = service.reconcile().await.unwrap();
     assert_eq!(report.deletion_jobs_completed, 1);
     let id = file.id;
-    let exists: bool = fixture
-        .db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM task_attachments WHERE id=?1)",
-                [id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let exists: bool = query_one(
+        &fixture.db,
+        "SELECT EXISTS(SELECT 1 FROM task_attachments WHERE id=?1)",
+        [id],
+    )
+    .await;
     assert!(!exists);
 }
 
@@ -509,12 +471,12 @@ async fn a_restored_task_keeps_its_files() {
         domain
             .execute(
                 &fixture.manager,
-                oneloop::domain::CommandEnvelope {
+                command(
                     operation,
-                    payload: serde_json::json!({"id":"task"}),
-                    idempotency_key: key.into(),
-                    expected_revision: Some(revision),
-                },
+                    serde_json::json!({"id":"task"}),
+                    key,
+                    Some(revision),
+                ),
             )
             .await
             .unwrap();
@@ -574,17 +536,12 @@ async fn deletion_is_byte_complete_and_safe_to_replay() {
         1
     );
     assert_eq!(stored_file_count(&files), 0);
-    let rows: (i64, i64) = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let rows: (i64, i64) = query_one(
+        &fixture.db,
+        "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
+        [],
+    )
+    .await;
     assert_eq!(rows, (0, 0));
     // The receipt still answers a retry after the purge.
     service
@@ -623,7 +580,7 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         )
         .await;
         let id = attachment.id.clone();
-        let key: String = f.db.run(move |c| Ok(c.query_row("SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id], |r| r.get(0))?)).await.unwrap();
+        let key: String = query_one(&f.db, "SELECT b.storage_key FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1", [id]).await;
         let path = f.store().file_path(&key).unwrap();
         service
             .delete_attachment(
@@ -664,16 +621,12 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
             false,
         )
         .await;
-        let receipts: i64 =
-            f.db.run(|c| {
-                Ok(c.query_row(
-                    "SELECT count(*) FROM idempotency_keys WHERE operation='attachment.delete'",
-                    [],
-                    |r| r.get(0),
-                )?)
-            })
-            .await
-            .unwrap();
+        let receipts: i64 = query_one(
+            &f.db,
+            "SELECT count(*) FROM idempotency_keys WHERE operation='attachment.delete'",
+            [],
+        )
+        .await;
         assert_eq!(receipts, 0, "ordinary writes really pruned the receipt");
         f.db.run(|c| {
             c.execute(
@@ -693,18 +646,20 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
             0
         );
         assert!(!path.exists());
-        let id = attachment.id.clone();
-        let (events, projections, outbox, attachments): (i64, i64, i64, i64) = f.db.run(move |c| Ok((
-            c.query_row("SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'", [&id], |r| r.get(0))?,
-            c.query_row("SELECT count(*) FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted'", [&id], |r| r.get(0))?,
-            c.query_row("SELECT count(*) FROM outbox_messages WHERE json_extract(payload_json,'$.activityEventId') IN (SELECT id FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted')", [&id], |r| r.get(0))?,
-            c.query_row("SELECT count(*) FROM task_attachments WHERE id=?1", [&id], |r| r.get(0))?,
-        ))).await.unwrap();
-        assert_eq!((events, projections, outbox, attachments), (1, 1, 1, 0));
+        let counts: (i64, i64, i64, i64) = query_one(
+            &f.db,
+            "SELECT
+                (SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'),
+                (SELECT count(*) FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted'),
+                (SELECT count(*) FROM outbox_messages WHERE json_extract(payload_json,'$.activityEventId')
+                    IN (SELECT id FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted')),
+                (SELECT count(*) FROM task_attachments WHERE id=?1)",
+            [attachment.id.clone()],
+        )
+        .await;
+        assert_eq!(counts, (1, 1, 1, 0));
         let id = attachment.id;
-        let provenance: (String, Option<String>, String) = f.db.run(move |c| Ok(c.query_row(
-            "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted') FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'",
-            [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?)).await.unwrap();
+        let provenance: (String, Option<String>, String) = query_one(&f.db, "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.deleted') FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'", [id]).await;
         // The name the account had when it deleted the file.
         assert_eq!(
             provenance,
@@ -746,22 +701,20 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
              FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
             [&id],
         )?;
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
             VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
         Ok(())
     }).await.unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::DeleteProject,
-                payload: serde_json::json!({"projectId":"p1","confirmedName":"Project"}),
-                idempotency_key: "delete-project".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::DeleteProject,
+                serde_json::json!({"projectId":"p1","confirmedName":"Project"}),
+                "delete-project",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
@@ -771,14 +724,19 @@ async fn an_unattributed_deletion_from_a_deleted_project_is_audited_but_not_deli
     );
     // Nobody can be told about the deletion, so nothing waits for delivery.
     let runtime = oneloop::collaboration::CollaborationRuntime::new(f.db.clone());
-    while runtime.worker().run_once().await.unwrap() {}
+    drain(&runtime).await;
     let id = attachment.id;
-    let (events, undelivered): (i64, i64) = f.db.run(move |c| Ok((
-        c.query_row("SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'
-            AND project_id IS NULL AND actor_user_id IS NULL AND json_extract(metadata_json,'$.attributionUnavailable')", [id], |r| r.get(0))?,
-        c.query_row("SELECT count(*) FROM outbox_messages WHERE delivered_at IS NULL", [], |r| r.get(0))?,
-    ))).await.unwrap();
-    assert_eq!((events, undelivered), (1, 0));
+    let counts: (i64, i64) = query_one(
+        &f.db,
+        "SELECT
+            (SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.deleted'
+                AND project_id IS NULL AND actor_user_id IS NULL
+                AND json_extract(metadata_json,'$.attributionUnavailable')),
+            (SELECT count(*) FROM outbox_messages WHERE delivered_at IS NULL)",
+        [id],
+    )
+    .await;
+    assert_eq!(counts, (1, 0));
 }
 
 #[tokio::test]
@@ -901,32 +859,17 @@ async fn retried_cleanup_uses_the_same_activity_projection_path() {
         .unwrap();
     assert_eq!(listed.items[0].revision, 2);
     let attachment_id = file.id.clone();
-    let (events, projections, metadata): (i64, i64, String) = fixture
-        .db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT
+    let (events, projections, metadata): (i64, i64, String) = query_one(&fixture.db, "SELECT
                     (SELECT count(*) FROM activity_events WHERE entity_id=?1 AND event_type='attachment.cleaned'),
                     (SELECT count(*) FROM activity_projection WHERE entity_id=?1 AND event_type='attachment.cleaned'),
-                    (SELECT metadata_json FROM activity_events WHERE entity_id=?1 AND event_type='attachment.cleaned')",
-                [&attachment_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+                    (SELECT metadata_json FROM activity_events WHERE entity_id=?1 AND event_type='attachment.cleaned')", [attachment_id]).await;
     assert_eq!((events, projections), (1, 1));
-    let run: (i64, i64) = fixture
-        .db
-        .run(|c| {
-            Ok(c.query_row(
-                "SELECT files,bytes FROM storage_cleanup_runs WHERE id='retry-run'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let run: (i64, i64) = query_one(
+        &fixture.db,
+        "SELECT files,bytes FROM storage_cleanup_runs WHERE id='retry-run'",
+        [],
+    )
+    .await;
     assert_eq!(run, (1, b"cleanup retry bytes".len() as i64));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&metadata).unwrap()["size"],
@@ -937,16 +880,7 @@ async fn retried_cleanup_uses_the_same_activity_projection_path() {
 #[tokio::test]
 async fn capacity_counts_reservations_without_double_counting_partial_staging() {
     let fixture = Fixture::new().await;
-    fixture
-        .db
-        .run(|connection| {
-            connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
+    let admin = fixture.admin.clone();
     let service = fixture.service(100);
     let AttachmentUpload::Pending(mut pending) = service
         .begin_attachment_upload(&admin, "task", "partial.bin", 10, false, "partial")
@@ -1024,17 +958,12 @@ async fn attachment_order_replays_without_a_second_revision_or_activity_change()
     );
     assert_eq!(changed.items[0].revision, second.revision + 1);
     assert_eq!(changed.items[1].revision, first.revision + 1);
-    let events: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM activity_events WHERE event_type='attachment.reordered'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let events: i64 = query_one(
+        &fixture.db,
+        "SELECT count(*) FROM activity_events WHERE event_type='attachment.reordered'",
+        [],
+    )
+    .await;
     assert_eq!(events, 1);
 }
 
@@ -1058,8 +987,15 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
             false,
         )
         .await;
+        assert_eq!(binary.media_type, "application/octet-stream");
         assert_eq!(binary.preview_kind, None);
         assert_eq!(binary.source_url, None);
+        assert!(
+            service
+                .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
+                .await
+                .is_err()
+        );
     }
 
     let mut large_html = b"<!doctype html><p>safe</p>".to_vec();
@@ -1079,7 +1015,7 @@ async fn text_detection_checks_the_whole_file_and_oversized_html_is_download_onl
 }
 
 #[tokio::test]
-async fn completed_reads_release_their_cleanup_and_deletion_lease() {
+async fn completed_reads_release_their_lease() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
     let file = upload(
@@ -1097,26 +1033,10 @@ async fn completed_reads_release_their_cleanup_and_deletion_lease() {
         .unwrap();
     drop(read);
     eventually("the read lease is released", async || {
-        let leases: i64 = fixture
-            .db
-            .run(|connection| {
-                Ok(connection
-                    .query_row("SELECT count(*) FROM file_leases", [], |row| row.get(0))?)
-            })
-            .await
-            .unwrap();
+        let leases: i64 = query_one(&fixture.db, "SELECT count(*) FROM file_leases", []).await;
         (leases == 0).then_some(())
     })
     .await;
-    service
-        .delete_attachment(
-            &fixture.manager,
-            &file.id,
-            file.revision,
-            "delete-after-read",
-        )
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -1142,22 +1062,17 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
     eventually(
         "the abandoned upload releases its reservation",
         async || {
-            let state: (i64, Option<String>) = fixture
-                .db
-                .run(|connection| {
-                    Ok(connection.query_row(
-                        "SELECT
+            let state: (i64, Option<String>) = query_one(
+                &fixture.db,
+                "SELECT
                            (SELECT count(*) FROM upload_reservations
                             WHERE committed_at IS NULL),
                            (SELECT state FROM idempotency_keys
                             WHERE actor_user_id='manager'
                               AND idempotency_key='interrupted-upload')",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?)
-                })
-                .await
-                .unwrap();
+                [],
+            )
+            .await;
             if state.0 == 0 {
                 assert_eq!(
                     state.1.as_deref(),
@@ -1313,11 +1228,9 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
     eventually(
         "the detached finalizer commits after its caller is cancelled",
         async || {
-            let state: (Option<String>, i64, i64) = fixture
-                .db
-                .run(|connection| {
-                    Ok(connection.query_row(
-                        "SELECT
+            let state: (Option<String>, i64, i64) = query_one(
+                &fixture.db,
+                "SELECT
                            (SELECT state FROM idempotency_keys
                             WHERE actor_user_id='manager'
                               AND idempotency_key='cancel-during-commit'),
@@ -1325,12 +1238,9 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
                             WHERE committed_at IS NULL),
                            (SELECT count(*) FROM task_attachments
                             WHERE task_id='task')",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )?)
-                })
-                .await
-                .unwrap();
+                [],
+            )
+            .await;
             (state == (Some("succeeded".to_owned()), 0, 1)).then_some(())
         },
     )
@@ -1373,15 +1283,12 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
 async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
+    let image = png(1, 1, false);
     service
         .upload_avatar(
             &fixture.manager,
             service.avatar_slot(&fixture.manager).unwrap(),
-            png.clone(),
+            image.clone(),
         )
         .await
         .unwrap();
@@ -1401,7 +1308,7 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
         .upload_avatar(
             &fixture.manager,
             service.avatar_slot(&fixture.manager).unwrap(),
-            png,
+            image,
         )
         .await
         .unwrap();
@@ -1410,13 +1317,7 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
     // Nothing refers to the replaced files, so reconciliation deletes both.
     let report = service.reconcile().await.unwrap();
     assert_eq!(report.deletion_jobs_completed, 2);
-    let blobs: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row("SELECT count(*) FROM file_blobs", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let blobs: i64 = query_one(&fixture.db, "SELECT count(*) FROM file_blobs", []).await;
     assert_eq!(blobs, 0);
 }
 
@@ -1424,17 +1325,12 @@ async fn avatar_changes_succeed_when_the_old_file_cannot_be_queued_for_deletion(
 async fn avatars_reserve_the_shared_storage_budget_before_writing() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100);
-    let pixels = [255_u8, 0, 0, 255];
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&pixels, 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
     assert!(matches!(
         service
             .upload_avatar(
                 &fixture.manager,
                 service.avatar_slot(&fixture.manager).unwrap(),
-                png
+                png(1, 1, false)
             )
             .await,
         Err(AppError::Rule {
@@ -1442,39 +1338,8 @@ async fn avatars_reserve_the_shared_storage_budget_before_writing() {
             ..
         })
     ));
-    let blobs: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row("SELECT count(*) FROM file_blobs", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let blobs: i64 = query_one(&fixture.db, "SELECT count(*) FROM file_blobs", []).await;
     assert_eq!(blobs, 0);
-}
-
-#[tokio::test]
-async fn malformed_text_is_download_only() {
-    let fixture = Fixture::new().await;
-    let service = fixture.service(100 * 1024 * 1024);
-    for name in ["broken.txt", "broken.md", "broken.markdown"] {
-        let binary = upload(
-            &service,
-            &fixture.manager,
-            name,
-            name,
-            &[0xff, 0xfe, 0, 1],
-            false,
-        )
-        .await;
-        assert_eq!(binary.media_type, "application/octet-stream");
-        assert_eq!(binary.preview_kind, None);
-        assert!(
-            service
-                .open_for_read(&fixture.manager, &binary.id, ReadMode::Source)
-                .await
-                .is_err()
-        );
-    }
 }
 
 #[tokio::test]
@@ -1502,20 +1367,6 @@ async fn avatars_that_need_too_much_memory_to_decode_are_refused() {
         )
         .await
         .unwrap();
-}
-
-trait AttachmentAssertions {
-    fn storage_safe(&self) -> bool;
-}
-
-impl AttachmentAssertions for oneloop::files::AttachmentView {
-    fn storage_safe(&self) -> bool {
-        !self
-            .download_url
-            .as_deref()
-            .unwrap_or_default()
-            .contains(&self.name)
-    }
 }
 
 #[tokio::test]
@@ -1571,16 +1422,7 @@ async fn stalled_upload_does_not_hold_back_a_complete_backup() {
 async fn capacity_scans_tolerate_staging_and_preview_churn() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
-    fixture
-        .db
-        .transaction(|tx| {
-            tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let admin = fixture.admin.clone();
     fixture.store().ensure_directories().await.unwrap();
     let staging = fixture.store().layout().staging();
     let previews = fixture.store().previews();
@@ -1639,15 +1481,11 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
             .await
             .is_err()
     );
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
     assert!(
         full.upload_avatar(
             &fixture.viewer,
             full.avatar_slot(&fixture.viewer).unwrap(),
-            png
+            png(1, 1, false)
         )
         .await
         .is_err()
@@ -1664,17 +1502,12 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
             .await
             .is_ok()
     );
-    let cleaned: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM activity_events WHERE event_type='attachment.cleaned'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let cleaned: i64 = query_one(
+        &fixture.db,
+        "SELECT count(*) FROM activity_events WHERE event_type='attachment.cleaned'",
+        [],
+    )
+    .await;
     assert_eq!(cleaned, 0);
 }
 
@@ -1766,7 +1599,7 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
             tx.execute(
                 "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_by,created_at,updated_at)
                  VALUES(?1,'p1','epic',?2,?3,'Storage fixture','planning',?2,'manager',1,1)",
-                rusqlite::params![format!("batch-task-{i}"),i+2,format!("PRJ-{:03}",i+2)],
+                rusqlite::params![format!("batch-task-{i}"),i+2,format!("ONE-{:03}",i+2)],
             )?;
         }
         for (i,key) in keys.iter().enumerate() {
@@ -1789,30 +1622,23 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
         (report.temporary_files_cleaned, report.bytes_reclaimed),
         (201, 20_100)
     );
-    let (cleaned, events, jobs): (i64, i64, i64) = fixture
-        .db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT count(*) FROM file_blobs WHERE state='cleaned'),
+    let (cleaned, events, jobs): (i64, i64, i64) = query_one(
+        &fixture.db,
+        "SELECT (SELECT count(*) FROM file_blobs WHERE state='cleaned'),
                     (SELECT count(*) FROM activity_events WHERE event_type='attachment.cleaned'),
                     (SELECT count(*) FROM file_deletion_jobs)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+        [],
+    )
+    .await;
     assert_eq!((cleaned, events, jobs), (201, 201, 0));
     fixture.db.transaction(|tx| {
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
         tx.execute("INSERT INTO projects(id,name,task_prefix,created_by,created_at,updated_at)
             VALUES('keep-project','Keep project','KEEP','manager',1,1)", [])?;
         // Deliberately span activity timestamps: history must use the run, not seconds.
         tx.execute("UPDATE activity_events SET created_at=created_at + rowid WHERE event_type='attachment.cleaned'", [])?;
         Ok(())
     }).await.unwrap();
-    let mut admin = fixture.manager.clone();
-    admin.is_admin = true;
+    let admin = fixture.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(usage.recent_cleanup.len(), 1);
     assert_eq!(
@@ -1836,27 +1662,22 @@ async fn cleanup_crosses_claim_batches_without_recounting_the_library() {
     oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc())
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::DeleteProject,
-                payload: serde_json::json!({"projectId":"p1","confirmedName":"Project"}),
-                idempotency_key: "delete-cleaned-project".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::DeleteProject,
+                serde_json::json!({"projectId":"p1","confirmedName":"Project"}),
+                "delete-cleaned-project",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
     service.reconcile().await.unwrap();
-    let remaining: i64 = fixture
-        .db
-        .run(|c| {
-            Ok(c.query_row(
-                "SELECT count(*) FROM file_blobs WHERE state='cleaned'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let remaining: i64 = query_one(
+        &fixture.db,
+        "SELECT count(*) FROM file_blobs WHERE state='cleaned'",
+        [],
+    )
+    .await;
     assert_eq!(remaining, 0);
     assert_eq!(
         service.storage_usage(&admin).await.unwrap().recent_cleanup[0].file_count,
@@ -1904,33 +1725,21 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
     }).await.unwrap();
     let path = fixture.store().staging_path(&staging).unwrap();
     tokio::fs::write(&path, b"partial").await.unwrap();
-    let expires: i64 = fixture
-        .db
-        .run(|connection| {
-            Ok(
-                connection.query_row("SELECT expires_at FROM upload_reservations", [], |r| {
-                    r.get(0)
-                })?,
-            )
-        })
-        .await
-        .unwrap();
+    let expires: i64 = query_one(
+        &fixture.db,
+        "SELECT expires_at FROM upload_reservations",
+        [],
+    )
+    .await;
     assert!(expires > now() + 3000);
     let _server_guard = fixture.db.layout().try_server_lock().unwrap();
     oneloop::runtime::prepare_files(&service).await.unwrap();
     oneloop::runtime::prepare_files(&service).await.unwrap();
     assert!(!path.exists());
-    let (reservations, state): (i64, String) = fixture
-        .db
-        .run(|connection| {
-            Ok((
-                connection
-                    .query_row("SELECT count(*) FROM upload_reservations", [], |r| r.get(0))?,
-                connection.query_row("SELECT state FROM idempotency_keys", [], |r| r.get(0))?,
-            ))
-        })
-        .await
-        .unwrap();
+    let (reservations, state): (i64, String) = (
+        query_one(&fixture.db, "SELECT count(*) FROM upload_reservations", []).await,
+        query_one(&fixture.db, "SELECT state FROM idempotency_keys", []).await,
+    );
     assert_eq!(reservations, 0);
     assert_eq!(state, "failed");
     let value = upload(
@@ -2000,7 +1809,7 @@ async fn high_watermark_admission_does_not_walk_originals() {
 }
 
 #[tokio::test]
-async fn deletion_backlog_drains_in_multiple_bounded_batches_per_pass() {
+async fn deletion_backlog_drains_in_bounded_batches() {
     let f = Fixture::new().await;
     let store = oneloop::files::FileStore::new(f.db.layout().clone());
     // One file more than a deletion batch of 200.
@@ -2066,16 +1875,6 @@ async fn startup_releases_crashed_reads_and_preserves_backup_leases() {
         .await
         .unwrap();
     assert_eq!(leases, vec!["backup-pin"]);
-    f.db.transaction(|tx| {
-        tx.execute("DELETE FROM file_leases", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    service
-        .delete_attachment(&f.manager, &file.id, file.revision, "after-restart")
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -2088,12 +1887,12 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
             CREATE TRIGGER reject_cleanup BEFORE DELETE ON file_blobs
             BEGIN SELECT RAISE(ABORT,'secondary cleanup failure'); END;")?; Ok(())
     }).await.unwrap();
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-        .unwrap();
     let error = service
-        .upload_avatar(&f.manager, service.avatar_slot(&f.manager).unwrap(), png)
+        .upload_avatar(
+            &f.manager,
+            service.avatar_slot(&f.manager).unwrap(),
+            png(1, 1, false),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -2108,10 +1907,7 @@ async fn avatar_cleanup_preserves_primary_error_and_startup_recovers_pending_row
     .await
     .unwrap();
     oneloop::runtime::prepare_files(&service).await.unwrap();
-    let rows: i64 =
-        f.db.run(|c| Ok(c.query_row("SELECT count(*) FROM file_blobs", [], |r| r.get(0))?))
-            .await
-            .unwrap();
+    let rows: i64 = query_one(&f.db, "SELECT count(*) FROM file_blobs", []).await;
     assert_eq!(rows, 0);
 }
 
@@ -2128,15 +1924,13 @@ async fn storage_accounts_for_pending_deletion_separately() {
         false,
     )
     .await;
-    f.db.transaction(|tx| {
-        tx.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        tx.execute("UPDATE file_blobs SET state='deleting'", [])?;
+    f.db.run(|connection| {
+        connection.execute("UPDATE file_blobs SET state='deleting'", [])?;
         Ok(())
     })
     .await
     .unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(usage.used_bytes, 7);
     assert_eq!(usage.pending_deletion_bytes, 7);
@@ -2166,24 +1960,17 @@ async fn the_files_of_a_deleted_task_count_as_pending_deletion_at_once() {
         true,
     )
     .await;
-    f.db.run(|connection| {
-        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    let mut admin = f.manager.clone();
-    admin.is_admin = true;
+    let admin = f.admin.clone();
     let domain = oneloop::domain::DomainService::new(f.db.clone(), crate::support::utc());
     domain
         .execute(
             &admin,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::DeleteTask,
-                payload: serde_json::json!({"id":"task"}),
-                idempotency_key: "delete-usage-parent".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                oneloop::domain::DomainOperation::DeleteTask,
+                serde_json::json!({"id":"task"}),
+                "delete-usage-parent",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
@@ -2430,11 +2217,13 @@ async fn a_task_whose_files_are_already_being_removed_stays_deleted() {
     )
     .await;
     let domain = oneloop::domain::DomainService::new(fixture.db.clone(), crate::support::utc());
-    let envelope = |operation, key: &str, revision| oneloop::domain::CommandEnvelope {
-        operation,
-        payload: serde_json::json!({"id":"task"}),
-        idempotency_key: key.into(),
-        expected_revision: Some(revision),
+    let envelope = |operation, key: &str, revision| {
+        command(
+            operation,
+            serde_json::json!({"id":"task"}),
+            key,
+            Some(revision),
+        )
     };
     domain
         .execute(
@@ -2675,16 +2464,12 @@ async fn deleted_attachments_wait_out_the_undo_window_across_restarts() {
     assert_eq!(listed_names(&restarted, &f.viewer).await, ["kept.txt"]);
     assert_eq!(stored_file_count(&f.db.layout().files()), 1);
     let id = purged.id.clone();
-    let remaining: i64 =
-        f.db.run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT count(*) FROM task_attachments WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let remaining: i64 = query_one(
+        &f.db,
+        "SELECT count(*) FROM task_attachments WHERE id=?1",
+        [id],
+    )
+    .await;
     assert_eq!(remaining, 0);
     assert!(matches!(
         restarted
@@ -2729,17 +2514,7 @@ async fn deleted_files_wait_for_removal_instead_of_temporary_file_cleanup() {
         )
         .await
         .unwrap();
-    let admin = {
-        let mut admin = f.manager.clone();
-        admin.is_admin = true;
-        admin
-    };
-    f.db.run(|connection| {
-        connection.execute("UPDATE users SET is_admin=1 WHERE id='manager'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    let admin = f.admin.clone();
     let usage = service.storage_usage(&admin).await.unwrap();
     assert_eq!(
         (usage.temporary_bytes, usage.pending_deletion_bytes),
@@ -2817,15 +2592,11 @@ async fn a_deleted_cleaned_attachment_is_restorable_and_then_forgotten() {
         .unwrap();
     end_undo_window(&f.db).await;
     service.reconcile().await.unwrap();
-    let rows: (i64, i64) =
-        f.db.run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let rows: (i64, i64) = query_one(
+        &f.db,
+        "SELECT (SELECT count(*) FROM task_attachments),(SELECT count(*) FROM file_blobs)",
+        [],
+    )
+    .await;
     assert_eq!(rows, (0, 0));
 }

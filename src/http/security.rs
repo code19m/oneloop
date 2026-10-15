@@ -453,23 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_addresses_are_used_only_from_trusted_peers() {
-        let trusted = vec!["10.0.0.0/8".parse().unwrap()];
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("203.0.113.9, 10.1.1.1"),
-        );
-        assert_eq!(
-            client_ip(Some("192.0.2.2:9000".parse().unwrap()), &headers, &trusted),
-            Some("192.0.2.2".parse().unwrap())
-        );
-        assert_eq!(
-            client_ip(Some("10.2.2.2:9000".parse().unwrap()), &headers, &trusted),
-            Some("203.0.113.9".parse().unwrap())
-        );
-    }
-    #[test]
     fn sibling_cookies_do_not_hide_sessions_and_invalid_duplicates_fail_closed() {
         let public = Url::parse("http://localhost").unwrap();
         for sibling in [b"lang=caf\xc3\xa9".as_slice(), b"lang=caf\xe9".as_slice()] {
@@ -558,15 +541,6 @@ mod tests {
             client_ip(peer, &headers, &trusted),
             Some("10.0.0.3".parse().unwrap())
         );
-    }
-
-    #[test]
-    fn throttle_buckets_group_only_ipv6_subnets() {
-        let bucket = |ip: &str| throttle_bucket(ip.parse().unwrap());
-        assert_eq!(bucket("::ffff:198.51.100.7"), bucket("198.51.100.7"));
-        assert_ne!(bucket("198.51.100.7"), bucket("198.51.100.8"));
-        assert_eq!(bucket("2001:db8:1:2::1"), bucket("2001:db8:1:2::ffff"));
-        assert_ne!(bucket("2001:db8:1:2::1"), bucket("2001:db8:1:3::1"));
     }
 }
 

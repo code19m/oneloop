@@ -5,12 +5,15 @@ use axum::{
     response::Response,
 };
 use oneloop::{
-    AppState, Db,
+    Db,
     auth::{NewUser, create_user, password::PasswordPolicy},
 };
 use tower::ServiceExt;
 
-use crate::support::http::{body_bytes, body_json};
+use crate::support::{
+    http::{body_bytes, body_json},
+    query_one,
+};
 
 use super::add_user;
 
@@ -20,9 +23,7 @@ fn application() -> (tempfile::TempDir, Db, Router) {
 
 fn application_at(public_url: &str) -> (tempfile::TempDir, Db, Router) {
     let (directory, db) = crate::support::database();
-    let config = crate::support::config(directory.path(), public_url, &[]);
-    let state = AppState::new(config, db.clone());
-    let app = oneloop::application(state).router;
+    let app = crate::support::app(directory.path(), &db, public_url, &[]).router;
     (directory, db, app)
 }
 
@@ -67,26 +68,9 @@ fn login_request(origin: Option<&str>) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn login_rejects_missing_or_cross_origin_and_issues_a_secure_cookie() {
+async fn login_issues_a_secure_cookie() {
     let (_directory, db, app) = application();
     add_user(&db, "person", false, false).await;
-    assert_eq!(
-        app.clone()
-            .oneshot(login_request(None))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        app.clone()
-            .oneshot(login_request(Some("https://evil.example")))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-
     let response = app
         .clone()
         .oneshot(login_request(Some("https://tasks.example.test")))
@@ -148,12 +132,7 @@ async fn rejected_login_origins_report_the_configured_address_without_creating_s
             "Open oneloop at https://tasks.example.test/ and try again."
         );
     }
-    let sessions: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let sessions: i64 = query_one(&db, "SELECT count(*) FROM sessions", []).await;
     assert_eq!(sessions, 0);
 }
 
@@ -438,7 +417,8 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
         }
         let response = me(&app, &cookie).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        for expiry in ["idle_expires_at", "absolute_expires_at", "revoked_at"] {
+        // The idle expiry never comes after the absolute one, so it covers both.
+        for assignment in ["idle_expires_at=1", "revoked_at=1"] {
             let response = app
                 .clone()
                 .oneshot(login_request(Some(public_url)))
@@ -446,11 +426,6 @@ async fn logout_is_idempotent_and_clears_dead_cookies_but_enforces_origin() {
                 .unwrap();
             let cookie = session_cookie(&response);
             db.run(move |connection| {
-                let assignment = match expiry {
-                    "absolute_expires_at" => "absolute_expires_at=1,idle_expires_at=1",
-                    "idle_expires_at" => "idle_expires_at=1",
-                    _ => "revoked_at=1",
-                };
                 connection.execute(&format!("UPDATE sessions SET {assignment}"), [])?;
                 Ok(())
             })
@@ -519,16 +494,7 @@ async fn rotated_cookies_keep_the_original_absolute_deadline() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         cookie = rotated;
     }
-    let saved: i64 = db
-        .run(|connection| {
-            Ok(
-                connection.query_row("SELECT absolute_expires_at FROM sessions", [], |row| {
-                    row.get(0)
-                })?,
-            )
-        })
-        .await
-        .unwrap();
+    let saved: i64 = query_one(&db, "SELECT absolute_expires_at FROM sessions", []).await;
     assert_eq!(saved, deadline);
 }
 

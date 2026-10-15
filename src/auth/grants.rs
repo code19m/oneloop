@@ -259,32 +259,6 @@ impl AuthService {
             .await
     }
 
-    pub async fn can_read_project(&self, actor: &Actor, project_id: &str) -> AppResult<bool> {
-        let actor = actor.clone();
-        let project_id = project_id.to_owned();
-        self.db
-            .run(move |connection| {
-                crate::access::allowed(crate::access::require_project(
-                    connection,
-                    &actor,
-                    &project_id,
-                    crate::access::Need::Read,
-                    false,
-                ))
-            })
-            .await
-    }
-
-    pub async fn require_project_read(&self, actor: &Actor, project_id: &str) -> AppResult<()> {
-        if self.can_read_project(actor, project_id).await? {
-            Ok(())
-        } else {
-            Err(AppError::NotFound {
-                resource: "project",
-            })
-        }
-    }
-
     /// The scopes of an MCP actor's grant, sorted.
     pub async fn grant_scopes(&self, actor: &Actor) -> AppResult<Vec<String>> {
         let grant = actor
@@ -294,16 +268,6 @@ impl AuthService {
         self.db
             .run(move |connection| {
                 values_for_grant(connection, "mcp_grant_scopes", "scope", &grant)
-            })
-            .await
-    }
-
-    pub async fn require_mcp_scope(&self, actor: &Actor, scope: McpScope) -> AppResult<()> {
-        let actor = actor.clone();
-        self.db
-            .run(move |connection| {
-                let actor = refresh_actor_connection(connection, &actor)?;
-                crate::access::require_scope(connection, &actor, scope.as_str(), None)
             })
             .await
     }

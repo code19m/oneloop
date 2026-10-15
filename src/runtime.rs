@@ -234,9 +234,7 @@ mod tests {
 
     /// A data directory with a person, a task and an item from `seed`.
     async fn database(seed: &'static str) -> (tempfile::TempDir, Db) {
-        let root = tempfile::tempdir_in("target").unwrap();
-        crate::db::migrate(root.path(), None).unwrap();
-        let db = Db::open(root.path()).unwrap();
+        let (root, db) = crate::db::migrated_db();
         db.run(move |connection| {
             connection.execute_batch(
                 "INSERT INTO users(id,username,display_name,password_hash,password_changed_at,created_at,updated_at)

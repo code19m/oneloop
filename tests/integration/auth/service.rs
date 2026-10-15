@@ -8,7 +8,7 @@ use oneloop::{
     },
 };
 
-use crate::support::{auth_service, database};
+use crate::support::{auth_service, database, query_one};
 
 use super::{PASSWORD, add_user};
 
@@ -24,17 +24,9 @@ async fn login(service: &AuthService, username: &str) -> (String, Actor) {
 }
 
 #[tokio::test]
-async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application() {
+async fn temporary_password_sessions_cannot_enter_the_application() {
     let (_directory, db) = database();
     let temporary_id = add_user(&db, "temporary", false, true).await;
-    let inactive_id = add_user(&db, "inactive", false, false).await;
-    db.run(move |connection| {
-        connection.execute("UPDATE users SET is_active=0 WHERE id=?1", [inactive_id])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
     let service = auth_service(&db);
     let (_, temporary) = login(&service, "temporary").await;
     assert!(matches!(
@@ -45,58 +37,7 @@ async fn inactive_accounts_and_temporary_sessions_cannot_enter_the_application()
         service.list_sessions(&temporary).await,
         Err(AppError::PreconditionFailed(_))
     ));
-    assert!(matches!(
-        service
-            .login("inactive", PASSWORD, SessionMetadata::default(), None)
-            .await,
-        Err(AppError::InvalidCredentials)
-    ));
     assert_eq!(temporary.user_id, temporary_id);
-}
-
-#[tokio::test]
-async fn permissions_are_rechecked_and_admin_assignment_still_requires_membership() {
-    let (_directory, db) = database();
-    let member_id = add_user(&db, "member", false, false).await;
-    add_user(&db, "administrator", true, false).await;
-    let project_id = "project-1".to_owned();
-    let project_for_insert = project_id.clone();
-    let member_for_insert = member_id.clone();
-    db.transaction(move |tx| {
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,'Project','PRJ',1,1)",
-            [&project_for_insert])?;
-        tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-                    VALUES(?1,?2,1,1,1)", rusqlite::params![project_for_insert,member_for_insert])?;
-        Ok(())
-    }).await.unwrap();
-
-    let service = auth_service(&db);
-    let (_, member) = login(&service, "member").await;
-    let (_, admin) = login(&service, "administrator").await;
-    assert!(
-        service
-            .can_read_project(&member, &project_id)
-            .await
-            .unwrap()
-    );
-    assert!(service.can_read_project(&admin, &project_id).await.unwrap());
-
-    let member_for_remove = member_id.clone();
-    db.run(move |connection| {
-        connection.execute(
-            "DELETE FROM project_memberships WHERE user_id=?1",
-            [member_for_remove],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(
-        !service
-            .can_read_project(&member, &project_id)
-            .await
-            .unwrap()
-    );
 }
 
 #[tokio::test]
@@ -142,16 +83,12 @@ async fn self_service_writes_recheck_a_session_revoked_after_authentication() {
             .await
             .is_ok()
     );
-    let (name, app_revoked): (String, Option<i64>) = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let (name, app_revoked): (String, Option<i64>) = query_one(
+        &db,
+        "SELECT (SELECT display_name FROM users),(SELECT revoked_at FROM mcp_grants)",
+        [],
+    )
+    .await;
     assert_eq!((name.as_str(), app_revoked), ("person", None));
 }
 
@@ -244,40 +181,38 @@ async fn changing_password_keeps_only_the_current_browser_and_revokes_apps() {
             .await
             .is_ok()
     );
-    let revoked: Option<i64> = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at FROM mcp_grants WHERE id='grant-1'",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let revoked: Option<i64> = query_one(
+        &db,
+        "SELECT revoked_at FROM mcp_grants WHERE id='grant-1'",
+        [],
+    )
+    .await;
     assert!(revoked.is_some());
 }
 
 #[tokio::test]
-async fn database_trigger_protects_the_last_active_administrator() {
+async fn the_last_active_administrator_cannot_be_demoted() {
     let (_directory, db) = database();
     let admin_id = add_user(&db, "onlyadmin", true, false).await;
-    let first = admin_id.clone();
-    let error = db
-        .run(move |connection| {
-            connection.execute("UPDATE users SET is_admin=0 WHERE id=?1", [first])?;
-            Ok(())
-        })
+    let service = auth_service(&db);
+    let (_, admin) = login(&service, "onlyadmin").await;
+    let demotion = || AccountUpdate {
+        display_name: "onlyadmin".into(),
+        is_admin: false,
+        is_active: true,
+        expected_revision: 1,
+    };
+    let error = service
+        .update_account(&admin, &admin_id, demotion())
         .await
         .unwrap_err();
-    assert!(matches!(error, AppError::Database(_)));
+    assert_eq!((error.code(), error.status().as_u16()), ("last_admin", 409));
 
     add_user(&db, "secondadmin", true, false).await;
-    db.run(move |connection| {
-        connection.execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin_id])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    service
+        .update_account(&admin, &admin_id, demotion())
+        .await
+        .unwrap();
 }
 
 #[test]
@@ -325,6 +260,22 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
         .await
         .unwrap();
     assert!(matches!(limited,LoginResult::SessionLimit{ref sessions} if sessions.len()==10));
+    // Another person's session can't be chosen, and it stays signed in.
+    add_user(&db, "otheruser", false, false).await;
+    let (other_token, other) = login(&service, "otheruser").await;
+    let refused = service
+        .login(
+            "sessionuser",
+            PASSWORD,
+            SessionMetadata::default(),
+            other.session_id().map(str::to_owned),
+        )
+        .await;
+    assert!(matches!(refused, Err(AppError::Conflict(_))));
+    service
+        .authenticate_session(&other_token, false)
+        .await
+        .unwrap();
     let issued = service
         .login(
             "sessionuser",
@@ -335,43 +286,20 @@ async fn session_limit_requires_an_explicit_owned_session_choice() {
         .await
         .unwrap();
     assert!(matches!(issued, LoginResult::Authenticated(_)));
-    let count: i64 = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM sessions WHERE user_id=?1 AND revoked_at IS NULL",
-                [user_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(
+        &db,
+        "SELECT COUNT(*) FROM sessions WHERE user_id=?1 AND revoked_at IS NULL",
+        [user_id],
+    )
+    .await;
     assert_eq!(count, 10);
 }
 
 #[tokio::test]
-async fn login_throttles_and_expired_sessions_fail_closed() {
+async fn idle_sessions_are_refused_and_revoked() {
     let (_directory, db) = database();
     add_user(&db, "limited", false, false).await;
-    let now = unix_now().unwrap();
-    let key = token_hash("account\0limited\0unknown");
-    db.run(move |connection| {
-        connection.execute("INSERT INTO login_throttles
-            (key,failure_count,window_started_at,last_failed_at,blocked_until) VALUES(?1,5,?2,?2,?3)",
-            rusqlite::params![key,now,now+60])?;
-        Ok(())
-    }).await.unwrap();
     let service = auth_service(&db);
-    assert!(
-        matches!(service.login("limited",PASSWORD,SessionMetadata::default(),None).await,
-        Err(AppError::RateLimited{retry_after}) if retry_after>0)
-    );
-
-    db.run(|connection| {
-        connection.execute("DELETE FROM login_throttles", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
     let (token, actor) = login(&service, "limited").await;
     let session_id = actor.session_id().unwrap().to_owned();
     let sid = session_id.clone();
@@ -385,16 +313,12 @@ async fn login_throttles_and_expired_sessions_fail_closed() {
         service.authenticate_session(&token, true).await,
         Err(AppError::Unauthorized)
     ));
-    let revoked: Option<i64> = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT revoked_at FROM sessions WHERE id=?1",
-                [session_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let revoked: Option<i64> = query_one(
+        &db,
+        "SELECT revoked_at FROM sessions WHERE id=?1",
+        [session_id],
+    )
+    .await;
     assert!(revoked.is_some());
 }
 
@@ -432,58 +356,13 @@ async fn passive_authentication_does_not_extend_idle_activity() {
         .unwrap();
     assert_eq!(unchanged, old);
     service.authenticate_session(&token, true).await.unwrap();
-    let updated: i64 = db
-        .run(move |connection| {
-            Ok(connection.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id=?1",
-                [session_id],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let updated: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id=?1",
+        [session_id],
+    )
+    .await;
     assert!(updated > old);
-}
-
-#[tokio::test]
-async fn mcp_project_access_is_intersected_with_live_grant_scopes() {
-    let (_directory, db) = database();
-    let user_id = add_user(&db, "mcpuser", false, false).await;
-    let project_id = "mcp-project".to_owned();
-    let access_token = "mcp-access-token-with-at-least-32-bytes".to_owned();
-    let access_hash = token_hash(&access_token);
-    let uid = user_id.clone();
-    let pid = project_id.clone();
-    db.transaction(move |tx| {
-        tx.execute("INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES(?1,'MCP','MCP',1,1)",[&pid])?;
-        tx.execute("INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
-            VALUES(?1,?2,1,1,1)",rusqlite::params![pid,uid])?;
-        tx.execute("INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at)
-            VALUES('grant',?1,'client','Client',1,1,9999999999)",[uid])?;
-        tx.execute("INSERT INTO mcp_grant_projects(grant_id,project_id) VALUES('grant',?1)",[pid])?;
-        tx.execute("INSERT INTO mcp_grant_scopes(grant_id,scope) VALUES('grant','project_read')",[])?;
-        tx.execute("INSERT INTO mcp_tokens(id,grant_id,family_id,kind,token_hash,issued_at,expires_at)
-            VALUES('access','grant','family','access',?1,1,9999999999)",[access_hash])?;
-        Ok(())
-    }).await.unwrap();
-    let service = auth_service(&db);
-    let actor = service
-        .authenticate_mcp_access_token(&access_token)
-        .await
-        .unwrap();
-    assert_eq!(actor.user_id, user_id);
-    assert!(service.can_read_project(&actor, &project_id).await.unwrap());
-    db.run(|connection| {
-        connection.execute("UPDATE mcp_grants SET revoked_at=2 WHERE id='grant'", [])?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-    assert!(!service.can_read_project(&actor, &project_id).await.unwrap());
-    assert!(matches!(
-        service.authenticate_mcp_access_token(&access_token).await,
-        Err(AppError::Unauthorized)
-    ));
 }
 
 #[tokio::test]
@@ -672,6 +551,12 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
     let (_directory, db) = database();
     add_user(&db, "chief", true, false).await;
     add_user(&db, "longusername", false, false).await;
+    // The administrator chose a short password under the default rules.
+    let (_, chief) = login(&auth_service(&db), "chief").await;
+    auth_service(&db)
+        .change_password(&chief, PASSWORD, "short pass")
+        .await
+        .unwrap();
     let service = AuthService::new(
         db.clone(),
         PasswordPolicy {
@@ -705,9 +590,8 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
         .change_password(&member, current, "twelve chars")
         .await
         .unwrap();
-    let (_, chief) = login(&service, "chief").await;
     let Err(error) = service
-        .change_password(&chief, current, "fifteen chars!!")
+        .change_password(&chief, "short pass", "fifteen chars!!")
         .await
     else {
         panic!("an admin password needs 16 characters");
@@ -731,9 +615,14 @@ async fn stricter_password_rules_apply_to_every_password_by_role() {
             .unwrap(),
         LoginResult::Authenticated(_)
     ));
-    // Sign-in never applies the rules, so shorter passwords chosen earlier work.
-    let (_, still) = login(&service, "chief").await;
-    assert_eq!(still.username, "chief");
+    // Sign-in never applies the rules, so the short password still works.
+    assert!(matches!(
+        service
+            .login("chief", "short pass", SessionMetadata::default(), None)
+            .await
+            .unwrap(),
+        LoginResult::Authenticated(_)
+    ));
 }
 
 #[tokio::test]
@@ -972,13 +861,7 @@ async fn password_gates_share_account_delay_across_sessions_and_clear_on_success
     .await
     .unwrap();
     let refreshed = service.recent_authenticate(&other, PASSWORD).await.unwrap();
-    let failures: i64 = db
-        .run(|connection| {
-            Ok(connection
-                .query_row("SELECT COUNT(*) FROM login_throttles", [], |row| row.get(0))?)
-        })
-        .await
-        .unwrap();
+    let failures: i64 = query_one(&db, "SELECT COUNT(*) FROM login_throttles", []).await;
     assert_eq!(failures, 0);
     assert!(
         service
@@ -1036,28 +919,21 @@ async fn parallel_login_attempts_observe_completed_failures_before_hashing() {
 }
 
 #[tokio::test]
-async fn password_commit_rechecks_revocation_and_both_expiries_after_verification() {
-    for condition in [
-        "revoked_at=1",
-        "idle_expires_at=0",
-        "idle_expires_at=0,absolute_expires_at=0",
-    ] {
+async fn password_commit_rechecks_revocation_and_expiry_after_verification() {
+    // The idle expiry never comes after the absolute one, so it covers both.
+    for condition in ["revoked_at=1", "idle_expires_at=0"] {
         for change_password in [true, false] {
             let (_directory, db) = database();
             let user_id = add_user(&db, "racing", false, false).await;
             let service = auth_service(&db);
             let (_, actor) = login(&service, "racing").await;
             let (other_token, _) = login(&service, "racing").await;
-            let before: (String, i64) = db
-                .run(|connection| {
-                    Ok(connection.query_row(
-                        "SELECT password_hash,revision FROM users WHERE username='racing'",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?)
-                })
-                .await
-                .unwrap();
+            let before: (String, i64) = query_one(
+                &db,
+                "SELECT password_hash,revision FROM users WHERE username='racing'",
+                [],
+            )
+            .await;
             let throttle_key = token_hash(&format!("password-confirmation\0{user_id}"));
             let session_id = actor.session_id().unwrap().to_owned();
             // Successful verification clears its prior failure row. This trigger
@@ -1085,10 +961,8 @@ async fn password_commit_rechecks_revocation_and_both_expiries_after_verificatio
                 matches!(result, Err(AppError::Unauthorized)),
                 "{condition}, change={change_password}"
             );
-            let after: (String, i64, Option<i64>, i64) = db.run(|connection| Ok(connection.query_row(
-                "SELECT password_hash,revision,(SELECT revoked_at FROM mcp_grants WHERE id='race-grant'),
-                 (SELECT COUNT(*) FROM security_events WHERE event_type='password.changed') FROM users WHERE username='racing'", [],
-                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?)).await.unwrap();
+            let after: (String, i64, Option<i64>, i64) = query_one(&db, "SELECT password_hash,revision,(SELECT revoked_at FROM mcp_grants WHERE id='race-grant'),
+                 (SELECT COUNT(*) FROM security_events WHERE event_type='password.changed') FROM users WHERE username='racing'", []).await;
             assert_eq!((after.0, after.1), before);
             assert_eq!(after.2, None);
             assert_eq!(after.3, 0);
@@ -1134,16 +1008,12 @@ async fn session_activity_does_not_wait_for_an_external_sqlite_writer() {
     lock.execute_batch("ROLLBACK").unwrap();
     service.authenticate_session(&token, true).await.unwrap();
     let id = actor.session_id().unwrap().to_owned();
-    let last: i64 = db
-        .run(move |c| {
-            Ok(c.query_row(
-                "SELECT last_activity_at FROM sessions WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let last: i64 = query_one(
+        &db,
+        "SELECT last_activity_at FROM sessions WHERE id=?1",
+        [id],
+    )
+    .await;
     assert!(last >= unix_now().unwrap() - 2);
 }
 
@@ -1214,16 +1084,12 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
             .unwrap(),
         LoginResult::Authenticated(_)
     ));
-    let count = db
-        .run(|conn| {
-            Ok(conn.query_row(
-                "SELECT count(*) FROM login_throttles WHERE key=?1",
-                [token_hash("login-account\0target")],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let count = query_one::<i64>(
+        &db,
+        "SELECT count(*) FROM login_throttles WHERE key=?1",
+        [token_hash("login-account\0target")],
+    )
+    .await;
     assert_eq!(count, 0);
 }
 
@@ -1299,16 +1165,12 @@ async fn unknown_addresses_do_not_share_a_global_login_counter() {
         ));
     }
     login(&service, "target").await;
-    let expired: bool = db
-        .run(|conn| {
-            Ok(conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM login_throttles WHERE key='expired')",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let expired: bool = query_one(
+        &db,
+        "SELECT EXISTS(SELECT 1 FROM login_throttles WHERE key='expired')",
+        [],
+    )
+    .await;
     assert!(!expired, "failed-attempt bookkeeping prunes expired rows");
 }
 

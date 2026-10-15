@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn cleanup_keeps_the_reservation_until_all_owners_and_temporary_bytes_are_gone() {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let reservations = Reservations::default();
         let disk = DiskAdmission::new(root.path(), 0, reservations.clone());
         let other = DiskAdmission::new(root.path(), 0, reservations);

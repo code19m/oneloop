@@ -14,9 +14,7 @@ const SHARED_RANGE: (u64, u64) = (0x4000_0002, 510);
 #[cfg(unix)]
 #[tokio::test]
 async fn growing_the_pool_keeps_sqlite_lock_on_the_database_file() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (_root, db) = migrated_db();
     // Hold the pool's only connection, so the next operation opens another.
     let (taken, wait_until_taken) = tokio::sync::oneshot::channel();
     let (release, wait_for_release) = std::sync::mpsc::channel::<()>();
@@ -45,6 +43,7 @@ async fn growing_the_pool_keeps_sqlite_lock_on_the_database_file() {
         .args([
             "--exact",
             "db::tests::report_database_lock_holder",
+            "--ignored",
             "--nocapture",
         ])
         .env(LOCK_PROBE_ENV, db.layout().database())
@@ -60,9 +59,9 @@ async fn growing_the_pool_keeps_sqlite_lock_on_the_database_file() {
     );
 }
 
-/// Runs only as the child process of the test above.
 #[cfg(unix)]
 #[test]
+#[ignore = "run only as a subprocess of the lock test above"]
 fn report_database_lock_holder() {
     use rustix::process::{Flock, FlockOffsetType, FlockType, fcntl_getlk};
     let Some(path) = std::env::var_os(LOCK_PROBE_ENV) else {
@@ -91,9 +90,7 @@ fn report_database_lock_holder() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_waiting_for_the_data_lock_goes_before_later_file_operations() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (root, db) = migrated_db();
     // A file operation is under way when a backup asks for the lock alone.
     let running = db.acquire_data_lease().await.unwrap();
     let layout = db.layout().clone();

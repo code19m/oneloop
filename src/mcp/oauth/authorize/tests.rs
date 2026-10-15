@@ -12,9 +12,7 @@ const RESOURCE: &str = "https://tasks.example.test/mcp";
 
 #[tokio::test]
 async fn consent_from_a_session_revoked_after_sign_in_creates_no_code() {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (root, db) = crate::db::migrated_db();
     let config = Config::from_os_iter([
         ("ONELOOP_PUBLIC_URL", "https://tasks.example.test"),
         ("ONELOOP_DATA_DIR", root.path().to_str().unwrap()),
@@ -114,9 +112,7 @@ struct Described {
 }
 
 async fn described() -> Described {
-    let root = tempfile::tempdir_in("target").unwrap();
-    crate::db::migrate(root.path(), None).unwrap();
-    let db = Db::open(root.path()).unwrap();
+    let (root, db) = crate::db::migrated_db();
     let config = Config::from_os_iter([
         ("ONELOOP_PUBLIC_URL", "http://127.0.0.1:8080"),
         ("ONELOOP_DATA_DIR", root.path().to_str().unwrap()),

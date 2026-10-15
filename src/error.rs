@@ -322,23 +322,6 @@ mod tests {
     use axum::{body::to_bytes, response::IntoResponse};
     use serde_json::json;
 
-    #[test]
-    fn validation_errors_expose_structured_field_details() {
-        let error = AppError::validation("title", "must contain 1–140 characters");
-        assert_eq!(
-            error.client_details(),
-            Some(json!({"field":"title","message":"must contain 1–140 characters"}))
-        );
-    }
-
-    #[test]
-    fn non_validation_errors_do_not_expose_internal_details() {
-        assert_eq!(
-            AppError::internal("database exploded").client_details(),
-            None
-        );
-    }
-
     #[tokio::test]
     async fn validation_http_response_keeps_message_and_adds_machine_readable_details() {
         let response =

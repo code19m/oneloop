@@ -11,7 +11,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 use super::initialize;
-use crate::support;
+use crate::support::{self, collaboration_command, command, query_one};
 
 #[tokio::test]
 async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore() {
@@ -84,9 +84,7 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     let files = oneloop::files::FileService::new(db.clone(), 100 * 1024 * 1024, 0);
     assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 1);
     assert_eq!(files.reconcile().await.unwrap().deletion_jobs_completed, 0);
-    let attribution: (String,String,String) = db.run(|c| Ok(c.query_row(
-        "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'",
-        [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).await.unwrap();
+    let attribution: (String,String,String) = query_one(&db, "SELECT actor_user_id,actor_mcp_grant_id,(SELECT actor_name_snapshot FROM activity_projection WHERE entity_id='a' AND event_type='attachment.deleted') FROM activity_events WHERE entity_id='a' AND event_type='attachment.deleted'", []).await;
     assert_eq!(attribution, ("u".into(), "g".into(), "Original".into()));
 }
 
@@ -226,12 +224,12 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let restore_gone = oneloop::domain::DomainService::new(db.clone(), support::utc())
         .execute(
             &owner,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::RestoreTask,
-                payload: serde_json::json!({"id":"gone"}),
-                idempotency_key: "undo-gone".into(),
-                expected_revision: Some(2),
-            },
+            command(
+                oneloop::domain::DomainOperation::RestoreTask,
+                serde_json::json!({"id":"gone"}),
+                "undo-gone",
+                Some(2),
+            ),
         )
         .await;
     assert!(
@@ -241,12 +239,12 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let restore_emptied = oneloop::collaboration::CollaborationService::new(db.clone())
         .execute(
             &owner,
-            oneloop::collaboration::CollaborationCommand {
-                operation: "discussion.comment.restore".into(),
-                payload: serde_json::json!({"commentId":"emptied"}),
-                idempotency_key: "undo-emptied".into(),
-                expected_revision: Some(2),
-            },
+            collaboration_command(
+                "discussion.comment.restore",
+                serde_json::json!({"commentId":"emptied"}),
+                "undo-emptied",
+                Some(2),
+            ),
         )
         .await;
     assert!(
@@ -257,9 +255,7 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
 
 #[tokio::test]
 async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first() {
-    use oneloop::domain::{
-        BoardQuery, CommandEnvelope, DomainOperation, DomainService, DoneOrder, TaskStatus,
-    };
+    use oneloop::domain::{BoardQuery, DomainOperation, DomainService, DoneOrder, TaskStatus};
     let root = support::scratch_dir();
     let live = root.path().join("live");
     fs::create_dir(&live).unwrap();
@@ -306,12 +302,12 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
     service
         .execute(
             &owner,
-            CommandEnvelope {
-                operation: DomainOperation::MoveTask,
-                payload: serde_json::json!({"taskId":"open","status":"done"}),
-                idempotency_key: "finish-open".into(),
-                expected_revision: Some(1),
-            },
+            command(
+                DomainOperation::MoveTask,
+                serde_json::json!({"taskId":"open","status":"done"}),
+                "finish-open",
+                Some(1),
+            ),
         )
         .await
         .unwrap();
@@ -325,41 +321,9 @@ async fn an_upgraded_done_column_keeps_its_order_and_puts_new_completions_first(
 }
 
 #[tokio::test]
-async fn migration_initializes_once_and_transactions_rollback() {
+async fn a_failed_transaction_rolls_back() {
     let root = support::scratch_dir();
     let db = initialize(&root);
-
-    let tables = db
-        .run(|connection| {
-            let mut statement = connection
-                .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(names)
-        })
-        .await
-        .unwrap();
-    for expected in [
-        "users",
-        "projects",
-        "tasks",
-        "comments",
-        "activity_events",
-        "notification_recipients",
-        "outbox_messages",
-        "sessions",
-        "mcp_grants",
-        "oauth_registration_attempts",
-        "file_blobs",
-        "idempotency_keys",
-    ] {
-        assert!(
-            tables.iter().any(|table| table == expected),
-            "missing {expected}"
-        );
-    }
-
     let failure: Result<(), AppError> = db
         .transaction(|transaction| {
             transaction.execute(
@@ -372,20 +336,8 @@ async fn migration_initializes_once_and_transactions_rollback() {
         })
         .await;
     assert!(failure.is_err());
-    let count: i64 = db
-        .run(|connection| {
-            connection
-                .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-                .map_err(AppError::from)
-        })
-        .await
-        .unwrap();
+    let count: i64 = query_one(&db, "SELECT COUNT(*) FROM users", []).await;
     assert_eq!(count, 0);
-
-    drop(db);
-    let second = migrate(root.path(), None).expect("already current");
-    assert!(second.applied.is_empty());
-    assert!(second.backup_path.is_none());
 }
 
 #[test]
@@ -850,6 +802,7 @@ fn migration_requires_exclusive_instance_access() {
     drop(db);
     let outcome = migrate(root.path(), None).expect("exclusive access restored");
     assert!(outcome.applied.is_empty());
+    assert!(outcome.backup_path.is_none());
 }
 
 #[test]

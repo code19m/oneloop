@@ -1,13 +1,16 @@
 use oneloop::{
     auth::ActorSource,
     collaboration::{
-        ActivityInput, CollaborationCommand, CollaborationRuntime, CollaborationService,
-        InboxFilter, NotificationInput, record_activity_tx, snapshot_notification_tx,
+        ActivityInput, CollaborationRuntime, CollaborationService, InboxFilter, NotificationInput,
+        record_activity_tx, snapshot_notification_tx,
     },
 };
 use serde_json::json;
 
-use crate::support::{SeededProject, browser_actor, now, seeded_project};
+use crate::support::{
+    SeededProject, browser_actor, collaboration_command, command, drain, now, query_one,
+    seeded_project,
+};
 
 #[tokio::test]
 async fn backward_clock_steps_split_activity_chains_without_blocking_domain_edits() {
@@ -72,12 +75,12 @@ async fn backward_clock_steps_split_activity_chains_without_blocking_domain_edit
     let updated = domain
         .execute(
             &alice,
-            oneloop::domain::CommandEnvelope {
-                operation: oneloop::domain::DomainOperation::UpdateTask,
-                payload: json!({"taskId":"task","title":"After correction"}),
-                idempotency_key: "clock-corrected-edit".into(),
-                expected_revision: Some(2),
-            },
+            command(
+                oneloop::domain::DomainOperation::UpdateTask,
+                json!({"taskId":"task","title":"After correction"}),
+                "clock-corrected-edit",
+                Some(2),
+            ),
         )
         .await
         .unwrap();
@@ -136,17 +139,13 @@ async fn competing_workers_claim_an_outbox_message_once() {
             .count(),
         1
     );
-    let delivered: i64 = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM notification_recipients
+    let delivered: i64 = query_one(
+        &db,
+        "SELECT COUNT(*) FROM notification_recipients
                  WHERE user_id='bob' AND delivered_at IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+        [],
+    )
+    .await;
     assert_eq!(delivered, 1);
 }
 
@@ -179,19 +178,14 @@ async fn a_burst_is_delivered_in_order_with_one_hint_each() {
     queue_inbox_changes(&db, &ids.iter().map(String::as_str).collect::<Vec<_>>()).await;
     let runtime = CollaborationRuntime::new(db.clone());
     let mut hints = runtime.subscribe();
-    let worker = runtime.worker();
     // How many go in one run depends on time; see the runtime's unit tests.
-    while worker.run_once().await.unwrap() {}
-    let delivered = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NOT NULL",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    drain(&runtime).await;
+    let delivered = query_one::<i64>(
+        &db,
+        "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NOT NULL",
+        [],
+    )
+    .await;
     assert_eq!(delivered, 70);
     let mut order = Vec::new();
     while let Ok(hint) = hints.try_recv() {
@@ -378,12 +372,7 @@ async fn inbox_state_changes_emit_one_private_hint_and_noops_stay_quiet() {
         service
             .execute(
                 &bob,
-                CollaborationCommand {
-                    operation: operation.into(),
-                    payload,
-                    idempotency_key: format!("inbox-state-{index}"),
-                    expected_revision: None,
-                },
+                collaboration_command(operation, payload, &format!("inbox-state-{index}"), None),
             )
             .await
             .unwrap();
@@ -438,8 +427,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
     .await
     .unwrap();
     let runtime = CollaborationRuntime::new(db.clone());
-    let worker = runtime.worker();
-    while worker.run_once().await.unwrap() {}
+    drain(&runtime).await;
     let service = CollaborationService::new(db.clone());
     let first = service
         .inbox(&bob, InboxFilter::default(), None, None)
@@ -462,12 +450,12 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
     service
         .execute(
             &bob,
-            CollaborationCommand {
-                operation: "inbox.bulkMarkRead".into(),
-                payload: json!({"filter":{"projectIds":[],"unreadOnly":true,"archived":false}}),
-                idempotency_key: "bulk-read".into(),
-                expected_revision: None,
-            },
+            collaboration_command(
+                "inbox.bulkMarkRead",
+                json!({"filter":{"projectIds":[],"unreadOnly":true,"archived":false}}),
+                "bulk-read",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -478,7 +466,7 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
     assert_eq!(read.unread_count, 0);
     assert_eq!(read.filtered_count, 55);
 
-    let alice_for_new = browser_actor("alice", "Alice", "sa", now());
+    let alice_for_new = browser_actor("alice", "Alice", "s-alice", now());
     db.transaction(move |tx| {
         snapshot_notification_tx(
             tx,
@@ -499,16 +487,16 @@ async fn inbox_uses_cursor_pages_of_fifty_and_bulk_changes_only_the_filter() {
     })
     .await
     .unwrap();
-    while worker.run_once().await.unwrap() {}
+    drain(&runtime).await;
     service
         .execute(
             &bob,
-            CollaborationCommand {
-                operation: "inbox.bulkArchive".into(),
-                payload: json!({"filter":{"projectIds":[],"unreadOnly":true,"archived":false}}),
-                idempotency_key: "bulk-archive".into(),
-                expected_revision: None,
-            },
+            collaboration_command(
+                "inbox.bulkArchive",
+                json!({"filter":{"projectIds":[],"unreadOnly":true,"archived":false}}),
+                "bulk-archive",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -650,8 +638,7 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
     })
     .await
     .unwrap();
-    let worker = CollaborationRuntime::new(db.clone()).worker();
-    while worker.run_once().await.unwrap() {}
+    drain(&CollaborationRuntime::new(db.clone())).await;
     db.run(|connection| {
         connection.execute("UPDATE tasks SET deleted_at=1 WHERE id='task'", [])?;
         Ok(())
@@ -688,12 +675,12 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
     service
         .execute(
             &bob,
-            CollaborationCommand {
-                operation: "inbox.archive".into(),
-                payload: json!({"notificationId": notification_id}),
-                idempotency_key: "archive-retention".into(),
-                expected_revision: None,
-            },
+            collaboration_command(
+                "inbox.archive",
+                json!({"notificationId": notification_id}),
+                "archive-retention",
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -720,12 +707,12 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
         service
             .execute(
                 &bob,
-                CollaborationCommand {
-                    operation: operation.into(),
-                    payload: json!({"notificationId":notification_id}),
-                    idempotency_key: format!("before-expiry-{operation}"),
-                    expected_revision: None,
-                },
+                collaboration_command(
+                    operation,
+                    json!({"notificationId":notification_id}),
+                    &format!("before-expiry-{operation}"),
+                    None,
+                ),
             )
             .await
             .unwrap();
@@ -757,12 +744,12 @@ async fn inbox_sql_filter_preserves_redaction_counts_and_archive_retention() {
             let error = service
                 .execute(
                     &bob,
-                    CollaborationCommand {
-                        operation: operation.into(),
-                        payload: json!({"notificationId":expired_id}),
-                        idempotency_key: format!("expired-{purge}-{operation}"),
-                        expected_revision: None,
-                    },
+                    collaboration_command(
+                        operation,
+                        json!({"notificationId":expired_id}),
+                        &format!("expired-{purge}-{operation}"),
+                        None,
+                    ),
                 )
                 .await
                 .unwrap_err();
@@ -882,18 +869,10 @@ async fn activity_uses_a_fixed_window_and_projects_before_cursor_pagination() {
     assert_eq!(older.items[0].before, Some(json!("a")));
     assert_eq!(older.items[0].after, Some(json!("c")));
     assert_eq!(older.items[0].created_at, base + 200);
-    let counts: (i64, i64) = db
-        .run(|connection| {
-            Ok((
-                connection
-                    .query_row("SELECT COUNT(*) FROM activity_events", [], |row| row.get(0))?,
-                connection.query_row("SELECT COUNT(*) FROM activity_projection", [], |row| {
-                    row.get(0)
-                })?,
-            ))
-        })
-        .await
-        .unwrap();
+    let counts: (i64, i64) = (
+        query_one(&db, "SELECT COUNT(*) FROM activity_events", []).await,
+        query_one(&db, "SELECT COUNT(*) FROM activity_projection", []).await,
+    );
     assert_eq!(counts, (4, 3));
 }
 
@@ -1005,17 +984,13 @@ async fn activity_snapshots_authenticated_app_provenance_without_browser_forgery
     assert!(browser.actor_mcp_grant_id.is_none());
     assert!(browser.actor_app_name.is_none());
 
-    let raw: (Option<String>, String) = db
-        .run(|connection| {
-            Ok(connection.query_row(
-                "SELECT actor_mcp_grant_id,metadata_json FROM activity_events
+    let raw: (Option<String>, String) = query_one(
+        &db,
+        "SELECT actor_mcp_grant_id,metadata_json FROM activity_events
                  WHERE field_key='title'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+        [],
+    )
+    .await;
     assert_eq!(raw.0.as_deref(), Some("grant-1"));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&raw.1).unwrap()["actorAppName"],
@@ -1147,18 +1122,6 @@ async fn consolidated_activity_uses_the_latest_web_or_app_source() {
 }
 
 #[tokio::test]
-async fn runtime_shutdown_notifies_long_lived_streams_immediately() {
-    let SeededProject {
-        root: _root, db, ..
-    } = seeded_project().await;
-    let runtime = CollaborationRuntime::new(db);
-    let mut shutdown = runtime.shutdown_receiver();
-    runtime.shutdown();
-    shutdown.changed().await.unwrap();
-    assert!(*shutdown.borrow());
-}
-
-#[tokio::test]
 async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() {
     let SeededProject {
         root: _root,
@@ -1166,7 +1129,7 @@ async fn personal_pool_activity_is_owner_private_even_from_members_and_admins() 
         alice,
         bob,
     } = seeded_project().await;
-    let mut dave = browser_actor("dave", "Dave", "sd", now());
+    let mut dave = browser_actor("dave", "Dave", "s-dave", now());
     dave.is_admin = true;
     let event_time = now() - 2;
     db.transaction({

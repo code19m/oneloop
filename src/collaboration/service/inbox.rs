@@ -316,11 +316,11 @@ fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{query_plan, test_database};
+    use crate::db::{migrated_connection, query_plan};
 
     #[test]
     fn the_archive_purge_reads_only_archived_items() {
-        let (_root, connection) = test_database();
+        let (_root, connection) = migrated_connection();
         let plan = query_plan(&connection, PURGE_ARCHIVED_SQL);
         assert!(plan.contains("notification_archived_idx"), "{plan}");
     }

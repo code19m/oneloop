@@ -1,6 +1,6 @@
 //! Integration tests for oneloop, built as one crate so Cargo compiles and
 //! links a single test binary. Each module covers one area of the product;
-//! `support` holds the only helpers shared between areas.
+//! `support` holds the helpers that areas share.
 //!
 //! Run one area with `cargo test --locked --test integration files::`.
 

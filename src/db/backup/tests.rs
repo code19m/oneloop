@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn backup_validation_requires_every_available_blob_to_match_the_snapshot() {
     for replacement in [None, Some(&b"changed!"[..]), Some(&b"short"[..])] {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let live = root.path().join("live");
         migration::migrate(&live, None).unwrap();
         fs::create_dir_all(live.join("files/aa")).unwrap();
@@ -42,7 +42,7 @@ fn backup_validation_requires_every_available_blob_to_match_the_snapshot() {
 #[test]
 fn backup_requires_the_knowledge_key_only_when_credentials_exist() {
     for credential in ["token", "deploy key"] {
-        let root = tempfile::tempdir_in("target").unwrap();
+        let root = tempfile::tempdir().unwrap();
         let live = root.path().join("live");
         migration::migrate(&live, None).unwrap();
         fs::remove_dir(live.join("keys")).unwrap();
@@ -87,7 +87,7 @@ fn backup_requires_the_knowledge_key_only_when_credentials_exist() {
 
 #[test]
 fn pinned_original_survives_deletion_and_manifest_preflight_fails_early() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let layout = DataLayout::new(root.path().join("live"));
     layout.ensure_runtime_directories().unwrap();
     let original = layout.files().join("aa/bb/blob");
@@ -164,7 +164,7 @@ fn soon(mut step: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let record = root.path().join(OWNER_FILE);
     let gone = exited_pid();
     plant(&record, &owner("backup", gone));
@@ -198,7 +198,7 @@ fn only_a_writer_that_is_gone_from_this_host_gives_up_its_work() {
 
 #[test]
 fn a_backup_removes_only_copies_whose_writer_is_gone() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let live = root.path().join("live");
     migration::migrate(&live, None).unwrap();
     let parent = root.path().join("backups");
@@ -223,7 +223,7 @@ fn a_backup_removes_only_copies_whose_writer_is_gone() {
 #[test]
 fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
     use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let gone = exited_pid();
     // Filesystems list a folder by name, by creation in either direction, or
     // by a hash of the names. Each copy has its own name for the part that
@@ -280,7 +280,7 @@ fn a_cleanup_that_stops_halfway_keeps_the_record_for_another_try() {
 
 #[test]
 fn a_restore_removes_only_the_marker_it_claimed() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let marker = root.path().join(crate::db::RESTORE_MARKER);
     plant(&marker, &owner("restore", exited_pid()));
     let (lock, _) = claim_abandoned(&marker).unwrap();
@@ -308,7 +308,7 @@ fn a_restore_removes_only_the_marker_it_claimed() {
 
 #[test]
 fn a_claimed_marker_leaves_its_path_before_its_lock_is_released() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let marker = root.path().join(crate::db::RESTORE_MARKER);
     plant(&marker, &owner("restore", exited_pid()));
     let (lock, _) = claim_abandoned(&marker).unwrap();
@@ -340,7 +340,7 @@ fn a_claimed_marker_leaves_its_path_before_its_lock_is_released() {
 
 #[test]
 fn restoring_again_removes_only_what_an_interrupted_restore_left() {
-    let root = tempfile::tempdir_in("target").unwrap();
+    let root = tempfile::tempdir().unwrap();
     let live = root.path().join("live");
     migration::migrate(&live, None).unwrap();
     let backup = root.path().join("backup");

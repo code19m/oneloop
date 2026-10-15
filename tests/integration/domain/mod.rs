@@ -9,12 +9,11 @@ use std::collections::HashSet;
 
 use axum::body::Body;
 use oneloop::{
-    AppError, AppState, Db,
-    auth::{Actor, ActorSource, token_hash},
+    AppError, Db,
+    auth::{Actor, token_hash},
     collaboration::{ActivityInput, CollaborationService, record_activity_tx},
     domain::{
-        BoardQuery, BoardViewQuery, BootstrapQuery, CommandEnvelope, DomainOperation,
-        DomainService, DoneOrder,
+        BoardQuery, BoardViewQuery, BootstrapQuery, DomainOperation, DomainService, DoneOrder,
     },
 };
 use rusqlite::params;
@@ -23,7 +22,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::support::http::body_bytes;
-use crate::support::{self, now};
+use crate::support::{self, collaboration_command, command, drain, now, query_one};
 
 struct Fixture {
     _root: TempDir,
@@ -77,8 +76,7 @@ fn session_token(user_id: &str) -> String {
 }
 
 fn router(f: &Fixture) -> axum::Router {
-    let config = support::config(f._root.path(), "http://127.0.0.1:8080", &[]);
-    oneloop::application(AppState::new(config, f.db.clone())).router
+    support::app(f._root.path(), &f.db, "http://127.0.0.1:8080", &[]).router
 }
 
 /// A GET request signed in as the fixture user `user_id`, such as `u2`.
@@ -91,20 +89,6 @@ fn signed_in_get(user_id: &str, uri: &str) -> axum::http::Request<Body> {
         )
         .body(Body::empty())
         .unwrap()
-}
-
-fn command(
-    operation: DomainOperation,
-    payload: Value,
-    key: &str,
-    revision: Option<i64>,
-) -> CommandEnvelope {
-    CommandEnvelope {
-        operation,
-        payload,
-        idempotency_key: key.into(),
-        expected_revision: revision,
-    }
 }
 
 async fn seed_ordering_column(f: &Fixture, count: i64) {
