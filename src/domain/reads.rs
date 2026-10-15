@@ -7,7 +7,6 @@ use jiff::{
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::{
     access::{self, Need, require_project},
@@ -166,16 +165,6 @@ impl DomainService {
                     memberships: memberships(connection, &project_id)?,
                     users: users(connection, &actor, &project_id)?,
                 })
-            })
-            .await
-    }
-
-    pub async fn sync_cursor(&self, actor: &Actor) -> AppResult<String> {
-        let actor = actor.clone();
-        self.db
-            .snapshot(move |connection| {
-                refresh_actor_connection(connection, &actor)?;
-                snapshot_cursor(connection)
             })
             .await
     }
@@ -1359,37 +1348,6 @@ fn resolve_task_id(connection: &rusqlite::Connection, value: &str) -> AppResult<
     connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional().map_err(Into::into)
 }
 
-// Both logs are append-only for mutations affecting bootstrap data. Compare
-// their last inserted identities, not timestamps (multiple writes share a second).
-fn snapshot_cursor(connection: &rusqlite::Connection) -> AppResult<String> {
-    let outbox: Option<String> = connection
-        .query_row(
-            "SELECT id FROM outbox_messages ORDER BY rowid DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let security: Option<String> = connection
-        .query_row(
-            "SELECT id FROM security_events ORDER BY rowid DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    // Delivery changes Inbox visibility without appending another outbox row.
-    let pending: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM outbox_messages WHERE delivered_at IS NULL",
-        [],
-        |row| row.get(0),
-    )?;
-    let boundary = format!(
-        "{}:{}:{pending}",
-        outbox.as_deref().unwrap_or("0"),
-        security.as_deref().unwrap_or("0")
-    );
-    Ok(hex::encode(Sha256::digest(boundary.as_bytes())))
-}
-
 fn bootstrap_snapshot(
     connection: &rusqlite::Connection,
     actor: &Actor,
@@ -1449,7 +1407,7 @@ fn bootstrap_snapshot(
         board_counts: None,
         board_pages: Default::default(),
         pool_counts: Default::default(),
-        sync_cursor: snapshot_cursor(connection)?,
+        sync_cursor: crate::collaboration::sync_cursor(connection)?,
     };
     if let Some(project_id) = selected.as_deref() {
         result.memberships = memberships(connection, project_id)?;

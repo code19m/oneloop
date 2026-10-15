@@ -66,6 +66,9 @@ All notable changes to oneloop are recorded here. The format follows
 - In MCP, `search_tasks` without a status now reads all four columns at one
   moment. Before, a task that moved while it was read could show up twice or
   not at all.
+- When a person opens more than 16 tabs, the oldest tab is now always told
+  that it was closed, even when it was behind on updates. Before, such a tab
+  could reconnect at once and close another tab.
 
 ### Security
 

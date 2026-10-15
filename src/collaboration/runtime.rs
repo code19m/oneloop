@@ -20,6 +20,10 @@ use crate::{AppError, AppResult, Db, access::can_read_project};
 
 use super::{CollaborationService, SseHint};
 
+mod live;
+pub use live::LiveEvent;
+pub(crate) use live::sync_cursor;
+
 /// One delivery transaction takes at most this many messages, and stops
 /// taking more after `BATCH_TIME`, so it holds the writer only briefly.
 const BATCH_MESSAGES: usize = 64;
@@ -33,9 +37,6 @@ const MINUTE: Duration = Duration::from_secs(60);
 const HOUR: Duration = Duration::from_secs(60 * 60);
 const DELIVERABLE_TOPICS: &str =
     "'notification.created','domain.activity','inbox.state_changed','access.changed'";
-/// Live-update streams one person may keep open, a small share of the
-/// server's connections. A browser tab holds one while it is shown.
-pub(crate) const STREAMS_PER_PERSON: usize = 16;
 
 #[derive(Clone)]
 pub struct CollaborationRuntime {
@@ -47,48 +48,7 @@ struct RuntimeInner {
     hints: broadcast::Sender<Arc<SseHint>>,
     authorization: Semaphore,
     shutdown: watch::Sender<bool>,
-    streams: Mutex<Streams>,
-}
-
-/// The open live-update streams of each person, oldest first, each with the
-/// token that closes it.
-#[derive(Default)]
-struct Streams {
-    opened: u64,
-    open: HashMap<String, VecDeque<(u64, CancellationToken)>>,
-}
-
-/// One person's live-update stream, counted until it is dropped.
-pub(crate) struct LiveStream {
-    runtime: CollaborationRuntime,
-    user_id: String,
-    id: u64,
-    replaced: CancellationToken,
-}
-
-impl LiveStream {
-    /// Completes when the person opened so many newer streams that this one
-    /// must close.
-    pub(crate) async fn replaced(&self) {
-        self.replaced.cancelled().await;
-    }
-}
-
-impl Drop for LiveStream {
-    fn drop(&mut self) {
-        let mut streams = self
-            .runtime
-            .inner
-            .streams
-            .lock()
-            .expect("live stream registry lock");
-        if let Some(open) = streams.open.get_mut(&self.user_id) {
-            open.retain(|(id, _)| *id != self.id);
-            if open.is_empty() {
-                streams.open.remove(&self.user_id);
-            }
-        }
-    }
+    streams: Mutex<live::Streams>,
 }
 
 impl CollaborationRuntime {
@@ -101,35 +61,8 @@ impl CollaborationRuntime {
                 hints,
                 authorization: Semaphore::new(2),
                 shutdown,
-                streams: Mutex::new(Streams::default()),
+                streams: Mutex::new(live::Streams::default()),
             }),
-        }
-    }
-
-    /// Counts a new live-update stream of `user_id`. Beyond
-    /// `STREAMS_PER_PERSON`, the person's oldest stream is told to close;
-    /// browsers reconnect a stream that closes.
-    pub(crate) fn open_stream(&self, user_id: &str) -> LiveStream {
-        let replaced = CancellationToken::new();
-        let mut streams = self
-            .inner
-            .streams
-            .lock()
-            .expect("live stream registry lock");
-        streams.opened += 1;
-        let id = streams.opened;
-        let open = streams.open.entry(user_id.to_owned()).or_default();
-        open.push_back((id, replaced.clone()));
-        while open.len() > STREAMS_PER_PERSON {
-            if let Some((_, oldest)) = open.pop_front() {
-                oldest.cancel();
-            }
-        }
-        LiveStream {
-            runtime: self.clone(),
-            user_id: user_id.to_owned(),
-            id,
-            replaced,
         }
     }
 
@@ -141,8 +74,8 @@ impl CollaborationRuntime {
         self.inner.hints.subscribe()
     }
 
-    /// SSE checks queue here before entering the shared database admission pool.
-    /// No authorization result is cached between deliveries.
+    /// Live-update checks queue here before they take a database connection.
+    /// Tests hold permits to delay those checks.
     pub async fn authorization_permit(&self) -> SemaphorePermit<'_> {
         self.inner
             .authorization

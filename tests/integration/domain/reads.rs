@@ -74,10 +74,7 @@ async fn notifications_wait_for_delivery_and_lose_deleted_task_context() {
     let worker = oneloop::collaboration::CollaborationRuntime::new(f.db.clone()).worker();
     while worker.run_once().await.unwrap() {}
     let delivered = f.service.bootstrap(&f.member, query()).await.unwrap();
-    assert_ne!(
-        pending.sync_cursor,
-        f.service.sync_cursor(&f.member).await.unwrap()
-    );
+    assert_ne!(pending.sync_cursor, delivered.sync_cursor);
     assert_eq!(delivered.inbox_unread_count, 1);
     assert!(read_inbox().await.unwrap().items[0].destination_available);
     f.service
