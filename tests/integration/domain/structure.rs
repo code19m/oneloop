@@ -211,6 +211,41 @@ async fn epic_panel_reads_every_task_and_real_activity_in_bounded_pages() {
     assert_eq!(older.items.len(), 1);
     assert_ne!(older.items[0].id, activity.items[0].id);
     assert!(older.items[0].event_type.starts_with("epic."));
+
+    // An activity page holds up to 100 items, like all other activity.
+    let manager = fixture.manager.clone();
+    fixture
+        .db
+        .transaction(move |tx| {
+            for index in 0..100 {
+                record_activity_tx(
+                    tx,
+                    &manager,
+                    ActivityInput {
+                        project_id: Some("p1"),
+                        entity_type: "epic",
+                        entity_id: "e1",
+                        task_id: None,
+                        event_type: "epic.updated",
+                        field_key: Some(&format!("field-{index}")),
+                        before: None,
+                        after: Some(json!(index)),
+                        metadata: json!({}),
+                        entity_revision: None,
+                    },
+                    now,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let page = discussion
+        .epic_activity(&fixture.member, "e1", None, Some(100))
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 100);
+    assert!(page.next_cursor.is_some());
 }
 
 #[tokio::test]

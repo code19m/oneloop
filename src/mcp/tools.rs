@@ -544,7 +544,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_epic",
-        description = "Read one epic's tasks and consolidated epic activity. Tasks and activity use independent cursors; each page is limited to at most 50 items.",
+        description = "Read one epic's tasks and consolidated epic activity. Tasks and activity use independent cursors; a task page holds at most 50 items and an activity page at most 100.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
