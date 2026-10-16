@@ -307,10 +307,7 @@ pub(super) fn move_task(
             "provide one of position, beforeTaskId or afterTaskId when reordering a column",
         ));
     }
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3",
-        params![before.project_id, status, input.task_id], |r| r.get(0))?;
-    let position = if let Some(anchor) = input
+    let requested = if let Some(anchor) = input
         .before_task_id
         .as_deref()
         .or(input.after_task_id.as_deref())
@@ -327,29 +324,37 @@ pub(super) fn move_task(
         let index: i64 = tx.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3 AND position<?4",
             params![before.project_id, status, input.task_id, anchor_position], |r| r.get(0))?;
-        index + i64::from(input.after_task_id.is_some())
+        Some(index + i64::from(input.after_task_id.is_some()))
     } else {
         input
             .position
             .map(i64::try_from)
             .transpose()
             .map_err(|_| AppError::validation("position", "is outside the status column"))?
-            .unwrap_or(count)
     };
-    if position > count {
-        return Err(AppError::validation(
-            "position",
-            "is outside the status column",
-        ));
-    }
-    if status == before.status && old_index == position {
+    if status == before.status && requested == Some(old_index) {
         return Err(AppError::validation(
             "position",
             "task is already at that position",
         ));
     }
-    let stored_position =
-        task_insert_position(tx, &before.project_id, status, &input.task_id, position)?;
+    // The task's index in the destination column, which the activity records.
+    let (position, stored_position) = match requested {
+        Some(index) => (
+            index,
+            task_insert_position(tx, &before.project_id, status, &input.task_id, index)?,
+        ),
+        // An append comes from another column, so the count reads only an
+        // index, and the end of the column is one lookup.
+        None => (
+            tx.query_row(
+                "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL",
+                params![before.project_id, status],
+                |r| r.get(0),
+            )?,
+            task_append_position(tx, &before.project_id, status)?,
+        ),
+    };
     tx.execute(
         MOVE_TASK_SQL,
         params![

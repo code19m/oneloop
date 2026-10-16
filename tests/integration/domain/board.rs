@@ -595,6 +595,8 @@ proptest::proptest! {
                 json!({"taskId":ids[0],"status":"planning","position":0,"beforeTaskId":ids[1]}),
                 json!({"taskId":ids[0],"status":"planning","beforeTaskId":"missing-anchor"}),
                 json!({"taskId":ids[0],"status":"planning","afterTaskId":"missing-anchor"}),
+                // Past the end of any column of the six tasks.
+                json!({"taskId":ids[0],"status":"planning","position":6}),
             ] {
                 let task = ids[0].clone();
                 let revision: i64 = query_one(&f.db, "SELECT revision FROM tasks WHERE id=?1", [task]).await;
