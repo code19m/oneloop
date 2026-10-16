@@ -49,8 +49,8 @@ function boardTasks() {
 export function renderBoard({column=null,excludeIds=null}={}) {
   const ts = boardTasks();
   const filtered = boardFiltered(boardFilters());
-  // A session that starts on another page, such as the Roadmap, has no cards until the Board's first read lands.
-  if (!ts.length && D.boardPageInfo?.projectId !== state.projectId) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
+  // A session that starts on another page, such as the Roadmap or a link to a task, has none of the Board's cards until its first read lands.
+  if (D.boardPageInfo?.projectId !== state.projectId) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
   if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
   const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
     const list = ts.filter((t) => t.state === c.key);

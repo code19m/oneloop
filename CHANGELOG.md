@@ -68,8 +68,9 @@ All notable changes to oneloop are recorded here. The format follows
   field. The page also stays at the comment you were reading. Before, it
   could jump away by several comments.
 - The Board now shows its loading placeholder while its cards load, when you
-  open it from another page such as the Roadmap. Before, it said "No tasks
-  yet" and offered **Create task** until the cards arrived.
+  open it from another page, such as the Roadmap or a task you opened from a
+  link. Before, it said "No tasks yet" and offered **Create task**, or showed
+  only that task, until the cards arrived.
 - Closing a file preview now gives focus back to the file name that opened
   it, also when the task's attachments changed while the preview showed.
   Before, keyboard users landed at the top of the page.
