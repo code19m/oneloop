@@ -23,7 +23,7 @@ function page(context){
   });
   const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap'),boardView:held('boardView'),board:held('board')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
-  const app={context:()=>context,refresh(){},refreshCounts(){},refreshBackground(){},refreshRoadmap(){},updateDocumentTitle(){}};
+  const app={context:()=>context,refresh(){},refreshCounts(){},refreshRoadmap(){},refreshTask(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
   const reload=createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>null,getRecovery:()=>recovery,location:{get hash(){return context.hash??'#/roadmap';}}});
   return {data,calls,bootstrap,reads,reload,next:name=>calls.find(call=>call.name===name&&!call.done&&(call.done=true)),

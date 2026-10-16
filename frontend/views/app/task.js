@@ -289,6 +289,14 @@ Object.assign(App, {
     page.querySelector('.task-property-date')?.classList.toggle('late', late);
     page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);
   },
+  /**
+   * Show the open task as it is saved now, after a change from elsewhere,
+   * such as a teammate, another tab or an MCP agent: its header, Status,
+   * title and description at once, in place, and the rest of the page once
+   * focus leaves it. The field being typed in keeps what the person is
+   * typing.
+   */
+  refreshTask(id) { App.refreshTaskHeader(); App.refreshTaskDrafts(id); App.refreshBackground(); },
   noteTaskSaving: taskSaving,
   clearTaskSaving,
   retryTaskActivity(id){retryTaskPage(id);},

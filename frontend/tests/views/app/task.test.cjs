@@ -291,17 +291,46 @@ test('a saved status shows in the header, the Status icon and Block task while S
   assert.equal(t.d.activeElement, select);
 });
 
+/**
+ * A task page on which someone else changes BIR-079 to `fields`. A live hint
+ * names the task, and the epic too when the change also moved the epic, such
+ * as a first move to In Progress. The page then reads the task, or the whole
+ * workspace, as boot.js wires it.
+ */
+function changedElsewhere(options = {}) {
+  let latest = null, reload;
+  const t = bootApp({ route: 'task/BIR-079', actions: true, ...options, api: { task: async () => latest }, reloadBootstrap: scope => reload(scope) });
+  const { replaceTaskDetail } = t.module('src/data/projection-store.js');
+  const bootstrap = { idle: async () => {}, load: async () => { if (latest) replaceTaskDetail(t.D, latest); return { stale: false }; } };
+  reload = t.module('src/app/projection-reload.js').createProjectionReload({ data: t.D, bootstrap, reads: t.reads, getApp: () => t.A, getBridge: () => null, getRecovery: () => t.w.Recovery, location: t.w.location });
+  return { ...t, change(entityTypes, fields) {
+    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
+    for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: 2 });
+  } };
+}
+const hintsOfAChange = [['task'], ['epic', 'task']];
+
 test('a status changed elsewhere shows at once in the header and Status, while the description being typed in stays', async () => {
-  const view = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'in_progress', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2 };
-  const t = bootApp({ route: 'task/BIR-079', api: { task: async () => view } });
-  const description = t.d.getElementById('task-description'), status = t.d.getElementById('select-tpState');
-  description.focus(); description.value = 'Typed while a teammate works';
-  t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: 2 });
-  await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', 'the header shows the new status');
-  assert.equal(status.querySelector('.sel-label').textContent, 'In Progress'); assert.equal(status.dataset.tip, 'In Progress');
-  assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
-  t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
-  assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere(), description = t.d.getElementById('task-description'), status = t.d.getElementById('select-tpState');
+    description.focus(); description.value = 'Typed while a teammate works';
+    t.change(hints, { status: 'in_progress' });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', `the header shows the new status (hints: ${hints})`);
+    assert.equal(status.querySelector('.sel-label').textContent, 'In Progress'); assert.equal(status.dataset.tip, 'In Progress');
+    assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
+    t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
+    assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+  }
+});
+
+test('a description changed elsewhere shows at once, also while focus is on the task page', async () => {
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });
+    const edit = t.d.querySelector('.description-edit'); edit.focus();
+    t.change(hints, { description: 'Written by an agent' });
+    await waitFor(() => t.d.getElementById('task-description-content').textContent.trim() === 'Written by an agent', `the description shows the new text (hints: ${hints})`);
+    assert.equal(t.d.activeElement, edit);
+  }
 });
 
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
