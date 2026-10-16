@@ -19,6 +19,9 @@ All notable changes to oneloop are recorded here. The format follows
   write a day later no longer holds up all other writes while it removes the
   expired retry keys. Database maintenance now removes them, a batch at a
   time. Before, 50,000 expired keys held up writes for about a second.
+- When several sign-in limits apply at once, "Try again in …" and the
+  `Retry-After` header now give the longest wait. Before, they could give a
+  shorter one, and the next attempt was refused again.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -1099,6 +1099,42 @@ async fn distributed_login_failures_share_an_account_delay_and_clear_after_succe
 }
 
 #[tokio::test]
+async fn a_sign_in_delayed_by_several_limits_waits_for_the_longest() {
+    let (_directory, db) = database();
+    add_user(&db, "target", false, false).await;
+    let service = auth_service(&db);
+    let metadata = SessionMetadata {
+        client_ip: Some("198.51.100.20".into()),
+        ..Default::default()
+    };
+    // Five failures from one address delay that pair for 30 seconds.
+    for _ in 0..5 {
+        assert!(matches!(
+            service
+                .login("target", "wrong", metadata.clone(), None)
+                .await,
+            Err(AppError::InvalidCredentials)
+        ));
+    }
+    let account = token_hash("login-account\0target");
+    db.run(move |connection| {
+        connection.execute(
+            "UPDATE login_throttles SET blocked_until=?1 WHERE key=?2",
+            rusqlite::params![now() + 60, account],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        service.login("target", "wrong", metadata, None).await,
+        Err(AppError::RateLimited {
+            retry_after: 59..=60
+        })
+    ));
+}
+
+#[tokio::test]
 async fn ipv6_subnet_login_throttle_preserves_exact_session_address() {
     let (_directory, db) = database();
     add_user(&db, "target", false, false).await;
