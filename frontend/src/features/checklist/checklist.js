@@ -8,10 +8,10 @@
 
 import { escapeHtml as esc } from '../../app/markup.js';
 import { UIMotion } from '../../app/motion.js';
+import { patchInPlace, placeRows } from '../../app/rows.js';
 import { sortable } from '../../app/sortable.js';
 import { setTrustedHTML } from '../../app/trusted-types.js';
 import { fileIcons as icons } from '../files/preview.js';
-import { patchInPlace, placeRows } from '../../../views/app/rows.js';
 
 /** @typedef {{id:string,taskId:string,title:string,done:boolean,revision:number}} ChecklistItem */
 /** @typedef {{id:string,checklist?:ChecklistItem[]}} ChecklistTask */

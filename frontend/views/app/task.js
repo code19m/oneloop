@@ -4,6 +4,7 @@
    the save status in its top bar. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { fadeOutRows, placeRows } from '../../src/app/rows.js';
 import { checklistHtml, refreshChecklist } from '../../src/features/checklist/checklist.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
@@ -17,7 +18,6 @@ import {
   App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
-import { fadeOutRows, placeRows } from './rows.js';
 
 let taskSaveFeedback = null, taskSaveTimer;
 function clearTaskSaved() {

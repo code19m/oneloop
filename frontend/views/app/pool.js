@@ -3,12 +3,12 @@
    a task from an item. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { patchInPlace, placeRows } from '../../src/app/rows.js';
 import { optionalMark } from './controls.js';
 import { I, UIAction, esc, setHTML } from './format.js';
 import { mountDescription, taskModalHtml } from './forms.js';
 import { App, D, canBoard, me, poolItems, poolTotal, report, runtime, state } from './model.js';
 import { closePop, stampOverlays } from './overlays.js';
-import { patchInPlace, placeRows } from './rows.js';
 
 function poolRowHtml(p) {
   const writable=p.scope==='mine'?p.ownerId===me()?.id:canBoard();

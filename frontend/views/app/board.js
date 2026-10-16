@@ -3,6 +3,7 @@
    saves that roll back when the server refuses. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { patchInPlace, placeRows } from '../../src/app/rows.js';
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
 } from '../../src/data/board-filters.js';
@@ -19,7 +20,6 @@ import {
   projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
-import { patchInPlace, placeRows } from './rows.js';
 import { announce } from './toasts.js';
 
 const COLS = [
