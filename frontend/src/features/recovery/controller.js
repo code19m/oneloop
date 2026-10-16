@@ -492,10 +492,12 @@ export function createRecoveryController({
     return reconcilePromise;
   }
 
+  // A probe that skips its read still schedules the next one, so probes go on
+  // after an outage.
   async function probeAccess() {
-    if(disposed||!data?.session||data.session.temporary||!apiReachable)return;
-    const context=getApp()?.context();if(!context)return;
     try{
+      if(disposed||!data?.session||data.session.temporary||!apiReachable)return;
+      const context=getApp()?.context();if(!context)return;
       // The open live stream reports lost access, and a hidden tab reconciles
       // when it shows again.
       if(liveOpen&&!resumeLive||documentObject.visibilityState==='hidden')return;

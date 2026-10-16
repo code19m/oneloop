@@ -76,6 +76,10 @@ All notable changes to oneloop are recorded here. The format follows
 - When several sign-in limits apply at once, "Try again in …" and the
   `Retry-After` header now give the longest wait. Before, they could give a
   shorter one, and the next attempt was refused again.
+- After oneloop could not be reached for a while, a tab without live updates,
+  such as one whose updates a newer tab took over, again checks every 30
+  seconds that you still have access. Before, it stopped checking until you
+  signed in again, so it didn't notice when you lost access to a project.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
