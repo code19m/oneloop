@@ -73,9 +73,10 @@ const milestones = [
 const featured = 'Balance cards carousel';
 const blocked = 'Instant transfer confirmation sheet';
 
-// Created in this order, which is also their order within each column; the
-// Planning tasks are added later than the rest. `status` is where each task
-// ends up; a deadline is in days from today.
+// Listed in their order within each column, from the top. The Planning tasks
+// are added later than the rest. `status` is where each task ends up; a
+// deadline is in days from today; `checklist` has the task's steps and how
+// many of them are done.
 const tasks = [
   { title: 'Typography and spacing tokens', epic: 'system', status: 'done', assignees: ['priya'] },
   { title: 'Icon set export for iOS and Android', epic: 'system', status: 'done', assignees: ['priya'] },
@@ -85,16 +86,20 @@ const tasks = [
   { title: featured, epic: 'home', status: 'in_progress', assignees: ['daniel'], deadline: 3,
     description: 'Swipeable balance cards at the top of the accounts home, one per account. The next card '
       + 'peeks in from the edge, and tapping a card opens the account. Three cards for the beta; the rest '
-      + 'go behind All accounts.' },
+      + 'go behind All accounts.',
+    checklist: { done: 4, steps: ['Next card peeks in from the edge', 'Tap a card to open the account',
+      'Fit balances over 1,000,000', 'Build on TestFlight', 'Snapshot tests pass'] } },
   { title: blocked, epic: 'payments', status: 'in_progress', assignees: ['sofia'],
     description: 'The sheet that confirms an instant transfer: amount, fee, payee and arrival time.' },
   { title: 'Recent transactions list', epic: 'home', status: 'in_progress', assignees: ['sofia', 'daniel'] },
   { title: 'Welcome screen illustrations', epic: 'onboarding', status: 'in_progress', assignees: ['priya'] },
   { title: 'Idempotent transfer requests', epic: 'payments', status: 'in_progress', assignees: ['kenji'] },
-  { title: 'Payee search with fuzzy matching', epic: 'payments', status: 'in_review', assignees: ['kenji'], deadline: 1 },
+  { title: 'Payee search with fuzzy matching', epic: 'payments', status: 'in_review', assignees: ['kenji'], deadline: 1,
+    checklist: { done: 3, steps: ['Index payee names', 'Match names despite typos', 'Rank recent payees first'] } },
   { title: 'Biometric sign-in on Android', epic: 'onboarding', status: 'in_review', assignees: ['sofia'] },
   { title: 'Dark mode for the accounts home', epic: 'home', status: 'in_review', assignees: ['priya', 'daniel'] },
-  { title: 'Accessibility review of the accounts home', epic: 'home', status: 'planning', assignees: ['priya'], deadline: 9 },
+  { title: 'Accessibility review of the accounts home', epic: 'home', status: 'planning', assignees: ['priya'], deadline: 9,
+    checklist: { done: 0, steps: ['Contrast of the balance cards', 'Screen reader order', 'Larger text sizes'] } },
   { title: 'Card freeze and unfreeze', epic: 'cards', status: 'planning', assignees: ['daniel'] },
   { title: 'Per-category spending limits', epic: 'cards', status: 'planning', assignees: [] },
   { title: 'Notification preferences screen', epic: 'push', status: 'planning', assignees: ['sofia'] },
@@ -246,21 +251,32 @@ async function seed(browser, log) {
       const { id, revision } = created[task.title];
       created[task.title] = await write(clients[task.assignees[0] ?? 'maya'], 'task.move', { taskId: id, status }, revision);
     };
+    // A new or moved task goes to the top of its column, so fill each column
+    // from the bottom up.
+    const bottomUp = (...statuses) => tasks.filter(item => statuses.includes(item.status)).reverse();
 
     await phase(log, 'finished');
-    for (const task of tasks.filter(item => item.status === 'done')) await move(task, 'done');
+    for (const task of bottomUp('done')) await move(task, 'done');
     const roadmap = await (await lead.get(`/api/projects/${project.id}/roadmap`)).json();
     for (const epic of epics.filter(item => item.done)) {
       await write(lead, 'epic.complete', { id: epicIds[epic.key] }, findById(roadmap, epicIds[epic.key]).revision);
     }
 
     await phase(log, 'backlog');
-    for (const task of tasks.filter(item => item.status === 'planning')) await create(task);
+    for (const task of bottomUp('planning')) await create(task);
     for (const title of ideas) await write(lead, 'pool.create', { projectId: project.id, scope: 'team', title });
 
     await phase(log, 'started');
-    for (const task of tasks.filter(item => item.status === 'in_progress' || item.status === 'in_review')) await move(task, 'in_progress');
-    for (const task of tasks.filter(item => item.status === 'in_review')) await move(task, 'in_review');
+    for (const task of bottomUp('in_progress', 'in_review')) await move(task, 'in_progress');
+    for (const task of bottomUp('in_review')) await move(task, 'in_review');
+    // Each task's first assignee writes its checklist and ticks the steps done.
+    for (const task of tasks.filter(item => item.checklist)) {
+      const author = clients[task.assignees[0] ?? 'maya'];
+      for (const [index, title] of task.checklist.steps.entries()) {
+        const item = await write(author, 'task.checklist.add', { taskId: created[task.title].id, title });
+        if (index < task.checklist.done) await write(author, 'task.checklist.update', { itemId: item.id, done: true }, item.revision);
+      }
+    }
 
     await phase(log, 'blocked');
     await write(clients.sofia, 'task.block', { taskId: created[blocked].id, reason: blockReason, mentions: mentions(blockReason, userIds) }, created[blocked].revision);
