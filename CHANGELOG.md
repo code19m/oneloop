@@ -35,6 +35,13 @@ All notable changes to oneloop are recorded here. The format follows
   a task draws its page two times instead of three, and a change from
   another tab to the open task reads its comments and activity once instead
   of twice.
+- The web app does less work on slow computers and phones. Turning off a
+  Board filter or emptying the search no longer draws the whole page again,
+  so the cards move smoothly into place. A change to one card, a drop or a
+  filter no longer redraws every loaded card, and dragging a card is
+  smoother. Opening a task draws its page two times instead of three, and a
+  change from another tab to the open task reads its comments and activity
+  once instead of twice.
 - A Board search, a Board filter or a project switch that takes more than a
   moment now dims the page until the result arrives. Before, a slow search
   looked as if nothing happened.

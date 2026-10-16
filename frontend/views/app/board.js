@@ -498,7 +498,8 @@ Object.assign(App, {
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
   // The header's search and filter menus show the arrays that the reset replaced.
-  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.refresh();runtime().filterBoard(App.context().board).catch(report);},
+  // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){

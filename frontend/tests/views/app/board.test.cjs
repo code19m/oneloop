@@ -1,7 +1,7 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, settle, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, tick, deferred } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
@@ -111,15 +111,29 @@ test('Board text search coalesces typing, respects composition, flushes Enter or
   t.mock.timers.reset();
 });
 
-test('Clear filters empties the search box and names every filter menu\'s default again', () => {
-  const t = bootApp({ route: 'board' }), trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
-  t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+test('Clear filters keeps No matching tasks until the Board read lands, then empties the search box and every filter menu', async () => {
+  // Board reads wait for the test, which answers as the server does: a search loads only the cards that match.
+  const reads = [];
+  const t = bootApp({ route: 'board', reads: { board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; } } });
+  const all = [...t.D.tasks], trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+  const answer = async () => {
+    for (const { filters, read } of reads.splice(0)) {
+      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+      t.A.refreshBoard(); read.resolve({ stale: false });
+    }
+    await settle();
+  };
+  const heading = () => t.d.querySelector('.board .page-empty h2')?.textContent;
+  await answer();
   t.A.popMulti({ preventDefault() {}, currentTarget: trigger() }, 'fTrack');
   for (const key of ['ArrowDown', 'Enter', 'Escape']) t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-  t.A.setBoardQ('no task has this title');
-  assert.doesNotMatch(trigger().textContent, /All tracks/); assert(t.d.querySelector('.board .page-empty'));
+  await answer();
+  t.A.setBoardQ('no task has this title'); await answer();
+  assert.equal(heading(), 'No matching tasks'); assert.doesNotMatch(trigger().textContent, /All tracks/);
   t.A.clearBoardFilters();
-  assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, ''); assert(t.d.querySelector('.board .card'));
+  assert.equal(heading(), 'No matching tasks', 'the empty search result stays until the cards arrive');
+  await answer();
+  assert(t.d.querySelector('.board .card')); assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, '');
 });
 
 test('a blocked card describes its block reason', () => {
