@@ -306,7 +306,7 @@ function renderContent() {
 
   mountTaskPage();
   mountDescription();
-  if (state.view === 'task') mountAttachments(state.taskId);
+  if (state.view === 'task') mountAttachments(state.taskId, paintedPage !== pageScope());
   if (state.view === 'roadmap' && !error) mountRoadmap();
   knowledge.mount();
   finishRenderMotion(renderMotion);
