@@ -47,12 +47,14 @@ function fixture(context,overrides={}){
   return {app,data,reads,bridge,opened,calls,paints,toasts,saved,get closed(){return closed;}};
 }
 
-test('an unloaded valid task hash is fetched before the shell decides it is missing',async()=>{
-  location.hash='#/task/ONE-1';
-  const state=fixture({view:'notfound',taskId:'ONE-1',projectId:'p1',board:{}});
-  await state.bridge.loadCurrentRoute();
-  assert.deepEqual(state.calls,[['task','ONE-1'],['counts','p1']]);
-  assert.deepEqual(state.opened,['ONE-1']);
+test('a task hash is read before the shell decides it is missing, and drawn again only when the page does not show it yet',async()=>{
+  for(const [view,pageError,opened] of [['notfound',null,['ONE-1']],['task','loading',['ONE-1']],['task',null,[]]]){
+    location.hash='#/task/ONE-1';
+    const state=fixture({view,taskId:'ONE-1',projectId:'p1',board:{}},{recovery:{pageError}});
+    await state.bridge.loadCurrentRoute();
+    assert.deepEqual(state.calls,[['task','ONE-1'],['counts','p1']]);
+    assert.deepEqual(state.opened,opened,`${view}, ${pageError}`);
+  }
 });
 
 test('a live refresh of Profile, Users and Settings reads passively, and a visit does not',async()=>{

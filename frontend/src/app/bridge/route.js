@@ -61,7 +61,9 @@ export function installRoute(ctx, account) {
             const roadmap=await reads.roadmap(loaded.task.projectId);
             if(!stillCurrent()||roadmap?.stale)return {stale:true};
           }
-          recovery.clearPageError();app.openTask(loaded.task.id);
+          // The read already drew a page that shows this task, unless its loading state shows.
+          const shown=context(),redraw=!!recovery.pageError||shown.view!=='task'||shown.taskId!==loaded.task.id;
+          recovery.clearPageError();if(redraw)app.openTask(loaded.task.id);
         }
       }
       else if(current.view==='users'||current.view==='settings')await loadUsers(false,null,{keepDepth:refresh,background});
