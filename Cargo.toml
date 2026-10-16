@@ -19,6 +19,8 @@ base64 = "0.23"
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 clap = { version = "4.5", features = ["derive"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["fast", "zeroize"] }
+# Already built for PNG; gzips the web client's files.
+flate2 = "1.1"
 fs4 = { version = "1.1", default-features = false }
 getrandom = "0.4"
 hex = "0.4"

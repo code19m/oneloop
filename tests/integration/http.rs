@@ -1040,6 +1040,63 @@ async fn content_versioned_assets_are_immutable_only_for_the_current_version() {
 }
 
 #[tokio::test]
+async fn assets_are_gzipped_only_for_clients_that_accept_gzip() {
+    let (_directory, app, _) = fixture().await;
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_text(response).await;
+    let version = html
+        .split("\"/v/")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .expect("versioned asset paths")
+        .to_owned();
+    let path = format!("/v/{version}/views/app.js");
+    let fetch = |headers: &[(&str, &str)]| {
+        let mut request = Request::builder().uri(&path);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        app.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+    let response = fetch(&[]).await.unwrap();
+    assert!(response.headers().get("content-encoding").is_none());
+    let raw = body_bytes(response).await;
+    let response = fetch(&[("accept-encoding", "gzip;q=0, identity")])
+        .await
+        .unwrap();
+    assert!(response.headers().get("content-encoding").is_none());
+    assert_eq!(body_bytes(response).await, raw);
+
+    let response = fetch(&[("accept-encoding", "gzip, deflate, br, zstd")])
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert_eq!(response.headers()["vary"], "Accept-Encoding");
+    let tag = response.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        tag,
+        format!("W/\"{}\"", hex::encode(sha2::Sha256::digest(&raw)))
+    );
+    let length = response.headers()["content-length"].clone();
+    let body = body_bytes(response).await;
+    assert_eq!(length, body.len().to_string().as_str());
+    assert!(body.len() < raw.len());
+    let mut decoded = Vec::new();
+    let mut decoder = flate2::read::GzDecoder::new(&body[..]);
+    std::io::Read::read_to_end(&mut decoder, &mut decoded).unwrap();
+    assert_eq!(decoded, raw);
+    let response = fetch(&[("accept-encoding", "gzip"), ("if-none-match", &tag)])
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
 async fn misspelled_query_and_attachment_fields_are_actionable_validation_errors() {
     let (_root, app, token) = fixture().await;
     for (path, method, body, field) in [

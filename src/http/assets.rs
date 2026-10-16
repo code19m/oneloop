@@ -1,12 +1,18 @@
 //! Embedded application assets; URL paths match the frontend tree.
 
-use std::sync::LazyLock;
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    io::Write,
+    sync::{LazyLock, Mutex},
+};
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
+use flate2::{Compression, write::GzEncoder};
 use rust_embed::{EmbeddedFile, RustEmbed};
 use sha2::{Digest, Sha256};
 
@@ -115,7 +121,9 @@ pub(crate) async fn serve(method: Method, uri: Uri, headers: HeaderMap) -> Respo
             .flatten()
         });
     match asset {
-        Some((file, key)) => asset_response(file, key, method == Method::HEAD, &headers, versioned),
+        Some((file, key)) => {
+            asset_response(file, key, method == Method::HEAD, &headers, versioned).await
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -145,14 +153,14 @@ fn notices_response(head: bool) -> Response {
     response
 }
 
-fn asset_response(
+async fn asset_response(
     mut file: EmbeddedFile,
     key: &str,
     head: bool,
     request: &HeaderMap,
     versioned: bool,
 ) -> Response {
-    let etag = if key == "index.html" {
+    let digest: [u8; 32] = if key == "index.html" {
         let prefix = format!("/v/{}", asset_version());
         let mut html = String::from_utf8_lossy(&file.data).into_owned();
         for directory in ASSET_DIRS {
@@ -161,12 +169,13 @@ fn asset_response(
                 &format!("\"{prefix}/{directory}/"),
             );
         }
-        let etag = format!("\"{}\"", hex::encode(Sha256::digest(html.as_bytes())));
-        file.data = std::borrow::Cow::Owned(html.into_bytes());
-        etag
+        let digest = Sha256::digest(html.as_bytes()).into();
+        file.data = Cow::Owned(html.into_bytes());
+        digest
     } else {
-        format!("\"{}\"", hex::encode(file.metadata.sha256_hash()))
+        file.metadata.sha256_hash()
     };
+    let etag = format!("\"{}\"", hex::encode(digest));
     let unchanged = request
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -176,19 +185,6 @@ fn asset_response(
                 tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
             })
         });
-    let length = file.data.len();
-    let body = if head || unchanged {
-        Body::empty()
-    } else {
-        match file.data {
-            std::borrow::Cow::Borrowed(bytes) => Body::from(bytes),
-            std::borrow::Cow::Owned(bytes) => Body::from(bytes),
-        }
-    };
-    let mut response = Response::new(body);
-    if unchanged {
-        *response.status_mut() = StatusCode::NOT_MODIFIED;
-    }
     let mime = if key.ends_with(".js") || key.ends_with(".mjs") {
         "text/javascript; charset=utf-8".to_owned()
     } else {
@@ -196,12 +192,42 @@ fn asset_response(
             .first_or_octet_stream()
             .to_string()
     };
+    // Fonts and images are compressed already.
+    let gzip = if file.data.len() > 1024
+        && (mime.starts_with("text/") || mime == "image/svg+xml")
+        && accepts_gzip(request)
+    {
+        gzip_body(digest, &file.data).await
+    } else {
+        None
+    };
+    let encoded = gzip.is_some();
+    let length = gzip.as_ref().map_or(file.data.len(), Bytes::len);
+    let body = if head || unchanged {
+        Body::empty()
+    } else if let Some(bytes) = gzip {
+        Body::from(bytes)
+    } else {
+        match file.data {
+            Cow::Borrowed(bytes) => Body::from(bytes),
+            Cow::Owned(bytes) => Body::from(bytes),
+        }
+    };
+    let mut response = Response::new(body);
+    if unchanged {
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+    }
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(&mime) {
         headers.insert(header::CONTENT_TYPE, value);
     }
+    // The gzip body is another representation, so its tag is weak.
+    let etag = if encoded { format!("W/{etag}") } else { etag };
     if let Ok(value) = HeaderValue::from_str(&etag) {
         headers.insert(header::ETAG, value);
+    }
+    if encoded {
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
     }
     if !unchanged && let Ok(value) = HeaderValue::from_str(&length.to_string()) {
         headers.insert(header::CONTENT_LENGTH, value);
@@ -230,4 +256,45 @@ fn asset_response(
         );
     }
     response
+}
+
+/// Whether the request lists `gzip` in `Accept-Encoding` without `q=0`.
+fn accepts_gzip(request: &HeaderMap) -> bool {
+    request
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|coding| {
+            let mut parts = coding.split(';').map(str::trim);
+            parts
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("gzip"))
+                && !parts.any(|part| {
+                    part.strip_prefix("q=")
+                        .is_some_and(|q| q.parse::<f32>().is_ok_and(|q| q == 0.0))
+                })
+        })
+}
+
+/// The gzip body of `data`, made once per SHA-256 `digest`. Bytes never change
+/// under their digest, so a kept body never goes stale.
+async fn gzip_body(digest: [u8; 32], data: &[u8]) -> Option<Bytes> {
+    static BODIES: LazyLock<Mutex<HashMap<[u8; 32], Bytes>>> = LazyLock::new(Default::default);
+    if let Some(body) = BODIES.lock().expect("gzip bodies lock").get(&digest) {
+        return Some(body.clone());
+    }
+    let data = data.to_vec();
+    let compressed = tokio::task::spawn_blocking(move || {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&data)?;
+        encoder.finish()
+    })
+    .await;
+    let body = Bytes::from(compressed.ok()?.ok()?);
+    BODIES
+        .lock()
+        .expect("gzip bodies lock")
+        .insert(digest, body.clone());
+    Some(body)
 }

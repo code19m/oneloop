@@ -6,6 +6,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- oneloop now compresses the web app's files with gzip, so a first visit
+  downloads about 60% less and the app opens faster on slow networks. A
+  reverse proxy no longer needs to compress them, and the nginx example no
+  longer does.
+
 ## [0.1.0-rc.5] - 2026-10-16
 
 The fifth release candidate. It fixes many bugs in the web app, in MCP and in

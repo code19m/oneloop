@@ -1627,6 +1627,7 @@ dependencies = [
  "chacha20poly1305",
  "clap",
  "ed25519-dalek",
+ "flate2",
  "fs4",
  "getrandom 0.4.3",
  "hex",
