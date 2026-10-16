@@ -16,6 +16,8 @@ All notable changes to oneloop are recorded here. The format follows
   of imports at a time, so it opens faster on slow networks.
 - The app reads your workspace while it checks your session, instead of
   after, so every visit opens one round trip sooner.
+- When a Board tab shows again, reconnects, or hears of a change to an epic,
+  track, milestone or member, it now reads the Board once instead of twice.
 
 ### Fixed
 

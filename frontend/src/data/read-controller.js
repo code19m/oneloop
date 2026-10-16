@@ -81,6 +81,8 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   function adoptBoard(projectId,filters={}){
     if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
     if(boardFiltered(filters))return false;
+    // A column that shows more than its first page reads those pages again.
+    if(boardState?.projectId===projectId&&Object.values(boardState.depths).some(depth=>depth>1))return false;
     if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
     supersedeBoard(boardTarget(projectId,boardFilters(filters)));
     remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});

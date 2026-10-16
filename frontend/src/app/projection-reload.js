@@ -122,7 +122,8 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,toWireScope(current.poolTab),false,undefined,readOptions));
       if(current.peek&&data.epics.some((item)=>item.id===current.peek))windows.push(reads.epic(current.peek,readOptions));
       if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
-        windows.push(reads.board(current.projectId,current.board,readOptions));
+        // A Board bootstrap carries the first page of each column.
+        if(!reads.adoptBoard(current.projectId,current.board))windows.push(reads.board(current.projectId,current.board,readOptions));
       }
       else if(current.view==='roadmap')app.refreshRoadmap();
       else if(bridge&&['profile','users','settings'].includes(current.view))windows.push(bridge.loadCurrentRoute({refresh:true,background:!!scope.background}));

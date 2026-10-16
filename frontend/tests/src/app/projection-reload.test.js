@@ -21,7 +21,7 @@ function page(context){
     calls.push({name,args,options:args.at(-1),resolve,reject});
     for(const waiter of waiting.filter(item=>calls.length>=item.count)){waiting.splice(waiting.indexOf(waiter),1);waiter.resolve();}
   });
-  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap')};
+  const api={bootstrap:held('bootstrap'),task:held('task'),epicTasks:held('epicTasks'),epicActivity:held('epicActivity'),roadmap:held('roadmap'),boardView:held('boardView'),board:held('board')};
   const bootstrap=createBootstrapController({api,data}),reads=createReadController({api,data});
   const app={context:()=>context,refresh(){},refreshCounts(){},refreshBackground(){},refreshRoadmap(){},updateDocumentTitle(){}};
   const recovery={refreshSucceeded(){},refreshFailed(){},handleRouteError(){}};
@@ -124,6 +124,25 @@ test('an unavailable destination is reported to the caller instead of the page w
   assert.deepEqual(await reload({taskId:'gone',routeErrors:false}),{stale:false,unavailable:true});
   assert.deepEqual(routeErrors,[]);
   await reload({taskId:'gone'});assert.deepEqual(routeErrors,[missing]);
+});
+
+test('a full refresh of the Board uses the cards its bootstrap carries, unless a column shows more than its first page',async()=>{
+  const empty={nextCursor:null,total:0};
+  const boardProjection=()=>projection('p1',{view:'board',boardPages:{planning:{nextCursor:'page-2',total:2},inProgress:empty,inReview:empty,done:empty},tasks:[view('t1')]});
+  for(const deeper of [false,true]){
+    const t=page({view:'board',projectId:'p1',board:{},hash:'#/board'});
+    hydrateLegacyData(t.data,boardProjection());t.reads.adoptBoard('p1');
+    if(deeper){const more=t.reads.moreBoard('planning');await t.called(1);t.next('board').resolve({items:[view('t2')],nextCursor:null,total:2});await more;}
+    const live=t.reload({background:true}),before=t.calls.length;
+    await t.called(before+1);t.next('bootstrap').resolve(boardProjection());await settle();
+    assert.deepEqual(t.calls.slice(before).map(call=>call.name),deeper?['bootstrap','boardView']:['bootstrap']);
+    if(deeper){
+      t.next('boardView').resolve({planning:{items:[view('t1')],nextCursor:'page-2',total:2},inProgress:{items:[],...empty},inReview:{items:[],...empty},done:{items:[],...empty},counts:{}});
+      await t.called(before+3);t.next('board').resolve({items:[view('t2')],nextCursor:null,total:2});
+    }
+    assert.equal((await live).stale,false);
+    assert.deepEqual(t.data.tasks.map(task=>task.internalId),deeper?['t1','t2']:['t1']);
+  }
 });
 
 /** A sign-in on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
