@@ -147,6 +147,9 @@ All notable changes to oneloop are recorded here. The format follows
 - A click on a task's file, or on **browse files**, now works also while the
   task changes, such as right after you edit one of its fields. Before, the
   change drew the files again under the pointer, and the click did nothing.
+- After you move a file with the arrow keys, focus now stays on it, so you
+  can move it again. Before, it fell to the page once oneloop saved the new
+  order.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -264,6 +264,7 @@ test('attachment order is shared by keyboard and pointer moves, which Escape and
   const original = order(), grip = () => d.querySelector(`[data-reorder-file="${original[0]}"]`);
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); assert.equal(task.attachments.at(-1).id, original[0]); assert.equal(d.activeElement.dataset.reorderFile, original[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(moves()[0].args)), ['bir-079', { attachmentId: 'hello', targetId: 'third', after: true, expectedRevision: 1, idempotencyKey: moves()[0].args[1].idempotencyKey }]); await keep();
+  assert.equal(d.activeElement, grip(), 'the moved file keeps focus once the server confirms its place, so the arrow keys go on moving it');
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(order(), original); await keep();
   const pointer = (type, target, x, y) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
   const geometry = () => { zone().getBoundingClientRect = () => ({ left: 0, right: 600, top: 0, bottom: 500 }); [...zone().querySelectorAll('[data-attachment-id]')].forEach((row, i) => row.getBoundingClientRect = () => ({ left: 0, right: 600, top: 100 + i * 100, bottom: 190 + i * 100, width: 600, height: 90 })); };
