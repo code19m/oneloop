@@ -62,6 +62,13 @@ All notable changes to oneloop are recorded here. The format follows
   someone marks it temporary.
 - Large Knowledge files download faster.
 
+### Fixed
+
+- A Mermaid diagram in a Markdown preview no longer fails when its renderer
+  takes more than 30 seconds to download, as on a slow mobile connection.
+  When the renderer can't load, the preview now says to check the
+  connection, instead of blaming the diagram's syntax.
+
 ## [0.1.0-rc.5] - 2026-10-16
 
 The fifth release candidate. It fixes many bugs in the web app, in MCP and in
