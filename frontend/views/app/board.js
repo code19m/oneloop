@@ -155,6 +155,7 @@ function showFilterChoice(key) {
  * nothing is known yet.
  */
 function keepKnownFilters() {
+  if (!state.boardTracks.length && !state.boardEpics.length && !state.boardAssignees.length) return;
   if (D.bootstrapProjectId !== state.projectId || !project()) return;
   const keep = (list, known) => {
     const kept = list.filter((id) => known.has(id));

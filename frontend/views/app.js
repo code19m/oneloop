@@ -481,7 +481,7 @@ function setLocalHash(hash) {
   markPlace(++shownPlace);
   locallyRenderedHashes.push(location.href);
 }
-/** Add a history entry for a page that already shows with its data, so no route load follows, as a hash change would start. */
+/** Add a history entry for a page whose data its caller loaded: unlike a hash change, it starts no route load. */
 function pushAddress(hash) {
   if (location.hash === hash) return;
   history.pushState({ ...history.state, oneloopPlace: ++shownPlace }, '', hash);
