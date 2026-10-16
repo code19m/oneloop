@@ -49,6 +49,8 @@ server {
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
 
+    # oneloop compresses the web app's files itself. Don't compress API
+    # responses; see the guide.
     location / {
         proxy_pass http://oneloop_app;
         proxy_request_buffering off;
@@ -59,17 +61,6 @@ server {
         proxy_pass http://oneloop_app;
         proxy_buffering off;
         proxy_cache off;
-    }
-
-    # Compress the web app's files, but not API responses or live updates.
-    location ~ "^/(?:$|index\.html$|(?:v/[a-f0-9]{64}/)?(?:src|views|styles|icons|vendor)/)" {
-        proxy_pass http://oneloop_app;
-        gzip on;
-        gzip_comp_level 5;
-        gzip_min_length 1024;
-        gzip_proxied no-cache;
-        gzip_vary on;
-        gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
     }
 
     # Optional: allow /healthz, which shows the version, only from your

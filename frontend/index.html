@@ -4,9 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <link rel="modulepreload" href="/views/app.js">
-  <link rel="modulepreload" href="/src/app/view-bridge.js">
-  <link rel="modulepreload" href="/src/data/projection-store.js">
   <title>oneloop</title>
   <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/icons/favicon.ico">
@@ -17,6 +14,69 @@
   <link rel="stylesheet" href="/styles/comment-threads.css">
   <link rel="stylesheet" href="/styles/pool.css">
   <link rel="stylesheet" href="/styles/knowledge.css">
+  <!-- Every module start-up imports, so the browser fetches them at once
+       instead of one import level at a time. Low priority keeps them behind
+       the stylesheets. tests/index.test.js keeps this list exact. -->
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/boot.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/build-info.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/api-client.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/bootstrap-controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/command-gateway.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/projection-store.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/auth/auth-controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/auth/oauth-return.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/view-bridge.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/view-actions.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/runtime-hooks.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/action-feedback.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/form-feedback.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/read-controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/collaboration/controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/knowledge/controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/recovery/controller.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/projection-reload.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/trusted-types.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/tooltips.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/motion.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/files/preview.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/account.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/attachments.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/board.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/collaboration.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/controls.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/dialogs.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/format.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/forms.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/model.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/overlays.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/roadmap.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/storage.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/task.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/toasts.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/done-order.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/time.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/page-window.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/wire.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/auth/session-label.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/layers.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/account.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/commands.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/pool.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/projects.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/roadmap.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/route.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/saves.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/bridge/tasks.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/activity-mapper.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/board-filters.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/data/inbox-mapper.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/app/markup.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/files/file-views.js">
+  <link rel="modulepreload" fetchpriority="low" href="/src/features/knowledge/model.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/drag.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/rows.js">
+  <link rel="modulepreload" fetchpriority="low" href="/views/app/pool.js">
 </head>
 <body>
   <div id="app"><main class="startup-status" role="status"><span class="startup-mark" aria-hidden="true"></span><span>Loading oneloop…</span></main></div>

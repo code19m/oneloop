@@ -96,6 +96,9 @@ with 502. Caddy needs no `keepalive` setting.
   oneloop sets its own, including HSTS.
 - Use HTTP/2 to browsers. With HTTP/1.1, a browser opens only six connections
   to a site, and every open tab uses one for live updates.
+- Leave compression to oneloop. It gzips the web app's files itself. Don't
+  compress API responses: compressed sizes can give away secrets in a
+  response, as the BREACH attack shows.
 - Reach oneloop itself over HTTP/1.1. It doesn't accept HTTP/2 without TLS
   (h2c).
 - Don't buffer or time out `/api/events`. This live-update stream stays open as

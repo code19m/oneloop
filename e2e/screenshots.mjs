@@ -1,6 +1,6 @@
 // Regenerates the product screenshots in docs/src/assets/screenshots/.
 //
-//   cargo build --locked --release
+//   cargo test --locked --all-targets --no-run
 //   node e2e/screenshots.mjs
 //
 // The script seeds a fictional team project through the real CLI and HTTP API
@@ -11,7 +11,9 @@
 // the pictures always look current. pngquant and oxipng compress the images
 // when they are installed.
 //
-// Set ONELOOP_TEST_BINARY to use another build. CI does not run this script.
+// It runs target/debug/oneloop, as the journeys do; a debug build serves the web
+// client from disk. Set ONELOOP_TEST_BINARY to use another build. CI does not run
+// this script.
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -24,7 +26,7 @@ import { cli, command, serve, stopServer } from './support/server.mjs';
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const binary = process.env.ONELOOP_TEST_BINARY
   ? resolve(process.env.ONELOOP_TEST_BINARY)
-  : join(repository, 'target', 'release', 'oneloop');
+  : join(repository, 'target', 'debug', 'oneloop');
 const dataDir = join(repository, 'target', 'screenshots', 'data');
 const output = join(repository, 'docs', 'src', 'assets', 'screenshots');
 const PORTS = [19950, 19951, 19952, 19953, 19954];
@@ -397,7 +399,7 @@ function optimize(file) {
 
 // ---------------------------------------------------------------------------
 
-if (!existsSync(binary)) throw new Error(`Missing ${binary}. Build it with \`cargo build --locked --release\`, or set ONELOOP_TEST_BINARY.`);
+if (!existsSync(binary)) throw new Error(`Missing ${binary}. Build it with \`cargo test --locked --all-targets --no-run\`, or set ONELOOP_TEST_BINARY.`);
 await rm(dataDir, { recursive: true, force: true });
 await mkdir(dataDir, { recursive: true });
 await mkdir(output, { recursive: true });

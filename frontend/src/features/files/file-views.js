@@ -87,7 +87,9 @@ function diagramRenderer(){
   if(!renderer)renderer=new Promise((resolve,reject)=>{
     const frame=document.createElement('iframe');frame.className='diagram-renderer';frame.title='Diagram renderer';frame.tabIndex=-1;frame.inert=true;frame.setAttribute('aria-hidden','true');
     const fail=()=>{clearTimeout(timer);frame.remove();renderer=null;reject(new Error('Diagram renderer unavailable'));};
-    const timer=setTimeout(fail,30_000);
+    // Mermaid is large, so a slow connection gets as long as an upload. A
+    // frame whose scripts did not load still fires load, without the renderer.
+    const timer=setTimeout(fail,300_000);
     frame.addEventListener('load',()=>{const render=/** @type {any} */ (frame.contentWindow)?.renderDiagram;if(typeof render!=='function'){fail();return;}clearTimeout(timer);resolve(render);},{once:true});
     frame.addEventListener('error',fail,{once:true});
     frame.src=rendererURL.href;document.body.append(frame);
@@ -104,7 +106,8 @@ function drawDiagram(figure,source,context,fallback=null){
   diagramQueue=diagramQueue.then(async()=>{
     if(!figure.isConnected)return;
     try{
-      const render=await diagramRenderer();if(!figure.isConnected)return;
+      const render=await diagramRenderer().catch(()=>null);if(!figure.isConnected)return;
+      if(!render){fallback?.('Diagrams could not load. Check your connection.');return;}
       const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
         secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
       if(!figure.isConnected)return;

@@ -93,11 +93,11 @@ refuses unknown `ONELOOP_` variables, so a shell that exports it can't run
 `screenshots.mjs` regenerates the images in `docs/src/assets/screenshots/`. It
 seeds a fictional project into `target/screenshots/`, serves it on a port from
 19950 to 19954, captures the Board, the Roadmap and a task page in Chromium,
-and stops the server. It uses the release build unless `ONELOOP_TEST_BINARY`
-is set, and compresses the images with pngquant and oxipng when they are
-installed.
+and stops the server. Like the journeys, it runs `target/debug/oneloop` unless
+`ONELOOP_TEST_BINARY` is set, so it needs no release build. It compresses the
+images with pngquant and oxipng when they are installed.
 
 ```sh
-cargo build --locked --release
+cargo test --locked --all-targets --no-run
 node e2e/screenshots.mjs
 ```

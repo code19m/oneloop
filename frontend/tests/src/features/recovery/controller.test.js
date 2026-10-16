@@ -304,6 +304,22 @@ test('forced password sessions neither schedule nor run project access probes',a
   state.controller.dispose();
 });
 
+test('access probes wait while live updates are open or the tab is hidden',async()=>{
+  const timers=[];let probes=0,visibility='visible';
+  const state=fixture({api:{counts:async()=>{probes++;}},setTimer:callback=>{timers.push(callback);return timers.length;}});
+  Object.defineProperty(state.document,'visibilityState',{configurable:true,get:()=>visibility});
+  state.controller.start();
+  state.controller.liveConnected();await timers.at(-1)();
+  assert.equal(probes,0,'the live stream reports lost access');
+  state.controller.livePaused(()=>{});await timers.at(-1)();
+  assert.equal(probes,1,'a newer tab took the live stream');
+  state.controller.liveDisconnected();visibility='hidden';await timers.at(-1)();
+  assert.equal(probes,1,'a hidden tab reconciles when it shows again');
+  visibility='visible';await timers.at(-1)();
+  assert.equal(probes,2);
+  state.controller.dispose();
+});
+
 test('idle Board and Roadmap access probes only read counts',async()=>{
   for(const view of ['board','roadmap']){
     const timers=[],calls=[];

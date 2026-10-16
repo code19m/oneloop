@@ -34,7 +34,8 @@ example `v0.1.0-rc.1`.
 6. Build the image and try it on both architectures if you can: first run,
    an upgrade from the previous release, and a backup restore.
 7. Merge to `main`. Then tag the merged release commit, usually `origin/main`,
-   and push the tag:
+   and push the tag. The release uses the result of `main`'s CI run for that
+   commit, so tag a commit that a push to `main` started a run for:
 
    ```sh
    git fetch origin
@@ -45,12 +46,14 @@ example `v0.1.0-rc.1`.
 The Release workflow then:
 
 - checks that the tag is on `main`, is not released yet and matches
-  `Cargo.toml` and `CHANGELOG.md`, then runs the full verification and the
-  dependency checks;
-- builds the linux/amd64 and linux/arm64 image and pushes it to
-  `ghcr.io/code19m/oneloop` with SBOM and provenance attestations. If the
-  version's image tag already exists with other images, it stops before it
-  changes any tag;
+  `Cargo.toml` and `CHANGELOG.md`, then runs the dependency checks;
+- waits for `main`'s CI run of the tagged commit instead of running the same
+  checks again. It fails if that run doesn't appear within five minutes, or
+  ends failed or cancelled;
+- meanwhile builds the linux/amd64 and linux/arm64 image and pushes it to
+  `ghcr.io/code19m/oneloop` by digest, with SBOM and provenance attestations.
+  Nothing tags the images until `main`'s CI has passed. If the version's image
+  tag already exists with other images, it stops before it changes any tag;
 - checks the attestations before it tags the version. Each image's SBOM must
   list the Rust crates, which cargo-auditable records in the binary, besides
   the Debian packages. The browser libraries aren't in it;
@@ -74,8 +77,10 @@ install a tag from source with `cargo install --git`.
 Afterwards, check the image and the GitHub Release. Publishing is not atomic:
 if one step fails, look at what already went out before you retry. Retry with
 **Re-run failed jobs** within a day of the build, while the run still has the
-image digests; it reuses the images that were built. Tags must never move, so
-fix forward with a new version when needed.
+image digests; it reuses the images that were built. If `main`'s CI failed on a
+flaky test, re-run its failed jobs first, then the release's; the release
+waits for the new attempt. Tags must never move, so fix forward with a new
+version when needed.
 
 ## Dependencies
 

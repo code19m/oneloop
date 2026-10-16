@@ -43,11 +43,34 @@ jobs:
           released=$(node scripts/release-exists.mjs "$RELEASE_TAG")
           if [ "$released" = true ]; then echo "::error::$RELEASE_TAG is already released, and tags never move." >&2; exit 1; fi
 
-  verify:
+  # main's CI checks the tagged commit as it lands, so the release uses that
+  # run's result instead of running the same jobs a second time.
+  ci:
+    name: main CI
     needs: metadata
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-latest
+    # Longer than main's slowest CI job, plus time in the queue.
+    timeout-minutes: 60
     permissions:
-      contents: read
+      actions: read
+    steps:
+      - name: Wait for main's CI run of the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The run can appear a little after the push that starts it.
+          for attempt in $(seq 20); do
+            run=$(gh run list --workflow ci.yml --branch main --event push --commit "$GITHUB_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [ -n "$run" ]; then break; fi
+            sleep 15
+          done
+          if [ -z "$run" ]; then echo "::error::main has no CI run for $GITHUB_SHA." >&2; exit 1; fi
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"
+          echo "Waiting for $url"
+          gh run watch "$run" --interval 30 > /dev/null || true
+          result=$(gh run view "$run" --json status,conclusion --jq 'if .status == "completed" then .conclusion else .status end')
+          if [ "$result" != success ]; then echo "::error::main's CI run for $GITHUB_SHA is $result: $url" >&2; exit 1; fi
 
   dependencies:
     needs: metadata
@@ -55,9 +78,11 @@ jobs:
     permissions:
       contents: read
 
+  # Images build while main's CI finishes. Nothing tags them before
+  # `manifest`, so a failed check leaves only untagged digests.
   image:
     name: image (${{ matrix.platform }})
-    needs: [metadata, verify, dependencies]
+    needs: [metadata, dependencies]
     strategy:
       matrix:
         include:
@@ -110,7 +135,7 @@ jobs:
 
   manifest:
     name: manifest
-    needs: [metadata, image]
+    needs: [metadata, ci, image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Builds can finish out of version order. Check and move aliases under one lock.
