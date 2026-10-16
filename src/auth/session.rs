@@ -58,15 +58,18 @@ impl AuthService {
         let throttle_key = login_throttle_key(&lookup_name, metadata.client_ip.as_deref());
         let ip_throttle_key = login_ip_throttle_key(metadata.client_ip.as_deref());
         let account_key = token_hash(&format!("login-account\0{lookup_name}"));
+        let mut buckets = vec![(throttle_key.clone(), &PAIR_RULE)];
+        buckets.extend(ip_throttle_key.map(|key| (key, &ADDRESS_RULE)));
+        buckets.push((account_key.clone(), &ACCOUNT_RULE));
         // Wait outside the blocking pool, then check the latest failure state.
         // Hold admission through bookkeeping so waiting attempts observe the delay.
         let turn = password_turn().await?;
         let now = unix_now()?;
-        self.check_login_throttle(&throttle_key, now).await?;
-        if let Some(key) = &ip_throttle_key {
-            self.check_login_throttle(key, now).await?;
-        }
-        self.check_login_throttle(&account_key, now).await?;
+        let keys = buckets
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>();
+        self.check_login_throttle(&keys, now).await?;
         let user = self
             .db
             .run(move |connection| {
@@ -111,13 +114,7 @@ impl AuthService {
             if user.as_ref().is_some_and(|user| !user.user.is_active) {
                 *failure_outcome = "inactive";
             }
-            self.record_login_failure(throttle_key, now, &PAIR_RULE)
-                .await?;
-            if let Some(key) = ip_throttle_key {
-                self.record_login_failure(key, now, &ADDRESS_RULE).await?;
-            }
-            self.record_login_failure(account_key, now, &ACCOUNT_RULE)
-                .await?;
+            self.record_login_failures(buckets, now).await?;
             return Err(AppError::InvalidCredentials);
         }
 

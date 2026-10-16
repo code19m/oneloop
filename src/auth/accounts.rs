@@ -135,7 +135,7 @@ impl AuthService {
     ) -> AppResult<String> {
         let hash = self.password_hash_for_session(actor).await?;
         let throttle_key = token_hash(&format!("password-confirmation\0{}", actor.user_id));
-        self.check_login_throttle(&throttle_key, unix_now()?)
+        self.check_login_throttle(&[&throttle_key], unix_now()?)
             .await?;
         let verified_hash = hash.clone();
         let supplied = supplied.to_owned();
@@ -144,8 +144,11 @@ impl AuthService {
             .run(move || verify_password(&supplied, &hash))
             .await??;
         if !valid {
-            self.record_login_failure(throttle_key, unix_now()?, &PASSWORD_CONFIRMATION_RULE)
-                .await?;
+            self.record_login_failures(
+                vec![(throttle_key, &PASSWORD_CONFIRMATION_RULE)],
+                unix_now()?,
+            )
+            .await?;
             return Err(AppError::IncorrectPassword { field });
         }
         self.db
