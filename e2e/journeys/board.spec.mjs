@@ -64,6 +64,75 @@ test('creation stays single while its post-save read is delayed', { tag: '@smoke
   expect(body.items.filter(task => task.title === 'Create once through delayed loading')).toHaveLength(1);
 });
 
+test('creating, deleting with Undo and turning a Pool item into a task keep the Board of a project that is not first by name', async ({ page, instance, allowedConsoleErrors }) => {
+  // A live read of the open task page can still be on its way when it is deleted.
+  allowedConsoleErrors.push(/404 .*\/api\/tasks\//);
+  const [, second] = instance.projects;
+  const [idea] = (await command(instance.api, 'pool.create', { projectId: second.project.id, scope: 'team', title: 'Second project idea' })).entities;
+  await openApp(page, instance, 'board');
+  await page.locator('.switcher-btn').click();
+  await page.locator('#project-switcher-menu').getByRole('button', { name: second.project.name }).click();
+  const titles = page.locator('.board .card-title-button'), modal = page.locator('.modal');
+  await expect(titles).toHaveText([second.task.title]);
+  const chooseEpic = async () => {
+    await modal.getByRole('button', { name: /^Epic / }).click();
+    await page.locator('.pop-opt').filter({ hasText: second.epic.title }).click();
+  };
+  const boardReads = [];
+  page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/board-view')) boardReads.push(request.url()); });
+  await page.getByRole('button', { name: 'Task', exact: true }).click();
+  await modal.locator('input[name="title"]').fill('Created in the second project');
+  await chooseEpic();
+  await modal.getByRole('button', { name: 'Create task', exact: true }).click();
+  await expect(titles).toHaveCount(2);
+  await expect(titles.filter({ hasText: 'Created in the second project' })).toBeVisible();
+  // The reload after the save carries the Board's cards, so no other read follows it.
+  expect(boardReads).toEqual([]);
+  await page.locator('.board .card').filter({ hasText: 'Created in the second project' }).click();
+  await page.getByRole('button', { name: 'Task actions' }).click();
+  await page.locator('#action-menu').getByText('Delete task').click();
+  await page.locator('[data-confirm-accept]').click();
+  await expect(titles).toHaveText([second.task.title]);
+  await page.locator('#toast-region .toast').filter({ hasText: 'deleted' }).getByRole('button', { name: 'Undo' }).click();
+  await expect(titles).toHaveCount(2);
+  await page.getByRole('button', { name: /^Pool/ }).click();
+  await page.locator('[data-pool-tab="project"]').click();
+  await page.locator(`[data-pool-item="${idea.id}"] .pool-promote`).click();
+  await chooseEpic();
+  await modal.getByRole('button', { name: 'Create task', exact: true }).click();
+  await expect(page.locator('.pool-view')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(titles).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: 'No tasks yet' })).toHaveCount(0);
+});
+
+test('the Board keeps its filters and search in its address through a refresh, and reads only the filtered cards', async ({ page, instance }) => {
+  const { project, track, task } = instance.projects[0];
+  const [otherTrack] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Other track' })).entities;
+  const [otherEpic] = (await command(instance.api, 'epic.create', { projectId: project.id, trackId: otherTrack.id, title: 'Other epic', startDate: '2026-09-24' })).entities;
+  await command(instance.api, 'task.create', { projectId: project.id, epicId: otherEpic.id, title: 'Elsewhere task' });
+  await openApp(page, instance, 'board');
+  const titles = page.locator('.board .card-title-button'), trackFilter = page.locator('[data-filter-key=fTrack]');
+  await expect(titles).toHaveCount(2);
+  await trackFilter.click();
+  await page.locator('.pop [data-v]').filter({ hasText: track.name }).click();
+  await page.keyboard.press('Escape');
+  await page.getByLabel('Search tasks', { exact: true }).fill('seeded');
+  await expect(page).toHaveURL(`${instance.url}/#/board/${project.id}?search=seeded&track=${track.id}`);
+  await expect(titles).toHaveText([task.title]);
+  const requests = [];
+  page.on('request', request => requests.push(new URL(request.url())));
+  await page.reload();
+  await expect(page.getByLabel('Search tasks', { exact: true })).toHaveValue('seeded');
+  await expect(trackFilter).toContainText(track.name);
+  await expect(titles).toHaveText([task.title]);
+  // The page asks for the filtered cards only, so it never shows the others first.
+  const bootstraps = requests.filter(url => url.pathname === '/api/bootstrap');
+  expect(bootstraps.map(url => [url.searchParams.get('projectId'), url.searchParams.get('view')])).toEqual([[project.id, 'metadata']]);
+  const reads = requests.filter(url => url.pathname.endsWith('/board-view'));
+  expect(reads.map(url => [url.searchParams.get('trackIds'), url.searchParams.get('search')])).toEqual([[track.id, 'seeded']]);
+});
+
 test('Board search coalesces typing', async ({ page, instance }) => {
   await openApp(page, instance, 'board');
   await expect(page.locator('.board .card').first()).toBeVisible();

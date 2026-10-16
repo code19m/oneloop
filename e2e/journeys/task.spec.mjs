@@ -90,10 +90,10 @@ test('an unsent comment asks before another page or a reload discards it', async
 });
 
 test('Cancel after Back keeps the unsent comment and every page behind it', async ({ page, instance }) => {
-  const { task } = instance.projects[0];
+  const { task, project } = instance.projects[0];
   await openApp(page, instance, 'board');
   await page.getByRole('button', { name: 'Roadmap', exact: true }).click();
-  await expect(page).toHaveURL(/#\/roadmap$/);
+  await expect(page).toHaveURL(new RegExp(`#/roadmap/${project.id}$`));
   await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
   const composer = page.locator('#cmtIn');
   await composer.fill('Half a thought');
@@ -105,10 +105,10 @@ test('Cancel after Back keeps the unsent comment and every page behind it', asyn
   // History is as it was: Back still leads to the Roadmap, then to the Board.
   await page.goBack({ waitUntil: 'commit' });
   await ask.getByRole('button', { name: 'Discard', exact: true }).click();
-  await expect(page).toHaveURL(/#\/roadmap$/);
+  await expect(page).toHaveURL(new RegExp(`#/roadmap/${project.id}$`));
   await expect(page.locator('.rm-canvas')).toBeVisible();
   await page.goBack({ waitUntil: 'commit' });
-  await expect(page).toHaveURL(/#\/board$/);
+  await expect(page).toHaveURL(new RegExp(`#/board/${project.id}$`));
   await expect(page.locator('.board')).toBeVisible();
 });
 

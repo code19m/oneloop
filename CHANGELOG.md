@@ -56,6 +56,21 @@ All notable changes to oneloop are recorded here. The format follows
   temporary, and the 24 hours of a temporary attachment start again when
   someone marks it temporary.
 - Large Knowledge files download faster.
+- The address now names the project on the **Board**, the **Roadmap**,
+  **Knowledge** and **Settings**, and the Board's address also holds its
+  filters and search. A refresh, a bookmark or a link opens the same project
+  and filters, switching projects is a step in the browser's history, and
+  **Back** leaves the Board instead of undoing filters. An address without a
+  project, such as an older bookmark, opens the project you last switched to in
+  this browser. Signing out clears the project and filters from the tab's
+  address, so the next person to sign in there starts from their own. Before, a
+  refresh opened the first project by name and lost the filters.
+- Every open tab now reloads by itself after an upgrade, when nothing you typed
+  would be lost, nothing such as a dialog, a menu or an **Undo** offer is open,
+  and the tab is hidden or unused for five minutes. **Reload after updates** is
+  gone from the account menu. The bar says that the page reloads by itself and
+  offers **Reload now**, and after such a reload the page says "oneloop was
+  updated".
 
 ### Fixed
 
@@ -86,6 +101,21 @@ All notable changes to oneloop are recorded here. The format follows
   faster than its comments, as could happen when you opened it from the
   **Board**. Before, the comments and activity appeared only when something
   else drew the page again.
+- Creating a task, deleting one or undoing that, and turning a Pool item into
+  a task no longer empty the **Board** in a project that isn't the first by
+  name. Before, the Board said "No tasks yet" until something else loaded it
+  again. The new card also shows one request sooner.
+- After you follow a link into another project, such as a **Knowledge** link,
+  its **Board** shows the project's cards. Before, it said "No tasks yet",
+  because the first project's tracks and epics stayed loaded.
+- The account menu shows only the version, such as `v0.1.0-rc.5`. Before, it
+  also showed the commit the build came from, which made the menu scroll
+  sideways in release images. `/healthz` and `oneloop --version` still give
+  the commit.
+- After **Load more** on the **Board**, typing in the search and erasing it
+  quickly, or turning a filter on and off before its cards arrive, keeps every
+  loaded card in view. Before, each column fell back to its first 50 cards with
+  no **Load more**, while its count still showed more.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

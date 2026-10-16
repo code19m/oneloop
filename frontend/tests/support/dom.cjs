@@ -12,6 +12,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const jsdom = require('jsdom');
 const { ApiError } = require('../../src/data/api-client.js');
+const { normalizeBoardFilters } = require('../../src/data/board-filters.js');
 const { createCommandGateway } = require('../../src/data/command-gateway.js');
 const { createLegacyData, sessionKey } = require('../../src/data/projection-store.js');
 const { createRuntimeHooks } = require('../../src/app/runtime-hooks.js');
@@ -193,7 +194,11 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
   });
   const readCalls = [], app = () => w.App;
   const repaint = {
-    board: () => app().context().view === 'board' ? app().refreshBoard() : app().refreshCounts(),
+    // A Board read loads the cards for its filters, which the sample projection already holds.
+    board: (projectId, filters) => {
+      w.DATA.boardPageInfo = { ...w.DATA.boardPageInfo, projectId, filters: normalizeBoardFilters(filters) };
+      return app().context().view === 'board' ? app().refreshBoard() : app().refreshCounts();
+    },
     counts: () => app().refreshCounts(), roadmap: () => app().refreshRoadmap(),
     pool: () => app().refreshPool(), morePool: () => app().refreshPool(),
     epic: () => app().refreshEpic(), moreEpicTasks: () => app().refreshEpic(), moreEpicActivity: () => app().refreshEpic(),
@@ -201,7 +206,7 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
   };
   const reads = {
     calls: readCalls, cancel() {}, invalidateBoard() {}, idle: async () => {}, adoptBoard: () => false,
-    ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(); return { stale: false }; }])),
+    ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(...args); return { stale: false }; }])),
     ...readAnswers,
   };
   // The tests end sessions themselves, so expiry leaves the projection alone.

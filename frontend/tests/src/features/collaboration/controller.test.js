@@ -19,7 +19,7 @@ const {JSDOM,importModule}=createRequire(import.meta.url)('../../../support/dom.
 /** The real Recovery, on a jsdom page, for a fixture's data, transport and app. */
 function pageRecovery({data,transport,app},options={}){
   const dom=new JSDOM('<!doctype html><body></body>',{url:'http://localhost/',runScripts:'outside-only',pretendToBeVisual:true});
-  const views={...app,refresh(){},commentDraft:()=>null,restoreCommentDraft(){},autoReloadChanged(){},noteTaskSaving(){},clearTaskSaving(){}};
+  const views={...app,refresh(){},commentDraft:()=>null,restoreCommentDraft(){},noteTaskSaving(){},clearTaskSaving(){}};
   return importModule(dom,'src/features/recovery/controller.js').createRecoveryController({data,api:transport.api,gateway:{invalidate(){},hasPending:()=>false},getApp:()=>views,getAuth:()=>null,reload:transport.reload,online:()=>true,...options});
 }
 

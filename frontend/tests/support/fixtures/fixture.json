@@ -403,6 +403,7 @@
       "revision": 1
     }
   ],
+  "bootstrapProjectId": "p1",
   "boardPageInfo": { "projectId": "p1", "filters": {}, "pages": {} },
   "tasks": [
     {

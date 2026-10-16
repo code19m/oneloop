@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, withRuntime, transfer, settle, tick, deferred } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
+const { normalizeBoardFilters } = require('../../../src/data/board-filters.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
  const t=bootApp({route:'board'}),projectId=t.A.context().projectId;
@@ -127,7 +128,7 @@ test('Clear filters keeps No matching tasks until the Board read lands, then emp
   const all = [...t.D.tasks], trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
   const answer = async () => {
     for (const { filters, read } of reads.splice(0)) {
-      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: normalizeBoardFilters(filters), pages: {} };
       t.A.refreshBoard(); read.resolve({ stale: false });
     }
     await settle();
@@ -143,6 +144,96 @@ test('Clear filters keeps No matching tasks until the Board read lands, then emp
   assert.equal(heading(), 'No matching tasks', 'the empty search result stays until the cards arrive');
   await answer();
   assert(t.d.querySelector('.board .card')); assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, '');
+});
+
+test('a Board address shows its filters, and values the project no longer has are dropped before the Board is read', async () => {
+  // A deleted track, a person who is no longer active, and an epic outside the chosen track.
+  const t = bootApp({ route: 'board/p1?search=reader&track=t2,gone&epic=e1&assignee=danaell,none,robin' });
+  assert.equal(t.w.location.hash, '#/board/p1?search=reader&track=t2&assignee=none,robin');
+  assert.equal(t.w.history.length, 1, 'the address changes in place');
+  assert.equal(t.d.querySelector('.board-search').value, 'reader');
+  assert.deepEqual([...t.d.querySelectorAll('[data-filter-key] .sel-label')].map(label => label.textContent), ['Web Apps', 'All epics', '2 assignees']);
+  await t.bridge.loadCurrentRoute();
+  // The page's arrays belong to its window, so they compare as JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(t.reads.calls.filter(([name]) => name === 'board').map(([, projectId, filters]) => [projectId, filters]))),
+    [['p1', { trackIds: ['t2'], epicIds: [], assigneeIds: ['__unassigned__', 'robin'], search: 'reader', blocked: false }]]);
+});
+
+test('a filter or search change rewrites the Board address in place, so Back leaves the Board, and Clear filters empties its query', t => {
+  const board = bootApp({ route: 'board/p1' });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  board.A.setBlockedFilter(board.d.querySelector('.blocked-filter'));
+  assert.equal(board.w.location.hash, '#/board/p1?blocked=1');
+  const search = board.d.querySelector('.board-search');
+  search.focus(); search.value = 'reader'; board.A.setBoardQ('reader', { isComposing: false });
+  assert.equal(board.w.location.hash, '#/board/p1?blocked=1', 'the search waits for its pause');
+  t.mock.timers.tick(180);
+  assert.equal(board.w.location.hash, '#/board/p1?search=reader&blocked=1');
+  // A live update draws the page again, and typing goes on in the search box.
+  board.A.refreshBackground();
+  assert.equal(board.d.activeElement, board.d.querySelector('.board-search')); assert.equal(board.d.activeElement.value, 'reader');
+  board.A.clearBoardFilters();
+  assert.equal(board.w.location.hash, '#/board/p1');
+  assert.equal(board.w.history.length, 1);
+  t.mock.timers.reset();
+});
+
+test('Back to a Board address with other filters shows the placeholder, not No matching tasks, until their read lands', async () => {
+  // The cards on screen were read for the first track only; reads wait for the test.
+  const reads = [], cards = () => [...t.d.querySelectorAll('.board .card')].map(card => card.dataset.task);
+  const onTrack = (D, track) => { const epics = new Set(D.epics.filter(epic => epic.trackId === track).map(epic => epic.id)); return all.filter(task => epics.has(task.epicId)); };
+  let all;
+  const t = bootApp({ route: 'board/p1?track=t1', reads: { board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; } }, prepare: D => {
+    all = [...D.tasks]; D.tasks.splice(0, Infinity, ...onTrack(D, 't1'));
+    D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters({ trackIds: ['t1'] }), pages: {} };
+  } });
+  assert(cards().length, 'the first track\'s cards show');
+  t.w.location.hash = '#/board/p1?track=t2';
+  t.w.dispatchEvent(new t.w.HashChangeEvent('hashchange', { newURL: t.w.location.href }));
+  assert(t.d.querySelector('.board .loading-board'), 'the placeholder shows');
+  assert.equal(t.d.querySelector('.board .page-empty'), null, 'and not No matching tasks');
+  const loading = t.bridge.loadCurrentRoute(); await settle();
+  const [{ filters, read }] = reads;
+  t.D.tasks.splice(0, Infinity, ...onTrack(t.D, 't2')); t.D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters(filters), pages: {} };
+  t.A.refreshBoard(); read.resolve({ stale: false }); await loading;
+  const second = new Set(onTrack(t.D, 't2').map(task => task.id));
+  assert(cards().length && cards().every(id => second.has(id)), 'the second track\'s cards show');
+});
+
+test('a Load more page that lands after the search changed draws nothing, and the search\'s read then draws its cards', async () => {
+  // Reads wait for the test.
+  const pages = [], reads = [];
+  const t = bootApp({ route: 'board', reads: {
+    moreBoard: () => { const page = deferred(); pages.push(page); return page.promise; },
+    board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; },
+  } });
+  t.A.loadMoreBoard('planning'); await settle();
+  // The search changes at once; its read waits for a pause in typing.
+  t.A.setBoardQ('reader', { isComposing: false });
+  pages[0].resolve({ stale: false, done: true }); await settle();
+  assert.doesNotMatch(t.d.getElementById('toast-region').textContent, /could not be completed/);
+  t.A.boardSearchKey({ key: 'Enter', isComposing: false, keyCode: 13, preventDefault() {} }); await settle();
+  const [{ filters, read }] = reads;
+  t.D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters(filters), pages: {} };
+  t.A.refreshBoard(); read.resolve({ stale: false }); await settle();
+  const titles = [...t.d.querySelectorAll('.board .card .card-title-button')].map(title => title.textContent);
+  assert(titles.length && titles.every(title => /reader/i.test(title)), 'the search\'s cards show');
+});
+
+test('after Load more, a search typed and erased before its read keeps every loaded card', async () => {
+  // Planning holds more than its first page; Load more brings the last page.
+  const t = bootApp({ route: 'board', prepare: D => {
+    for (let index = 0; index < 60; index++) D.tasks.push({ id: `BIR-${900 + index}`, internalId: `more-${index}`, projectId: 'p1', epicId: 'e1', state: 'planning', title: `More work ${index}`, order: 1000 + index, assignees: [], created: Date.now(), revision: 1, comments: [], attachments: [], activity: [] });
+    D.boardPageInfo = { projectId: 'p1', filters: {}, pages: { planning: { nextCursor: 'next', total: 0 } } };
+  } });
+  const planning = () => t.d.querySelectorAll('[data-col="planning"] .card').length, loaded = t.D.tasks.filter(task => task.projectId === 'p1' && task.state === 'planning').length;
+  assert.equal(planning(), 50);
+  t.D.boardPageInfo.pages.planning.nextCursor = null;
+  t.A.loadMoreBoard('planning'); await settle();
+  assert.equal(planning(), loaded);
+  t.A.setBoardQ('e', { isComposing: false });
+  t.A.setBoardQ('', { isComposing: false }); await settle();
+  assert.equal(planning(), loaded, 'the cards Load more showed stay');
 });
 
 test('a blocked card describes its block reason', () => {
@@ -384,7 +475,7 @@ test('the click that ends a card drag never opens the card, however late it come
   // Firefox clicks only after the drop's redraw, which a busy page can take a second to finish.
   const now = t.w.Date.now; t.w.Date.now = () => now() + 1000;
   click();
-  assert.equal(t.w.location.hash, '#/board');
+  assert.equal(t.w.location.hash, '#/board/p1');
   // The next press forgets the drag, so a plain click opens the card.
   pointer('pointerdown', 10); pointer('pointerup', 10); click();
   assert.equal(t.w.location.hash, `#/task/${card.dataset.task}`);

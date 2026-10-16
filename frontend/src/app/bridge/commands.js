@@ -231,9 +231,9 @@ export function createCommands(ctx) {
       if (options.reload) {
         const loaded=await reloadBootstrap();if(loaded?.stale)return stale(result);
         const current=context();
-        if(data.projects.some((item)=>item.id===current.projectId)){
-          const projected=current.view==='board'?await reads.board(current.projectId,current.board):null;
-          if(projected?.stale)return stale(result);
+        // An unfiltered Board shows the cards that the reload carries.
+        if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)&&!reads.adoptBoard(current.projectId,current.board)){
+          if((await reads.board(current.projectId,current.board))?.stale)return stale(result);
         }
       } else if(/^task\.(?:block|unblock)/.test(operation)&&data.projects.some((item)=>item.id===context().projectId)){
         if((await reads.counts(context().projectId))?.stale)return stale(result);

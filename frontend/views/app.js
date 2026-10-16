@@ -5,13 +5,15 @@
    server-backed actions to `App`. See frontend/README.md before changing an
    action. */
 
+import { pageOf, projectAddress, readAddress, rememberSwitch } from '../src/app/address.js';
 import { UIMotion } from '../src/app/motion.js';
 import { checkPreviewAccess } from '../src/features/files/preview.js';
+import { routeHash } from '../src/features/knowledge/model.js';
 import { accountTopbarHtml, renderProfile, renderSettings, renderUsers } from './app/account.js';
 import { mountAttachments } from './app/attachments.js';
 import {
-  boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch, clearFilterMotion,
-  rememberBoardRows, renderBoard, resetBoardFilters,
+  boardFilters, boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch, clearFilterMotion,
+  rememberBoardRows, renderBoard, resetBoardFilters, showBoardFilters,
 } from './app/board.js';
 import { beforeCollaborationRender, inboxHtml, inboxNav, mountCollaboration } from './app/collaboration.js';
 import { field, resetFieldIds } from './app/controls.js';
@@ -139,7 +141,8 @@ function renderTopbar() {
 let paintedPage=null;
 const pageScope=()=>JSON.stringify([D.session?.id,D.session?.userId,state.view,state.projectId,state.taskId]);
 let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressedTaskControl=false,pressedControlTimer=null;
-const renderScope=()=>JSON.stringify([D.session?.id,D.session?.userId,location.hash,state.view,state.projectId,state.taskId,state.modal?.type,state.modal?.id,state.peek]);
+// A filter rewrites the Board's address, but the page stays, and so does focus in its search box.
+const renderScope=()=>JSON.stringify([D.session?.id,D.session?.userId,pageOf(location.hash),state.view,state.projectId,state.taskId,state.modal?.type,state.modal?.id,state.peek]);
 // A render rebuilds an open dialog and loses its unsaved fields, so a change
 // that arrives under one paints when that dialog closes.
 function refreshAfterDialog(){
@@ -231,7 +234,7 @@ function renderContent() {
   if(state.modal?.type==='temppw'&&(!D.session||state.modal.ownerSession!==D.session.id||state.modal.ownerId!==me()?.id||!isAdmin()))state.modal=null;
   clearStaleTaskSave();
   today.setTime(instanceToday().getTime());
-  if (pendingConfirmation && (pendingConfirmation.session !== D.session?.id || pendingConfirmation.hash !== location.hash || !D.session)) pendingConfirmation.close(false, false);
+  if (pendingConfirmation && (pendingConfirmation.session !== D.session?.id || pageOf(pendingConfirmation.hash) !== pageOf(location.hash) || !D.session)) pendingConfirmation.close(false, false);
   checkPreviewAccess();
   beforeCollaborationRender({userId:me()?.id,projectId:state.projectId,view:state.view,taskId:state.taskId,modal:state.modal});
   const renderMotion = prepareRenderMotion();
@@ -243,7 +246,7 @@ function renderContent() {
   if(state.view==='task'&&!canReadTask(taskById(state.taskId))){state.view='forbidden';state.peek=null;state.modal=null;}
   if(state.peek&&!canReadProject(trackById(epicById(state.peek)?.trackId)?.projectId))state.peek=null;
   if(state.modal&&!canReadProject(state.projectId)&&!['user','project','temppw'].includes(state.modal.type))state.modal=null;
-  if (!visibleProjects().find((p) => p.id === state.projectId)) state.projectId = (visibleProjects()[0] || {}).id;
+  if (!visibleProjects().some((p) => p.id === state.projectId)) state.projectId = defaultProject();
   // The empty page keeps its address, so a first project returns to that page.
   if (state.view === 'no-projects' && project()) resolveRoute();
   if (['settings','users','storage'].includes(state.view) && !isAdmin()) state.view = 'forbidden';
@@ -253,7 +256,10 @@ function renderContent() {
   const p = project() || {name:'No projects'};
   const u = me();
   const error = recovery.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
-  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? recovery.errorHtml(error) : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : state.view === 'knowledge' ? knowledge.render(state.projectId) : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
+  // An address can name a project whose tracks, epics and people the route
+  // loader still loads; the Board waits for its cards in the same way.
+  const loadingProject = ['roadmap','settings'].includes(state.view) && D.bootstrapProjectId !== state.projectId;
+  const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? recovery.errorHtml(error) : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : loadingProject ? recovery.errorHtml('loading') : state.view === 'knowledge' ? knowledge.render(state.projectId) : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`
     <a class="skip-link" href="#main">Skip to content</a>
@@ -325,6 +331,22 @@ Object.assign(App, {
    */
   context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null, movePending:state.view==='board'?boardMovePending():state.view==='roadmap'?roadmapMovePending():false }; },
   updateDocumentTitle,
+  replaceAddress,
+  /**
+   * Forget the project, page and Board filters the tab showed, with its
+   * address, as its person signed out on purpose: the next person to sign in
+   * here starts from their own project. A session that ends by itself keeps
+   * them, for the same person to come back to.
+   */
+  clearAddress() {
+    const {page}=readAddress(location.hash);
+    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;resetBoardFilters();
+    // A task names its project too, so it gives way to the Board, as does an address that can't be read.
+    state.view=['task','notfound'].includes(page)?'board':page;
+    replaceAddress();
+  },
+  /** Read the address again once someone signs in, since their projects decide what it shows. */
+  resolveRoute,
   refreshCounts() {
     const badge=document.querySelector('.sidebar .nav-item[title="Board"] .end');
     const open=String(counts().open);if(badge&&badge.textContent!==open)badge.textContent=open;
@@ -334,8 +356,21 @@ Object.assign(App, {
     document.querySelectorAll('[data-pool-count]').forEach(el=>{if(el.textContent!==pool)el.textContent=pool;});
   },
   followAddress,
-  selectProject(id) { if(!visibleProjects().some(project=>project.id===id))return;const leaveTask=state.view==='task'&&state.projectId!==id;state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();if(leaveTask){state.view='board';state.taskId=null;setLocalHash('#/board');}if(state.view==='knowledge'){knowledge.route('knowledge',id);setLocalHash('#/knowledge');}render(); },
-  nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash('#/' + v); render(); },
+  /**
+   * Switch to a project whose data the caller loaded. The page stays, but a
+   * task page goes to the Board and Knowledge to its top folder. The switch is
+   * a new history entry, and this person's new tabs in this browser open the
+   * project.
+   */
+  selectProject(id) {
+    if(!visibleProjects().some(project=>project.id===id))return;
+    const leaveTask=state.view==='task'&&state.projectId!==id;
+    state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);
+    if(leaveTask){state.view='board';state.taskId=null;}
+    if(state.view==='knowledge')knowledge.route('knowledge',id);
+    pushAddress(addressOf(state.view));render();
+  },
+  nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash(addressOf(v)); render(); },
   require(permission) {
     if (hasPermission(permission)) return true;
     App.toast(`${permission === 'manage_roadmap' ? 'Roadmap' : 'Board'}: read only`, 'info');
@@ -366,7 +401,6 @@ Object.assign(App, {
     const r = ev.currentTarget.getBoundingClientRect();
     openMenu([
       { theme: true },
-      { autoReload: true },
       { sep: true },
       { label: 'Profile', icon: I.person, fn: () => App.nav('profile') },
       ...(isAdmin() ? [{ label: 'Users', icon: I.users, fn: () => App.nav('users') },{ label: 'Storage', icon: I.storage, fn: () => App.nav('storage') }] : []),
@@ -375,17 +409,6 @@ Object.assign(App, {
     ], r.left, r.top, { version: true, above: true, trigger:ev.currentTarget });
   },
   setTheme(value) { window.Theme.set(value); },
-  toggleAutoReload() {
-    recovery.setAutoReload(!recovery.autoReload);
-    App.autoReloadChanged();
-  },
-  /** Show Reload after updates as it is now, also after another tab changed it. */
-  autoReloadChanged() {
-    const on = !!recovery.autoReload, button = document.querySelector('[data-auto-reload]');
-    if (!button || button.getAttribute('aria-pressed') === String(on)) return;
-    button.setAttribute('aria-pressed', String(on));
-    setHTML(button.querySelector('.menu-check'), on ? I.tick : '');
-  },
   /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
   leaveField(event, field) { event.preventDefault(); field.blur(); },
 
@@ -414,27 +437,51 @@ window.App = App;
 export { App };
 
 // ---------- routing ----------
+/** The project to show when the address names none: the one on screen, else the loaded one, else the first. */
+const defaultProject=()=>[state.projectId,D.bootstrapProjectId].find(id=>visibleProjects().some(project=>project.id===id))??visibleProjects()[0]?.id;
+/**
+ * Show the project an address names. One this person can't open is not
+ * found, once their data says so; another project starts with an unfiltered
+ * Board and the Roadmap at today.
+ */
+function showProject(id){
+  if(id&&D.session&&!visibleProjects().some(project=>project.id===id)){state.view='notfound';return false;}
+  if(id&&id!==state.projectId){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();}
+  return true;
+}
 function resolveRoute() {
-  const route=location.hash.replace(/^#\/?/,'') || 'roadmap';
-  if(route.startsWith('task/')){
-    let id;try{id=decodeURIComponent(route.slice(5));}catch{state.view='notfound';state.taskId=null;return;}
-    state.taskId=id;
-    const task=taskById(id);
-    if(!task){state.view='notfound';state.taskId=id;return;}
+  const place=readAddress(location.hash);
+  state.taskId=place.taskId;
+  if(place.page==='task'){
+    const task=taskById(place.taskId);
+    if(!task){state.view='notfound';return;}
     const epic=epicById(task.epicId),track=trackById(epic?.trackId);
     if(!track){state.view='notfound';return;}
     state.projectId=track.projectId;state.view=canReadTask(task)?'task':'forbidden';state.taskId=task.id;return;
   }
-  state.taskId=null;
-  if(route==='knowledge'||/^knowledge[/?]/.test(route)){
-    const projectId=knowledge.route(route,state.projectId);
-    if(projectId&&projectId!==state.projectId){
-      if(!visibleProjects().some(project=>project.id===projectId)){state.view='notfound';return;}
-      state.projectId=projectId;state.rmScrollLeft=null;resetBoardFilters();
-    }
-    state.view='knowledge';return;
-  }
-  state.view=['roadmap','board','settings','profile','users','inbox','storage'].includes(route)?route:'notfound';
+  if(place.page==='knowledge'){
+    if(!showProject(knowledge.route(location.hash.replace(/^#\/?/,''),defaultProject())))return;
+    state.view='knowledge';
+  }else if(['board','roadmap','settings'].includes(place.page)){
+    if(!showProject(place.projectId??defaultProject()))return;
+    state.view=place.page;
+    if(place.page==='board')showBoardFilters(place.filters);
+  }else{state.view=place.page;return;}
+  // An older address, such as `#/board`, gets the project in place.
+  if(!place.projectId)replaceAddress();
+}
+/** The address of a page of the project on screen; the Board's carries its filters. Other pages keep theirs. */
+function addressOf(view){
+  if(!['board','roadmap','settings','knowledge'].includes(view))return ['inbox','profile','users','storage'].includes(view)?`#/${view}`:location.hash;
+  if(!state.projectId)return `#/${view}`;
+  // Knowledge builds its own addresses, which go on to a folder or a file.
+  return view==='knowledge'?routeHash(state.projectId):projectAddress(view,state.projectId,view==='board'?boardFilters():null);
+}
+/** Show the page's address in place, as after a filter change, with no new history entry. */
+function replaceAddress(){
+  const address=addressOf(state.view);if(location.hash===address)return;
+  // A browser may refuse many changes in a short time; the page still shows them.
+  try{history.replaceState(history.state,'',address);}catch{}
 }
 // Each history entry the views reach keeps its place in history.state, so
 // that Cancel after Back or Forward can step back to the entry that shows.
@@ -450,6 +497,11 @@ function setLocalHash(hash) {
   location.hash = hash;
   markPlace(++shownPlace);
   locallyRenderedHashes.push(location.href);
+}
+/** Add a history entry for a page whose data its caller loaded: unlike a hash change, it starts no route load. */
+function pushAddress(hash) {
+  if (location.hash === hash) return;
+  history.pushState({ ...history.state, oneloopPlace: ++shownPlace }, '', hash);
 }
 /** The address Discard let through, which routes without asking again. */
 let discardedFor = null;

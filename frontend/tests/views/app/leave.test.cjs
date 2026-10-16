@@ -263,7 +263,7 @@ test('Back with typed text puts the address back and asks, also through a redraw
   await waitFor(() => t.A.context().view !== 'task', 'Discard leaves the task');
   assert.equal(ask(t), null, 'Discard asks once');
   // Cancel left history as it was, so Back still leads to the Board.
-  assert.equal(t.w.location.hash, '#/board'); assert.equal(t.A.context().view, 'board');
+  assert.equal(t.w.location.hash, '#/board/p1'); assert.equal(t.A.context().view, 'board');
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {
@@ -348,29 +348,4 @@ test('Escape in a dialog\'s date field undoes the typed date first, then reaches
   assert.equal(date.value, saved); assert(t.d.querySelector('.modal'), 'the first Escape undoes the typing');
   escape();
   assert.equal(t.d.querySelector('.modal'), null, 'the next one closes the dialog');
-});
-
-test('Reload after updates is a choice in the account menu, which stays open', () => {
-  const t = bootApp({ route: 'board' });
-  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
-  const toggle = () => t.d.querySelector('[data-auto-reload]');
-  assert.equal(toggle().textContent, 'Reload after updates'); assert.equal(toggle().getAttribute('aria-pressed'), 'false');
-  t.A.toggleAutoReload();
-  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(t.d.querySelector('.profile-menu'), 'the menu stays open');
-  assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), 'on'); assert.equal(t.w.Recovery.autoReload, true);
-  t.A.toggleAutoReload();
-  assert.equal(toggle().getAttribute('aria-pressed'), 'false'); assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), null);
-});
-
-test('the account menu follows Reload after updates when another tab changes it', () => {
-  const t = bootApp({ route: 'board' });
-  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
-  const toggle = () => t.d.querySelector('[data-auto-reload]');
-  // Another tab of the same browser turns it on: this tab hears of it through storage.
-  t.w.localStorage.setItem('oneloop.autoReload', 'on');
-  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: 'oneloop.autoReload', newValue: 'on' }));
-  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(toggle().querySelector('.menu-check svg'));
-  t.w.localStorage.clear();
-  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: null }));
-  assert.equal(toggle().getAttribute('aria-pressed'), 'false');
 });

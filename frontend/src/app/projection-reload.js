@@ -4,55 +4,67 @@ import { ApiError } from '../data/api-client.js';
 import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
 import { boardFiltered } from '../data/board-filters.js';
 import { toWireScope } from '../data/wire.js';
+import { lastSwitch, pageOf, readAddress, rememberSwitch } from './address.js';
 
 /**
- * The bootstrap view for the current address: the task, the Board, the
- * Roadmap or metadata only.
+ * What the bootstrap loads for an address: a task page's task; or the project
+ * the address names, else the one on screen, with the Board's first pages, the
+ * Roadmap or metadata only. A filtered Board reads its cards afterwards, so it
+ * never shows the unfiltered ones first.
  * @param {string} hash @param {any} app
  */
 export function routeScope(hash, app) {
-  const route=hash.replace(/^#\/?/,'');
-  if(route.startsWith('task/')){
-    try{return {taskId:decodeURIComponent(route.slice(5)),view:'task'};}catch{return {view:'metadata'};}
-  }
-  const filtered=boardFiltered(app?.context().board);
-  return {view:route==='board'&&!filtered?'board':route==='roadmap'||!route?'roadmap':'metadata'};
+  const {page,projectId,taskId,filters}=readAddress(hash);
+  if(page==='task')return {taskId,view:'task'};
+  const project=projectId??app?.context().projectId;
+  const view=page==='board'&&!boardFiltered(filters)?'board':page==='roadmap'?'roadmap':'metadata';
+  return project?{projectId:project,view}:{view};
 }
 
 /**
- * Load the projection as someone signs in: the page the tab shows, in the
- * project it showed when the last session ended, so the project switcher and
- * the loaded work agree. A task they can't open loads only metadata, and a
- * project they can't open loads the default project.
- * @param {{bootstrap:any,api:any,getApp:()=>any,location?:{hash:string}}} options
+ * Load the projection as someone signs in, for the page the tab shows. An
+ * address that names no project, with none on screen, opens the project of
+ * the last switch in this browser, but only for the person who made it. A
+ * task they can't open loads only metadata, and a project they can't open
+ * loads the first project instead: an address that names it then shows Page
+ * not found, and their own switch to it is forgotten.
+ * @param {{bootstrap:any,api:any,data:any,getApp:()=>any,location?:{hash:string}}} options
  */
-export function createSignInLoad({ bootstrap, api, getApp, location = globalThis.location }) {
-  /** @type {string|undefined} */ let shown;
+export function createSignInLoad({ bootstrap, api, data, getApp, location = globalThis.location }) {
   /** @type {{key:string,response:Promise<any>}|null} */ let early = null;
+  /** The scope of the page the tab shows, with the project of `last`, a switch, when the page names none. */
+  const scopeWith = (last) => {
+    const scope = routeScope(location.hash, getApp());
+    return last && !scope.projectId && !scope.taskId ? { ...scope, projectId: last.projectId } : scope;
+  };
   return Object.freeze({
     /**
      * Start the first load's read while the page checks the session. Both
-     * answer for the same cookie, so neither waits for the other. The next
-     * load uses it if the page still asks for the same view; a session change
-     * drops it.
+     * answer for the same cookie, so neither waits for the other. The person
+     * isn't known yet, so it takes the last switch whoever made it; the load
+     * uses the read only if it still asks for the same scope, and a session
+     * change drops it.
      */
     prefetch() {
-      const scope = routeScope(location.hash, getApp());
+      const scope = scopeWith(lastSwitch());
       early = { key: JSON.stringify(scope), response: api.bootstrap(scope) };
       early.response.catch(() => {});
     },
-    /** A session change drops the early read. As a session ends, remember the project on screen. */
-    sessionChanged(session) { early = null; if (!session) shown = getApp()?.context().projectId ?? undefined; },
+    /** A session change drops the early read. */
+    sessionChanged() { early = null; },
     async load() {
-      const scope = routeScope(location.hash, getApp());
-      const first = !shown && early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : scope;
+      const person = data.session?.userId, last = lastSwitch();
+      // Someone else's switch never opens for this person.
+      const scope = scopeWith(last?.userId === person ? last : null);
+      const first = early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : scope;
       early = null;
-      try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : first); }
+      try { return await bootstrap.load(first); }
       catch (error) {
         if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
         if (scope.taskId) return bootstrap.load({ view: 'metadata' });
-        if (shown) return bootstrap.load(scope);
-        throw error;
+        if (!scope.projectId) throw error;
+        if (person && last?.projectId === scope.projectId) rememberSwitch(person, null);
+        return bootstrap.load({ view: scope.view });
       }
     },
   });
@@ -68,7 +80,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
   let projectionGeneration=0;
   const projectionScope=()=>{
     const context=getApp()?.context()??{};
-    return JSON.stringify([data.session?.id,data.session?.userId,location.hash,context.view,context.projectId,context.taskId]);
+    return JSON.stringify([data.session?.id,data.session?.userId,pageOf(location.hash),context.view,context.projectId,context.taskId]);
   };
 
   return async function reloadProjection(scope={}){
@@ -100,7 +112,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load({projectId:app?.context().projectId,...routeScope(location.hash,app),...scope}); }
+      try { loaded=await bootstrap.load({...routeScope(location.hash,app),...scope}); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;

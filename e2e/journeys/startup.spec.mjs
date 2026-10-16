@@ -130,6 +130,18 @@ test('a build change after reconnect offers reload without overwriting open inpu
   await expect(field).toBeFocused();
 });
 
+test('the account menu shows the release version only, and a long one wraps inside the menu', async ({ page, instance }) => {
+  const version = '0.1.0-rc.5.20261016120000.0123456789abcdef', revision = '5cee2010df88a8d229d0048c2a0c51ac8fb69e61';
+  await page.route('**/healthz', route => route.fulfill({ json: { status: 'ok', version, revision } }));
+  await openApp(page, instance, 'board');
+  await page.locator('.me-chip').click();
+  const menu = page.locator('.profile-menu'), shown = menu.locator('.menu-version');
+  await expect(shown.locator('[aria-hidden="true"]')).toHaveText(`v${version}`);
+  await expect(shown.locator('.sr-only')).toHaveText(`Version ${version}`);
+  await expect(menu).not.toContainText(revision.slice(0, 8));
+  expect(await menu.evaluate(element => element.scrollWidth <= element.clientWidth), 'the menu does not scroll sideways').toBe(true);
+});
+
 test('an unresolved task uses its layout while loading and only shows a confirmed 404', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/404 .*\/api\/tasks\//);
   await openApp(page, instance, 'board');
@@ -161,9 +173,10 @@ test('a delayed task destination cannot reopen after the user returns to Board',
     await page.evaluate(key => { location.hash = `#/task/${key}`; }, secondary.task.taskKey);
     await reads.started;
     await page.locator('.nav-item[title="Board"]').click();
-    await expect(page).toHaveURL(/#\/board$/);
+    const board = new RegExp(`#/board/${instance.projects[0].project.id}$`);
+    await expect(page).toHaveURL(board);
     await reads.release();
-    await expect(page).toHaveURL(/#\/board$/);
+    await expect(page).toHaveURL(board);
     await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
     await expect(page.locator('.task-page')).toHaveCount(0);
     await expect(page).toHaveTitle(/Board · .* · oneloop/);
@@ -178,7 +191,7 @@ test('a sidebar click still navigates when a render lands between press and rele
   // Background work, such as the route-loading indicator, renders at any moment.
   await page.evaluate(() => window.App.refresh());
   await page.mouse.up();
-  await expect(page).toHaveURL(/#\/board$/);
+  await expect(page).toHaveURL(new RegExp(`#/board/${instance.projects[0].project.id}$`));
   await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
 });
 
@@ -207,6 +220,48 @@ test('keyboard menus, refresh focus and titles stay contextual across navigation
   await expect(page).toHaveTitle(`Board · ${secondary.project.name} · oneloop`);
   await expect(page.locator('.board')).toContainText(secondary.task.title);
   await expect(page.locator('.board')).not.toContainText(primary.task.title);
+});
+
+test('the address keeps the project through a refresh, Back and Forward, and a new tab opens the project switched to last', async ({ page, context, instance }) => {
+  const [first, second] = instance.projects;
+  const titles = target => target.locator('.board .card-title-button');
+  await openApp(page, instance, 'board');
+  await expect(page).toHaveURL(`${instance.url}/#/board/${first.project.id}`);
+  await page.locator('.switcher-btn').click();
+  await page.locator('#project-switcher-menu').getByRole('button', { name: second.project.name }).click();
+  await expect(page).toHaveURL(`${instance.url}/#/board/${second.project.id}`);
+  await page.reload();
+  await expect(page.locator('.switcher-btn')).toHaveAccessibleName(`Project: ${second.project.name}`);
+  await expect(titles(page)).toHaveText([second.task.title]);
+  await page.goBack();
+  await expect(titles(page)).toHaveText([first.task.title]);
+  await page.goForward();
+  await expect(titles(page)).toHaveText([second.task.title]);
+  // An address from before projects had one opens the project this browser switched to last.
+  const tab = await context.newPage();
+  await tab.goto(`${instance.url}/#/board`);
+  await expect(tab).toHaveURL(`${instance.url}/#/board/${second.project.id}`);
+  await expect(titles(tab)).toHaveText([second.task.title]);
+});
+
+test('a link into another project loads that project first, showing the Board skeleton until it lands', async ({ page, instance }) => {
+  const [first, second] = instance.projects;
+  const titles = page.locator('.board .card-title-button');
+  await openApp(page, instance, 'board');
+  await expect(titles).toHaveText([first.task.title]);
+  await page.evaluate(id => { location.hash = `#/knowledge/${id}`; }, second.project.id);
+  await expect(page.locator('.switcher-btn')).toHaveAccessibleName(`Project: ${second.project.name}`);
+  await page.locator('.nav-item[title="Board"]').click();
+  await expect(titles).toHaveText([second.task.title]);
+  await page.goBack();
+  const bootstrap = await holdResponses(page, '**/api/bootstrap**');
+  try {
+    await page.goBack();
+    await bootstrap.started;
+    await expect(page.locator('.board .loading-board')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'No tasks yet' })).toHaveCount(0);
+  } finally { await bootstrap.release(); }
+  await expect(titles).toHaveText([first.task.title]);
 });
 
 test('members navigate every accessible project and see all Inbox project choices', async ({ page, instance, playwright }) => {

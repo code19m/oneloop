@@ -13,6 +13,14 @@
 An epic without an end date is **ongoing**. Use ongoing epics for recurring
 work, such as "Small fixes".
 
+The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
+names the project, so a refresh, a bookmark or a link opens the same project.
+An address without a project, such as an older bookmark, opens the project you
+last switched to in this browser, or else your first project. A link to a
+project you can't open shows **Page not found**. When you sign out, the tab's
+address drops the project and the Board's filters, so the next person who signs
+in there starts from their own project.
+
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
 still comment. See [Permissions](admin-guide.md#permissions).
@@ -76,7 +84,10 @@ a review.
   works well with a keyboard.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
-  filters together show fewer.
+  filters together show fewer. The filters are part of the page's address, so
+  a refresh keeps them and you can share a filtered Board as a link. Changing
+  them adds no step to the browser's history, so **Back** leaves the Board. A
+  choice the project no longer has, such as a deleted track, is dropped.
 - **Newest first**, at the top of **Done**, lists the most recently finished
   tasks first. Each browser remembers this choice. While it is on, a task you
   move to Done goes to the top, and you can't reorder Done by hand. The manual
@@ -234,13 +245,16 @@ bulk undo, but you can restore individual items from **Archived** and use
 
 Click your name at the bottom of the sidebar. The menu has **Profile**,
 **Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
-default, follows your device's light or dark setting.
+default, follows your device's light or dark setting, and the theme you choose
+applies to this browser only.
 
-When oneloop is upgraded, open tabs show **oneloop was updated**. With
-**Reload after updates** on, a tab reloads by itself once nothing you typed
-would be lost and the tab is hidden or you haven't used it for a minute. A
-temporary password that is still on screen counts as something that would be
-lost. Both choices apply to this browser only.
+When oneloop is upgraded, open tabs show **oneloop was updated** and reload by
+themselves at a safe moment: nothing you typed would be lost, nothing is open,
+such as a dialog, a menu, a file preview or an **Undo** offer, and the tab is
+hidden or you haven't used it for five minutes. A temporary password that is
+still on screen counts as something that would be lost. **Reload now** reloads
+at once. A reloaded page shows the same address, so you keep your project and
+Board filters.
 
 On your **Profile**:
 

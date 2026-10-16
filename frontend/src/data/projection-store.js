@@ -16,7 +16,7 @@ export function createLegacyData() {
   return {
     limits:/** @type {{maxAttachmentBytes:number,maxAvatarBytes:number,maxAttachmentsPerTask:number}|null} */(null), projectionGeneration:0, timeZone: 'UTC', users: [], projects: [], tracks: [], epics: [], milestones: [],
     tasks: [], pool: [], notifications: [], browserSessions: [], appGrants: [], session: null,
-    inboxUnreadCount: 0, boardPageInfo: null, projectTaskCounts: {}, poolPageInfo: {}, bootstrapView:null, syncCursor:null,
+    inboxUnreadCount: 0, boardPageInfo: null, projectTaskCounts: {}, poolPageInfo: {}, bootstrapView:null, bootstrapProjectId:null, syncCursor:null,
     epicPageInfo: {}, adminUsers: { ids: [], nextCursor: null, loaded: false },
   };
 }
@@ -291,7 +291,9 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   data.projectTaskCounts={};
   data.poolPageInfo={};
   data.bootstrapView=bootstrap.view??null;data.syncCursor=bootstrap.syncCursor??null;
-  const projectId=bootstrap.selectedProjectId;
+  // The project whose tracks, epics, milestones and people the bootstrap loaded.
+  data.bootstrapProjectId=bootstrap.selectedProjectId??null;
+  const projectId=data.bootstrapProjectId;
   if(projectId&&bootstrap.boardCounts)setProjectTaskCounts(data,projectId,byStatus(bootstrap.boardCounts));
   if(projectId&&Object.keys(bootstrap.boardPages??{}).length){
     const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[toLegacyStatus(status),page]));
