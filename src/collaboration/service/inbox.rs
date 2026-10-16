@@ -3,24 +3,66 @@
 use super::*;
 
 pub(super) const ARCHIVE_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
-const INBOX_FILTER_SQL: &str = concat!(
-    "
-    WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL
-      AND ((?3=0 AND r.archived_at IS NULL)
-        OR (?3=1 AND r.archived_at>?2))
-      AND (?4=0 OR r.read_at IS NULL)
-      AND (?6=0 OR (
-        n.project_id IN (SELECT value FROM json_each(?5))
-        AND EXISTS(SELECT 1 FROM projects p WHERE p.id=n.project_id AND p.deleted_at IS NULL)
-        AND (r.task_key_snapshot IS NULL OR EXISTS(
-          SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.deleted_at IS NULL))
-        AND EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND ",
-    access::can_read_project!("me", "n.project_id"),
-    ")
-      ))
-      AND (?7 IS NULL OR n.project_id IN
-        (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?7))"
-);
+
+/// The Inbox items `filter` selects for `actor`, as `FROM … WHERE …` over
+/// the recipient rows `r`, with its parameters from `?1` on. Conditions are
+/// chosen here, not switched by parameters, so SQLite reads
+/// `notification_inbox_idx` for the archived state; the event `n` is joined
+/// only when the caller, a project filter or a grant needs it.
+fn inbox_items_sql(
+    actor: &Actor,
+    filter: &InboxFilter,
+    archived_since: i64,
+    with_event: bool,
+) -> AppResult<(String, Vec<rusqlite::types::Value>)> {
+    let grant = actor.mcp_grant_id();
+    let join = if with_event || grant.is_some() || !filter.project_ids.is_empty() {
+        " JOIN notification_events n ON n.id=r.notification_id"
+    } else {
+        ""
+    };
+    let mut sql = format!(
+        "FROM notification_recipients r{join}
+         WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL"
+    );
+    let mut values = vec![actor.user_id.clone().into()];
+    if filter.archived {
+        values.push(archived_since.into());
+        sql.push_str(" AND r.archived_at>?2");
+    } else {
+        sql.push_str(" AND r.archived_at IS NULL");
+    }
+    if filter.unread_only {
+        sql.push_str(" AND r.read_at IS NULL");
+    }
+    if !filter.project_ids.is_empty() {
+        values.push(
+            serde_json::to_string(&filter.project_ids)
+                .map_err(|error| AppError::internal(format!("serialize Inbox filter: {error}")))?
+                .into(),
+        );
+        sql.push_str(&format!(
+            concat!(
+                " AND n.project_id IN (SELECT value FROM json_each(?{}))
+                  AND EXISTS(SELECT 1 FROM projects p WHERE p.id=n.project_id AND p.deleted_at IS NULL)
+                  AND (r.task_key_snapshot IS NULL OR EXISTS(
+                    SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.deleted_at IS NULL))
+                  AND EXISTS(SELECT 1 FROM users me WHERE me.id=r.user_id AND ",
+                access::can_read_project!("me", "n.project_id"),
+                ")"
+            ),
+            values.len()
+        ));
+    }
+    if let Some(grant) = grant {
+        values.push(grant.to_owned().into());
+        sql.push_str(&format!(
+            " AND n.project_id IN (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?{})",
+            values.len()
+        ));
+    }
+    Ok((sql, values))
+}
 
 /// Clears what Inbox items archived before `?1` still show.
 const PURGE_ARCHIVED_SQL: &str = "UPDATE notification_recipients
@@ -44,34 +86,35 @@ impl CollaborationService {
             let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
             access::require_scope(connection, actor, McpScope::InboxPrivate, None)?;
             validate_inbox_projects(connection, actor, &filter.project_ids)?;
-            let unread_count: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM notification_recipients r
-                 JOIN notification_events n ON n.id=r.notification_id
-                 WHERE r.user_id=?1 AND r.delivered_at IS NOT NULL AND r.read_at IS NULL AND r.archived_at IS NULL
-                 AND (?2 IS NULL OR n.project_id IN
-                   (SELECT project_id FROM mcp_grant_projects WHERE grant_id=?2))",
-                params![actor.user_id, actor.mcp_grant_id()], |row| row.get(0),
-            )?;
             let cutoff = unix_now()?.saturating_sub(ARCHIVE_RETENTION_SECONDS);
-            let project_ids = serde_json::to_string(&filter.project_ids)
-                .map_err(|error| AppError::internal(format!("serialize Inbox filter: {error}")))?;
-            let filtered_count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*)
-                    FROM notification_recipients r
-                    JOIN notification_events n ON n.id=r.notification_id
-                    {INBOX_FILTER_SQL}"),
-                params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id()],
-                |row| row.get(0),
-            )?;
+            let count = |filter: &InboxFilter| -> AppResult<i64> {
+                let (items, values) = inbox_items_sql(actor, filter, cutoff, false)?;
+                Ok(connection.query_row(
+                    &format!("SELECT COUNT(*) {items}"),
+                    rusqlite::params_from_iter(values),
+                    |row| row.get(0),
+                )?)
+            };
+            let unread_count = count(&InboxFilter {
+                unread_only: true,
+                ..InboxFilter::default()
+            })?;
+            let filtered_count = count(&filter)?;
+            let (mut items, mut values) = inbox_items_sql(actor, &filter, cutoff, true)?;
+            if let Some(cursor) = cursor {
+                values.push(cursor.time.into());
+                values.push(cursor.id.into());
+                items.push_str(&format!(
+                    " AND (n.created_at<?{time} OR (n.created_at=?{time} AND n.id<?{id}))",
+                    time = values.len() - 1,
+                    id = values.len()
+                ));
+            }
+            values.push(((limit + 1) as i64).into());
             let mut statement = connection.prepare(&format!(
                 "WITH page AS (
-                    SELECT n.id,n.created_at
-                    FROM notification_recipients r
-                    JOIN notification_events n ON n.id=r.notification_id
-                    {INBOX_FILTER_SQL}
-                    AND (?8 IS NULL OR n.created_at<?8 OR (n.created_at=?8 AND n.id<?9))
-                    ORDER BY n.created_at DESC,n.id DESC LIMIT ?10
+                    SELECT n.id,n.created_at {items}
+                    ORDER BY n.created_at DESC,n.id DESC LIMIT ?{limit}
                  )
                  SELECT n.id,n.event_type,n.project_id,n.task_id,n.comment_id,n.block_id,n.created_at,
                         COALESCE(p.name,r.project_name_snapshot),
@@ -91,16 +134,10 @@ impl CollaborationService {
                  LEFT JOIN task_blocks b ON b.id=n.block_id
                  LEFT JOIN users actor ON actor.id=n.actor_user_id
                  ORDER BY page.created_at DESC,page.id DESC",
+                limit = values.len(),
                 can_read = access::can_read_project!("me", "n.project_id"),
             ))?;
-            let cursor_time = cursor.as_ref().map(|cursor| cursor.time);
-            let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
-            let rows = statement.query_map(
-                params![actor.user_id, cutoff, filter.archived, filter.unread_only,
-                    project_ids, !filter.project_ids.is_empty(), actor.mcp_grant_id(), cursor_time, cursor_id,
-                    (limit + 1) as i64],
-                inbox_row,
-            )?;
+            let rows = statement.query_map(rusqlite::params_from_iter(values), inbox_row)?;
             let mut items = rows.collect::<Result<Vec<_>, _>>()?;
             let next_cursor = next_cursor(&mut items, limit, |item| (item.created_at, &item.id));
             Ok(InboxPage {
@@ -197,34 +234,31 @@ pub(super) fn inbox_bulk_change(
     now: i64,
 ) -> AppResult<Mutation> {
     validate_inbox_projects(tx, actor, &input.filter.project_ids)?;
-    let filter = &input.filter;
-    let project_ids = serde_json::to_string(&filter.project_ids)
-        .map_err(|error| AppError::internal(format!("serialize Inbox filter: {error}")))?;
+    let (items, mut values) = inbox_items_sql(
+        actor,
+        &input.filter,
+        now.saturating_sub(ARCHIVE_RETENTION_SECONDS),
+        false,
+    )?;
+    values.push(now.into());
+    let now_parameter = values.len();
     let (assignment, changed_filter) = if archive {
         (
-            "read_at=COALESCE(read_at,?8),archived_at=COALESCE(archived_at,?8)",
+            format!(
+                "read_at=COALESCE(read_at,?{now_parameter}),archived_at=COALESCE(archived_at,?{now_parameter})"
+            ),
             "(read_at IS NULL OR archived_at IS NULL)",
         )
     } else {
-        ("read_at=?8", "read_at IS NULL")
+        (format!("read_at=?{now_parameter}"), "read_at IS NULL")
     };
     let changed = tx.execute(
         &format!(
             "UPDATE notification_recipients SET {assignment}
          WHERE user_id=?1 AND {changed_filter} AND notification_id IN (
-           SELECT n.id FROM notification_recipients r
-           JOIN notification_events n ON n.id=r.notification_id {INBOX_FILTER_SQL})"
+           SELECT r.notification_id {items})"
         ),
-        params![
-            actor.user_id,
-            now.saturating_sub(ARCHIVE_RETENTION_SECONDS),
-            filter.archived,
-            filter.unread_only,
-            project_ids,
-            !filter.project_ids.is_empty(),
-            actor.mcp_grant_id(),
-            now
-        ],
+        rusqlite::params_from_iter(values),
     )?;
     if changed > 0 {
         enqueue_inbox_change_tx(tx, &actor.user_id, now)?;
@@ -316,6 +350,35 @@ fn inbox_row(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
 mod tests {
     use super::*;
     use crate::db::{migrated_connection, query_plan};
+
+    #[test]
+    fn inbox_counts_find_the_archived_state_in_the_index_without_the_events() {
+        let (_root, connection) = migrated_connection();
+        let actor = Actor {
+            user_id: "user".into(),
+            username: "user".into(),
+            display_name: "User".into(),
+            is_admin: false,
+            must_change_password: false,
+            authenticated_at: 0,
+            source: crate::auth::ActorSource::BrowserSession {
+                session_id: "session".into(),
+            },
+        };
+        for archived in [false, true] {
+            let filter = InboxFilter {
+                archived,
+                ..InboxFilter::default()
+            };
+            let (items, _) = inbox_items_sql(&actor, &filter, 0, false).unwrap();
+            let plan = query_plan(&connection, &format!("SELECT COUNT(*) {items}"));
+            assert!(
+                plan.contains("notification_inbox_idx (user_id=? AND archived_at")
+                    && !plan.contains("notification_events"),
+                "{plan}"
+            );
+        }
+    }
 
     #[test]
     fn the_archive_purge_reads_only_archived_items() {

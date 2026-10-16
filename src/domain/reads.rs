@@ -7,7 +7,7 @@ mod roadmap;
 
 use board::{
     board_counts_connection, board_page_connection, board_page_with_total,
-    epic_task_page_connection,
+    epic_task_page_connection, task_page_generation,
 };
 use bootstrap::bootstrap_snapshot;
 use roadmap::{epics, milestones, tracks};
@@ -162,11 +162,11 @@ impl DomainService {
         access::read(&self.db, actor, move |connection, actor| {
             require_project(connection, actor, &query.project_id, Need::Read, false)?;
             let counts = board_counts_connection(connection, &query.project_id)?;
+            let generation = task_page_generation(connection, &query.project_id)?;
             let unfiltered = query.filter.is_empty();
             let page = |status: TaskStatus, total: i64| {
                 board_page_with_total(
                     connection,
-                    actor,
                     &BoardQuery {
                         project_id: query.project_id.clone(),
                         status,
@@ -175,6 +175,7 @@ impl DomainService {
                         filter: query.filter.clone(),
                     },
                     unfiltered.then_some(total),
+                    generation,
                 )
             };
             let planning = page(TaskStatus::Planning, counts.planning)?;

@@ -653,22 +653,16 @@ async fn delayed_deletion_keeps_attribution_after_receipt_expiry_and_pruning() {
         })
         .await
         .unwrap();
-        upload(
-            &service,
-            &f.manager,
-            "prune-expired",
-            "another.txt",
-            b"other",
-            false,
-        )
-        .await;
+        oneloop::retention::prune_transient_state(&f.db, now())
+            .await
+            .unwrap();
         let receipts: i64 = query_one(
             &f.db,
             "SELECT count(*) FROM idempotency_keys WHERE operation='attachment.delete'",
             [],
         )
         .await;
-        assert_eq!(receipts, 0, "ordinary writes really pruned the receipt");
+        assert_eq!(receipts, 0, "maintenance really pruned the receipt");
         f.db.run(|c| {
             c.execute(
                 "UPDATE users SET display_name='Renamed' WHERE id='manager'",

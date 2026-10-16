@@ -285,16 +285,14 @@ pub(crate) fn require_project(
     destructive: bool,
 ) -> AppResult<()> {
     let actor = refresh_actor_connection(conn, actor)?;
-    let visible: bool = conn.query_row(
-        concat!(
+    let visible: bool = conn
+        .prepare_cached(concat!(
             "SELECT EXISTS(SELECT 1 FROM projects p JOIN users u ON u.id=?2
              WHERE p.id=?1 AND p.deleted_at IS NULL AND ",
             can_read_project!("u", "p.id"),
             ")"
-        ),
-        params![project, actor.user_id],
-        |row| row.get(0),
-    )?;
+        ))?
+        .query_row(params![project, actor.user_id], |row| row.get(0))?;
     if !visible {
         return Err(AppError::NotFound {
             resource: "project",

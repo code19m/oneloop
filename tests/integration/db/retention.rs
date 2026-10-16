@@ -17,7 +17,9 @@ async fn retention_removes_only_dead_state_preserving_audit_families_and_cursor(
             VALUES('expired','u','client','Client','https://example.test','https://example.test/mcp','[]','[]','x',1,2,NULL),('used','u','client','Client','https://example.test','https://example.test/mcp','[]','[]','x',1,{future},1),('active','u','client','Client','https://example.test','https://example.test/mcp','[]','[]','x',1,{future},NULL);
             INSERT INTO oauth_authorization_requests(id,user_id,client_id,redirect_uri,resource,requested_scopes_json,code_challenge,created_at,expires_at) VALUES('old','u','client','https://example.test','https://example.test/mcp','[]','x',1,2);
             INSERT INTO mcp_grants(id,user_id,client_id,client_name,created_at,updated_at,expires_at,last_used_at)
-            VALUES('dead','u','client','Client',1,1,2,1),('audited','u','client','Client',1,1,2,1),('notified','u','client','Client',1,1,2,1),('active','u','client','Client',{now},{now},{future},{now}),('recently-expired','u','client','Client',{now},{now},{now},{now}),('idle','u','client','Client',1,1,{future},1);
+            VALUES('dead','u','client','Client',1,1,2,1),('audited','u','client','Client',1,1,2,1),('notified','u','client','Client',1,1,2,1),('active','u','client','Client',{now},{now},{future},{now}),('recently-expired','u','client','Client',{now},{now},{now},{now}),('idle','u','client','Client',1,1,{future},1),('receipted','u','client','Client',1,1,2,1);
+            INSERT INTO idempotency_keys(id,actor_user_id,actor_mcp_grant_id,idempotency_key,operation,request_hash,state,created_at,updated_at,expires_at)
+            VALUES('expired','u','receipted','key','task.update','hash','succeeded',1,1,{now}),('live','u',NULL,'key','task.update','hash','succeeded',{now},{now},{future});
             INSERT INTO mcp_tokens(id,grant_id,family_id,kind,token_hash,issued_at,expires_at,revoked_at,rotated_to_id)
             VALUES('new','active','family','refresh','new',{now},{future},NULL,NULL),('rotated','active','family','refresh','rotated',1,{future},{now},'new'),('ancient','dead','dead','access','ancient',1,2,NULL,NULL);
             INSERT INTO activity_events(id,entity_type,entity_id,actor_mcp_grant_id,event_type,created_at) VALUES('audit','task','t','audited','task.created',1);
@@ -44,6 +46,7 @@ async fn retention_removes_only_dead_state_preserving_audit_families_and_cursor(
                 "active,audited,notified,recently-expired",
             ),
             ("mcp_tokens", "id", "new,rotated"),
+            ("idempotency_keys", "id", "live"),
             ("file_leases", "id", "live"),
             ("outbox_messages", "id", "cursor,recent,undelivered"),
             ("activity_events", "id", "audit"),

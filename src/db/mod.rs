@@ -817,9 +817,16 @@ fn open_lock_file(path: &Path) -> AppResult<File> {
 
 use rusqlite::OptionalExtension;
 
+/// Unit tests skip SQLite's disk flushes with the integration tests' VFS.
+#[cfg(test)]
+#[allow(dead_code, unreachable_pub)]
+#[path = "../../tests/integration/support/sqlite.rs"]
+mod test_sqlite;
+
 /// Test support: a migrated database in a new temporary folder.
 #[cfg(test)]
 pub(crate) fn migrated_db() -> (tempfile::TempDir, Db) {
+    test_sqlite::skip_disk_flushes();
     let root = tempfile::tempdir().expect("temporary folder");
     migrate(root.path(), None).expect("migrated test database");
     let db = Db::open(root.path()).expect("test database");
@@ -830,6 +837,7 @@ pub(crate) fn migrated_db() -> (tempfile::TempDir, Db) {
 /// folder.
 #[cfg(test)]
 pub(crate) fn migrated_connection() -> (tempfile::TempDir, Connection) {
+    test_sqlite::skip_disk_flushes();
     let root = tempfile::tempdir().expect("temporary folder");
     migrate(root.path(), None).expect("migrated test database");
     let connection = open_connection(&root.path().join(DATABASE_FILE)).expect("test database");

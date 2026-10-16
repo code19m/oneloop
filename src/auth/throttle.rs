@@ -45,18 +45,21 @@ pub(super) const PASSWORD_CONFIRMATION_RULE: ThrottleRule = ThrottleRule {
 };
 
 impl AuthService {
-    pub(super) async fn check_login_throttle(&self, key: &str, now: i64) -> AppResult<()> {
-        let key = key.to_owned();
+    /// Refuses an attempt while any of these buckets delays it, for as long
+    /// as the longest delay lasts.
+    pub(super) async fn check_login_throttle(&self, keys: &[&str], now: i64) -> AppResult<()> {
+        let keys = serde_json::to_string(keys)
+            .map_err(|error| AppError::internal(format!("serialize throttle keys: {error}")))?;
         let blocked_until = self
             .db
             .run(move |connection| {
                 connection
                     .query_row(
-                        "SELECT blocked_until FROM login_throttles WHERE key=?1",
-                        [key],
-                        |row| row.get::<_, i64>(0),
+                        "SELECT MAX(blocked_until) FROM login_throttles
+                         WHERE key IN (SELECT value FROM json_each(?1))",
+                        [keys],
+                        |row| row.get::<_, Option<i64>>(0),
                     )
-                    .optional()
                     .map_err(AppError::from)
             })
             .await?;
@@ -68,56 +71,59 @@ impl AuthService {
         Ok(())
     }
 
-    pub(super) async fn record_login_failure(
+    /// Counts one failed attempt in each bucket, each by its own rule, in one
+    /// transaction.
+    pub(super) async fn record_login_failures(
         &self,
-        key: String,
+        failures: Vec<(String, &'static ThrottleRule)>,
         now: i64,
-        rule: &'static ThrottleRule,
     ) -> AppResult<()> {
         self.db
             .transaction(move |tx| {
                 // Keep cleanup proportional to hostile traffic as well as running
                 // periodically: address rotation must not outrun the timer's batch.
                 prune(tx, now, 100)?;
-                let existing = tx
-                    .query_row(
-                        "SELECT failure_count,window_started_at FROM login_throttles WHERE key=?1",
-                        [&key],
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-                    )
-                    .optional()?;
-                let (failure_count, window_started_at) = match existing {
-                    Some((count, start)) if now - start < FAILURE_WINDOW_SECONDS => {
-                        (count + 1, start)
+                for (key, rule) in failures {
+                    let existing = tx
+                        .query_row(
+                            "SELECT failure_count,window_started_at FROM login_throttles WHERE key=?1",
+                            [&key],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                        )
+                        .optional()?;
+                    let (failure_count, window_started_at) = match existing {
+                        Some((count, start)) if now - start < FAILURE_WINDOW_SECONDS => {
+                            (count + 1, start)
+                        }
+                        _ => (1, now),
+                    };
+                    if rule.log_start && failure_count == rule.threshold {
+                        tracing::warn!(
+                            target: "oneloop::auth",
+                            account_key = %key,
+                            "account login delay started"
+                        );
                     }
-                    _ => (1, now),
-                };
-                if rule.log_start && failure_count == rule.threshold {
-                    tracing::warn!(
-                        target: "oneloop::auth",
-                        account_key = %key,
-                        "account login delay started"
-                    );
+                    // 30 seconds at the threshold, doubling with each failure after it.
+                    let blocked_until = if failure_count >= rule.threshold {
+                        let exponent = (failure_count - rule.threshold).min(5) as u32;
+                        now + 30_i64
+                            .saturating_mul(2_i64.pow(exponent))
+                            .min(rule.max_delay)
+                    } else {
+                        now
+                    };
+                    tx.execute(
+                        "INSERT INTO login_throttles
+                         (key,failure_count,window_started_at,last_failed_at,blocked_until)
+                         VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET
+                           failure_count=excluded.failure_count,
+                           window_started_at=excluded.window_started_at,
+                           last_failed_at=excluded.last_failed_at,
+                           blocked_until=excluded.blocked_until",
+                        rusqlite::params![key, failure_count, window_started_at, now, blocked_until],
+                    )?;
                 }
-                // 30 seconds at the threshold, doubling with each failure after it.
-                let blocked_until = if failure_count >= rule.threshold {
-                    let exponent = (failure_count - rule.threshold).min(5) as u32;
-                    now + 30_i64
-                        .saturating_mul(2_i64.pow(exponent))
-                        .min(rule.max_delay)
-                } else {
-                    now
-                };
-                tx.execute(
-                    "INSERT INTO login_throttles
-                     (key,failure_count,window_started_at,last_failed_at,blocked_until)
-                     VALUES(?1,?2,?3,?4,?5) ON CONFLICT(key) DO UPDATE SET
-                       failure_count=excluded.failure_count,
-                       window_started_at=excluded.window_started_at,
-                       last_failed_at=excluded.last_failed_at,
-                       blocked_until=excluded.blocked_until",
-                    rusqlite::params![key, failure_count, window_started_at, now, blocked_until],
-                )?;
                 Ok(())
             })
             .await

@@ -121,7 +121,16 @@ pub(super) fn task_insert_position(
             Ok(tx.query_row("SELECT position FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3 ORDER BY position LIMIT 1 OFFSET ?4",
                 params![project,status,moving,offset], |r| r.get(0)).optional()?)
         };
-        let left = at(index - 1)?.unwrap_or(0);
+        let left = match at(index - 1)? {
+            Some(left) => left,
+            None if index > 0 => {
+                return Err(AppError::validation(
+                    "position",
+                    "is outside the status column",
+                ));
+            }
+            None => 0,
+        };
         let right = at(index)?;
         let position = match right {
             Some(right) if right - left > 1 => Some(left + (right - left) / 2),

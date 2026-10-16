@@ -1,4 +1,4 @@
-//! Integration tests skip SQLite's disk flushes, as SQLite's own test suite
+//! Tests skip SQLite's disk flushes, as SQLite's own test suite
 //! does with `SQLITE_NO_SYNC`. A flush only matters when the machine loses
 //! power, which no test simulates. On macOS each flush is an `F_FULLFSYNC`
 //! that waits for the drive, and parallel tests queue behind each other's
