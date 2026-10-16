@@ -107,6 +107,10 @@ All notable changes to oneloop are recorded here. The format follows
 - After you follow a link into another project, such as a **Knowledge** link,
   its **Board** shows the project's cards. Before, it said "No tasks yet",
   because the first project's tracks and epics stayed loaded.
+- The account menu shows only the version, such as `v0.1.0-rc.5`. Before, it
+  also showed the commit the build came from, which made the menu scroll
+  sideways in release images. `/healthz` and `oneloop --version` still give
+  the commit.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -85,7 +85,7 @@ const buildMonitor=createBuildMonitor({
     const response=await fetch('/healthz',{credentials:'same-origin',cache:'no-store',redirect:'error',headers:{Accept:'application/json'},signal:AbortSignal.timeout(5000)});
     return response.ok?response.json():null;
   },
-  onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version,build:value.revision});},
+  onInitial:value=>{globalThis.ONELOOP_BUILD=Object.freeze({version:value.version});},
   onUpdate:(value)=>recovery?.buildChanged(value),
 });
 recovery=createRecoveryController({data,api,gateway,getApp:()=>app,getAuth:()=>auth,reload:reloadProjection,checkBuild:()=>buildMonitor.check()});

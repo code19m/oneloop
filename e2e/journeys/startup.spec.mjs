@@ -130,6 +130,18 @@ test('a build change after reconnect offers reload without overwriting open inpu
   await expect(field).toBeFocused();
 });
 
+test('the account menu shows the release version only, and a long one wraps inside the menu', async ({ page, instance }) => {
+  const version = '0.1.0-rc.5.20261016120000.0123456789abcdef', revision = '5cee2010df88a8d229d0048c2a0c51ac8fb69e61';
+  await page.route('**/healthz', route => route.fulfill({ json: { status: 'ok', version, revision } }));
+  await openApp(page, instance, 'board');
+  await page.locator('.me-chip').click();
+  const menu = page.locator('.profile-menu'), shown = menu.locator('.menu-version');
+  await expect(shown.locator('[aria-hidden="true"]')).toHaveText(`v${version}`);
+  await expect(shown.locator('.sr-only')).toHaveText(`Version ${version}`);
+  await expect(menu).not.toContainText(revision.slice(0, 8));
+  expect(await menu.evaluate(element => element.scrollWidth <= element.clientWidth), 'the menu does not scroll sideways').toBe(true);
+});
+
 test('an unresolved task uses its layout while loading and only shows a confirmed 404', async ({ page, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/404 .*\/api\/tasks\//);
   await openApp(page, instance, 'board');
