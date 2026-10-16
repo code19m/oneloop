@@ -36,6 +36,18 @@ export function boardFiltered(filters) {
 }
 
 /**
+ * Whether two sets of filters that `normalizeBoardFilters` returned, such as
+ * those a Board read loaded its cards for, choose the same tasks. The Done
+ * order is not a filter.
+ * @param {Partial<ReturnType<typeof normalizeBoardFilters>>|null|undefined} left
+ * @param {Partial<ReturnType<typeof normalizeBoardFilters>>|null|undefined} right
+ */
+export function sameBoardFilters(left, right) {
+  const key = (filters) => JSON.stringify([filters?.search ?? '', filters?.trackIds ?? [], filters?.epicIds ?? [], filters?.assigneeIds ?? [], !!filters?.noAssignee, !!filters?.blocked]);
+  return key(left) === key(right);
+}
+
+/**
  * Whether a task passes filters that `normalizeBoardFilters` returned.
  * @param {{title:string,key:string,epicId:string,trackId?:string,assigneeIds:string[],blocked:boolean}} task
  * @param {ReturnType<typeof normalizeBoardFilters>} filters

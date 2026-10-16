@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, withRuntime, transfer, settle, tick, deferred } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
+const { normalizeBoardFilters } = require('../../../src/data/board-filters.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
  const t=bootApp({route:'board'}),projectId=t.A.context().projectId;
@@ -127,7 +128,7 @@ test('Clear filters keeps No matching tasks until the Board read lands, then emp
   const all = [...t.D.tasks], trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
   const answer = async () => {
     for (const { filters, read } of reads.splice(0)) {
-      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: normalizeBoardFilters(filters), pages: {} };
       t.A.refreshBoard(); read.resolve({ stale: false });
     }
     await settle();
@@ -175,6 +176,28 @@ test('a filter or search change rewrites the Board address in place, so Back lea
   assert.equal(board.w.location.hash, '#/board/p1');
   assert.equal(board.w.history.length, 1);
   t.mock.timers.reset();
+});
+
+test('Back to a Board address with other filters shows the placeholder, not No matching tasks, until their read lands', async () => {
+  // The cards on screen were read for the first track only; reads wait for the test.
+  const reads = [], cards = () => [...t.d.querySelectorAll('.board .card')].map(card => card.dataset.task);
+  const onTrack = (D, track) => { const epics = new Set(D.epics.filter(epic => epic.trackId === track).map(epic => epic.id)); return all.filter(task => epics.has(task.epicId)); };
+  let all;
+  const t = bootApp({ route: 'board/p1?track=t1', reads: { board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; } }, prepare: D => {
+    all = [...D.tasks]; D.tasks.splice(0, Infinity, ...onTrack(D, 't1'));
+    D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters({ trackIds: ['t1'] }), pages: {} };
+  } });
+  assert(cards().length, 'the first track\'s cards show');
+  t.w.location.hash = '#/board/p1?track=t2';
+  t.w.dispatchEvent(new t.w.HashChangeEvent('hashchange', { newURL: t.w.location.href }));
+  assert(t.d.querySelector('.board .loading-board'), 'the placeholder shows');
+  assert.equal(t.d.querySelector('.board .page-empty'), null, 'and not No matching tasks');
+  const loading = t.bridge.loadCurrentRoute(); await settle();
+  const [{ filters, read }] = reads;
+  t.D.tasks.splice(0, Infinity, ...onTrack(t.D, 't2')); t.D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters(filters), pages: {} };
+  t.A.refreshBoard(); read.resolve({ stale: false }); await loading;
+  const second = new Set(onTrack(t.D, 't2').map(task => task.id));
+  assert(cards().length && cards().every(id => second.has(id)), 'the second track\'s cards show');
 });
 
 test('a blocked card describes its block reason', () => {
