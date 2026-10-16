@@ -11,14 +11,15 @@ All notable changes to oneloop are recorded here. The format follows
 - The **Board**, its counts and, in MCP, `search_tasks` without a status no
   longer slow down on an instance with many tasks where no task was ever
   blocked. Before, counting the blocked tasks could read every task of the
-  instance, which took about 0.1 seconds at 100,000 tasks.
+  instance, which took tens of milliseconds at 100,000 tasks.
 - An open connection, such as the one each browser tab keeps for live
   updates, now uses about 20 KB of server memory. Before, each one kept its
   own copy of the routes, about 300 KB, so 100 open tabs took 30 MB.
 - After many writes in a short time, such as an import through MCP, the first
   write a day later no longer holds up all other writes while it removes the
   expired retry keys. Database maintenance now removes them, a batch at a
-  time. Before, 50,000 expired keys held up writes for about a second.
+  time. Before, 50,000 expired keys held up writes for a few hundred
+  milliseconds.
 - When several sign-in limits apply at once, "Try again in …" and the
   `Retry-After` header now give the longest wait. Before, they could give a
   shorter one, and the next attempt was refused again.
