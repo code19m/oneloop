@@ -5,10 +5,11 @@ use super::*;
 pub(super) fn block_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskBlock,
+    mut input: TaskBlock,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
     check_revision(expected, task.revision)?;
@@ -184,11 +185,12 @@ pub(super) fn update_block_reason(
 pub(super) fn unblock_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskUnblock,
+    mut input: TaskUnblock,
     expected: i64,
     complete: bool,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
     check_revision(expected, task.revision)?;

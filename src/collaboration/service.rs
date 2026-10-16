@@ -26,6 +26,7 @@ use crate::{
     auth::{Actor, refresh_actor_connection},
     clock::unix_now,
     command::{Command, CommandResult, Mutation, check_revision},
+    domain::resolve_task_id,
     input::parse_payload,
     paging::{self, TimeCursor, next_cursor},
 };
@@ -159,7 +160,8 @@ fn authorize_replay(
     match operation {
         CreateComment => {
             let input: CommentCreate = parse_payload(payload)?;
-            access::require_task(tx, actor, &input.task_id, Need::Discussion, false).map(drop)
+            let task_id = resolve_task_id(tx, &input.task_id)?;
+            access::require_task(tx, actor, &task_id, Need::Discussion, false).map(drop)
         }
         EditComment | DeleteComment | RestoreComment => {
             let comment_id = payload

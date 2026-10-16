@@ -1194,10 +1194,13 @@ async fn display_text_rejects_spoofing_without_changing_multiline_unicode() {
         .begin_attachment_upload(
             &f.manager,
             task.entities[0]["id"].as_str().unwrap(),
-            "invoice\u{202e}fdp.exe",
-            1,
-            false,
-            "bidi-file",
+            oneloop::files::NewAttachment {
+                name: "invoice\u{202e}fdp.exe",
+                size: 1,
+                temporary: false,
+                idempotency_key: "bidi-file",
+                replaces: None,
+            },
         )
         .await;
     assert!(matches!(error,Err(AppError::Validation{ref field,..}) if field=="fileName"));

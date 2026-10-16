@@ -42,7 +42,10 @@ async fn pending_deletion_provenance_survives_schema_upgrade_backup_and_restore(
     );
     fs::create_dir(root.path().join("before")).unwrap();
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
-    assert_eq!(upgrade.applied, vec![3, 4, 5, 6]);
+    assert_eq!(
+        upgrade.applied,
+        (3..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>()
+    );
     let upgraded = Connection::open(live.join("oneloop.sqlite3")).unwrap();
     let done_order_index: bool = upgraded
         .query_row(
@@ -171,7 +174,7 @@ async fn a_main_branch_database_upgrades_to_undo_with_its_deletions_intact() {
     let upgrade = migrate(&live, Some(root.path().join("before"))).unwrap();
     assert_eq!(
         (upgrade.previous_version, upgrade.applied.clone()),
-        (3, vec![4, 5, 6])
+        (3, (4..=CURRENT_SCHEMA_VERSION).collect::<Vec<_>>())
     );
     assert_eq!(
         validate_backup(upgrade.backup_path.unwrap())

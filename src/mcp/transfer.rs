@@ -20,7 +20,7 @@ use crate::{
     AppError, AppResult, AppState,
     auth::{Actor, ActorSource, refresh_actor_connection, revoke_unless_current, token},
     clock::unix_now,
-    files::{ReadMode, UploadDeadline},
+    files::{NewAttachment, ReadMode, UploadDeadline},
     http::file_response::{self, Caching, Disposition},
 };
 
@@ -39,6 +39,9 @@ pub(super) struct UploadTicketInput {
     #[serde(default)]
     /// Allow automatic removal of file bytes under storage pressure when true.
     pub temporary: bool,
+    #[serde(default)]
+    /// ID of a file of the same task that you uploaded. When the upload completes, the new file takes its place and the old one is deleted.
+    pub replaces_attachment_id: Option<String>,
     /// Unique key of 1–128 visible ASCII characters per logical write; reuse with identical input on retry.
     pub idempotency_key: String,
 }
@@ -113,6 +116,7 @@ struct UploadTicket {
     size: u64,
     temporary: bool,
     idempotency_key: String,
+    replaces: Option<String>,
 }
 
 impl UploadTicket {
@@ -123,6 +127,7 @@ impl UploadTicket {
             size: row.get::<_, i64>("size_bytes")?.max(0) as u64,
             temporary: row.get("is_ephemeral")?,
             idempotency_key: row.get("idempotency_key")?,
+            replaces: row.get("replaces_attachment_id")?,
         })
     }
 }
@@ -162,6 +167,7 @@ pub(super) async fn issue_upload(
         size: input.size_bytes,
         temporary: input.temporary,
         idempotency_key: input.idempotency_key,
+        replaces: input.replaces_attachment_id,
     });
     issue(state, actor, ticket, input.size_bytes).await
 }
@@ -197,7 +203,7 @@ async fn issue(
                 "DELETE FROM mcp_file_transfers WHERE expires_at<=?1 OR consumed_at IS NOT NULL",
                 [now],
             )?;
-            let (task, attachment, name, size, temporary, key) = match ticket {
+            let (task, attachment, name, size, temporary, key, replaces) = match ticket {
                 Ticket::Upload(upload) => (
                     Some(upload.task_id),
                     None,
@@ -205,16 +211,23 @@ async fn issue(
                     Some(upload.size as i64),
                     upload.temporary,
                     Some(upload.idempotency_key),
+                    upload.replaces,
                 ),
-                Ticket::Download(download) => {
-                    (None, Some(download.attachment_id), None, None, false, None)
-                }
+                Ticket::Download(download) => (
+                    None,
+                    Some(download.attachment_id),
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
+                ),
             };
             tx.execute(
                 "INSERT INTO mcp_file_transfers
                  (token_hash,grant_id,direction,task_id,attachment_id,file_name,size_bytes,
-                  is_ephemeral,idempotency_key,created_at,expires_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                  is_ephemeral,idempotency_key,replaces_attachment_id,created_at,expires_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     hash,
                     grant,
@@ -225,6 +238,7 @@ async fn issue(
                     size,
                     temporary,
                     key,
+                    replaces,
                     now,
                     now + TICKET_SECONDS
                 ],
@@ -262,7 +276,7 @@ async fn claim<T: Send + 'static>(
             let Some((grant_id, user_id, ticket)) = tx
                 .query_row(
                     "SELECT f.grant_id,g.user_id,f.task_id,f.attachment_id,f.file_name,
-                            f.size_bytes,f.is_ephemeral,f.idempotency_key
+                            f.size_bytes,f.is_ephemeral,f.idempotency_key,f.replaces_attachment_id
                      FROM mcp_file_transfers f JOIN mcp_grants g ON g.id=f.grant_id
                      WHERE f.token_hash=?1 AND f.direction=?2 AND f.consumed_at IS NULL
                        AND f.expires_at>?3",
@@ -325,10 +339,13 @@ async fn upload(
         .begin_attachment_upload(
             &actor,
             &ticket.task_id,
-            &ticket.file_name,
-            ticket.size,
-            ticket.temporary,
-            &ticket.idempotency_key,
+            NewAttachment {
+                name: &ticket.file_name,
+                size: ticket.size,
+                temporary: ticket.temporary,
+                idempotency_key: &ticket.idempotency_key,
+                replaces: ticket.replaces.as_deref(),
+            },
         )
         .await?;
     let mut stream = body.into_data_stream();

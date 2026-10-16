@@ -71,9 +71,17 @@ const MIGRATIONS: &[Migration] = &[
         hook: None,
         foreign_keys_off: false,
     },
+    Migration {
+        version: 7,
+        name: "upload_replaces",
+        sql: include_str!("../../migrations/0007_upload_replaces.sql"),
+        hook_revision: "",
+        hook: None,
+        foreign_keys_off: false,
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {

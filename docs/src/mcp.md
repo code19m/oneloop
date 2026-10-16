@@ -90,7 +90,7 @@ project; the assistant can't see other projects. Then choose capabilities:
 | Create and manage roadmap work | `roadmap_manage` | Create and edit tracks, epics and milestones | Yes |
 | Read and manage your private Inbox (selected projects only) | `inbox_private` | Read your Inbox, mark items read, and archive them | No |
 | Read and manage your private My Pool | `my_pool_private` | Read and manage your My Pool | No |
-| Read and manage attachments | `attachments` | List and download files; upload and reorder them if it may also manage tasks | Yes |
+| Read and manage attachments | `attachments` | List and download files; upload and reorder files, and replace your own, if it may also manage tasks | Yes |
 | Permanently delete permitted work and files | `destructive` | Delete tasks, epics, tracks, milestones, Pool items, files and your own comments | No |
 
 The page lists only the capabilities that the assistant asked for. Delete access
@@ -168,7 +168,7 @@ and deleting needs `destructive` too.
 | `execute_destructive_command` | Permanently deletes work, or one of your own comments | Delete |
 | `list_attachments` | Lists a task's files | Read |
 | `create_attachment_download` | Creates a ticket to download a file | Read |
-| `create_attachment_upload` | Creates a ticket to upload a file to a task | Write |
+| `create_attachment_upload` | Creates a ticket to upload a file to a task, or to replace one of your files | Write |
 | `reorder_attachment` | Moves a file before or after another | Write |
 | `set_attachment_temporary` | Marks a file as temporary or permanent | Write |
 | `delete_attachment` | Permanently deletes a file | Delete |
@@ -186,9 +186,8 @@ schema describes the payload of each operation.
 
 ### Rules for every call
 
-- **IDs.** Tools take the IDs that reads return. `read_task`,
-  `list_attachments`, `create_attachment_upload` and `reorder_attachment` also
-  accept a task key, such as `WEB-042`.
+- **IDs.** Tools take the IDs that reads return. Anywhere a tool takes a task
+  ID, it also accepts a task key, such as `WEB-042`.
 - **Retries.** Every write takes an `idempotencyKey` of 1 to 128 visible ASCII
   characters. If you retry with the same key and the same input, oneloop applies
   the change only once. The same key with different input fails with
@@ -223,7 +222,10 @@ schema describes the payload of each operation.
   download. A download names the file in its `Content-Disposition` header.
   Never send a local file path. To retry a failed upload, ask for a new
   ticket with the same `idempotencyKey`, file name, size and bytes, so the
-  file is attached only once.
+  file is attached only once. To replace a file that you uploaded, pass its
+  ID as `replacesAttachmentId`: when the upload completes, the new file takes
+  its place and the old one is deleted. If the upload fails, the old file
+  stays. Another person's file can only be deleted, with `delete_attachment`.
 - **Knowledge base.** `read_knowledge_overview` returns the README and a list
   of files, each Markdown file with its title and headings; pass a `folder`, or
   use `search_knowledge`, to see more. `read_knowledge_file` returns text within

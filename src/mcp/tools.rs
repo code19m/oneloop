@@ -84,7 +84,7 @@ pub(super) struct KnowledgeSearchInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct TaskInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
 }
 
@@ -184,7 +184,7 @@ impl CommandInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PageInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     /// Exact comment ID; cannot be combined with cursor or limit.
@@ -203,7 +203,7 @@ pub(super) struct ActivityInput {
     /// Stable project ID selected in this connection.
     pub project_id: String,
     #[serde(default)]
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: Option<String>,
     /// Retrieve a bounded blocking episode for an exact Inbox destination.
     #[serde(default)]
@@ -908,6 +908,7 @@ impl OneloopMcp {
         annotations(
             read_only_hint = false,
             destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = false
         )
     )]

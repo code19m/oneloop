@@ -21,12 +21,11 @@ pub(super) fn bootstrap_snapshot(
     time_zone: &TimeZone,
 ) -> AppResult<BootstrapView> {
     let projects = projects(connection, actor)?;
-    let direct_task = match query.task_id.as_deref() {
-        Some(id) => {
-            Some(resolve_task_id(connection, id)?.ok_or(AppError::NotFound { resource: "task" })?)
-        }
-        None => None,
-    };
+    let direct_task = query
+        .task_id
+        .as_deref()
+        .map(|id| resolve_task_id(connection, id))
+        .transpose()?;
     let direct_project = match direct_task.as_deref() {
         Some(id) => connection
             .query_row(

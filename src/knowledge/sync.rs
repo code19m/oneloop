@@ -609,6 +609,7 @@ mod tests {
         Db,
         auth::{Actor, ActorSource},
         command::Command,
+        files::NewAttachment,
         knowledge::{
             KnowledgeOperation,
             git::tests::{commit_all, git},
@@ -807,10 +808,13 @@ mod tests {
             .begin_attachment_upload(
                 &actor,
                 "task",
-                "data.bin",
-                crate::files::MAX_ATTACHMENT_BYTES,
-                false,
-                "competing",
+                NewAttachment {
+                    name: "data.bin",
+                    size: crate::files::MAX_ATTACHMENT_BYTES,
+                    temporary: false,
+                    idempotency_key: "competing",
+                    replaces: None,
+                },
             )
             .await;
         let blocked = matches!(
@@ -836,10 +840,13 @@ mod tests {
                     .begin_attachment_upload(
                         &actor,
                         "task",
-                        "data.bin",
-                        crate::files::MAX_ATTACHMENT_BYTES,
-                        false,
-                        "competing",
+                        NewAttachment {
+                            name: "data.bin",
+                            size: crate::files::MAX_ATTACHMENT_BYTES,
+                            temporary: false,
+                            idempotency_key: "competing",
+                            replaces: None,
+                        },
                     )
                     .await
                 {

@@ -13,8 +13,8 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{
-    FileService, attachment_by_id, capacity::require_capacity, log_cleanup_failure,
-    require_file_access, require_free_slot, task_id_or_key, task_project,
+    FileService, attachment_by_id, capacity::require_capacity, delete_for_undo,
+    log_cleanup_failure, require_file_access, require_free_slot, task_project,
 };
 use crate::{
     AppError, AppResult, Db,
@@ -23,9 +23,10 @@ use crate::{
     collaboration::{ActivityInput, record_activity_tx},
     db::DataLease,
     disk::DiskReservation,
+    domain::resolve_task_id,
     files::{
-        AttachmentView, FileStore, MAX_ATTACHMENT_BYTES, MAX_HTML_PREVIEW_BYTES,
-        UPLOAD_RESERVATION_SECONDS,
+        AttachmentView, BlobState, FileStore, MAX_ATTACHMENT_BYTES, MAX_HTML_PREVIEW_BYTES,
+        NewAttachment, UPLOAD_RESERVATION_SECONDS,
         detect::{self, validate_original_name},
     },
     idempotency::{Resource, validate_key as validate_idempotency_key},
@@ -110,7 +111,7 @@ impl FileService {
                     crate::access::McpScope::Attachments,
                     None,
                 )?;
-                let task_id = task_id_or_key(connection, &task)?;
+                let task_id = resolve_task_id(connection, &task)?;
                 let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, true, false)?;
                 Ok(task_id)
@@ -118,22 +119,35 @@ impl FileService {
             .await
     }
 
+    /// Starts an upload of a file to the task, which replaces a file of the
+    /// task once its bytes arrive when it names one. A retry of a finished
+    /// upload replays it even when that file is gone, so the file is checked
+    /// here, after the replay, as free slots are.
     pub async fn begin_attachment_upload(
         &self,
         actor: &Actor,
         task_id: &str,
-        original_name: &str,
-        claimed_size: u64,
-        is_ephemeral: bool,
-        idempotency_key: &str,
+        file: NewAttachment<'_>,
     ) -> AppResult<AttachmentUpload> {
+        let NewAttachment {
+            name: original_name,
+            size: claimed_size,
+            temporary: is_ephemeral,
+            idempotency_key,
+            replaces,
+        } = file;
         check_upload(actor, original_name, claimed_size, idempotency_key)?;
-        let request_hash = crate::idempotency::request_hash(&json!({
+        let mut request = json!({
             "taskId": task_id,
             "name": original_name,
             "size": claimed_size,
             "ephemeral": is_ephemeral,
-        }))?;
+        });
+        // The retry key covers the file it replaces, so a retry replaces once.
+        if let Some(replaces) = replaces {
+            request["replacesAttachmentId"] = json!(replaces);
+        }
+        let request_hash = crate::idempotency::request_hash(&request)?;
         let replay_task = task_id.to_owned();
         let replay_key = idempotency_key.to_owned();
         let replay_actor = actor.clone();
@@ -171,6 +185,8 @@ impl FileService {
         let reservation_id_tx = reservation_id.clone();
         let idempotency_id_tx = idempotency_id.clone();
         let staging_key_tx = staging_key.clone();
+        let replaces_tx = replaces.map(str::to_owned);
+        let pending_replaces = replaces_tx.clone();
         let limit = self.storage_limit_bytes;
 
         let service = self.clone();
@@ -198,7 +214,10 @@ impl FileService {
                         return Ok(ReserveOutcome::Replay(Box::new(existing)));
                     }
 
-                    require_free_slot(tx, &task_id_owned, now)?;
+                    if let Some(replaces) = &replaces_tx {
+                        replaced_attachment(tx, &actor_owned, &task_id_owned, replaces)?;
+                    }
+                    require_free_slot(tx, &task_id_owned, now, replaces_tx.as_deref())?;
 
                     require_capacity(tx, now, non_database_bytes, claimed_size, limit)?;
 
@@ -248,6 +267,7 @@ impl FileService {
                             project_id,
                             original_name: pending_original_name,
                             is_ephemeral,
+                            replaces: pending_replaces,
                             staging_path: staging_path.clone(),
                             storage_key,
                             disk,
@@ -406,6 +426,8 @@ struct UploadAttempt {
     project_id: String,
     original_name: String,
     is_ephemeral: bool,
+    /// The file of the task that the new one replaces.
+    replaces: Option<String>,
     staging_path: PathBuf,
     storage_key: String,
     disk: DiskReservation,
@@ -518,6 +540,7 @@ impl UploadAttempt {
             let name = self.original_name.clone();
             let storage_key = self.storage_key.clone();
             let is_ephemeral = self.is_ephemeral;
+            let replaces = self.replaces.clone();
             self.service
                 .db
                 .transaction(move |tx| {
@@ -536,11 +559,26 @@ impl UploadAttempt {
                     if !active {
                         return Err(AppError::Conflict("upload reservation expired".into()));
                     }
-                    let position: i64 = tx.query_row(
-                        "SELECT coalesce(max(position)+1,0) FROM task_attachments WHERE task_id=?1",
-                        [&task_id],
-                        |r| r.get(0),
-                    )?;
+                    let position: i64 = match &replaces {
+                        // The new file takes the place of the one it replaces.
+                        // That one is deleted, and waits after the other files,
+                        // as deleted files do.
+                        Some(replaces) => {
+                            let old = replaced_attachment(tx, &actor, &task_id, replaces)?;
+                            tx.execute(
+                                "UPDATE task_attachments SET position=(SELECT max(position)+1
+                                   FROM task_attachments WHERE task_id=?1) WHERE id=?2",
+                                params![task_id, old.id],
+                            )?;
+                            delete_for_undo(tx, &actor, &old, now)?;
+                            old.position
+                        }
+                        None => tx.query_row(
+                            "SELECT coalesce(max(position)+1,0) FROM task_attachments WHERE task_id=?1",
+                            [&task_id],
+                            |r| r.get(0),
+                        )?,
+                    };
                     tx.execute(
                         "INSERT INTO file_blobs
                          (id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
@@ -713,6 +751,36 @@ impl Drop for PendingAttachmentUpload {
             });
         }
     }
+}
+
+/// The file that an upload replaces: one that the person uploaded to the same
+/// task, and that is not being removed. Another person's file goes only
+/// through a deletion, which needs destructive access.
+fn replaced_attachment(
+    connection: &rusqlite::Connection,
+    actor: &Actor,
+    task_id: &str,
+    id: &str,
+) -> AppResult<AttachmentView> {
+    let attachment = attachment_by_id(connection, id)?.attachment;
+    if attachment.task_id != task_id {
+        return Err(AppError::validation(
+            "replacesAttachmentId",
+            "must name a file of the same task",
+        ));
+    }
+    if attachment.uploaded_by != actor.user_id {
+        return Err(AppError::validation(
+            "replacesAttachmentId",
+            "must name a file you uploaded; another person's file can only be deleted",
+        ));
+    }
+    if attachment.state == BlobState::Deleting {
+        return Err(AppError::Conflict(
+            "the attachment is being removed, so it can't be replaced".into(),
+        ));
+    }
+    Ok(attachment)
 }
 
 fn release_upload_rows(

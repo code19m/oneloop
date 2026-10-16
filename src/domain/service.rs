@@ -50,7 +50,7 @@ use super::{
     MilestoneCreate, MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote,
     PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate,
     TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate,
-    TrackReorder, TrackUpdate, TrackView, require_undo_window,
+    TrackReorder, TrackUpdate, TrackView, require_undo_window, resolve_task_id,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;

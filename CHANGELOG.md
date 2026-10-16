@@ -6,6 +6,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- Stop oneloop, install the new version, and run
+  `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
+  upgrades the database to schema 7. Older versions refuse a schema 7
+  database. To go back to one, restore the backup that `db migrate` made.
+
 ### Added
 
 - A task's description now shows as formatted Markdown, as people and AI
@@ -18,6 +25,12 @@ All notable changes to oneloop are recorded here. The format follows
   keeps you there. In a dialog, or while you edit a comment, it does what the
   main button does. It never sends a new comment, and it no longer downloads
   the page.
+- In MCP, `create_attachment_upload` can replace a file that you uploaded:
+  pass its ID as `replacesAttachmentId`. When the upload completes, the new
+  file takes the old one's place, and the old one is deleted as
+  `delete_attachment` deletes it. This needs no destructive access, so an
+  assistant can update its own documents without asking you to delete the old
+  version. If the upload fails, the old file stays.
 
 ### Changed
 
@@ -95,6 +108,12 @@ All notable changes to oneloop are recorded here. The format follows
   column hid them until **Load more**, and Done mixed both orders. A drag,
   **Move up** and **Move down** still put a task exactly there, and
   **Newest first** still lists Done by completion time.
+- In MCP, every tool that names a task now also accepts its key, such as
+  `WEB-042`: `read_comments`, `read_activity`, `discussion.comment.create`,
+  `task.delete` and every other `task.*` operation, also in `beforeTaskId` and
+  `afterTaskId`. Moving a blocked task to Done now fails with a message that
+  names `task.unblock-and-complete`, and `set_attachment_temporary` is marked
+  as safe to repeat.
 - **Newest first** is now a small sort button at the top of **Done**, so
   Done's header is as tall as the others and its cards line up with theirs.
   The button shows your choice at once, and the page dims while a slow Board
@@ -102,6 +121,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- In MCP, `read_activity` with a task key, or with a task that doesn't exist,
+  returned an empty page. It now returns the task's activity, or fails with
+  `not_found`.
 - A Mermaid diagram in a Markdown preview no longer fails when its renderer
   takes more than 30 seconds to download, as on a slow mobile connection.
   When the renderer can't load, the preview now says to check the

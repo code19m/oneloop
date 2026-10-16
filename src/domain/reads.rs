@@ -238,8 +238,7 @@ impl DomainService {
 
     pub async fn task(&self, actor: &Actor, task_id: String) -> AppResult<TaskView> {
         access::read(&self.db, actor, move |connection, actor| {
-            let id = resolve_task_id(connection, &task_id)?
-                .ok_or(AppError::NotFound { resource: "task" })?;
+            let id = resolve_task_id(connection, &task_id)?;
             access::require_task(connection, actor, &id, Need::Read, false)?;
             task_view(connection, &id)
         })
@@ -433,11 +432,10 @@ fn pool_page_connection(
     })
 }
 
-pub(crate) fn resolve_task_id(
-    connection: &rusqlite::Connection,
-    value: &str,
-) -> AppResult<Option<String>> {
-    connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional().map_err(Into::into)
+/// The ID of the task that `value` names by its ID or its key, such as
+/// `WEB-042`. Callers check access to the task's project.
+pub(crate) fn resolve_task_id(connection: &rusqlite::Connection, value: &str) -> AppResult<String> {
+    connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional()?.ok_or(AppError::NotFound { resource: "task" })
 }
 
 #[cfg(test)]

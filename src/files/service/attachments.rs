@@ -7,15 +7,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    ATTACHMENT_COLUMNS, DeleteActivityContext, FileService, attachment_by_id,
-    record_attachment_deletion, require_file_access, require_free_slot, require_revision,
-    stored_file_row, task_id_or_key, task_project,
+    ATTACHMENT_COLUMNS, FileService, attachment_by_id, delete_for_undo, require_file_access,
+    require_free_slot, require_revision, stored_file_row, task_project,
 };
 use crate::{
     AppError, AppResult,
     auth::Actor,
     clock::unix_now,
     collaboration::{ActivityInput, record_activity_tx},
+    domain::resolve_task_id,
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
         BlobState, StoredFile,
@@ -31,7 +31,7 @@ impl FileService {
         let items = self
             .db
             .run(move |connection| {
-                let task_id = task_id_or_key(connection, &task)?;
+                let task_id = resolve_task_id(connection, &task)?;
                 let project_id = task_project(connection, &task_id)?;
                 require_file_access(connection, &actor, &project_id, false, false)?;
                 attachment_views(connection, &task_id)
@@ -155,7 +155,7 @@ impl FileService {
         self.db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let task_id = task_id_or_key(tx, &task)?;
+                let task_id = resolve_task_id(tx, &task)?;
                 let project_id = task_project(tx, &task_id)?;
                 require_file_access(tx, &actor, &project_id, true, false)?;
                 envelope.once(
@@ -306,22 +306,7 @@ impl FileService {
                                 "the attachment is being removed; try again shortly".into(),
                             ));
                         }
-                        tx.execute(
-                            "UPDATE task_attachments SET deleted_at=?1,updated_at=?1,revision=revision+1
-                             WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
-                            params![now, attachment_id, expected_revision],
-                        )?;
-                        record_attachment_deletion(
-                            tx,
-                            &DeleteActivityContext {
-                                id: attachment_id.clone(),
-                                project_id: Some(stored.project_id.clone()),
-                                task_id: Some(stored.task_id.clone()),
-                                name: stored.name,
-                            },
-                            Some(actor),
-                            now,
-                        )?;
+                        delete_for_undo(tx, actor, &stored, now)?;
                         let resource = Resource {
                             kind: "attachment",
                             id: Some(attachment_id.clone()),
@@ -387,7 +372,7 @@ impl FileService {
                             ));
                         }
                         if stored.state == BlobState::Available {
-                            require_free_slot(tx, &stored.task_id, now)?;
+                            require_free_slot(tx, &stored.task_id, now, None)?;
                         }
                         let revision = input.expected_revision + 1;
                         tx.execute(

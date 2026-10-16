@@ -97,6 +97,17 @@ pub struct AttachmentPatch {
     pub expected_revision: i64,
 }
 
+/// A file that an upload adds to a task, and the file of the task that it
+/// replaces, if any.
+#[derive(Clone, Copy, Debug)]
+pub struct NewAttachment<'a> {
+    pub name: &'a str,
+    pub size: u64,
+    pub temporary: bool,
+    pub idempotency_key: &'a str,
+    pub replaces: Option<&'a str>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttachmentReorder {

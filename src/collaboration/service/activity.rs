@@ -17,6 +17,7 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let block_id = block_id.to_owned();
         access::read(&self.db, actor, move |connection, actor| {
+            let task_id = resolve_task_id(connection, &task_id)?;
             let project_id: String = connection
                 .query_row(
                     "SELECT b.project_id FROM task_blocks b JOIN tasks t ON t.id=b.task_id
@@ -75,6 +76,19 @@ impl CollaborationService {
         access::read(&self.db, actor, move |connection, actor| {
             let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
             require_project(connection, actor, &project_id, Need::Read, false)?;
+            // The feed of a task of another project would be empty.
+            let task_id = match task_id {
+                Some(task) => {
+                    let id = resolve_task_id(connection, &task)?;
+                    if access::require_task(connection, actor, &id, Need::Read, false)?
+                        != project_id
+                    {
+                        return Err(AppError::NotFound { resource: "task" });
+                    }
+                    Some(id)
+                }
+                None => None,
+            };
             let task_id = task_id.as_deref();
             let mut items = project_feed(
                 connection,

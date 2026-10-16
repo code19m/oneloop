@@ -92,10 +92,11 @@ pub(super) fn create_task(
 pub(super) fn update_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskUpdate,
+    mut input: TaskUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
@@ -276,10 +277,11 @@ pub(super) fn update_task(
 pub(super) fn move_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskMove,
+    mut input: TaskMove,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
@@ -292,7 +294,8 @@ pub(super) fn move_task(
         )?;
         if blocked {
             return Err(AppError::PreconditionFailed(
-                "resolve the block while completing this task".into(),
+                "the task is blocked; task.unblock-and-complete resolves the block and completes it"
+                    .into(),
             ));
         }
     }
@@ -319,10 +322,17 @@ pub(super) fn move_task(
         } else {
             "afterTaskId"
         };
+        let not_in_column =
+            || AppError::validation(field, "anchor is not in the destination column");
+        // An anchor that names no task is not in the column either.
+        let anchor = match resolve_task_id(tx, anchor) {
+            Err(AppError::NotFound { .. }) => return Err(not_in_column()),
+            anchor => anchor?,
+        };
         let anchor_position: i64 = tx.query_row(
             "SELECT position FROM tasks WHERE id=?1 AND project_id=?2 AND status=?3 AND deleted_at IS NULL AND id<>?4",
             params![anchor, before.project_id, status, input.task_id], |r| r.get(0)).optional()?
-            .ok_or_else(|| AppError::validation(field, "anchor is not in the destination column"))?;
+            .ok_or_else(not_in_column)?;
         let index: i64 = tx.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3 AND position<?4",
             params![before.project_id, status, input.task_id, anchor_position], |r| r.get(0))?;
@@ -409,10 +419,11 @@ pub(super) fn move_task(
 pub(super) fn delete_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: EntityId,
+    mut input: EntityId,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.id = resolve_task_id(tx, &input.id)?;
     let before = task_row(tx, &input.id)?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
     check_revision(expected, before.revision)?;

@@ -346,6 +346,7 @@ pub struct TaskCreate {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskUpdate {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     pub epic_id: Option<String>,
@@ -367,15 +368,16 @@ pub struct TaskUpdate {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskMove {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     pub status: TaskStatus,
     /// The task's index in the column, counted from 0 at the top, without the task itself.
     #[serde(default)]
     pub position: Option<usize>,
-    /// Puts the task just above this task of the column.
+    /// The ID or key of a task in the column; the task goes just above it.
     #[serde(default)]
     pub before_task_id: Option<String>,
-    /// Puts the task just below this task of the column.
+    /// The ID or key of a task in the column; the task goes just below it.
     #[serde(default)]
     pub after_task_id: Option<String>,
 }
@@ -383,6 +385,7 @@ pub struct TaskMove {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskBlock {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     pub reason: String,
     #[serde(default)]
@@ -401,6 +404,7 @@ pub struct BlockReasonUpdate {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskUnblock {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     pub resolution: Option<String>,
