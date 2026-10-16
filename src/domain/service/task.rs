@@ -1,6 +1,6 @@
 //! Creating, editing, moving, deleting and restoring tasks.
 use super::checklist::{checklist_titles, insert_item};
-use super::ordering::{task_append_position, task_insert_position};
+use super::ordering::task_insert_position;
 use super::validation::optional_date;
 use super::*;
 
@@ -501,14 +501,21 @@ pub(super) fn restore_task(
             "the task's epic was deleted, so the task can't be restored".into(),
         ));
     }
-    // The task returns to its place unless another card took that position.
+    // The task returns to its position. When another card took it, as a top
+    // insert takes a deleted top card's, the task goes back to the same place
+    // among the cards around it: below as many cards as were above it.
     let taken: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status=?2 AND position=?3 AND deleted_at IS NULL)",
         params![before.project_id, before.status, before.position],
         |row| row.get(0),
     )?;
     let position = if taken {
-        task_append_position(tx, &before.project_id, &before.status)?
+        let index: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND position<?3 AND deleted_at IS NULL",
+            params![before.project_id, before.status, before.position],
+            |row| row.get(0),
+        )?;
+        task_insert_position(tx, &before.project_id, &before.status, &input.id, index)?
     } else {
         before.position
     };

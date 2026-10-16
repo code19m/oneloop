@@ -115,7 +115,9 @@ All notable changes to oneloop are recorded here. The format follows
   **Move up** and **Move down** still put a task exactly there, and
   **Newest first** still lists Done by completion time. A task at the top
   takes a position above the first one, which leaves the other tasks where
-  they are, so a task's `position` in MCP reads can be below zero.
+  they are, so a task's `position` in MCP reads can be below zero. **Undo**
+  puts a deleted task back at the same place in its column, also when a new
+  task took its place; before, it went to the end.
 - In MCP, every tool that names a task now also accepts its key, such as
   `WEB-042`: `read_comments`, `read_activity`, `discussion.comment.create`,
   `task.delete` and every other `task.*` operation, also in `beforeTaskId` and

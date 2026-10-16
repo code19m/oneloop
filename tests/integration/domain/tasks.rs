@@ -1494,7 +1494,7 @@ async fn only_people_who_could_delete_a_task_restore_it_in_time() {
 }
 
 #[tokio::test]
-async fn a_restored_task_goes_last_when_its_place_was_taken() {
+async fn a_restored_task_goes_back_among_its_neighbours_when_its_place_was_taken() {
     let f = fixture().await;
     let ids = planning_tasks(&f, &["First", "Second", "Third"]).await;
     f.service
@@ -1545,7 +1545,8 @@ async fn a_restored_task_goes_last_when_its_place_was_taken() {
         )
         .await
         .unwrap();
-    assert_eq!(planning_order(&f).await, ["Third", "Second", "First"]);
+    // First was at the top, so it goes back to the top, not to the end.
+    assert_eq!(planning_order(&f).await, ["First", "Third", "Second"]);
 }
 
 #[tokio::test]

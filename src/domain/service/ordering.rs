@@ -78,21 +78,6 @@ pub(super) fn compact_positions(
     resequence(tx, table, &ids, now, None)
 }
 
-pub(super) fn task_append_position(
-    tx: &Transaction<'_>,
-    project: &str,
-    status: &str,
-) -> AppResult<i64> {
-    let last: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(position),0) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL",
-        params![project,status], |r| r.get(0))?;
-    if let Some(position) = last.checked_add(TASK_POSITION_GAP) {
-        return Ok(position);
-    }
-    space_task_positions(tx, project, status)?;
-    task_append_position(tx, project, status)
-}
-
 pub(super) fn space_task_positions(
     tx: &Transaction<'_>,
     project: &str,
