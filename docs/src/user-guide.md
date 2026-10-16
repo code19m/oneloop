@@ -104,8 +104,20 @@ turn it into a task.
 
 ![A task page with an attachment, its activity and comments, and its properties on the right](assets/screenshots/task.png)
 
-Click a card to open the task. Your changes save automatically.
+Click a card to open the task. Your changes save automatically. To save the
+field you are typing in at once, press Ctrl+S (Cmd+S on macOS); you stay where
+you are. In a dialog, such as **New task**, or while you edit a comment, Ctrl+S
+does what the dialog's main button does. It never sends a new comment or reply,
+and it doesn't save the page as a file, except from inside an HTML file preview.
 
+- The **Description** shows formatted Markdown (GitHub style), such as
+  headings, lists, tables and code, and keeps the line breaks you type. Click
+  the text, or choose **Edit**, to change it. Leave the field, or press Esc or
+  Ctrl+Enter (Cmd+Enter on macOS), to save it and see it formatted again.
+  Task keys of your projects, such as `WEB-042`, link to their tasks. Boxes in
+  a task list show what the text says; to tick one, edit the text.
+- Links to other sites open in a new tab. Links to oneloop pages, such as a
+  task, open in the same tab, in descriptions and in Markdown files alike.
 - **Assignees** can be any project members. They get an Inbox notification when
   you assign them.
 - **Deadline** is a date. When that day ends in your team's timezone, a task

@@ -59,6 +59,11 @@ browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
   that saves itself when it loses focus with `data-autosave`, so it counts only
   while it is being typed. One whose save was refused gets `data-unsaved` and
   counts until it saves.
+- **Cmd/Ctrl+S.** `src/app/save-shortcut.js` saves a `data-autosave` field
+  through its blur action and keeps focus there. Mark a dialog's form or an
+  editor with `data-save-shortcut` so the key presses its `.btn.primary`, and
+  a button so the key presses it when nothing is being edited. Leave forms
+  that send, sign in or confirm unmarked.
 - **Tooltips.** Put a detail that only a hover would show, such as a full time
   or a name that may be cut off, in `data-tip` rather than `title`.
   [`src/app/tooltips.js`](src/app/tooltips.js) shows it and lists the other

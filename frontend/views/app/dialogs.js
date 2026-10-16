@@ -19,14 +19,14 @@ export function renderModal() {
     if(!task)return '';
     body=`<h2>${blocking ? task.block ? 'Edit block reason' : 'Block task' : complete ? 'Unblock and complete task?' : 'Unblock task'}</h2>
       ${!blocking ? `<p class="sub">${esc(task.block?.reason || '')}</p>` : ''}
-      <form novalidate data-block-action ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
+      <form novalidate data-block-action data-save-shortcut ${UIAction.on('submit', 'saveBlock', UIAction.event, task.id, m.type)}>
         ${field(blocking?'Reason':'Resolution',blocking ? blockReasonHtml(task) : `<textarea class="ctl" name="reason" maxlength="500" placeholder="How was this resolved?" ${UIAction.on('keydown', 'commentKey', UIAction.event)}></textarea>`,!blocking)}
         <div class="modal-actions"><button type="button" class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary">${blocking?'Save':complete?'Unblock and complete':'Unblock'}</button></div>
       </form>`;
   } else if (m.type === 'epic') {
     const e = m.id ? epicById(m.id) : null;
     body = `<h2>${e ? 'Edit epic' : 'New epic'}</h2>
-    <form novalidate ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveEpic', UIAction.event, m.id || '')}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Payment integration" value="${esc(e ? e.title : '')}" maxlength="120" required autofocus>`)}
       ${field('Track', selectHtml('mTrack', { name: 'trackId', value: e ? e.trackId : (m.trackId || ''), placeholder: 'Choose a track', options: tracks().map((t) => ({ v: t.id, l: t.name })) }))}
       <div class="field-row">
@@ -39,7 +39,7 @@ export function renderModal() {
   } else if (m.type === 'milestone') {
     const ms = m.id ? D.milestones.find((x) => x.id === m.id) : null;
     body = `<h2>${ms ? 'Edit milestone' : 'New milestone'}</h2>
-    <form novalidate ${UIAction.on('submit', 'saveMilestone', UIAction.event, m.id || '')}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveMilestone', UIAction.event, m.id || '')}>
       ${field('Name', `<input class="ctl" name="name" placeholder="Public launch" value="${esc(ms ? ms.name : '')}" maxlength="60" required autofocus>`)}
       ${field('Date', dateHtml('mDate', { name: 'date', value: ms ? ms.date : iso(today) }))}
       ${field('Goal', descriptionEditorHtml(ms?.desc,500), true)}
@@ -48,7 +48,7 @@ export function renderModal() {
   } else if (m.type === 'track') {
     const t = m.id ? trackById(m.id) : null;
     body = `<h2>${t ? 'Rename track' : 'New track'}</h2>
-    <form novalidate ${UIAction.on('submit', 'saveTrack', UIAction.event, m.id || '')}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveTrack', UIAction.event, m.id || '')}>
       ${field('Name', `<input class="ctl" name="name" placeholder="Backend & API" value="${esc(t ? t.name : '')}" maxlength="60" required autofocus>`)}
       <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">${t ? 'Save' : 'Create track'}</button></div>
     </form>`;
@@ -56,7 +56,7 @@ export function renderModal() {
     body = taskModalHtml(m);
   } else if (m.type === 'project') {
     body = `<h2>New project</h2>
-    <form novalidate ${UIAction.on('submit', 'saveProjectNew', UIAction.event)}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveProjectNew', UIAction.event)}>
       ${field('Name', `<input class="ctl" name="name" maxlength="60" required autofocus>`)}
       ${field('Task prefix', `<input class="ctl mono" name="key" placeholder="APP" maxlength="4">`)}
       <div class="modal-actions"><button class="btn quiet" type="button" ${UIAction('closeOverlays')}>Cancel</button><button class="btn primary" type="submit">Create project</button></div>
@@ -65,7 +65,7 @@ export function renderModal() {
     const u = m.id ? userById(m.id) : null;
     const lastAdmin = u && u.admin && u.active && activeAdmins().length === 1;
     body = `<h2>${u ? 'Edit user' : 'New user'}</h2>
-    <form novalidate ${UIAction.on('submit', 'saveUser', UIAction.event, m.id || '')}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveUser', UIAction.event, m.id || '')}>
       ${field('Username', `<input class="ctl mono" name="username" value="${esc(u ? userHandle(u) : '')}" ${u ? 'disabled' : 'autofocus'} maxlength="32">`)}
       ${field('Full name', `<input class="ctl" name="name" value="${esc(u ? u.name : '')}" maxlength="80" ${u ? 'autofocus' : ''}>`)}
       <label class="check user-admin"><input type="checkbox" name="admin" ${u && u.admin ? 'checked' : ''} ${lastAdmin ? 'disabled' : ''}> Admin${lastAdmin ? ' <span class="mono subtle">· last active admin</span>' : ''}</label>

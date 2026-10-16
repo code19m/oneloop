@@ -1,15 +1,40 @@
 // @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
-/* Form parts that several pages and dialogs share: description fields that
-   grow with their text, and the New task form. */
+/* Form parts that several pages and dialogs share: descriptions that grow
+   with their text and show their Markdown, and the New task form. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { markdownInto } from '../../src/features/files/file-views.js';
 import { dateHtml, field, multiHtml, selectHtml } from './controls.js';
 import { I, UIAction, d, esc, setHTML } from './format.js';
-import { App, canRoadmap, epics, projectMembers, userById, userHandle } from './model.js';
+import { App, canRoadmap, epics, projectMembers, userById, userHandle, visibleProjects } from './model.js';
 
 // ---------- descriptions ----------
 const expandedDescriptions = new Set();
 let descriptionObserver,descriptionResizeFrame=0;
+// What each description reader showed, by the reader, its text and the
+// projects whose task keys it links, kept from one drawing of the page to the
+// next: the page shows it again at once, and its diagrams and images stay.
+let shownMarkdown=new Map();
+const mountedReaders=new WeakSet();
+
+/** Show the Markdown of each description reader, `[data-markdown]`, which holds its text until the renderer is there. */
+function mountReaders(){
+  const prefixes=new Set(visibleProjects().map(project=>project.key)),scope=[...prefixes].sort().join(),kept=shownMarkdown;
+  // A line break in the text is a line break, as in descriptions written before they showed as Markdown.
+  // Task keys of the projects the person can see become links; others stay text.
+  const context={breaks:true,taskLink:key=>prefixes.has(key.slice(0,key.indexOf('-')))?'#/task/'+encodeURIComponent(key):null};
+  shownMarkdown=new Map();
+  for(const reader of document.querySelectorAll('.description-content[data-markdown]')){
+    const text=reader.getAttribute('data-markdown'),key=`${reader.id}\n${scope}\n${text}`;
+    if(!mountedReaders.has(reader)){
+      mountedReaders.add(reader);
+      const article=kept.get(key);
+      if(article)reader.replaceChildren(article);
+      else markdownInto(reader,text,context,()=>{shownMarkdown.set(key,reader.firstElementChild);sizeDescription();});
+    }
+    const article=reader.querySelector(':scope > .markdown-body');if(article)shownMarkdown.set(key,article);
+  }
+}
 
 export function sizeDescription(animated = false) {
   document.querySelectorAll('.expandable-description').forEach(section=>{
@@ -18,7 +43,8 @@ export function sizeDescription(animated = false) {
     UIMotion.cancel(input);
     const expanded=expandedDescriptions.has(section.dataset.descriptionKey);
     input.style.overflowY='hidden';input.style.height='0px';
-    const fullHeight=Math.max(input.tagName==='TEXTAREA'?96:0,input.scrollHeight+(input.tagName==='TEXTAREA'?2:0));
+    // The height holds the text and the box's own border.
+    const fullHeight=Math.max(input.tagName==='TEXTAREA'?96:0,input.scrollHeight+input.offsetHeight-input.clientHeight);
     const expandedLimit=Math.max(240,Math.round(innerHeight*.8));
     input.style.height=Math.min(fullHeight,expanded?expandedLimit:240)+'px';
     input.style.overflowY=expanded?'auto':'hidden';input.scrollTop=expanded?scrollTop:0;
@@ -42,7 +68,7 @@ export function descriptionEditorHtml(value,limit,placeholder) {
 }
 
 export function descriptionReadHtml(value,key) {
-  return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" ${UIAction('toggleDescription', UIAction.element)} hidden>Show more</button></section>`;
+  return `<section class="peek-description expandable-description" data-description-key="${esc(key)}"><h3>Description</h3><div class="description-preview"><div class="description-content" id="${esc(key)}" role="group" aria-label="Epic description" data-markdown="${esc(value)}">${esc(value)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(key)}" aria-expanded="false" ${UIAction('toggleDescription', UIAction.element)} hidden>Show more</button></section>`;
 }
 
 export function sizeTaskTitle() {
@@ -54,7 +80,7 @@ export function sizeTaskTitle() {
 
 export function mountDescription() {
   cancelAnimationFrame(descriptionResizeFrame);descriptionResizeFrame=0;
-  sizeTaskTitle();descriptionObserver?.disconnect();sizeDescription();sizeDescriptionEditors();
+  mountReaders();sizeTaskTitle();descriptionObserver?.disconnect();sizeDescription();sizeDescriptionEditors();
   if(typeof ResizeObserver!=='undefined'){
     const widths=new WeakMap();
     descriptionObserver=new ResizeObserver(entries=>{
@@ -79,7 +105,7 @@ function taskAssigneesHtml(m){
 export function taskModalHtml(m) {
   if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${canRoadmap()?`<button class="btn primary" ${UIAction('openModal', 'epic')}>Create epic</button>`:''}</div>`;
   return `<h2>New task</h2>
-    <form novalidate ${UIAction.on('submit', 'saveTask', UIAction.event)}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveTask', UIAction.event)}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Fix payment validation" value="${esc(m.title || '')}" maxlength="140" required autofocus>`)}
       ${field('Epic', selectHtml('mEpic', { name: 'epicId', value: taskDestinationEpics().some((e) => e.id === m.epicId) ? m.epicId : '', placeholder: 'Choose an epic', options: taskDestinationEpics().slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })) }))}
       <div class="field-row">

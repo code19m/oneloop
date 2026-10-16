@@ -264,6 +264,7 @@ test('attachment order is shared by keyboard and pointer moves, which Escape and
   const original = order(), grip = () => d.querySelector(`[data-reorder-file="${original[0]}"]`);
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); assert.equal(task.attachments.at(-1).id, original[0]); assert.equal(d.activeElement.dataset.reorderFile, original[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(moves()[0].args)), ['bir-079', { attachmentId: 'hello', targetId: 'third', after: true, expectedRevision: 1, idempotencyKey: moves()[0].args[1].idempotencyKey }]); await keep();
+  assert.equal(d.activeElement, grip(), 'the moved file keeps focus once the server confirms its place, so the arrow keys go on moving it');
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(order(), original); await keep();
   const pointer = (type, target, x, y) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
   const geometry = () => { zone().getBoundingClientRect = () => ({ left: 0, right: 600, top: 0, bottom: 500 }); [...zone().querySelectorAll('[data-attachment-id]')].forEach((row, i) => row.getBoundingClientRect = () => ({ left: 0, right: 600, top: 100 + i * 100, bottom: 190 + i * 100, width: 600, height: 90 })); };
@@ -353,6 +354,17 @@ test('a task page reads its attachments once each time it opens and once per liv
   t.A.nav('board'); await open();
   assert.equal(reads, 3, 'the task opens again');
   assert.equal(t.d.querySelector('.attachment-title').textContent, 'notes.txt');
+});
+
+test('a live reload of the files waits for a press on the page to end, so its click lands', async () => {
+  const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')]);
+  const card = () => t.d.querySelector('[data-attachment-id="notes"]'), pressed = card();
+  const pointer = type => pressed.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  pointer('pointerdown');
+  t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' }); await settle();
+  assert.equal(card(), pressed, 'the file stays under the pressed button');
+  pointer('pointerup'); pressed.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await waitFor(() => card() !== pressed, 'the files are drawn again once the press ends');
 });
 
 test('a live re-read of attachments that lost access stays quiet', async () => {

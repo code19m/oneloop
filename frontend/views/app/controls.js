@@ -44,6 +44,21 @@ function failField(form, name, msg) {
   return false;
 }
 
+/**
+ * Show `value` as the select `key`'s value: its label and tip, its form value
+ * and the option its list marks. While its list is open, the select stays as
+ * the person sees it.
+ */
+export function setSelectValue(key, value) {
+  const def = SELS[key], button = document.getElementById(`select-${key}`);
+  if (!def || !button || POP.id === 'sel:' + key) return;
+  const option = def.options.find((o) => o.v === value), label = option ? option.l : (def.placeholder || 'Select');
+  def.value = value;
+  const hidden = button.parentNode.querySelector('input[type="hidden"]'); if (hidden) hidden.value = value ?? '';
+  button.classList.toggle('empty', value === '' || value == null);
+  button.querySelector('.sel-label').textContent = label; button.dataset.tip = label;
+}
+
 export function selectHtml(key, def) {
   SELS[key] = def;
   const cur = def.options.find((o) => o.v === def.value);
@@ -432,10 +447,7 @@ Object.assign(App, {
     const pick = (o) => {
       const returnFocus = rememberOpener(btn);
       closePop();
-      if (hid) hid.value = o.v;
-      def.value = o.v;
-      btn.classList.toggle('empty', o.v === '' || o.v == null);
-      btn.querySelector('.sel-label').textContent = o.l; btn.dataset.tip = o.l;
+      setSelectValue(key, o.v);
       clearFieldError(btn);
       if (def.pick) def.pick(o.v);
       restoreOpener(returnFocus);

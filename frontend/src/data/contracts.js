@@ -21,9 +21,10 @@
  *   offerUndo:ViewMethod, openModal:ViewMethod, openPeek:ViewMethod, openTask:ViewMethod, prepareBlock:ViewMethod,
  *   redrawDialog:ViewMethod, refreshAfterDialog:ViewMethod, refreshBackground:ViewMethod, refreshBoard:ViewMethod,
  *   refreshCounts:ViewMethod, refreshEpic:ViewMethod, refreshPool:ViewMethod, refreshProfileAccess:ViewMethod,
- *   refreshRoadmap:ViewMethod, refreshTaskDrafts:ViewMethod, refreshTaskHeader:ViewMethod, refreshUsers:ViewMethod,
- *   resolveRoute:ViewMethod, restoreCommentDraft:ViewMethod, selectProject:ViewMethod, showBlocked:ViewMethod, showTemporaryPassword:ViewMethod,
- *   signOutText:ViewMethod, togglePoolDescription:ViewMethod, updateDocumentTitle:ViewMethod, validateFormDates:ViewMethod,
+ *   refreshRoadmap:ViewMethod, refreshTask:ViewMethod, refreshTaskDrafts:ViewMethod, refreshTaskHeader:ViewMethod,
+ *   refreshUsers:ViewMethod, resolveRoute:ViewMethod, restoreCommentDraft:ViewMethod, selectProject:ViewMethod,
+ *   showBlocked:ViewMethod, showTemporaryPassword:ViewMethod, signOutText:ViewMethod, togglePoolDescription:ViewMethod,
+ *   updateDocumentTitle:ViewMethod, validateFormDates:ViewMethod,
  * } & Record<string,unknown>} LegacyApp
  */
 export {};

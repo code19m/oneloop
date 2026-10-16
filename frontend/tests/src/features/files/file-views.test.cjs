@@ -5,8 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../../../support/dom.cjs');
 
-const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const libraries = [...previewLibraries, ...markdownLibraries];
+const libraries = [...previewLibraries, 'vendor/katex/katex.min', 'vendor/marked-katex-extension/index'];
 // KaTeX refuses to render in quirks mode.
 const boot = options => { const t = bootApp({ route: 'task/BIR-079', libraries, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
 
@@ -316,6 +315,7 @@ function lazyPreviews() {
 test('Markdown loads only the libraries it needs and retries a failed math library once', async () => {
   const { host, loaded, open, settle } = lazyPreviews();
   await open('# Plain\n\nSimple text.'); assert(host.querySelector('h1')); assert(!loaded.some(name => /katex|highlight/.test(name)));
+  await open('It costs $5 or $10, and `echo $HOME` prints $HOME.'); assert(!loaded.some(name => /katex/.test(name)), 'prices and shell variables are no math');
   await open('> ~~~js\n> const answer = 42;\n> ~~~'); assert(host.querySelector('.hljs-keyword')); assert(!loaded.some(name => /katex/.test(name)));
   await open('Math: $x^2$'); assert(host.querySelector('[role="alert"]')); assert.equal(host.querySelector('.html-source').textContent, 'Math: $x^2$');
   host.querySelector('[role="alert"] button').click(); await settle();
@@ -344,7 +344,7 @@ test('HTML previews keep Source usable without parsing, and show nothing without
 function directPreviews() {
   const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   w.matchMedia = () => ({ matches: true });
-  for (const name of [...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index']) w.eval(source(name));
+  for (const name of previewLibraries) w.eval(source(name));
   return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
 
@@ -366,6 +366,35 @@ test('a Knowledge context links relative files and shows relative images; attach
   views.markdownView(host, { name: 'README.md', size: text.length }, text, false);
   assert(!d.querySelector('.markdown-body a[href^="#/knowledge"]'));
   assert(!d.querySelector('.markdown-body img'));
+});
+
+test('deciding what hostile Markdown needs takes a few plain passes over it, not one per character', () => {
+  // The libraries never arrive, so markdownInto only checks which ones the text needs.
+  const dom = new JSDOM('<!doctype html><div></div>', { url: 'http://localhost/', runScripts: 'outside-only' }), d = dom.window.document;
+  d.head.append = () => {};
+  const views = importModule(dom, 'src/features/files/file-views.js');
+  // CPU work: the machine's speed and load affect the checks and a plain pass alike.
+  const work = run => { const start = process.cpuUsage(); run(); const used = process.cpuUsage(start); return used.user + used.system; };
+  // 128 KB, under the 200 KiB that previews read, so checks that grow with the square of the text fail in seconds.
+  for (const unit of ['\\$', '\\$a', '`', '$`a', '~', '<code ']) {
+    const text = unit.repeat(Math.ceil(2 ** 17 / unit.length)), check = () => views.markdownInto(d.createElement('div'), text);
+    const pass = Math.min(...[1, 2, 3].map(() => work(() => { let dollars = 0; for (let at = 0; at < text.length; at++) if (text.charCodeAt(at) === 36) dollars++; return dollars; })));
+    const limit = 100 * pass;
+    // The best of up to three rounds, as the process's other threads, such as the garbage collector, can slow
+    // one. A round ten times over the limit is no such noise, so it ends the test at once.
+    let checks = work(check);
+    for (let round = 2; round <= 3 && checks >= limit && checks < 10 * limit; round++) checks = Math.min(checks, work(check));
+    assert(checks < limit, `${JSON.stringify(unit)} × 128 KB: ${checks} µs of checks, ${pass} µs for a plain pass`);
+  }
+});
+
+test('a link to a oneloop page opens it in place, while other links keep their rules', () => {
+  const { d, host, views } = directPreviews();
+  const text = ['[Task](#/task/WEB-002)', '[Board](http://localhost/#/board)', '[Section](#setup)', '[Other app](http://localhost:9000/#/board)', '[Docs](https://example.invalid/docs)'].join('\n\n');
+  views.markdownView(host, { name: 'notes.md', size: text.length }, text, false);
+  assert.deepEqual([...d.querySelectorAll('.markdown-body a')].map(link => [link.getAttribute('href'), link.getAttribute('target')]), [
+    ['#/task/WEB-002', null], ['#/board', null], ['#md-setup', null], ['http://localhost:9000/#/board', '_blank'], ['https://example.invalid/docs', '_blank'],
+  ]);
 });
 
 test('plain text previews indent whole JSON files and say when they are cut', () => {

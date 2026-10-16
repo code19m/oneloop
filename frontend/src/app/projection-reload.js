@@ -139,7 +139,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       }
       else if(current.view==='roadmap')app.refreshRoadmap();
       else if(bridge&&['profile','users','settings'].includes(current.view))windows.push(bridge.loadCurrentRoute({refresh:true,background:!!scope.background}));
-      else if(data.projects.some((item)=>item.id===current.projectId)){app.refreshCounts();if(current.view==='task')app.refreshBackground();}
+      else if(data.projects.some((item)=>item.id===current.projectId)){app.refreshCounts();if(current.view==='task')app.refreshTask(current.taskId);}
       else app.refresh();
       const results=await Promise.all(windows);
       return complete(results.find(result=>result?.stale)??loaded);

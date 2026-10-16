@@ -151,7 +151,7 @@ function load(dom, name) {
 }
 
 /** The browser libraries that Markdown previews load on demand, already present. */
-const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
+const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
 
 /** Knowledge, which view tests leave out: a page and sections with nothing in them. */
 const knowledgeStub = () => ({ route: (_route, projectId) => projectId, render: () => '', topbar: () => '<h1>Knowledge base</h1>', beforeRender() {}, mount() {}, settingsHtml: () => '', modalHtml: () => '', clear() {} });
@@ -283,6 +283,7 @@ function bootApp({
   const wiring = wire(dom, { api, reads, reloadBootstrap });
   importModule(dom, 'src/app/motion.js').installDisclosures(w.document);
   importModule(dom, 'src/features/files/preview.js').installPreviews(w.document, wiring.runtime);
+  importModule(dom, 'src/app/save-shortcut.js').installSaveShortcut(w.document, w.Recovery);
   prepare?.(w.DATA, w);
   for (const name of libraries) load(dom, name);
   load(dom, 'app');

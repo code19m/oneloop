@@ -141,6 +141,8 @@ function renderTopbar() {
 let paintedPage=null;
 const pageScope=()=>JSON.stringify([D.session?.id,D.session?.userId,state.view,state.projectId,state.taskId]);
 let rendering=false,paintedScope=null,backgroundRenderTimer=null,dialogPaintOwed=false,pressedTaskControl=false,pressedControlTimer=null;
+// What waits for a press inside a page to end, after its click.
+const afterRelease=new Set();
 // A filter rewrites the Board's address, but the page stays, and so does focus in its search box.
 const renderScope=()=>JSON.stringify([D.session?.id,D.session?.userId,pageOf(location.hash),state.view,state.projectId,state.taskId,state.modal?.type,state.modal?.id,state.peek]);
 // A render rebuilds an open dialog and loses its unsaved fields, so a change
@@ -432,6 +434,12 @@ Object.assign(App, {
   refreshBackground,
   refreshAfterDialog,
   isRendering:()=>rendering,
+  /**
+   * While a press inside a page is in progress, run `run` once it ends,
+   * after its click, and say so. Content that moves under a pressed pointer
+   * makes the browser drop the click.
+   */
+  afterPress(run){if(!pressedTaskControl)return false;afterRelease.add(run);return true;},
 });
 window.App = App;
 export { App };
@@ -558,12 +566,15 @@ document.addEventListener('pointerdown', (e) => {
   clearTimeout(pressedControlTimer);
   pressedTaskControl=!!e.target.closest?.('.task-page,.peek,.modal');
 });
-const releasePressedControl=()=>{clearTimeout(pressedControlTimer);pressedControlTimer=setTimeout(()=>{pressedTaskControl=false;},0);};
+function releasePress(){pressedTaskControl=false;for(const run of [...afterRelease]){afterRelease.delete(run);run();}}
+const releasePressedControl=()=>{clearTimeout(pressedControlTimer);pressedControlTimer=setTimeout(releasePress,0);};
 // Retain the guard through click dispatch and intervening promise callbacks.
 window.addEventListener('pointerup',releasePressedControl,true);
 window.addEventListener('pointercancel',releasePressedControl,true);
 window.addEventListener('click',releasePressedControl,true);
-window.addEventListener('blur',()=>{clearTimeout(pressedControlTimer);pressedTaskControl=false;});
+// A context menu on macOS ends a press without pointerup, and a native drag in Safari ends it with only dragend.
+for(const type of ['contextmenu','dragend'])window.addEventListener(type,releasePressedControl,true);
+window.addEventListener('blur',()=>{clearTimeout(pressedControlTimer);releasePress();});
 let rsz;
 window.addEventListener('resize', () => {
   hideEpicTip();

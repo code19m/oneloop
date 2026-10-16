@@ -18,7 +18,7 @@
   --epic-active-border: rgba(255,255,255,.18);
   --epic-hover-tint: 6%;
   --surface-message: rgb(var(--tone-rgb) / 0.025);
-  --surface-code: rgba(25,25,25,0.45);
+  --surface-code: rgb(var(--tone-rgb) / 0.05);
   --segment-track: rgba(0,0,0,0.12);
   --segment-selected: rgb(var(--tone-rgb) / 0.09);
   --scrim: rgba(0,0,0,0.28);
@@ -1174,6 +1174,26 @@ div.ms-label {cursor:default}
 .task-layout .task-description textarea { background:transparent;border-color:var(--line-strong);font-size:var(--text-body);line-height:1.65;padding:12px 14px; }
 .task-layout .task-description textarea:hover:not(:disabled) { background:var(--glass-1); }
 .task-layout .task-description textarea:disabled { opacity:1;color:var(--ink-muted); }
+.description-heading { display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px; }
+.description-heading .description-edit { min-height:30px;padding:4px 10px; }
+@media (pointer: coarse) { .description-heading,.description-heading .description-edit { min-height:44px; } }
+/* The description reads in the box its editor opens in, so opening it moves no text. */
+.task-layout .task-description .description-content:not(.description-empty) { padding:12px 14px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);color:var(--ink);line-height:1.65; }
+.task-layout .task-description .description-content[data-action] { cursor:text; }
+@media (hover:hover) { .task-layout .task-description .description-content[data-action]:hover { background:var(--glass-1); } }
+.description-empty { margin:0;color:var(--ink-muted); }
+/* Descriptions show Markdown at the size of their text, with headings below the task title's. */
+:root .description-content .markdown-body.markdown-body { font:inherit;color:inherit;background:transparent;white-space:normal; }
+:root .description-content .markdown-body.markdown-body :is(h1,h2,h3,h4,h5,h6) { margin:20px 0 8px;font-weight:600;line-height:1.3; }
+:root .description-content .markdown-body.markdown-body h1 { font-size:20px; }
+:root .description-content .markdown-body.markdown-body h2 { font-size:var(--text-heading); }
+:root .description-content .markdown-body.markdown-body h3 { font-size:var(--text-ui); }
+:root .description-content .markdown-body.markdown-body :is(h4,h5,h6) { font-size:var(--text-body); }
+/* Each line takes its direction from its own text, as in the editor and in comments. */
+:root .description-content .markdown-body.markdown-body :is(p,h1,h2,h3,h4,h5,h6) { unicode-bidi:plaintext; }
+:root .description-content .markdown-body.markdown-body > :first-child { margin-top:0; }
+:root .description-content .markdown-body.markdown-body > :last-child { margin-bottom:0; }
+:root .description-content .markdown-body.markdown-body a.task-key-link { font-family:var(--font-mono);font-variant-numeric:tabular-nums; }
 .task-layout .task-attachments,.task-layout .task-activity { border-top:1px solid var(--line-strong);padding-top:24px; }
 .task-layout .task-attachments h2 .btn { font-size:var(--text-label);min-height:30px;padding:4px 10px; }
 .task-layout .access-note { font-family:var(--font-sans);font-size:var(--text-label);color:var(--ink-muted); }

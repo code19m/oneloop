@@ -1,7 +1,7 @@
 // views/app.js: the task page, its dialogs, save feedback and activity feed.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
+const { bootApp, source, waitFor, settle } = require('../../support/dom.cjs');
 
 /** A task page whose toasts are recorded as notices. */
 function taskPage(options) {
@@ -94,11 +94,144 @@ test('a redraw folds long comments before it puts the task page\'s scroll positi
 });
 
 test('epic, milestone and task descriptions share bounded readers and editors that keep their scroll position', () => {
- const t=bootApp({route:'roadmap',prepare:D=>{D.epics[0].desc='<script>unsafe</script>\n'+('A long epic description.\n'.repeat(50));D.milestones[0].desc='A milestone goal.\n'.repeat(25);}});
- t.A.openPeek(t.D.epics[0].id);let reader=t.d.querySelector('.description-content');assert(reader.textContent.includes('<script>unsafe</script>'));assert(!reader.querySelector('script'));Object.defineProperty(reader,'scrollHeight',{value:1600});t.w.innerHeight=1000;t.A.sizeDescription();assert.equal(reader.style.height,'240px');assert(t.d.querySelector('.peek-description').classList.contains('is-collapsed'));
+ const t=bootApp({route:'roadmap',prepare:D=>{D.epics[0].desc='## Goal\n\n<script>unsafe</script>\n'+('A long epic description.\n'.repeat(50));D.milestones[0].desc='A milestone goal.\n'.repeat(25);}});
+ // The epic's description shows as Markdown, read-only, as a task's does.
+ t.A.openPeek(t.D.epics[0].id);let reader=t.d.querySelector('.description-content');assert.equal(reader.querySelector('.markdown-body h2').textContent,'Goal');assert(!reader.querySelector('script'));assert(!reader.hasAttribute('data-action'));Object.defineProperty(reader,'scrollHeight',{value:1600});t.w.innerHeight=1000;t.A.sizeDescription();assert.equal(reader.style.height,'240px');assert(t.d.querySelector('.peek-description').classList.contains('is-collapsed'));
  t.A.toggleDescription(t.d.querySelector('.peek-description .description-toggle'));assert.equal(reader.style.height,'800px');assert.equal(reader.style.overflowY,'auto');assert(!t.d.querySelector('.peek-description').classList.contains('is-collapsed'));reader.scrollTop=130;t.A.sizeDescription();assert.equal(reader.scrollTop,130);
  for(const [kind,id] of [['epic',t.D.epics[0].id],['milestone',t.D.milestones[0].id],['task',null]]){t.A.closeOverlays();t.A.openModal(kind,id);const input=t.d.querySelector('[data-description-editor]');assert(input);assert(t.d.querySelector('.modal .optional-mark'));assert(!t.d.querySelector('.modal .description-toggle'));Object.defineProperty(input,'scrollHeight',{value:1600});t.A.sizeDescriptionEditors();assert.equal(input.style.height,'320px');assert.equal(input.style.overflowY,'auto');input.scrollTop=180;t.A.sizeDescriptionEditors();assert.equal(input.scrollTop,180);t.w.innerHeight=500;t.A.sizeDescriptionEditors();assert.equal(input.style.height,'200px');t.w.innerHeight=1000;}
  t.A.closeOverlays();t.A.openTask('BIR-079');const input=t.d.querySelector('#task-description');Object.defineProperty(input,'scrollHeight',{value:1600});t.A.sizeDescription();assert.equal(input.style.height,'240px');t.A.expandDescription();assert.equal(input.style.height,'800px');t.A.toggleDescription();assert.equal(input.style.height,'240px');
+});
+
+/** A task page whose BIR-079 has `desc` as its saved description, with the app's view actions. */
+const describedTask = (desc, options = {}) => taskPage({ actions: true, ...options, prepare: (D, w) => { D.tasks.find(item => item.id === 'BIR-079').desc = desc; options.prepare?.(D, w); } });
+const click = (t, element) => element.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+
+test('a description shows as Markdown, and a click on its text opens the editor with the caret at the end', () => {
+  const source = '## Plan\n\n- [ ] Write **tests**\n\nSee BIR-064 and XYZ-001, `BIR-065` and [the guide](https://example.invalid/guide).\nA new line, as the text has it.';
+  const t = describedTask(source), reader = () => t.d.getElementById('task-description-content');
+  assert.equal(t.d.getElementById('task-description'), null, 'no editor until the person opens it');
+  assert.equal(reader().querySelector('.markdown-body h2').textContent, 'Plan');
+  assert(reader().querySelector('p br'), 'a line break in the text is a line break');
+  assert.equal(reader().querySelector('input[type=checkbox]').disabled, true, 'task lists stay read-only');
+  assert.deepEqual([...reader().querySelectorAll('a')].map(link => [link.textContent, link.getAttribute('href'), link.className]),
+    [['BIR-064', '#/task/BIR-064', 'task-key-link'], ['the guide', 'https://example.invalid/guide', '']], 'keys of projects the person can see link to their tasks; other keys and code stay text');
+  // A click on a link follows it, and one that ends a selection keeps it.
+  t.w.addEventListener('click', event => event.preventDefault(), { once: true });
+  click(t, reader().querySelector('a[href^="https:"]'));
+  t.w.getSelection().selectAllChildren(reader().querySelector('h2')); click(t, reader().querySelector('h2'));
+  assert.equal(t.d.getElementById('task-description'), null);
+  t.w.getSelection().removeAllRanges(); click(t, reader().querySelector('strong'));
+  const editor = t.d.getElementById('task-description');
+  assert.equal(t.d.activeElement, editor); assert.equal(editor.value, source); assert.equal(editor.selectionStart, source.length);
+  assert.equal(t.d.querySelector('.description-edit').hidden, true, 'Edit hides while the editor is open');
+  // Leaving the unchanged text shows it again, with nothing to save.
+  editor.blur();
+  assert.equal(t.d.getElementById('task-description'), null); assert(reader().querySelector('.markdown-body'));
+  assert.equal(t.d.querySelector('.description-edit').hidden, false); assert.equal(t.commands.length, 0);
+});
+
+test('Escape and Ctrl+Enter save the description, which shows again once saved, and give focus to Edit', async () => {
+  for (const [index, init] of [{ key: 'Escape' }, { key: 'Enter', ctrlKey: true }].entries()) {
+    const t = describedTask('Saved text'), task = t.D.tasks.find(item => item.id === 'BIR-079');
+    click(t, t.d.querySelector('.description-edit'));
+    const editor = t.d.getElementById('task-description');
+    assert.equal(t.d.activeElement, editor, 'Edit opens the editor');
+    editor.value = `Changed ${index}`; editor.dispatchEvent(new t.w.Event('input', { bubbles: true }));
+    const key = new t.w.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }); editor.dispatchEvent(key);
+    assert(key.defaultPrevented);
+    assert.deepEqual(sent(t), [['task.update', { taskId: task.internalId, description: `Changed ${index}` }]]);
+    assert.equal(t.d.activeElement, t.d.querySelector('.description-edit'));
+    assert.equal(t.d.getElementById('task-description').value, `Changed ${index}`, 'the editor stays while its save is on its way');
+    await accept(t, [{ entityType: 'task', id: task.internalId, description: `Changed ${index}`, revision: 2 }]);
+    assert.equal(t.d.getElementById('task-description'), null);
+    assert.equal(t.d.getElementById('task-description-content').textContent.trim(), `Changed ${index}`);
+    assert.equal(t.d.activeElement, t.d.querySelector('.description-edit'), 'Edit keeps focus');
+  }
+});
+
+test('a press below the description keeps the editor in place until the press ends, so its click lands', async () => {
+  for (const changed of [false, true]) {
+    const t = describedTask('One line'), task = t.D.tasks.find(item => item.id === 'BIR-079'), below = t.d.querySelector('.task-activity h2');
+    const pointer = type => below.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+    t.A.editDescription(task.id);
+    const editor = t.d.getElementById('task-description');
+    if (changed) editor.value = 'One line, changed';
+    // The press moves focus out of the editor before its click.
+    pointer('pointerdown'); editor.blur();
+    if (changed) await accept(t, [{ entityType: 'task', id: task.internalId, description: 'One line, changed', revision: 2 }]);
+    assert.equal(t.d.getElementById('task-description'), editor, `the editor keeps its place while the button is down (changed: ${changed})`);
+    pointer('pointerup'); click(t, below);
+    await waitFor(() => !t.d.getElementById('task-description'), 'the description shows its text once the press ends');
+    assert.equal(t.d.getElementById('task-description-content').textContent.trim(), changed ? 'One line, changed' : 'One line');
+  }
+});
+
+test('Escape while a press is still down gives focus to Edit, though the editor waits for the press to end', () => {
+  const t = describedTask('One line'), below = t.d.querySelector('.task-activity h2');
+  t.A.editDescription('BIR-079');
+  below.dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  t.d.getElementById('task-description').dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(t.d.activeElement, t.d.querySelector('.description-edit'));
+  assert(t.d.getElementById('task-description'), 'the editor keeps its place while the button is down');
+});
+
+test('a context menu or a native drag ends a press that sends no pointerup, so the description shows its text', async () => {
+  for (const type of ['contextmenu', 'dragend']) {
+    const t = describedTask('One line'), below = t.d.querySelector('.task-activity h2');
+    t.A.editDescription('BIR-079');
+    below.dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+    t.d.getElementById('task-description').blur();
+    assert(t.d.getElementById('task-description'), 'the editor waits while the button is down');
+    below.dispatchEvent(new t.w.Event(type, { bubbles: true, cancelable: true }));
+    await waitFor(() => !t.d.getElementById('task-description'), `the description shows its text after ${type}`);
+  }
+});
+
+test('a description keeps its editor while a conflict question or a Not saved draft holds its text', async () => {
+  const t = conflictPage({ desc: 'Their description' }), editor = () => t.d.getElementById('task-description');
+  t.task.desc = 'Saved description'; t.A.refresh();
+  t.A.editDescription(t.task.id);
+  // As in the app, the field's blur handler saves before focus leaves it.
+  editor().value = 'My description'; t.A.updTask(t.task.id, 'desc', editor().value); editor().blur();
+  t.commands[0].reject(conflict(t));
+  await waitFor(() => promptButton(t, 'Keep my changes'), 'the conflict prompt appears');
+  assert.equal(editor().value, 'My description', 'the question stays beside the editor');
+  promptButton(t, 'Keep my changes').click();
+  await waitFor(() => t.commands.length === 2, 'Keep my changes saves again');
+  await accept(t, [{ entityType: 'task', id: t.task.internalId, description: 'My description', revision: 3 }]);
+  assert.equal(editor(), null); assert.equal(t.d.getElementById('task-description-content').textContent.trim(), 'My description');
+  t.w.Recovery.observeResponse({ ok: false, error: new t.w.TestApiError('Unable to reach oneloop', { code: 'network_error' }), requestContext: t.w.Recovery.requestContext() });
+  t.A.editDescription(t.task.id);
+  editor().value = 'Written offline'; t.A.updTask(t.task.id, 'desc', editor().value); editor().blur(); await settle();
+  t.A.refresh();
+  assert.equal(editor().value, 'Written offline'); assert.match(t.d.querySelector('.task-description [data-draft-note]').textContent, /Not saved/);
+});
+
+test('read-only members read the description without Edit, and see No description when it is empty', () => {
+  const readOnly = D => { D.users.find(user => user.id === 'taylorwu').admin = false; D.projects[0].members.find(member => member.userId === 'taylorwu').permissions = []; };
+  const t = describedTask('Only **read**', { prepare: readOnly }), reader = t.d.getElementById('task-description-content');
+  assert.equal(reader.querySelector('strong').textContent, 'read'); assert.equal(t.d.querySelector('.description-edit'), null);
+  click(t, reader); assert.equal(t.d.getElementById('task-description'), null);
+  const empty = describedTask('', { prepare: readOnly });
+  assert.equal(empty.d.getElementById('task-description-content').textContent, 'No description'); assert.equal(empty.d.getElementById('task-description'), null);
+});
+
+test('a description shows its text while the renderer loads, and keeps it when the renderer can\'t load', async () => {
+  for (const loads of [true, false]) {
+    const pending = [];
+    const t = describedTask('# Heading\n\nBody text', { libraries: [], setup: w => { w.document.head.append = element => pending.push(element); } });
+    const reader = t.d.getElementById('task-description-content');
+    assert.equal(reader.textContent, '# Heading\n\nBody text', 'the plain text shows at once');
+    while (pending.length) {
+      const element = pending.shift(), name = new URL(element.src || element.href).pathname.slice(1);
+      if (!loads) { element.onerror(); continue; }
+      if (element.tagName === 'SCRIPT') t.w.eval(source(name));
+      element.onload(); await settle();
+    }
+    await settle();
+    if (loads) assert.equal(reader.querySelector('.markdown-body h1').textContent, 'Heading');
+    else { assert.equal(reader.textContent, '# Heading\n\nBody text'); assert.equal(t.d.querySelector('.task-description [role=alert]'), null, 'and no error box'); }
+  }
 });
 
 test('closing the task dialog discards its unsent input without a stored draft', () => {
@@ -165,7 +298,8 @@ test('Use latest on a description shows the saved description, not the typed one
   [...t.d.querySelectorAll('[data-recovery-conflict] button')].find(button => button.textContent === 'Use latest').click();
   await waitFor(() => !t.bridge.taskDraft(t.task.internalId, 'desc'), 'the typed description is dropped');
   await settle();
-  assert.equal(t.d.getElementById('task-description').value, 'Their description');
+  // With nothing left to save, the description shows its saved text.
+  assert.equal(t.d.getElementById('task-description-content').textContent.trim(), 'Their description');
   assert.equal(t.d.querySelector('.task-description [data-draft-note]'), null);
 });
 
@@ -193,6 +327,57 @@ test('a saved status shows in the header, the Status icon and Block task while S
   assert.equal(select.querySelector('svg').outerHTML, t.d.querySelector('.task-status-chip svg').outerHTML, 'the Status icon is the Done ring');
   assert.equal(t.d.querySelector('.block-task-action'), null, 'a finished task offers no Block task');
   assert.equal(t.d.activeElement, select);
+});
+
+/**
+ * A task page on which someone else changes BIR-079 to `fields`. A live hint
+ * names the task, and the epic too when the change also moved the epic, such
+ * as a first move to In Progress. The page then reads the task, or the whole
+ * workspace, as boot.js wires it.
+ */
+function changedElsewhere(options = {}) {
+  let latest = null, reload;
+  const none = async () => ({ items: [], nextCursor: null });
+  const t = bootApp({ route: 'task/BIR-079', actions: true, ...options, api: { task: async () => latest, comments: none, activity: none, attachments: none }, reloadBootstrap: scope => reload(scope) });
+  const { replaceTaskDetail } = t.module('src/data/projection-store.js');
+  const bootstrap = { idle: async () => {}, load: async () => { if (latest) replaceTaskDetail(t.D, latest); return { stale: false }; } };
+  reload = t.module('src/app/projection-reload.js').createProjectionReload({ data: t.D, bootstrap, reads: t.reads, getApp: () => t.A, getBridge: () => null, getRecovery: () => t.w.Recovery, location: t.w.location });
+  return { ...t, change(entityTypes, fields) {
+    latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
+    for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: latest.revision });
+  } };
+}
+const hintsOfAChange = [['task'], ['epic', 'task']];
+
+test('a status changed elsewhere shows at once in the header and Status, while the description being typed in stays', async () => {
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere(), description = t.d.getElementById('task-description'), status = t.d.getElementById('select-tpState');
+    description.focus(); description.value = 'Typed while a teammate works';
+    t.change(hints, { status: 'in_progress' });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', `the header shows the new status (hints: ${hints})`);
+    assert.equal(status.querySelector('.sel-label').textContent, 'In Progress'); assert.equal(status.dataset.tip, 'In Progress');
+    assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
+    t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
+    assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+  }
+});
+
+test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
+  for (const hints of hintsOfAChange) {
+    const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });
+    const edit = t.d.querySelector('.description-edit'), reader = () => t.d.getElementById('task-description-content');
+    edit.focus();
+    t.change(hints, { description: 'Written by an agent, see BIR-064.' });
+    await waitFor(() => reader().textContent.trim() === 'Written by an agent, see BIR-064.', `the description shows the new text (hints: ${hints})`);
+    assert.equal(t.d.activeElement, edit);
+    // Someone on a link in the text keeps their place until focus leaves the text.
+    const link = reader().querySelector('a.task-key-link'); link.focus();
+    t.change(hints, { description: 'Changed again', status: 'in_progress', revision: 3 });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', 'the change arrived');
+    assert.equal(t.d.activeElement, link, `the link keeps focus (hints: ${hints})`); assert.match(reader().textContent, /Written by an agent/);
+    edit.focus();
+    await waitFor(() => reader().textContent.trim() === 'Changed again', 'the new text shows once focus leaves the text');
+  }
 });
 
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
