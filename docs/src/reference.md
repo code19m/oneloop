@@ -93,7 +93,8 @@ neither do Knowledge files, which oneloop keeps in the database.
 
 When files and unfinished uploads reach 80% of the limit, oneloop removes all
 image thumbnails, then temporary attachments that nobody has opened for 24
-hours, until usage is back at 70%. oneloop also removes them, at any usage,
+hours, until usage is back at 70%. The 24 hours start again when someone opens
+the attachment or marks it temporary. oneloop also removes them, at any usage,
 when an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
 It makes a thumbnail again when someone views the image, while usage with
 thumbnails stays under 80%. **Clean up now** counts thumbnails too. oneloop

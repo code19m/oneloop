@@ -1,6 +1,8 @@
-//! Authenticated file reads use leases and revalidate live parent access before serving bytes.
+//! Authenticated file reads. Access and validators are checked in a read
+//! snapshot, so a revalidation doesn't wait for the writer; sending the bytes
+//! takes a read lease, in a write that checks the file again.
 
-use rusqlite::params;
+use rusqlite::{Connection, Transaction, params};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
@@ -13,8 +15,8 @@ use crate::{
     auth::Actor,
     clock::unix_now,
     files::{
-        BlobState, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
-        sanitized_html_preview,
+        AttachmentView, BlobState, MAX_HTML_PREVIEW_BYTES, MAX_TEXT_PREVIEW_BYTES, PreviewKind,
+        StoredFile, sanitized_html_preview,
     },
 };
 
@@ -42,56 +44,36 @@ impl FileService {
         validator: Option<String>,
     ) -> AppResult<ConditionalRead> {
         let _lease = self.db.acquire_data_lease().await?;
-        let actor = actor.clone();
-        let attachment_id = attachment_id.to_owned();
+        let (actor_tx, id) = (actor.clone(), attachment_id.to_owned());
+        let stored = self
+            .db
+            .snapshot(move |connection| readable(connection, &actor_tx, &id, mode))
+            .await?;
+        let etag = file_etag(&stored.attachment.checksum, mode == ReadMode::Source);
+        if etag_matches(validator.as_deref(), &etag) {
+            self.keep_temporary(&stored.attachment).await?;
+            return Ok(ConditionalRead::NotModified(etag));
+        }
+        let (actor, id) = (actor.clone(), attachment_id.to_owned());
         let lease_id = Uuid::now_v7().to_string();
         let lease_id_tx = lease_id.clone();
+        // A deletion that claimed the file meanwhile wins here, and a later
+        // one sees the lease.
         let stored = self
             .db
             .transaction(move |tx| {
                 let now = unix_now()?;
-                let stored = attachment_by_id(tx, &attachment_id)?;
-                require_file_access(tx, &actor, &stored.attachment.project_id, false, false)?;
-                if stored.attachment.state != BlobState::Available || stored.storage_key.is_none() {
-                    return Err(AppError::NotFound { resource: "attachment" });
-                }
-                match mode {
-                    ReadMode::Content => {
-                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::is_inline_media) {
-                            return Err(AppError::NotFound { resource: "preview" });
-                        }
-                    }
-                    ReadMode::Source => {
-                        if !stored.attachment.preview_kind.is_some_and(PreviewKind::has_source) {
-                            return Err(AppError::NotFound { resource: "source" });
-                        }
-                    }
-                    ReadMode::HtmlPreview => {
-                        if stored.attachment.preview_kind != Some(PreviewKind::Html)
-                            || stored.attachment.size > MAX_HTML_PREVIEW_BYTES
-                        {
-                            return Err(AppError::NotFound { resource: "preview" });
-                        }
-                    }
-                    ReadMode::Download => {}
-                }
-                tx.execute(
-                    "UPDATE task_attachments SET last_accessed_at=max(last_accessed_at,?1) WHERE id=?2 AND last_accessed_at<?1",
-                    params![now, attachment_id],
-                )?;
-                let etag = file_etag(&stored.attachment.checksum, mode == ReadMode::Source);
-                if etag_matches(validator.as_deref(), &etag) {
-                    return Ok((stored, etag, false));
-                }
-                let kind = if mode == ReadMode::Download { "download" } else { "preview" };
+                let stored = readable(tx, &actor, &id, mode)?;
+                touch_temporary(tx, &id, now)?;
+                let kind = if mode == ReadMode::Download {
+                    "download"
+                } else {
+                    "preview"
+                };
                 insert_read_lease(tx, &lease_id_tx, &stored.blob_id, kind, &actor.user_id, now)?;
-                Ok((stored, etag, true))
+                Ok(stored)
             })
             .await?;
-        let (stored, etag, modified) = stored;
-        if !modified {
-            return Ok(ConditionalRead::NotModified(etag));
-        }
         let key = stored.storage_key.as_deref().expect("checked storage key");
         let file = self.open_leased(key, lease_id, "attachment").await?;
         let byte_limit = match mode {
@@ -115,6 +97,19 @@ impl FileService {
         })))
     }
 
+    /// Starts the 24 hours of a temporary file again when a read checked in a
+    /// snapshot answers without the bytes.
+    pub(super) async fn keep_temporary(&self, attachment: &AttachmentView) -> AppResult<()> {
+        let now = unix_now()?;
+        if !attachment.is_ephemeral || attachment.last_accessed_at >= now {
+            return Ok(());
+        }
+        let id = attachment.id.clone();
+        self.db
+            .transaction(move |tx| touch_temporary(tx, &id, now))
+            .await
+    }
+
     pub async fn html_preview_bytes(
         &self,
         actor: &Actor,
@@ -136,6 +131,54 @@ impl FileService {
         sanitized_html_preview(bytes).await
     }
 }
+
+/// The attachment `id`, when `actor` may read it in `mode`.
+fn readable(
+    connection: &Connection,
+    actor: &Actor,
+    id: &str,
+    mode: ReadMode,
+) -> AppResult<StoredFile> {
+    let stored = attachment_by_id(connection, id)?;
+    require_file_access(
+        connection,
+        actor,
+        &stored.attachment.project_id,
+        false,
+        false,
+    )?;
+    if stored.attachment.state != BlobState::Available || stored.storage_key.is_none() {
+        return Err(AppError::NotFound {
+            resource: "attachment",
+        });
+    }
+    let kind = stored.attachment.preview_kind;
+    let (allowed, resource) = match mode {
+        ReadMode::Content => (kind.is_some_and(PreviewKind::is_inline_media), "preview"),
+        ReadMode::Source => (kind.is_some_and(PreviewKind::has_source), "source"),
+        ReadMode::HtmlPreview => (
+            kind == Some(PreviewKind::Html) && stored.attachment.size <= MAX_HTML_PREVIEW_BYTES,
+            "preview",
+        ),
+        ReadMode::Download => (true, "attachment"),
+    };
+    if !allowed {
+        return Err(AppError::NotFound { resource });
+    }
+    Ok(stored)
+}
+
+/// Opening a temporary file starts its 24 hours again. Permanent files need
+/// no access time, so reading them doesn't write.
+fn touch_temporary(tx: &Transaction<'_>, id: &str, now: i64) -> AppResult<()> {
+    tx.execute(
+        "UPDATE task_attachments SET last_accessed_at=?1
+         WHERE id=?2 AND is_ephemeral=1 AND last_accessed_at<?1",
+        params![now, id],
+    )?;
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadMode {
     Download,

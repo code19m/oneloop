@@ -11,7 +11,7 @@ use image::{
     DynamicImage, ImageEncoder,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::OptionalExtension;
 use tokio::{
     fs::{self, File, OpenOptions},
     io::{AsyncReadExt, AsyncWriteExt},
@@ -26,7 +26,6 @@ use super::{
 use crate::{
     AppError, AppResult,
     auth::Actor,
-    clock::unix_now,
     disk::DiskReservation,
     files::{BlobState, PreviewKind, detect},
 };
@@ -108,8 +107,8 @@ enum RenderError {
 
 impl FileService {
     /// The thumbnail of an image attachment, with the same access checks and
-    /// validators as `/content`. Without a thumbnail it queues one and serves
-    /// the original.
+    /// validators as `/content`, checked in a read snapshot. Without a
+    /// thumbnail it queues one and serves the original.
     pub(crate) async fn open_thumbnail(
         &self,
         actor: &Actor,
@@ -121,26 +120,30 @@ impl FileService {
         let validator_tx = validator.clone();
         let (stored, unchanged) = self
             .db
-            .transaction(move |tx| {
-                let now = unix_now()?;
-                let stored = attachment_by_id(tx, &id)?;
-                require_file_access(tx, &actor_tx, &stored.attachment.project_id, false, false)?;
+            .snapshot(move |connection| {
+                let stored = attachment_by_id(connection, &id)?;
+                require_file_access(
+                    connection,
+                    &actor_tx,
+                    &stored.attachment.project_id,
+                    false,
+                    false,
+                )?;
                 if stored.attachment.state != BlobState::Available
                     || stored.storage_key.is_none()
                     || stored.attachment.preview_kind != Some(PreviewKind::Image)
                 {
-                    return Err(AppError::NotFound { resource: "preview" });
+                    return Err(AppError::NotFound {
+                        resource: "preview",
+                    });
                 }
-                // Like opening the image, a thumbnail view keeps a temporary file.
-                tx.execute(
-                    "UPDATE task_attachments SET last_accessed_at=max(last_accessed_at,?1) WHERE id=?2 AND last_accessed_at<?1",
-                    params![now, id],
-                )?;
                 let etag = thumbnail_etag(&stored.attachment.checksum);
                 let unchanged = etag_matches(validator_tx.as_deref(), &etag).then_some(etag);
                 Ok((stored, unchanged))
             })
             .await?;
+        // Like opening the image, a thumbnail view keeps a temporary file.
+        self.keep_temporary(&stored.attachment).await?;
         if let Some(etag) = unchanged {
             return Ok(ThumbnailRead::NotModified(etag));
         }

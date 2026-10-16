@@ -95,8 +95,11 @@ impl FileService {
                     ));
                 }
                 let revision = patch.expected_revision + 1;
+                // Reads of a permanent file don't record the time, so the 24
+                // hours of a temporary file start when it becomes one.
                 tx.execute(
-                    "UPDATE task_attachments SET is_ephemeral=?1,updated_at=?2,revision=?3
+                    "UPDATE task_attachments SET is_ephemeral=?1,updated_at=?2,revision=?3,
+                       last_accessed_at=CASE WHEN ?1 THEN ?2 ELSE last_accessed_at END
                      WHERE id=?4 AND revision=?5",
                     params![
                         patch.is_ephemeral,
