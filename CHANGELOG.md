@@ -81,6 +81,10 @@ All notable changes to oneloop are recorded here. The format follows
   such as one whose updates a newer tab took over, again checks every 30
   seconds that you still have access. Before, it stopped checking until you
   signed in again, so it didn't notice when you lost access to a project.
+- A task page no longer stays at "Loading activity…" when the task loads
+  faster than its comments, as could happen when you opened it from the
+  **Board**. Before, the comments and activity appeared only when something
+  else drew the page again.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

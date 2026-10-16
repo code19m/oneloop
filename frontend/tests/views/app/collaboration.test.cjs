@@ -471,6 +471,24 @@ test('a task page reads its comments and activity once each time it opens and on
  assert.deepEqual(reads.slice(4),['comments','activity'],'the task opens again');
 });
 
+test('a task page shows its comments and activity when the task read lands before them', async () => {
+ const held=[];let taskReads;
+ const view={id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title:'Flexible reading schedule',description:'',status:'planning',position:1,createdAt:1,updatedAt:1,assigneeIds:[],activeBlock:null,revision:1};
+ const t=bootApp({route:'board',api:{
+  comments:()=>{const read=deferred();held.push(read);return read.promise;},
+  activity:async()=>({items:[],nextCursor:null}),attachments:async()=>({items:[]}),task:async()=>view,
+ },reads:{task:id=>taskReads.task(id)}});
+ // The route loader's task read draws the page again, as boot.js wires it.
+ taskReads=createReadController({api:t.api,data:t.D,onTask:task=>{const context=t.A.context();if(context.view==='task'&&context.taskId===task.id)t.A.refresh();}});
+ // The comments are still on their way when the task read lands and replaces the task.
+ t.A.openTask('BIR-079');await settle();
+ await t.bridge.loadCurrentRoute();await settle();
+ for(const read of held.splice(0))read.resolve({items:[{id:'c1',projectId:'p1',taskId:'bir-079',authorId:'taylorwu',authorName:'Taylor Wu',rootId:'c1',replyToId:null,content:'Arrived late',mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1}],nextCursor:null});
+ const timeline=()=>t.d.querySelector('.task-page .timeline').textContent;
+ await waitFor(()=>timeline().includes('Arrived late'),'the comment shows');
+ assert.doesNotMatch(timeline(),/Loading activity/);
+});
+
 test('a block reason with extra spaces keeps its mention where the reason shows it', () => {
  const t=boot(),task=t.D.tasks.find(x=>x.id==='BIR-079');t.A.openModal('block',task.id);
  const input=pickBlock(t,'  Waiting    for @rob','robin');typeBlock(t,input.value+'to approve.  ');saveBlockForm(t);

@@ -107,7 +107,10 @@ export function installCollaborationController({ transport, recovery, eventSourc
           [activity,page.activityDepth??1,cursor=>transport.api.activity(task.projectId,{taskId:task.internalId,cursor,limit:50,signal:taskController.signal,background})],
         ]){for(let index=1;index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.replyCounts={...rows.replyCounts,...next.replyCounts};rows.nextCursor=next.nextCursor;}}
       }
-      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||currentTask(task.internalId)!==task){page.loading=false;return {stale:true};}
+      // A task read can replace the task's object while this read runs; the result then goes to the object the page shows.
+      const shown=currentTask(task.internalId);
+      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!shown){page.loading=false;return {stale:true};}
+      task=shown;
       const commentRows=new Map([...(comments.context??[]),...(comments.items??[]),...(target?.context??[]),...(target?.items??[])].map((item)=>[item.id,item]));
       const replyCounts={...comments.replyCounts,...target?.replyCounts};
       const mappedComments=[...commentRows.values()].map((item)=>({...mapComment(item),replyCount:replyCounts[item.rootId]}));
@@ -127,7 +130,7 @@ export function installCollaborationController({ transport, recovery, eventSourc
       return {stale:false};
     }catch(error){
       page.loading=false;
-      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||currentTask(task.internalId)!==task||error?.code==='aborted')return {stale:true};
+      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!currentTask(task.internalId)||error?.code==='aborted')return {stale:true};
       page.error=true;
       facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:true,hasMore:!!(page.commentsCursor||page.activityCursor),background});
       if([403,404].includes(error?.status))recovery.handleRouteError(error,{background:true});else report(error,false);
