@@ -30,7 +30,8 @@ All notable changes to oneloop are recorded here. The format follows
   connection, instead of blaming the diagram's syntax.
 - The web app does less work on slow computers and phones. Clearing a Board
   filter or the search no longer draws the whole page again, so the cards
-  move smoothly into place.
+  move smoothly into place. A change from another tab to the open task reads
+  its comments and activity once instead of twice.
 
 ### Fixed
 
