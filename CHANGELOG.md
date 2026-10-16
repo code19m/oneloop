@@ -21,6 +21,16 @@ All notable changes to oneloop are recorded here. The format follows
 - A tab no longer checks your access every 30 seconds while it is hidden or
   gets live updates. Live updates already report lost access, and a hidden
   tab refreshes when it shows again.
+- The web app does less work on slow computers and phones. Turning off a
+  Board filter or emptying the search no longer draws the whole page again,
+  so the cards move smoothly into place. A change to one card, a drop or a
+  filter no longer redraws every loaded card, and dragging a card is
+  smoother. Opening a task draws its page two times instead of three, and a
+  change from another tab to the open task reads its comments and activity
+  once instead of twice.
+- A Board search, a Board filter or a project switch that takes more than a
+  moment now dims the page until the result arrives. Before, a slow search
+  looked as if nothing happened.
 
 ### Fixed
 
@@ -28,6 +38,16 @@ All notable changes to oneloop are recorded here. The format follows
   takes more than 30 seconds to download, as on a slow mobile connection.
   When the renderer can't load, the preview now says to check the
   connection, instead of blaming the diagram's syntax.
+- Long comments on a task page no longer fold to nothing and grow back when
+  the page draws again, such as after a change from another tab or a saved
+  field. The page also stays at the comment you were reading. Before, it
+  could jump away by several comments.
+- The Board now shows its loading placeholder while its cards load, when you
+  open it from another page such as the Roadmap. Before, it said "No tasks
+  yet" and offered **Create task** until the cards arrived.
+- Closing a file preview now gives focus back to the file name that opened
+  it, also when the task's attachments changed while the preview showed.
+  Before, keyboard users landed at the top of the page.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

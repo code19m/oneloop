@@ -49,6 +49,8 @@ function boardTasks() {
 export function renderBoard({column=null,excludeIds=null}={}) {
   const ts = boardTasks();
   const filtered = boardFiltered(boardFilters());
+  // A session that starts on another page, such as the Roadmap, has no cards until the Board's first read lands.
+  if (!ts.length && D.boardPageInfo?.projectId !== state.projectId) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
   if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
   const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
     const list = ts.filter((t) => t.state === c.key);
@@ -82,6 +84,10 @@ const filterAnimations = new Set();
 const filterExitLayers = new Set();
 const filterScroll = new WeakMap();
 export const boardSnapshots = new WeakMap();
+/** The markup each row was drawn from, so a redraw leaves the rows that did not change. */
+const rowMarkup = new WeakMap();
+/** Remember the rows of a Board that was drawn whole. */
+export function rememberBoardRows(board) { for (const row of board.querySelectorAll('.col-cards > *')) rowMarkup.set(row, row.outerHTML); }
 let boardSearchTimer;
 
 export function cancelBoardSearch() { clearTimeout(boardSearchTimer); boardSearchTimer = null; }
@@ -179,8 +185,10 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
     // A row keeps its element while its actions stay; a permission change
     // replaces a card, so its drag handlers come and go together.
     placeRows(list, desired.map((row) => {
-      const old=previous.get(boardRowKey(row,column.dataset.col))?.card;
-      return old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+      const old=previous.get(boardRowKey(row,column.dataset.col))?.card,markup=row.outerHTML;
+      if(old&&rowMarkup.get(old)===markup)return old;
+      const kept=old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+      rowMarkup.set(kept,markup);return kept;
     }));
     const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
     if(count.textContent!==nextCount)count.textContent=nextCount;
@@ -489,7 +497,9 @@ Object.assign(App, {
     UIMotion.layout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
-  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).catch(report);},
+  // The header's search and filter menus show the arrays that the reset replaced.
+  // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){

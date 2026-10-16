@@ -110,12 +110,17 @@ function positions(selector) { return new Map([...document.querySelectorAll(sele
  * @param {Map<string|undefined,DOMRect>} before @param {string} selector @param {string} [skip]
  */
 function layout(before, selector, skip) {
-  document.querySelectorAll(selector).forEach(el => {
-    const key = layoutKey(/** @type {HTMLElement} */ (el)), from = before.get(key); cancel(el);
-    if (!from || key === skip || reduced()) return;
-    const to = el.getBoundingClientRect(), x = from.left - to.left, y = from.top - to.top;
-    if (Math.abs(x) + Math.abs(y) >= 1) animate(el, [{ transform: `translate(${x}px, ${y}px)` }, { transform: 'translate(0, 0)' }], 220);
+  // As in reflow: cancel every move, then read every place, then start the moves.
+  const elements = /** @type {HTMLElement[]} */ ([...document.querySelectorAll(selector)]);
+  elements.forEach(cancel);
+  if (reduced()) return;
+  const moves = elements.flatMap(el => {
+    const key = layoutKey(el), from = before.get(key);
+    if (!from || key === skip) return [];
+    const to = el.getBoundingClientRect();
+    return [{ el, x: from.left - to.left, y: from.top - to.top }];
   });
+  for (const { el, x, y } of moves) if (Math.abs(x) + Math.abs(y) >= 1) animate(el, [{ transform: `translate(${x}px, ${y}px)` }, { transform: 'translate(0, 0)' }], 220);
 }
 
 /** The motion engine the views and previews share. */

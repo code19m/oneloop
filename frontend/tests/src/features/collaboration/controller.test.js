@@ -199,14 +199,15 @@ test('SSE reconciliation passively refreshes canonical task fields before scoped
   useMockedClock();
   let request;
   const canonical={id:'opaque-task',projectId:'p1',epicId:'e1',taskKey:'ONE-101',title:'Changed elsewhere',description:'',status:'in_progress',position:1,deadline:null,createdAt:1,updatedAt:2,revision:2,assigneeIds:[],activeBlock:null};
-  let refreshed=0;
-  const t=fixture({api:{task:async(id,options)=>{request={id,options};return canonical;}},facade:{canonicalTask:()=>refreshed++}});
+  let refreshed=0,t;
+  // The page draws again with the new task object, as the views do.
+  t=fixture({api:{task:async(id,options)=>{request={id,options};return canonical;}},facade:{canonicalTask:()=>{refreshed++;t.controller.mount({view:'task',taskId:'ONE-101'});}}});
   t.controller.beforeRender({userId:'u1',view:'task',projectId:'p1',taskId:'ONE-101'});
   t.events.listeners.hint({data:JSON.stringify({kind:'activity.changed'})});await delay(90);
   assert.deepEqual(t.published,[{type:'sse',kind:'activity.changed',taskId:'ONE-101'}]);
   assert.equal(request.id,'opaque-task');assert.equal(request.options.background,true);
   assert.equal(t.data.tasks[0].title,'Changed elsewhere');assert.equal(refreshed,1);
-  assert.ok(t.apiCalls.some(([name,_id,options])=>name==='comments'&&options.background===true));
+  assert.deepEqual(t.apiCalls.map(([name,_id,options])=>[name,options.background]),[['comments',true],['activity',true]],'the redraw and the live read share one read');
 });
 
 test('SSE board hints coalesce, treat null revisions as unknown and wait for optimistic motion',async()=>{

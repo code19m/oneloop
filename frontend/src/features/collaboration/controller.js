@@ -485,8 +485,9 @@ export function installCollaborationController({ transport, recovery, eventSourc
       if(!data.session)return;
       if(context.view==='task'){
         const task=currentTask(context.taskId),page=task&&taskPages.get(task.internalId);
-        // Reading a page again after a refresh replaced its task is passive.
-        if(task&&(!page?.loaded||page.taskRef?.deref()!==task)&&!page?.loading&&!page?.error)readTask(task,{background:!!page?.loaded});
+        // Reading a page again after a refresh replaced its task is passive. A
+        // queued live read for the task reads the page itself, once.
+        if(task&&(!page?.loaded||page.taskRef?.deref()!==task)&&!page?.loading&&!page?.error&&!liveReads.has(`task:${currentSession()}:${task.internalId}`))readTask(task,{background:!!page?.loaded});
       }else if(context.view==='inbox'){
         const key=`${currentSession()}:${filterKey(facade.filter())}`;if((inboxEntry||!inboxPage.loaded||inboxPage.key!==key)&&!inboxPage.loading&&!(inboxPage.error&&inboxPage.key===key)){inboxEntry=false;readInbox(facade.filter(),{background:inboxPage.loaded});}
       }

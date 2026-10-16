@@ -1,7 +1,7 @@
 // views/app.js: the Board, its filters, pagination, moves and the Pool dialog.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, settle, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, transfer, settle, tick, deferred } = require('../../support/dom.cjs');
 const { createReadController } = require('../../../src/data/read-controller.js');
 
 test('live Board moves keep loaded cards in position and ID order across columns',async()=>{
@@ -33,6 +33,13 @@ test('Board search renders matching titles and keys with surrounding whitespace'
   t.A.setBoardQ(padded);
   assert.deepEqual([...t.d.querySelectorAll('.board .card')].map(card=>card.dataset.task),['BIR-079'],padded);
  }
+});
+
+test('the Board shows its loading skeleton, not No tasks yet, until its first read lands',()=>{
+ const t=bootApp({route:'board',prepare:D=>{D.tasks.splice(0);}});
+ assert(t.d.querySelector('.board .loading-board'));assert(!t.d.querySelector('.board .page-empty'));
+ t.D.boardPageInfo={projectId:t.A.context().projectId,filters:{},pages:{}};t.A.refreshBoard();
+ assert.equal(t.d.querySelector('.board .page-empty h2').textContent,'No tasks yet');assert(!t.d.querySelector('.board .loading-board'));
 });
 
 test('live Pool content patches visible titles, descriptions and labels without losing an active draft',()=>{
@@ -102,6 +109,31 @@ test('Board text search coalesces typing, respects composition, flushes Enter or
   board.A.setBoardQ('', { isComposing: false }); assert.equal(calls.length, 3);
   board.A.setBoardQ('abandoned', { isComposing: false }); board.A.nav('profile'); t.mock.timers.tick(220); assert.equal(calls.length, 3);
   t.mock.timers.reset();
+});
+
+test('Clear filters keeps No matching tasks until the Board read lands, then empties the search box and every filter menu', async () => {
+  // Board reads wait for the test, which answers as the server does: a search loads only the cards that match.
+  const reads = [];
+  const t = bootApp({ route: 'board', reads: { board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; } } });
+  const all = [...t.D.tasks], trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+  const answer = async () => {
+    for (const { filters, read } of reads.splice(0)) {
+      t.D.tasks.splice(0, Infinity, ...(filters.search ? [] : all)); t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+      t.A.refreshBoard(); read.resolve({ stale: false });
+    }
+    await settle();
+  };
+  const heading = () => t.d.querySelector('.board .page-empty h2')?.textContent;
+  await answer();
+  t.A.popMulti({ preventDefault() {}, currentTarget: trigger() }, 'fTrack');
+  for (const key of ['ArrowDown', 'Enter', 'Escape']) t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  await answer();
+  t.A.setBoardQ('no task has this title'); await answer();
+  assert.equal(heading(), 'No matching tasks'); assert.doesNotMatch(trigger().textContent, /All tracks/);
+  t.A.clearBoardFilters();
+  assert.equal(heading(), 'No matching tasks', 'the empty search result stays until the cards arrive');
+  await answer();
+  assert(t.d.querySelector('.board .card')); assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, '');
 });
 
 test('a blocked card describes its block reason', () => {

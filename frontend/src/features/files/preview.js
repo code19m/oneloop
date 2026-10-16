@@ -92,8 +92,14 @@ function mountRetentionHelp(layer,owner){
   owner.retentionHelpOff=()=>{hide();tip.remove();document.removeEventListener('pointerdown',outside);document.removeEventListener('scroll',position,true);window.removeEventListener('resize',position);};
 }
 function disposePreview(owner){if(!owner)return;owner.disposed=true;owner.sourceController?.abort();clearTimeout(owner.sourceTimeout);owner.retentionHelpOff?.();owner.zoomWheelOff?.();clearTimeout(owner.pdfWheelTimer);clearTimeout(owner.pdfTimeout);clearTimeout(owner.pdfResizeTimer);owner.pdfResize?.disconnect();owner.imageResize?.disconnect();owner.detailsMedia?.removeEventListener?.('change',owner.detailsSync);owner.pdfRender?.cancel();owner.pdfLoading?.destroy()?.catch?.(()=>{});}
+/**
+ * The control that opened the dialog. A live update can draw it again while
+ * the dialog shows; then its copy runs the same action and has the same name.
+ * @param {any} el
+ */
+const opener=el=>!el||el.isConnected?el:[...document.querySelectorAll(`${el.tagName}[data-action]`)].find(other=>['data-action','data-args','aria-label'].every(name=>other.getAttribute(name)===el.getAttribute(name)));
 /** Close the file dialog, and give focus back to where it was. */
-export function closePreview(){if(!preview)return;disposePreview(preview);const focus=preview.focus;UIMotion.remove(document.querySelector('.file-overlay'));document.getElementById('app').inert=false;preview=null;if(focus?.isConnected)focus.focus({preventScroll:true});}
+export function closePreview(){if(!preview)return;disposePreview(preview);const focus=opener(preview.focus);UIMotion.remove(document.querySelector('.file-overlay'));document.getElementById('app').inert=false;preview=null;focus?.focus({preventScroll:true});}
 /**
  * Show `file` in the file dialog, or switch the dialog that shows to it.
  * Previous and Next step through `files`, and `open(id)` shows one of them;

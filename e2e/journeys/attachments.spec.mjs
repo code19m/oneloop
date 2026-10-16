@@ -1,15 +1,10 @@
 // Attachments and their previews: Markdown, HTML, PDF and images.
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { test, expect, openApp, signIn, holdResponses } from '../support/test.mjs';
+import { test, expect, openApp, holdResponses } from '../support/test.mjs';
 
 const pdf = readFileSync(new URL('../support/fixtures/document.pdf', import.meta.url));
 const png = readFileSync(new URL('../../frontend/icons/icon-192.png', import.meta.url));
-
-function largePdf(marker) {
-  const xref = [...pdf.toString('latin1').matchAll(/startxref\s+(\d+)/g)].at(-1)[1];
-  return Buffer.concat([pdf, Buffer.from('\n% ' + marker.repeat(12 * 1024 * 1024) + '\nstartxref\n' + xref + '\n%%EOF\n')]);
-}
 
 /** The requests that reached the network. Chromium also reports loads that a policy blocked. */
 async function sent(requests) {
@@ -253,33 +248,6 @@ test('the PDF preview loads bundled assets from a deep app URL', async ({ page, 
   const assetPath = response => new URL(response.url()).pathname.replace(/^\/v\/[a-f0-9]{64}(?=\/)/, '');
   for (const name of ['pdf.mjs', 'pdf.worker.mjs']) expect(assets.some(response => assetPath(response) === `/vendor/pdfjs/${name}` && response.ok())).toBe(true);
   expect(assets.every(response => assetPath(response).startsWith('/vendor/pdfjs/') && response.ok())).toBe(true);
-});
-
-test('PDF pages render, the source cache is bounded and sign-out releases it', async ({ page, instance }) => {
-  await openApp(page, instance);
-  await page.locator('#attIn').setInputFiles(['A', 'B', 'C'].map((marker, index) => ({ name: `cache-${index}.pdf`, mimeType: 'application/pdf', buffer: largePdf(marker) })));
-  await expect(page.locator('.attachment-title')).toHaveCount(3, { timeout: 20_000 });
-  const downloads = [];
-  page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/content')) downloads.push(request.url()); });
-  const open = async index => {
-    await page.locator('.attachment-title').filter({ hasText: `cache-${index}.pdf` }).click();
-    const overlay = page.locator('.file-overlay:not([data-motion-exiting])');
-    await expect(overlay.locator('.pdf-surface canvas')).toBeVisible({ timeout: 15_000 });
-    await overlay.locator('[data-file-close]').click();
-    await expect(page.locator('.file-overlay')).toHaveCount(0);
-  };
-  for (let i = 0; i < 3; i++) await open(i);
-  expect(downloads).toHaveLength(3);
-  await open(2);
-  expect(downloads).toHaveLength(3);
-  await open(0);
-  expect(downloads).toHaveLength(4);
-  await page.evaluate(() => App.logout());
-  await page.locator('.confirmation-layer').getByRole('button', { name: 'Sign out', exact: true }).click();
-  await signIn(page, instance);
-  await expect(page.locator('.attachment-title')).toHaveCount(3);
-  await open(0);
-  expect(downloads).toHaveLength(5);
 });
 
 test('an attachment response survives task projection replacement', async ({ page, instance }) => {

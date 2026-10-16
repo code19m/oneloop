@@ -14,32 +14,36 @@ test('text file names match the server detection list', () => {
   assert.deepEqual(new Set([...body.matchAll(/"([^"]+)"/g)].map(match => match[1])), new Set([...ext, ...names]));
 });
 
-/** Boot a task page, in a page at `url`, whose PDF.js module and canvas are test doubles. */
-async function pdfPreview(url) {
-  const state = { renders: 0, textReads: 0, fades: 0, documentOptions: null }, observers = [];
+/**
+ * Boot a task page, in a page at `url`, with `count` PDFs of `size` bytes,
+ * whose PDF.js module and canvas are test doubles. `state.downloads` lists
+ * the files read from the server.
+ */
+async function pdfPreview(url, { count = 1, size = 9 } = {}) {
+  const state = { renders: 0, textReads: 0, fades: 0, documentOptions: null, downloads: [] }, observers = [];
   const page = { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }), render() { state.renders++; return { promise: Promise.resolve(), cancel() {} }; }, getTextContent() { state.textReads++; return Promise.resolve({ items: [] }); } };
-  const pdf = { id: 'pdf', name: 'test.pdf', size: 9, mediaType: 'application/pdf', previewKind: 'pdf', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: '/content/pdf', downloadUrl: '/download/pdf' };
+  const pdfs = Array.from({ length: count }, (_, i) => ({ id: `pdf-${i}`, name: `test-${i}.pdf`, size, mediaType: 'application/pdf', previewKind: 'pdf', isEphemeral: false, uploadedBy: 'taylorwu', uploadedAt: 1, lastAccessedAt: 1, state: 'available', revision: 1, contentUrl: `/content/pdf-${i}`, downloadUrl: `/download/pdf-${i}` }));
   const pdfjs = { GlobalWorkerOptions: {}, getDocument: options => { state.documentOptions = options; return { promise: Promise.resolve({ numPages: 2, getPage: async () => page }), destroy: async () => {} }; } };
   const t = bootApp({
     url: url + '#/task/BIR-079', media: () => false,
-    api: { attachments: async () => ({ items: [pdf] }) },
+    api: { attachments: async () => ({ items: pdfs }) },
     modules: { 'vendor/pdfjs/pdf.mjs': pdfjs },
     setup: w => {
       w.URL.createObjectURL = () => 'blob:pdf'; w.HTMLCanvasElement.prototype.getContext = () => ({});
       w.ResizeObserver = class { constructor(fn) { this.fn = fn; observers.push(this); } observe(el) { this.el = el; } disconnect() { this.stopped = true; } };
-      w.fetch = async () => ({ ok: true, arrayBuffer: async () => new TextEncoder().encode('%PDF-test').buffer });
+      w.fetch = async url => { state.downloads.push(url); return { ok: true, arrayBuffer: async () => new ArrayBuffer(size) }; };
     },
   });
   const { w, d } = t;
   t.module('src/app/motion.js').UIMotion.fade = el => { if (el?.tagName === 'CANVAS') state.fades++; };
   const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
   await waitFor(() => task.attachments?.length, 'the PDF is listed');
-  const open = () => {
-    w.App.previewAttachment(task.id, task.attachments[0].id);
+  const open = (index = 0) => {
+    w.App.previewAttachment(task.id, task.attachments[index].id);
     const host = d.querySelector('.file-preview-content'); Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
     return host;
   };
-  return { d, state, observers, open, pdfjs };
+  return { d, D: t.D, runtime: t.runtime, state, observers, open, pdfjs };
 }
 
 test('PDF previews load PDF.js and its assets from the app\'s files, also on a page in a folder', async () => {
@@ -50,6 +54,20 @@ test('PDF previews load PDF.js and its assets from the app\'s files, also on a p
   assert.equal(pdfjs.GlobalWorkerOptions.workerSrc, root + 'pdf.worker.mjs');
   assert.equal(state.documentOptions.standardFontDataUrl, root + 'standard_fonts/'); assert.equal(state.documentOptions.cMapUrl, root + 'cmaps/');
   assert.equal(state.renders, 1); assert.equal(state.textReads, 0); assert(!d.querySelector('.pdf-text-version'));
+});
+
+test('the PDF byte cache keeps the most recently shown files within its limit and forgets them all when the session changes', async () => {
+  // A file counts twice, its bytes and their Blob, so two 12 MiB files fit in 64 MiB and a third pushes one out.
+  const { d, D, runtime, state, open } = await pdfPreview('http://localhost/', { count: 3, size: 12 * 1024 * 1024 });
+  const view = async index => { const fades = state.fades; open(index); await waitFor(() => state.fades > fades, 'the first page is painted'); d.querySelector('[data-file-close]').click(); };
+  for (const index of [0, 1, 2]) await view(index);
+  await view(2); await view(1);
+  assert.deepEqual(state.downloads, ['/content/pdf-0', '/content/pdf-1', '/content/pdf-2'], 'two cached files show without a download');
+  await view(0); await view(1);
+  assert.deepEqual(state.downloads.slice(3), ['/content/pdf-0'], 'the least recently shown file, not the oldest download, left the cache');
+  D.session = { ...D.session, id: 'next-session' }; runtime.publish({ type: 'auth' });
+  await view(1);
+  assert.equal(state.downloads.at(4), '/content/pdf-1', 'another session downloads the file again');
 });
 
 test('PDF previews redraw only on width changes, zoom and paging, and stop when closed', async t => {

@@ -11,7 +11,7 @@ import { accountTopbarHtml, renderProfile, renderSettings, renderUsers } from '.
 import { mountAttachments } from './app/attachments.js';
 import {
   boardMovePending, boardSnapshot, boardSnapshots, boardTopbarHtml, cancelBoardSearch, clearFilterMotion,
-  renderBoard, resetBoardFilters,
+  rememberBoardRows, renderBoard, resetBoardFilters,
 } from './app/board.js';
 import { beforeCollaborationRender, inboxHtml, inboxNav, mountCollaboration } from './app/collaboration.js';
 import { field, resetFieldIds } from './app/controls.js';
@@ -178,7 +178,7 @@ function render(){
     renderContent();
     // An unanswered conflict prompt goes back beside its redrawn field before focus is restored.
     recovery.keepPrompts();
-    const board=document.querySelector('.board');if(board)boardSnapshots.set(board,boardSnapshot());
+    const board=document.querySelector('.board');if(board){boardSnapshots.set(board,boardSnapshot());rememberBoardRows(board);}
     if(document.getElementById('rmScroll')&&document.querySelector('.content')?.clientHeight!==roadmapHeight)App.refreshRoadmap();
     if (paintedPage !== pageScope() && document.activeElement === document.body && !document.querySelector('.modal,.peek') && !document.getElementById('app').inert) {
       const target = document.querySelector('.topbar h1') || document.querySelector('.auth-card [autofocus]') || document.querySelector('.auth-card h1');
