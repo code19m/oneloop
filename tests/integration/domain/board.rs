@@ -567,6 +567,81 @@ async fn new_and_promoted_tasks_start_at_the_top_of_planning() {
 }
 
 #[tokio::test]
+async fn a_hundred_top_inserts_in_a_row_move_no_other_card() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 100).await;
+    count_position_writes(&f).await;
+    // A move without a place goes a full gap above the first card, so every
+    // other card keeps the position that open Boards know.
+    for number in 101..=200 {
+        let id = format!("order-{number}");
+        f.service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::MoveTask,
+                    json!({"taskId":id,"status":"done"}),
+                    &format!("top-{number}"),
+                    Some(1),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(position_writes(&f).await, HashSet::from([id]));
+    }
+    let done = column(&f, "done").await;
+    assert_eq!(
+        done.iter()
+            .take(3)
+            .map(|card| card.id.as_str())
+            .collect::<Vec<_>>(),
+        ["order-200", "order-199", "order-198"]
+    );
+}
+
+#[tokio::test]
+async fn re_spacing_a_column_with_negative_positions_keeps_its_order() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 3).await;
+    // Top inserts leave positions below zero; no gap is left between the first two.
+    f.db.run(|connection| {
+        connection.execute_batch(
+            "UPDATE tasks SET position=-1025 WHERE id='order-1';
+             UPDATE tasks SET position=-1024 WHERE id='order-2';
+             UPDATE tasks SET position=1024 WHERE id='order-3';",
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    f.service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::MoveTask,
+                json!({"taskId":"order-4","status":"planning","position":1}),
+                "re-space",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let planning = column(&f, "planning").await;
+    assert_eq!(
+        planning
+            .iter()
+            .map(|card| card.id.as_str())
+            .collect::<Vec<_>>(),
+        ["order-1", "order-4", "order-2", "order-3"]
+    );
+    assert!(
+        planning
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position)
+    );
+}
+
+#[tokio::test]
 async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_search() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static READS: AtomicUsize = AtomicUsize::new(0);

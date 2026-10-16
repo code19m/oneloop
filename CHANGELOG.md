@@ -113,7 +113,9 @@ All notable changes to oneloop are recorded here. The format follows
   of **Planning**. Before, most of these went to the bottom, where a long
   column hid them until **Load more**, and Done mixed both orders. A drag,
   **Move up** and **Move down** still put a task exactly there, and
-  **Newest first** still lists Done by completion time.
+  **Newest first** still lists Done by completion time. A task at the top
+  takes a position above the first one, which leaves the other tasks where
+  they are, so a task's `position` in MCP reads can be below zero.
 - In MCP, every tool that names a task now also accepts its key, such as
   `WEB-042`: `read_comments`, `read_activity`, `discussion.comment.create`,
   `task.delete` and every other `task.*` operation, also in `beforeTaskId` and

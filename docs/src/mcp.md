@@ -211,7 +211,8 @@ schema describes the payload of each operation.
   `afterTaskId` says; `position` counts from 0 at the top of the column.
   Without a place, the task goes to the top of its new column, as it does after
   `task.unblock-and-complete`. New tasks start at the top of Planning.
-  `search_tasks` lists every column, Done too, in this order.
+  `search_tasks` lists every column, Done too, in this order. A task's
+  `position` in a read only orders its column, and it can be below zero.
 - **Checklists.** `read_task` returns a task's checklist items, and every task
   in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
   `task.create` takes the items' titles in `checklist`, so a task and its
