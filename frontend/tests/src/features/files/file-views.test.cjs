@@ -373,13 +373,18 @@ test('deciding what hostile Markdown needs takes a few plain passes over it, not
   const dom = new JSDOM('<!doctype html><div></div>', { url: 'http://localhost/', runScripts: 'outside-only' }), d = dom.window.document;
   d.head.append = () => {};
   const views = importModule(dom, 'src/features/files/file-views.js');
-  // CPU work, best of three: the machine's speed and load affect the checks and a plain pass alike.
-  const work = run => { let best = Infinity; for (let round = 0; round < 3; round++) { const start = process.cpuUsage(); run(); const used = process.cpuUsage(start); best = Math.min(best, used.user + used.system); } return best; };
+  // CPU work: the machine's speed and load affect the checks and a plain pass alike.
+  const work = run => { const start = process.cpuUsage(); run(); const used = process.cpuUsage(start); return used.user + used.system; };
+  // 128 KB, under the 200 KiB that previews read, so checks that grow with the square of the text fail in seconds.
   for (const unit of ['\\$', '\\$a', '`', '$`a', '~', '<code ']) {
-    const text = unit.repeat(Math.ceil(2 ** 20 / unit.length));
-    const pass = work(() => { let dollars = 0; for (let at = 0; at < text.length; at++) if (text.charCodeAt(at) === 36) dollars++; return dollars; });
-    const checks = work(() => views.markdownInto(d.createElement('div'), text));
-    assert(checks < 100 * pass, `${JSON.stringify(unit)} × 1 MB: ${checks} µs of checks, ${pass} µs for a plain pass`);
+    const text = unit.repeat(Math.ceil(2 ** 17 / unit.length)), check = () => views.markdownInto(d.createElement('div'), text);
+    const pass = Math.min(...[1, 2, 3].map(() => work(() => { let dollars = 0; for (let at = 0; at < text.length; at++) if (text.charCodeAt(at) === 36) dollars++; return dollars; })));
+    const limit = 100 * pass;
+    // The best of up to three rounds, as the process's other threads, such as the garbage collector, can slow
+    // one. A round ten times over the limit is no such noise, so it ends the test at once.
+    let checks = work(check);
+    for (let round = 2; round <= 3 && checks >= limit && checks < 10 * limit; round++) checks = Math.min(checks, work(check));
+    assert(checks < limit, `${JSON.stringify(unit)} × 128 KB: ${checks} µs of checks, ${pass} µs for a plain pass`);
   }
 });
 
