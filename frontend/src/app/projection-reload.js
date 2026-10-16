@@ -24,16 +24,30 @@ export function routeScope(hash, app) {
  * project it showed when the last session ended, so the project switcher and
  * the loaded work agree. A task they can't open loads only metadata, and a
  * project they can't open loads the default project.
- * @param {{bootstrap:any,getApp:()=>any,location?:{hash:string}}} options
+ * @param {{bootstrap:any,api:any,getApp:()=>any,location?:{hash:string}}} options
  */
-export function createSignInLoad({ bootstrap, getApp, location = globalThis.location }) {
+export function createSignInLoad({ bootstrap, api, getApp, location = globalThis.location }) {
   /** @type {string|undefined} */ let shown;
+  /** @type {{key:string,response:Promise<any>}|null} */ let early = null;
   return Object.freeze({
-    /** Remember the project on screen as a session ends. */
-    sessionEnded() { shown = getApp()?.context().projectId ?? undefined; },
+    /**
+     * Start the first load's read while the page checks the session. Both
+     * answer for the same cookie, so neither waits for the other. The next
+     * load uses it if the page still asks for the same view; a session change
+     * drops it.
+     */
+    prefetch() {
+      const scope = routeScope(location.hash, getApp());
+      early = { key: JSON.stringify(scope), response: api.bootstrap(scope) };
+      early.response.catch(() => {});
+    },
+    /** A session change drops the early read. As a session ends, remember the project on screen. */
+    sessionChanged(session) { early = null; if (!session) shown = getApp()?.context().projectId ?? undefined; },
     async load() {
       const scope = routeScope(location.hash, getApp());
-      try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : scope); }
+      const first = !shown && early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : scope;
+      early = null;
+      try { return await bootstrap.load(shown ? { projectId: shown, ...scope } : first); }
       catch (error) {
         if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
         if (scope.taskId) return bootstrap.load({ view: 'metadata' });
@@ -108,7 +122,8 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,toWireScope(current.poolTab),false,undefined,readOptions));
       if(current.peek&&data.epics.some((item)=>item.id===current.peek))windows.push(reads.epic(current.peek,readOptions));
       if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
-        windows.push(reads.board(current.projectId,current.board,readOptions));
+        // A Board bootstrap carries the first page of each column.
+        if(!reads.adoptBoard(current.projectId,current.board))windows.push(reads.board(current.projectId,current.board,readOptions));
       }
       else if(current.view==='roadmap')app.refreshRoadmap();
       else if(bridge&&['profile','users','settings'].includes(current.view))windows.push(bridge.loadCurrentRoute({refresh:true,background:!!scope.background}));

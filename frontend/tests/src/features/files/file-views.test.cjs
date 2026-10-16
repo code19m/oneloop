@@ -225,6 +225,29 @@ test('diagrams render in their own document, fall back on syntax errors and drop
   assert(!pending.querySelector('img'));
 });
 
+test('diagrams wait for a slow renderer download, and blame the connection when the renderer did not load', async t => {
+  const { w, d, views } = boot();
+  const frames = [], append = d.body.append.bind(d.body);
+  d.body.append = (...nodes) => { append(...nodes); frames.push(...nodes.filter(node => node.classList?.contains('diagram-renderer'))); };
+  const host = d.createElement('div'); d.body.append(host);
+  const diagram = '```mermaid\nflowchart LR\n A-->B\n```';
+  // The renderer's scripts did not load.
+  views.markdownView(host, { name: 'offline.md' }, diagram, false);
+  await waitFor(() => frames.length === 1, 'the renderer document is added');
+  frames[0].dispatchEvent(new w.Event('load'));
+  await waitFor(() => !host.querySelector('[aria-busy]'), 'the diagram gives up');
+  assert.match(host.querySelector('.markdown-diagram').textContent, /^Diagrams could not load\. Check your connection\./);
+  // Mermaid takes a minute to download. waitFor needs the real timers.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  views.markdownView(host, { name: 'slow.md' }, diagram, false);
+  for (let turn = 0; turn < 20 && frames.length < 2; turn++) await settle();
+  t.mock.timers.tick(60_000); t.mock.timers.reset();
+  assert.equal(frames.length, 2, 'the renderer document is added again');
+  frames[1].contentWindow.renderDiagram = async () => ({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>', width: 10, height: 10 });
+  frames[1].dispatchEvent(new w.Event('load'));
+  await waitFor(() => host.querySelector('.markdown-diagram img'), 'the diagram is drawn');
+});
+
 test('a diagram is drawn again in the new colors when the theme changes, also with System', async () => {
   const { w, d, views } = boot();
   stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme}</text></svg>`, width: 10, height: 10 }; } });

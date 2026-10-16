@@ -49,14 +49,11 @@ test('the launchd plist is well-formed XML', t => {
 });
 
 // src/http/assets.rs lists the web client's folders. The image build must send
-// each one, or the image embeds nothing from it and still builds, and the nginx
-// example compresses each one.
-test('the image build and the nginx example name every web client folder', () => {
+// each one, or the image embeds nothing from it and still builds.
+test('the image build names every web client folder', () => {
   const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
   const list = read('src/http/assets.rs').match(/const ASSET_DIRS: \[&str; \d+\] = \[([^\]]*)\]/)[1];
   const folders = [...list.matchAll(/"(\w+)"/g)].map(match => match[1]).sort();
   const sent = [...read('.dockerignore').matchAll(/^!frontend\/(\w+)\/\*\*$/gm)].map(match => match[1]);
   assert.deepEqual(sent.sort(), folders, '.dockerignore');
-  const compressed = read('deploy/nginx/oneloop.conf.example').match(/\(\?:([\w|]+)\)\//)[1].split('|');
-  assert.deepEqual(compressed.sort(), folders, 'deploy/nginx/oneloop.conf.example');
 });

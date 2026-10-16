@@ -87,6 +87,11 @@ sets up the data, the controllers and the document's listeners, then imports
 the `app.js` module. The view bridge installs server-backed actions before the
 first application render; preview libraries load on demand.
 
+`index.html` preloads every module that start-up imports, so the browser
+fetches them at once instead of one import level at a time. A new module that
+`boot.js` or `app.js` imports needs a link there; `tests/index.test.js` lists
+any that is missing or left over.
+
 The page's parts reach each other through these `window` properties only.
 New code imports a module instead of adding one.
 

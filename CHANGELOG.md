@@ -6,6 +6,29 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- oneloop now compresses the web app's files with gzip, so a first visit
+  downloads about 60% less and the app opens faster on slow networks. A
+  reverse proxy no longer needs to compress them, and the nginx example no
+  longer does.
+- The app asks for all of its start-up scripts at once, instead of one level
+  of imports at a time, so it opens faster on slow networks.
+- The app reads your workspace while it checks your session, instead of
+  after, so every visit opens one round trip sooner.
+- When a Board tab shows again, reconnects, or hears of a change to an epic,
+  track, milestone or member, it now reads the Board once instead of twice.
+- A tab no longer checks your access every 30 seconds while it is hidden or
+  gets live updates. Live updates already report lost access, and a hidden
+  tab refreshes when it shows again.
+
+### Fixed
+
+- A Mermaid diagram in a Markdown preview no longer fails when its renderer
+  takes more than 30 seconds to download, as on a slow mobile connection.
+  When the renderer can't load, the preview now says to check the
+  connection, instead of blaming the diagram's syntax.
+
 ## [0.1.0-rc.5] - 2026-10-16
 
 The fifth release candidate. It fixes many bugs in the web app, in MCP and in
