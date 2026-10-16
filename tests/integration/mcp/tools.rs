@@ -2183,6 +2183,19 @@ async fn an_agent_creates_a_task_with_its_steps_and_ticks_them() {
     );
     let task = created["entities"][0]["id"].clone();
     let first = created["entities"][0]["checklist"][0]["id"].clone();
+    // The agent pages through the column and the epic one task at a time,
+    // ticking a step between pages.
+    let column = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "limit": 1}),
+        )
+        .await,
+    );
+    let epic_page = tool_value(
+        &mcp.call("read_epic", json!({"epicId": epic, "limit": 1}))
+            .await,
+    );
     tool_value(
         &mcp.call(
             "execute_work_command",
@@ -2190,6 +2203,28 @@ async fn an_agent_creates_a_task_with_its_steps_and_ticks_them() {
                    "expectedRevision": 1, "payload": {"itemId": first, "done": true}}),
         )
         .await,
+    );
+    let next_column = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "limit": 1,
+                   "cursor": column["nextCursor"]}),
+        )
+        .await,
+    );
+    let next_epic_page = tool_value(
+        &mcp.call(
+            "read_epic",
+            json!({"epicId": epic, "limit": 1, "taskCursor": epic_page["tasks"]["nextCursor"]}),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            next_column["items"].as_array().map(Vec::len),
+            next_epic_page["tasks"]["items"].as_array().map(Vec::len)
+        ),
+        (Some(1), Some(1))
     );
     let found = tool_value(
         &mcp.call(

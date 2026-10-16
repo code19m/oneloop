@@ -283,3 +283,29 @@ async fn checklist_changes_stay_out_of_the_feed_and_tell_other_tabs_to_read_the_
         (&json!("task"), &json!(task), &Value::Null)
     );
 }
+
+#[tokio::test]
+async fn a_checklist_change_keeps_the_cursor_of_the_next_page() {
+    let f = fixture().await;
+    let task = task_with_checklist(&f, &["Plan"]).await;
+    task_with_checklist(&f, &[]).await;
+    let page = |cursor| BoardQuery {
+        limit: Some(1),
+        ..board_query("planning", cursor)
+    };
+    let first = f.service.board_page(&f.member, page(None)).await.unwrap();
+    let view = f.service.task(&f.member, task).await.unwrap();
+    let tick = json!({"itemId":view.checklist.unwrap()[0].id,"done":true});
+    change(&f, DomainOperation::UpdateChecklistItem, tick, Some(1))
+        .await
+        .unwrap();
+    // Load more after someone ticks an item reads the next page, not the Board again.
+    let next = f
+        .service
+        .board_page(&f.member, page(first.next_cursor))
+        .await;
+    assert!(
+        matches!(&next, Ok(next) if next.items.len() == 1),
+        "{next:?}"
+    );
+}
