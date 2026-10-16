@@ -31,8 +31,9 @@ All notable changes to oneloop are recorded here. The format follows
 - The web app does less work on slow computers and phones. Clearing a Board
   filter or the search no longer draws the whole page again, so the cards
   move smoothly into place. A change to one card, a drop or a filter no
-  longer redraws every loaded card. A change from another tab to the open
-  task reads its comments and activity once instead of twice.
+  longer redraws every loaded card, and dragging a card is smoother. A change
+  from another tab to the open task reads its comments and activity once
+  instead of twice.
 
 ### Fixed
 
