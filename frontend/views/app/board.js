@@ -356,8 +356,7 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   if (newest) { if (t.state === 'done') return null; beforeId = null; atTop = true; }
   const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
   const shownBefore = shownColumn(col).filter((item) => item !== t);
-  const origin = moveOrigin(t), { projectId } = origin, previousState = t.state;
-  const previousOrders = new Map(tasks().map((item)=>[item,item.order]));
+  const origin = moveOrigin(t), { projectId } = origin, previousState = t.state, previousOrder = t.order;
   const pageInfoReference=D.boardPageInfo;
   const previousPageInfo = D.boardPageInfo ? JSON.parse(JSON.stringify(D.boardPageInfo)) : null;
   const countsReference=D.projectTaskCounts?.[projectId]||null;
@@ -370,7 +369,10 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   D.tasks.splice(Math.max(0, at), 0, t);
   t.state = col;
   if (newest) t.completedAt = Date.now();
-  for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
+  // Only the moved card takes a new position, between its new neighbours, as
+  // on the server. The other cards keep the positions the server gave them,
+  // so sorting the column again, as a live change does, keeps this order.
+  t.order = next && previous ? (previous.order + next.order) / 2 : next ? next.order - 1 : previous ? previous.order + 1 : 0;
   // The column keeps showing every card it showed, and shows the moved card too.
   const column = boardTasks().filter((item) => item.state === col);
   state.boardLimits[col] = Math.max(state.boardLimits[col] || 50, ...[t, ...shownBefore].map((item) => column.indexOf(item) + 1));
@@ -384,10 +386,9 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   if(previousState!==col&&pages){if(pages[previousState])pages[previousState].total=Math.max(0,pages[previousState].total-1);if(pages[col])pages[col].total+=1;}
   const counts=D.projectTaskCounts?.[projectId];
   if(previousState!==col&&counts){counts[previousState]=Math.max(0,(counts[previousState]||0)-1);counts[col]=(counts[col]||0)+1;counts.open=counts.planning+counts.progress+counts.review;}
-  const optimisticOrders=new Map([...previousOrders.keys()].map((item)=>[item,item.order]));
   const optimisticEpics=new Map([...affectedEpics].map(([id])=>{const item=epicById(id);return[id,{item,state:item?.state,done:item?.done}];}));
   return {
-    ...origin, previousState, optimisticState:col, previousOrders, optimisticOrders,
+    ...origin, previousState, optimisticState:col, previousOrder, optimisticOrder:t.order,
     pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
     countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
     payload:{ taskId:t.internalId||t.id, status:col, ...plan.placement, optimistic:true },
@@ -407,11 +408,11 @@ function restoreTaskPosition(change) {
   return true;
 }
 
-/** Undo a column move: the task's place and status, the column orders and the counts it changed. */
+/** Undo a column move: the task's place, status and position, and the counts it changed. */
 function rollbackTaskMove(change) {
   if (change.task.state!==change.optimisticState || !restoreTaskPosition(change)) return false;
   change.task.state=change.previousState;
-  for(const [item,order] of change.previousOrders)if(D.tasks.includes(item)&&item.order===change.optimisticOrders.get(item))item.order=order;
+  if(change.task.order===change.optimisticOrder)change.task.order=change.previousOrder;
   if(change.previousPageInfo&&D.boardPageInfo===change.pageInfoReference&&JSON.stringify(D.boardPageInfo)===JSON.stringify(change.optimisticPageInfo))D.boardPageInfo=change.previousPageInfo;
   if(change.previousCounts&&D.projectTaskCounts?.[change.projectId]===change.countsReference&&JSON.stringify(change.countsReference)===JSON.stringify(change.optimisticCounts))D.projectTaskCounts[change.projectId]=change.previousCounts;
   for(const [id,value] of change.affectedEpics){const item=epicById(id),optimistic=change.optimisticEpics.get(id);if(item===value.item&&item===optimistic?.item&&item.state===optimistic.state&&item.done===optimistic.done)Object.assign(item,{state:value.state,done:value.done});}

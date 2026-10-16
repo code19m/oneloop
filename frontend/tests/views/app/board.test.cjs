@@ -467,6 +467,29 @@ test('Move to puts the card at the top of its new column, in view and focused', 
   }
 });
 
+test('a card moved to the top of a column stays first when a live change sorts the column again', async () => {
+  const t = bootApp({ route: 'board' }), projectId = t.A.context().projectId;
+  t.D.tasks.splice(0); t.D.projectTaskCounts = {};
+  const task = (id, position, status, title = id) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title, status, position, revision: 1, assigneeIds: [] });
+  const empty = { items: [], total: 0, nextCursor: null }, counts = { planning: 1, inProgress: 2, inReview: 0, done: 0, blocked: 0 };
+  let changed;
+  // The column's first card sits above 1024, as after older cards moved on.
+  const reads = createReadController({ data: t.D, onBoard: () => t.A.refreshBoard(), api: {
+    boardView: async () => ({ planning: { items: [task('a', 1024, 'planning')], total: 1, nextCursor: null }, inProgress: { items: [task('b', 4096, 'in_progress'), task('c', 5120, 'in_progress')], total: 2, nextCursor: null }, inReview: empty, done: empty, counts }),
+    task: async () => changed, counts: async () => counts,
+  } });
+  await reads.board(projectId);
+  const cards = () => [...t.d.querySelectorAll('[data-col="progress"] .card')].map(card => card.dataset.task);
+  const move = t.d.querySelector('[data-task="BIR-a"] .card-move'); move.focus();
+  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, 'BIR-a'); chooseMenuItem(t, 'Move to In Progress');
+  assert.deepEqual(cards(), ['BIR-a', 'BIR-b', 'BIR-c']);
+  // The server puts the card a gap above the first one.
+  t.commands[0].resolve({ entities: [{ entityType: 'task', ...task('a', 3072, 'in_progress'), revision: 2 }], events: [] }); await settle();
+  changed = { ...task('c', 5120, 'in_progress', 'Renamed elsewhere'), revision: 2 };
+  await reads.patchBoard(projectId, {}, [{ entityId: 'c' }]);
+  assert.deepEqual(cards(), ['BIR-a', 'BIR-b', 'BIR-c']);
+});
+
 test('a card dropped below a long column follows its last shown card and stays drawn', () => {
   const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
   dropCard(t,task.id,'done');
