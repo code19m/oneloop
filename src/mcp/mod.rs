@@ -53,7 +53,9 @@ pub fn router(state: AppState) -> Router<AppState> {
             ))
         })
         .collect::<Vec<_>>();
-    let server_state = state.clone();
+    // The handler holds no per-request state, and building its tool router
+    // generates every schema, so each request gets a clone.
+    let handler = OneloopMcp::new(state.clone());
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts([host, authority])
         .with_allowed_origins(origins)
@@ -61,7 +63,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .with_legacy_session_mode(false)
         .with_max_request_body_bytes(1024 * 1024);
     let service = StreamableHttpService::new(
-        move || Ok(OneloopMcp::new(server_state.clone())),
+        move || Ok(handler.clone()),
         Arc::new(NeverSessionManager::default()),
         config,
     );
