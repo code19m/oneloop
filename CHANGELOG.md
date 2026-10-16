@@ -12,6 +12,9 @@ All notable changes to oneloop are recorded here. The format follows
   longer slow down on an instance with many tasks where no task was ever
   blocked. Before, counting the blocked tasks could read every task of the
   instance, which took about 0.1 seconds at 100,000 tasks.
+- An open connection, such as the one each browser tab keeps for live
+  updates, now uses about 20 KB of server memory. Before, each one kept its
+  own copy of the routes, about 300 KB, so 100 open tabs took 30 MB.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

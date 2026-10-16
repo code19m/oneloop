@@ -34,6 +34,7 @@ use tokio::{
     time::{Instant, Sleep},
 };
 use tokio_stream::Stream;
+use tower_layer::Layer;
 
 use crate::AppError;
 
@@ -173,7 +174,9 @@ async fn serve_connection<T>(
 ) where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let service = TowerToHyperService::new(router.layer(axum::Extension(ConnectInfo(address))));
+    // Around the router, as axum's `into_make_service_with_connect_info` does:
+    // `Router::layer` would copy the whole route tree for each connection.
+    let service = TowerToHyperService::new(axum::Extension(ConnectInfo(address)).layer(router));
     let header_timeout =
         if crate::http::security::is_trusted(address.ip().to_canonical(), &trusted_proxies) {
             limits.proxy_header_timeout
@@ -457,6 +460,28 @@ mod tests {
                 .expect("a connection without a request must close")
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn handlers_see_the_peer_address_of_their_connection() {
+        let router = Router::new().route(
+            "/",
+            axum::routing::get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move {
+                peer.to_string()
+            }),
+        );
+        let (mut client, _closing, _connection) = connect(router, 64 * 1024);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(
+            response.ends_with(b"\r\n\r\n127.0.0.1:1"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
     }
 
     #[tokio::test(start_paused = true)]
