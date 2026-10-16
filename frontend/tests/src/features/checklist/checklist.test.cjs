@@ -174,6 +174,20 @@ test('arrow keys on a grip move its item, keep focus on the grip and say where i
   assert.deepEqual(t.titles(), ['Build', 'Ship', 'Plan']);
 });
 
+test('a row dragged by its grip moves there, and its grip keeps focus', async () => {
+  const t = checklistPage(), grip = () => t.row('c1').querySelector('[data-checklist-grip]'), zone = t.d.querySelector('.task-checklist');
+  const pointer = (type, target, x, y) => { const event = new t.w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
+  zone.getBoundingClientRect = () => ({ left: 0, right: 600, top: 0, bottom: 500 });
+  [...zone.querySelectorAll('[data-checklist-item]')].forEach((row, i) => { row.getBoundingClientRect = () => ({ left: 0, right: 600, top: 100 + i * 100, bottom: 190 + i * 100, width: 600, height: 90 }); });
+  pointer('pointerdown', grip(), 20, 120);
+  // WebKit moves focus off a pressed button, as here to the page.
+  t.d.getElementById('main').focus();
+  pointer('pointermove', t.d, 20, 370); pointer('pointerup', t.d, 20, 370);
+  assert.deepEqual(t.sent(), [['task.checklist.move', { itemId: 'c1', afterItemId: 'c3' }, 1]]);
+  assert.deepEqual(t.titles(), ['Build', 'Ship', 'Plan']);
+  assert.equal(t.d.activeElement, grip());
+});
+
 test('a change from elsewhere redraws the checklist in place and keeps the title being typed', async () => {
   const view = taskView([item('c2', 'Build', true, 2), item('c3', 'Ship')], 2);
   const t = checklistPage({ api: { task: async () => view } });

@@ -82,7 +82,13 @@ function listen() {
     }
     locate();
   }, { passive: false });
-  document.addEventListener('pointerup', event => { const s = sorting; if (!s || event.pointerId !== s.pointerId) return; locate(); stop(); if (s.active && s.target) s.list.move(s.handle, s.target, !!s.after); });
+  document.addEventListener('pointerup', event => {
+    const s = sorting; if (!s || event.pointerId !== s.pointerId) return;
+    locate(); stop();
+    if (s.active && s.target) s.list.move(s.handle, s.target, !!s.after);
+    // WebKit takes focus off a pressed button, so the grip gets it back, as after the arrow keys.
+    if (s.active && s.handle.isConnected) s.handle.focus({ preventScroll: true });
+  });
   document.addEventListener('pointercancel', stop); window.addEventListener('blur', stop); window.addEventListener('hashchange', stop);
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && sorting) { event.preventDefault(); event.stopImmediatePropagation(); stop(); return; }
