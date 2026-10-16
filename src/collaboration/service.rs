@@ -69,20 +69,16 @@ impl CollaborationService {
         let actor = actor.clone();
         let project_id = project_id.map(str::to_owned);
         self.db
-            .run(move |connection| {
-                if !access::allowed(refresh_actor_connection(connection, &actor))? {
-                    return Ok(false);
-                }
-                match project_id {
-                    Some(project_id) => access::allowed(require_project(
-                        connection,
-                        &actor,
-                        &project_id,
-                        Need::Read,
-                        false,
-                    )),
-                    None => Ok(true),
-                }
+            .run(move |connection| match project_id {
+                // The project check refreshes the actor itself.
+                Some(project_id) => access::allowed(require_project(
+                    connection,
+                    &actor,
+                    &project_id,
+                    Need::Read,
+                    false,
+                )),
+                None => access::allowed(refresh_actor_connection(connection, &actor)),
             })
             .await
     }

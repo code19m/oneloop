@@ -1,6 +1,6 @@
 //! The bootstrap: what the client needs to show its first view.
 
-use super::board::{board_counts_connection, board_page_with_total};
+use super::board::{board_counts_connection, board_page_with_total, task_page_generation};
 use super::roadmap::{epics, milestones, tracks};
 use super::*;
 
@@ -83,6 +83,8 @@ pub(super) fn bootstrap_snapshot(
         result.milestones = milestones(connection, project_id)?;
         let counts = board_counts_connection(connection, project_id)?;
         if result.view == "board" {
+            require_project(connection, actor, project_id, Need::Read, false)?;
+            let generation = task_page_generation(connection, project_id)?;
             result.done_order = Some(query.done_order);
             for (status, total) in [
                 (TaskStatus::Planning, counts.planning),
@@ -92,7 +94,6 @@ pub(super) fn bootstrap_snapshot(
             ] {
                 let page = board_page_with_total(
                     connection,
-                    actor,
                     &BoardQuery {
                         project_id: project_id.into(),
                         status,
@@ -104,6 +105,7 @@ pub(super) fn bootstrap_snapshot(
                         },
                     },
                     Some(total),
+                    generation,
                 )?;
                 result.board_pages.insert(
                     status.as_str().into(),
