@@ -149,6 +149,16 @@ test('Escape and Ctrl+Enter save the description, which shows again once saved, 
   }
 });
 
+test('a title changed elsewhere waits for a press below it to end, as a longer title moves what lies below', async () => {
+  const t = taskPage(), task = t.D.tasks.find(item => item.id === 'BIR-079'), title = t.d.querySelector('.tp-title'), below = t.d.querySelector('.task-activity h2');
+  const pointer = type => below.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  pointer('pointerdown');
+  task.title = 'A teammate\'s much longer title, which takes more lines than the one before it'; t.A.refreshTask(task.id);
+  assert.equal(title.value, 'Flexible reading schedule', 'the title keeps its place while the button is down');
+  pointer('pointerup');
+  await waitFor(() => title.value === task.title, 'the new title shows once the press ends');
+});
+
 test('a press below the description keeps the editor in place until the press ends, so its click lands', async () => {
   for (const changed of [false, true]) {
     const t = describedTask('One line'), task = t.D.tasks.find(item => item.id === 'BIR-079'), below = t.d.querySelector('.task-activity h2');

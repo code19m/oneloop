@@ -85,6 +85,20 @@ function placeDraftNote(host, t, field) {
 // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
 const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
 
+/**
+ * Show the open task's title as it is now, with its Not saved note. The title
+ * being typed keeps what the person is typing. A new title waits for a press
+ * on the page to end: it can take more lines and move what lies below.
+ */
+function paintTitle(t) {
+  const host = document.querySelector('.task-page .task-title-field');
+  if (!host) return;
+  const input = host.querySelector('.tp-title'), value = taskDraft(t, 'title')?.value ?? t.title;
+  if (input && input !== document.activeElement && input.value !== value && !App.afterPress(repaintTitle)) { input.value = value; sizeTaskTitle(); }
+  placeDraftNote(host, t, 'title');
+}
+function repaintTitle() { const t = state.view === 'task' ? taskById(state.taskId) : null; if (t) paintTitle(t); }
+
 // ---------- description ----------
 // The description shows its saved text as Markdown. Its editor shows instead
 // while the person has it open, while its text waits to be saved (a save on
@@ -244,13 +258,7 @@ Object.assign(App, {
   refreshTaskDrafts(id) {
     if (state.view !== 'task' || state.taskId !== id) return;
     const t = taskById(id); if (!t) return;
-    const host = document.querySelector('.task-page .task-title-field');
-    if (host) {
-      const input = host.querySelector('.tp-title'), value = taskDraft(t, 'title')?.value ?? t.title;
-      if (input && input !== document.activeElement && input.value !== value) { input.value = value; sizeTaskTitle(); }
-      placeDraftNote(host, t, 'title');
-    }
-    paintDescription(t);
+    paintTitle(t); paintDescription(t);
   },
   /**
    * Open the description's editor, focused with the caret at the end. A
