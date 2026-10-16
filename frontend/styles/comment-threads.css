@@ -12,7 +12,7 @@
 .comment-reading { display:flex;min-width:0;flex-direction:column;align-items:stretch; }
 .comment-reading .description-preview { min-width:0; }
 .comment-reading.is-collapsed .description-preview::after { content:"";position:absolute;inset:auto 0 0;height:112px;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);background:color-mix(in srgb,var(--description-blur-surface,var(--surface-canvas)) 15%,transparent);mask-image:linear-gradient(to bottom,transparent,#000 85%);-webkit-mask-image:linear-gradient(to bottom,transparent,#000 85%);pointer-events:none; }
-.comment-reading .comment-body-content { box-sizing:border-box;margin-top:10px;overflow-wrap:anywhere;transition:height var(--motion-normal) var(--ease-out); }
+.comment-reading .comment-body-content { box-sizing:border-box;margin-top:10px;overflow-wrap:anywhere; }
 /* A comment has no frame around it, so the cut-off text fades into the card instead of ending at an edge. */
 .comment-reading.is-collapsed .comment-body-content { mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent);-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 56px),transparent); }
 .comment-reading .description-toggle { margin-top:6px; }
@@ -40,7 +40,6 @@
 .inline-composer textarea { min-height:88px; }
 .comment-composer-home:empty { display:none; }
 @media(max-width:520px) { .comment-conversation>.tl-cmt { padding:12px; }.comment-thread,.thread-composer { margin-left:12px;padding-left:12px; }.inline-composer { padding:12px; }.reply-toggle { margin-left:0; }.reply-latest { margin-left:0; } }
-@media(prefers-reduced-motion:reduce) { .comment-reading .comment-body-content { transition:none; } }
 @media(pointer:coarse) { .cmt-head .comment-menu-button { width:36px;min-width:36px;min-height:44px;opacity:1; }.comment-actions .reply-action,.reply-toggle,.reply-context>.btn { min-height:44px; } }
 
 /* Saving places the reading cursor here; it is not a selected message. */

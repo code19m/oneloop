@@ -5,7 +5,7 @@
 import { UIMotion } from '../../src/app/motion.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
-import { blockText, composerHtml, feedHtml, retryTaskPage, taskFeedState } from './collaboration.js';
+import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
 import { dateHtml, multiHtml, selectHtml } from './controls.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, overdue, setHTML, stIcon,
@@ -137,9 +137,14 @@ export function taskTopbarHtml() {
   ${canBoard() ? `<div class="right"><button class="btn icon task-actions-button" aria-label="Task actions" title="Task actions" aria-controls="action-menu" aria-expanded="${!!state.menu?.taskActions}" ${UIAction('taskActions', UIAction.event, t.id)}>${I.kebab}</button></div>` : '<div class="right"><span class="read-only-pill">read only</span></div>'}`;
 }
 
-/** Remember the timeline's rows as drawn, so a refresh keeps the ones that did not change. */
+/**
+ * After the task page draws: remember the timeline's rows, so a refresh keeps
+ * the ones that did not change, and fold long comments.
+ */
 export function mountTaskPage() {
   document.querySelectorAll('.timeline > [data-feed-key]').forEach(el=>feedRowMarkup.set(el,el.outerHTML));
+  // Long comments fold before the render puts the scroll position back, so the reader stays at the same comment.
+  sizeCommentBodies();
 }
 
 /** Clear a Saved status that belongs to another page or person. */

@@ -64,16 +64,33 @@ test('new epics require an explicit track', async () => {
  await accept(t,[{entityType:'epic',id:'e-new',projectId:'p1',trackId:'t1',title:'Explicit track',startDate:'2026-10-01',state:'planning',position:20,revision:1}]);t.A.openModal('epic','e-new');assert.equal(t.d.querySelector('[name="trackId"]').value,'t1');
 });
 
-test('comment readers reset every height before measuring any of them', () => {
+test('comment readers measure every body at its natural height, never folded to zero', () => {
   const { w, d } = bootApp({ route: 'task/BIR-079', media: () => false });
   const task = w.DATA.tasks.find(item => item.id === 'BIR-079');
   task.comments = Array.from({ length: 3 }, (_, i) => ({ id: `perf-${i}`, who: w.DATA.session.userId, ts: Date.now() + i, text: 'Long comment', mentions: [] }));
   let reads = 0;
   Object.defineProperty(w.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() {
-    if (this.matches('.comment-body-content')) { reads++; const bodies = [...d.querySelectorAll('.comment-body-content')]; assert.ok(bodies.every(body => body.style.height === '0px'), 'all height resets precede the first measurement'); return 500; }
+    if (this.matches('.comment-body-content')) { reads++; const bodies = [...d.querySelectorAll('.comment-body-content')]; assert.ok(bodies.every(body => ['', 'auto'].includes(body.style.height)), 'every body is unfolded before the first measurement'); return 500; }
     return 0;
   } });
   w.App.refresh(); assert.ok(reads > 0);
+});
+
+// The browser keeps the reader's place only when the comments above it already have their folded height.
+test('a redraw folds long comments before it puts the task page\'s scroll position back', () => {
+  const { w, d } = bootApp({ route: 'task/BIR-079', media: () => false });
+  w.DATA.tasks.find(item => item.id === 'BIR-079').comments = Array.from({ length: 3 }, (_, i) => ({ id: `long-${i}`, who: w.DATA.session.userId, ts: Date.now() + i, text: 'Long comment', mentions: [] }));
+  Object.defineProperty(w.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.matches('.comment-body-content') ? 500 : 0; } });
+  w.App.refresh();
+  d.querySelector('.task-page').scrollTop = 900;
+  const scrollTop = Object.getOwnPropertyDescriptor(w.Element.prototype, 'scrollTop');
+  let heights;
+  Object.defineProperty(w.Element.prototype, 'scrollTop', { configurable: true, get: scrollTop.get, set(value) {
+    if (this.matches('.task-page') && value === 900) heights ??= [...d.querySelectorAll('.comment-body-content')].map(body => body.style.height);
+    scrollTop.set.call(this, value);
+  } });
+  w.App.refresh();
+  assert.deepEqual(heights, ['240px', '240px', '240px']);
 });
 
 test('epic, milestone and task descriptions share bounded readers and editors that keep their scroll position', () => {

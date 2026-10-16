@@ -28,6 +28,12 @@ All notable changes to oneloop are recorded here. The format follows
   takes more than 30 seconds to download, as on a slow mobile connection.
   When the renderer can't load, the preview now says to check the
   connection, instead of blaming the diagram's syntax.
+### Fixed
+
+- Long comments on a task page no longer fold to nothing and grow back when
+  the page draws again, such as after a change from another tab or a saved
+  field. The page also stays at the comment you were reading. Before, it
+  could jump away by several comments.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
