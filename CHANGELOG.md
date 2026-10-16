@@ -135,7 +135,7 @@ All notable changes to oneloop are recorded here. The format follows
 - A link to a oneloop page in a Markdown preview or a Knowledge file, such as
   `[the task](#/task/WEB-042)` or the page's full address, now opens that
   page. Before, it went nowhere.
-- Code blocks in Markdown files now have a visible background in the dark
+- Code blocks in the Knowledge base now have a visible background in the dark
   theme. Before, it matched the page.
 - When someone else changes the open task, such as a teammate, another tab or
   an AI assistant, its status in the page header and in **Status**, its title

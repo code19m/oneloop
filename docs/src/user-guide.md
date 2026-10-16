@@ -108,7 +108,7 @@ Click a card to open the task. Your changes save automatically. To save the
 field you are typing in at once, press Ctrl+S (Cmd+S on macOS); you stay where
 you are. In a dialog, such as **New task**, or while you edit a comment, Ctrl+S
 does what the dialog's main button does. It never sends a new comment or reply,
-and it never saves the page as a file.
+and it doesn't save the page as a file, except from inside an HTML file preview.
 
 - The **Description** shows formatted Markdown (GitHub style), such as
   headings, lists, tables and code, and keeps the line breaks you type. Click

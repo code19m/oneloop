@@ -41,8 +41,7 @@ const needsHighlight=text=>/[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^>]*\blanguage-/i.te
 // of a run of text, as the math extension reads it, also in quotes, lists and
 // tables. Prices and shell variables, such as "$5 and $10" or "$HOME", don't
 // load KaTeX. Inline math that the extension reads across another $ still
-// ends with a $…$ found here, and stopping at the next $ keeps a long line of
-// them quick.
+// ends with a $…$ found here.
 const needsMath=text=>/(?:`{3,}|~{3,})\s*math\b|\$`[^\n]+?`\$|\$\$[\s\S]*?\$\$|^[>*+\-.)\d \t]*\$[ \t]*$|\$(?!\$)(?:\\.|[^\\\n$])*?(?:\\.|[^\\\n$])\$(?=[\s?!.,:？！。，：*_~)\]|]|$)/m.test(text);
 const readyFor=text=>ready()&&(!needsHighlight(text)||!!vendor.hljs)&&(!needsMath(text)||!!vendor.katex&&!!vendor.markedKatex);
 
