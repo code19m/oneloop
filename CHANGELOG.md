@@ -34,6 +34,9 @@ All notable changes to oneloop are recorded here. The format follows
   the page draws again, such as after a change from another tab or a saved
   field. The page also stays at the comment you were reading. Before, it
   could jump away by several comments.
+- The Board now shows its loading placeholder while its cards load, when you
+  open it from another page such as the Roadmap. Before, it said "No tasks
+  yet" and offered **Create task** until the cards arrived.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
