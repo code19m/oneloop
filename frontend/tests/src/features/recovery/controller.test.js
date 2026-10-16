@@ -14,7 +14,7 @@ function page(html=''){
 }
 
 /** The views' methods that Recovery calls, with the toasts and repaints recorded. */
-const appFor=(context)=>({toasts:[],refreshes:0,context,refresh(){this.refreshes++;},toast(...args){this.toasts.push(args);},commentDraft:()=>null,restoreCommentDraft(){},autoReloadChanged(){},noteTaskSaving(){},clearTaskSaving(){}});
+const appFor=(context)=>({toasts:[],refreshes:0,context,refresh(){this.refreshes++;},toast(...args){this.toasts.push(args);},commentDraft:()=>null,restoreCommentDraft(){},noteTaskSaving(){},clearTaskSaving(){}});
 
 function fixture(overrides={}){
   const {window,document,createRecoveryController}=page(overrides.html);
@@ -286,9 +286,9 @@ test('HTML gateway outages block writes and render service unavailable without l
 
 test('an upgrade notice remains until reload without clearing input or disabling accepted work',()=>{
   const state=fixture();state.controller.buildChanged();
-  assert.match(state.controller.connectionHtml(),/oneloop was updated/);
+  assert.match(state.controller.connectionHtml(),/oneloop was updated\. The page reloads by itself when nothing you typed would be lost\./);
   state.controller.clearPageError();state.controller.sessionChanged(state.data.session);
-  assert.match(state.controller.connectionHtml(),/Reload/);assert.equal(state.app.refreshes,0);assert.equal(state.controller.ensureOnline(),true);
+  assert.match(state.controller.connectionHtml(),/Reload now/);assert.equal(state.app.refreshes,0);assert.equal(state.controller.ensureOnline(),true);
 });
 
 
@@ -351,15 +351,14 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
  * the test controls. `stores` is the tab's storage, which a reload keeps; a
  * reload is counted, since jsdom can't run one. The page checks the server's
  * version the way the app does, with the build monitor; `server` is the
- * version the server answers with.
+ * version the server answers with. `html` is what the page shows.
  */
-function updatable({autoReload=true,hidden=false,stores={local:new Map(),session:new Map()}}={}){
-  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0,visibility=hidden?'hidden':'visible';
+function updatable({hidden=false,stores={session:new Map()},html=''}={}){
+  const timers=new Map();let clock=0,next=0,reloads=0,saving=false,checks=0,visibility=hidden?'hidden':'visible';
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
-  if(autoReload)stores.local.set('oneloop.autoReload','on');
-  const {window,document,createRecoveryController}=page();
+  const {window,document,createRecoveryController}=page(html);
   Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visibility});
-  const windowObject={localStorage:storage(stores.local),sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);},removeEventListener(){}};
+  const windowObject={sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener(){},removeEventListener(){}};
   const app=appFor(()=>({view:'board',projectId:'p1'}));
   let server=oldVersion;
   const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
@@ -368,21 +367,13 @@ function updatable({autoReload=true,hidden=false,stores={local:new Map(),session
     checkBuild:()=>monitor.check()});
   controller.start();
   const fire=type=>document.dispatchEvent(new window.Event(type));
-  return {controller,stores,monitor,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
-    /** Another tab of this browser changes the stored setting. */
-    otherTab(value){if(value)stores.local.set('oneloop.autoReload',value);else stores.local.delete('oneloop.autoReload');for(const listener of listeners.storage??[])listener({key:'oneloop.autoReload',newValue:value});},
+  return {controller,stores,monitor,document,toasts:app.toasts,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
     /** The tab hides, or shows again. */
     show(visible){visibility=visible?'visible':'hidden';fire('visibilitychange');},
     /** Move the clock on, run the timers that are due, and let the checks they start finish. */
     async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await settle();}};
 }
 const newVersion={version:'0.2.0',revision:'b2'},oldVersion={version:'0.1.0',revision:'a1'};
-
-test('with Reload after updates off, an update only shows the notice',()=>{
-  const page=updatable({autoReload:false,hidden:true});
-  page.controller.buildChanged(newVersion);page.fire('visibilitychange');page.advance(10*60_000);
-  assert.equal(page.reloads,0);assert.match(page.controller.connectionHtml(),/oneloop was updated/);
-});
 
 test('a hidden tab asks the server for its version every minute and reloads once no save is running',async()=>{
   const page=updatable();await page.monitor.check();
@@ -397,22 +388,6 @@ test('a hidden tab asks the server for its version every minute and reloads once
   assert.equal(page.reloads,1);
 });
 
-test('with Reload after updates off, a hidden tab never asks the server',async()=>{
-  const page=updatable({autoReload:false});await page.monitor.check();
-  page.show(false);page.server=newVersion;
-  await page.advance(10*60_000);
-  assert.equal(page.checks,1);assert.equal(page.reloads,0);
-});
-
-test('a hidden tab starts asking the server once another tab turns Reload after updates on',async()=>{
-  const page=updatable({autoReload:false});await page.monitor.check();
-  page.show(false);page.server=newVersion;
-  await page.advance(60_000);assert.equal(page.checks,1);
-  page.otherTab('on');
-  await page.advance(60_000);
-  assert.equal(page.checks,2);assert.equal(page.reloads,1);
-});
-
 test('a tab that shows again counts as activity, so the person who comes back is not reloaded at once',async()=>{
   const page=updatable();await page.monitor.check();
   page.show(false);await page.advance(30_000);
@@ -420,16 +395,16 @@ test('a tab that shows again counts as activity, so the person who comes back is
   // They come back before the next check; the live connection opens and checks.
   page.show(true);await page.monitor.check();
   assert.equal(page.reloads,0,'not in front of the person');
-  await page.advance(59_000);assert.equal(page.reloads,0);
+  await page.advance(4*60_000+59_000);assert.equal(page.reloads,0);
   await page.advance(60_000);
-  assert.equal(page.reloads,1,'a minute without activity');
+  assert.equal(page.reloads,1,'five minutes without activity');
 });
 
-test('a tab that is shown reloads only after a minute without activity',()=>{
+test('a tab that is shown reloads only after five minutes without activity',()=>{
   const page=updatable();
   page.controller.buildChanged(newVersion);
-  page.advance(30_000);page.fire('keydown');page.advance(30_000);
-  assert.equal(page.reloads,0,'the person typed half a minute ago');
+  page.advance(4*60_000);page.fire('keydown');page.advance(4*60_000);
+  assert.equal(page.reloads,0,'the person typed four minutes ago');
   page.advance(60_000);
   assert.equal(page.reloads,1);
 });
@@ -443,6 +418,17 @@ test('unsaved input keeps an updated tab from reloading until it is gone',()=>{
   assert.equal(page.reloads,1);
 });
 
+test('a dialog, drawer, menu, preview, confirmation, Undo offer or drag keeps an updated tab from reloading until it is gone',()=>{
+  for(const html of ['<div class="modal"></div>','<div class="peek"></div>','<div class="menu"></div>','<div class="pop"></div>','<div class="file-overlay"></div>','<div class="confirmation-layer"></div>','<button class="toast-action">Undo</button>','drag']){
+    const page=updatable({hidden:true,html:html==='drag'?'':html});
+    if(html==='drag')page.document.body.classList.add('is-dragging');
+    page.controller.buildChanged(newVersion);page.advance(60_000);
+    assert.equal(page.reloads,0,html);
+    page.document.body.replaceChildren();page.document.body.classList.remove('is-dragging');page.advance(30_000);
+    assert.equal(page.reloads,1,html);
+  }
+});
+
 test('a tab reloads by itself once for each version, so servers that disagree cannot make it loop',()=>{
   const first=updatable({hidden:true});
   first.controller.buildChanged(newVersion);first.controller.buildChanged(newVersion);first.fire('visibilitychange');
@@ -454,13 +440,13 @@ test('a tab reloads by itself once for each version, so servers that disagree ca
   assert.equal(third.reloads,0);assert.match(third.controller.connectionHtml(),/Reload/);
 });
 
-test('turning Reload after updates on applies to an update that is already waiting',()=>{
-  const page=updatable({autoReload:false,hidden:true});
-  page.controller.buildChanged(newVersion);
-  assert.equal(page.controller.autoReload,false);
-  page.controller.setAutoReload(true);
-  assert.equal(page.controller.autoReload,true);assert.equal(page.reloads,1);
-  page.controller.setAutoReload(false);assert.equal(page.stores.local.has('oneloop.autoReload'),false);
+test('a page that a tab reloaded by itself for an update says so once, and one reloaded by the person does not',()=>{
+  const first=updatable({hidden:true});first.controller.buildChanged(newVersion);
+  assert.equal(first.reloads,1);
+  assert.deepEqual(updatable({stores:first.stores}).toasts,[['oneloop was updated','info']]);
+  assert.deepEqual(updatable({stores:first.stores}).toasts,[],'only the first page after the reload');
+  const manual=updatable();manual.controller.buildChanged(newVersion);manual.controller.activateNotice();
+  assert.equal(manual.reloads,1,'Reload now');assert.deepEqual(updatable({stores:manual.stores}).toasts,[]);
 });
 
 /**

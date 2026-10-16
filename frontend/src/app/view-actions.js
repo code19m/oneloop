@@ -54,7 +54,7 @@ export const ACTIONS = Object.freeze([
   'setBlockedFilter', 'setBoardQ', 'setMemberPermission', 'setNotificationRead', 'setPassword',
   'setPoolTab', 'setRoadmapScale', 'setTheme', 'showMoreMembers', 'sizeDescription',
   'sizeDescriptionEditors', 'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu',
-  'toggleAutoReload', 'toggleCommentText', 'toggleDescription', 'toggleDoneOrder',
+  'toggleCommentText', 'toggleDescription', 'toggleDoneOrder',
   'togglePoolDescription', 'toggleReplies', 'toggleSidebar', 'trackDragStart', 'trackDrop',
   'trackMenu', 'trackReorderKey', 'updMe', 'updTask', 'updateProjectField', 'userMenu',
 ]);

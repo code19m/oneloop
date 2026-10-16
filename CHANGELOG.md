@@ -64,6 +64,12 @@ All notable changes to oneloop are recorded here. The format follows
   project, such as an older bookmark, opens the project you last switched to in
   this browser. Before, a refresh opened the first project by name and lost
   the filters.
+- Every open tab now reloads by itself after an upgrade, when nothing you typed
+  would be lost, nothing such as a dialog, a menu or an **Undo** offer is open,
+  and the tab is hidden or unused for five minutes. **Reload after updates** is
+  gone from the account menu. The bar says that the page reloads by itself and
+  offers **Reload now**, and after such a reload the page says "oneloop was
+  updated".
 
 ### Fixed
 

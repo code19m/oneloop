@@ -243,13 +243,16 @@ bulk undo, but you can restore individual items from **Archived** and use
 
 Click your name at the bottom of the sidebar. The menu has **Profile**,
 **Sign out**, and the theme: **Light**, **Dark** or **System**. **System**, the
-default, follows your device's light or dark setting.
+default, follows your device's light or dark setting, and the theme you choose
+applies to this browser only.
 
-When oneloop is upgraded, open tabs show **oneloop was updated**. With
-**Reload after updates** on, a tab reloads by itself once nothing you typed
-would be lost and the tab is hidden or you haven't used it for a minute. A
-temporary password that is still on screen counts as something that would be
-lost. Both choices apply to this browser only.
+When oneloop is upgraded, open tabs show **oneloop was updated** and reload by
+themselves at a safe moment: nothing you typed would be lost, nothing is open,
+such as a dialog, a menu, a file preview or an **Undo** offer, and the tab is
+hidden or you haven't used it for five minutes. A temporary password that is
+still on screen counts as something that would be lost. **Reload now** reloads
+at once. A reloaded page shows the same address, so you keep your project and
+Board filters.
 
 On your **Profile**:
 

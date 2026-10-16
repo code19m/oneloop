@@ -36,11 +36,13 @@ const NOT_TYPED = new Set(['password','file','submit','button','reset','image','
 const AUTOSAVE = '[data-autosave]';
 /** A field that saves itself whose last save was refused, so what it shows is not saved. */
 const REFUSED = '[data-unsaved]';
-/** Reload after updates, a choice each browser makes. */
-const AUTO_RELOAD = 'oneloop.autoReload';
 /** The versions a tab already reloaded itself for. */
 const RELOADED_FOR = 'oneloop.reloadedFor';
-const IDLE_BEFORE_RELOAD_MS = 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
+/** Set as a tab reloads itself after an update, so the new page can say why. */
+const RELOADED_NOW = 'oneloop.reloadedNow';
+const IDLE_BEFORE_RELOAD_MS = 5 * 60_000, AUTO_RELOAD_CHECK_MS = 30_000, HIDDEN_BUILD_CHECK_MS = 60_000;
+/** What a reload would take away although nothing typed is lost: a dialog, the drawer, a menu or picker, a file preview, a confirmation, an Undo offer or a drag. */
+const IN_PROGRESS = '.modal,.peek,.menu,.pop,.file-overlay,.confirmation-layer,.toast-action,body.is-dragging';
 
 /**
  * Whether an open editor holds text the person typed and has not saved or
@@ -312,39 +314,23 @@ export function createRecoveryController({
 
   /** Browser storage, which privacy settings can turn off. @param {'localStorage'|'sessionStorage'} kind */
   function storage(kind){try{return windowObject[kind];}catch{return null;}}
-  function autoReloadOn(){try{return storage('localStorage')?.getItem(AUTO_RELOAD)==='on';}catch{return false;}}
   /** @returns {string[]} */
   function reloadedFor(){try{const list=JSON.parse(storage('sessionStorage')?.getItem(RELOADED_FOR)??'[]');return Array.isArray(list)?list:[];}catch{return [];}}
   const noteActivity=()=>{lastActivity=now();};
 
   /**
-   * After an update, a browser with Reload after updates on reloads at the
-   * first moment nothing would be lost: no unsaved input, and the tab is
-   * hidden or the person has been idle for a minute. Until then it checks
-   * again every 30 seconds, when the tab hides and when a save settles. A tab
-   * reloads by itself once per page load and once per version, so servers
-   * that disagree about the version can't make it loop.
-   */
-  /**
    * A hidden tab closes its live connection, whose opening is when a page
-   * compares its version with the server's. So with Reload after updates on,
-   * a hidden tab asks the server every minute instead, until it learns of an
-   * update.
+   * compares its version with the server's. So a hidden tab asks the server
+   * every minute instead, until it learns of an update.
    */
   function scheduleHiddenCheck(){
     clearTimer(hiddenCheckTimer);hiddenCheckTimer=null;
-    const checking=()=>!disposed&&!updatedBuild&&autoReloadOn()&&documentObject.visibilityState==='hidden';
+    const checking=()=>!disposed&&!updatedBuild&&documentObject.visibilityState==='hidden';
     if(!checking())return;
     hiddenCheckTimer=setTimer(()=>{
       hiddenCheckTimer=null;
       if(checking())Promise.resolve().then(checkBuild).catch(()=>{}).finally(scheduleHiddenCheck);
     },HIDDEN_BUILD_CHECK_MS);
-  }
-
-  /** Another tab of this browser changed Reload after updates, or cleared storage. @param {{key:string|null}} event */
-  function storageChanged(event){
-    if(event.key!==AUTO_RELOAD&&event.key!==null)return;
-    scheduleHiddenCheck();reloadWhenSafe();getApp()?.autoReloadChanged();
   }
 
   /** A tab that shows again counts as activity, so a person who comes back is never reloaded at once. */
@@ -353,16 +339,36 @@ export function createRecoveryController({
     scheduleHiddenCheck();reloadWhenSafe();
   }
 
+  /**
+   * After an update, a tab reloads at the first moment nothing would be lost:
+   * no unsaved input, nothing open or moving, and the tab is hidden or the
+   * person has not used it for five minutes. Until then it checks again every
+   * 30 seconds, when the tab hides and when a save settles. A tab reloads by
+   * itself once per page load and once per version, so servers that disagree
+   * about the version can't make it loop.
+   */
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
-    if(disposed||!updatedBuild||autoReloaded||!autoReloadOn())return;
+    if(disposed||!updatedBuild||autoReloaded)return;
     const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
     if(reloadedFor().includes(version))return;
     const away=documentObject.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
-    if(!away||hasUnsavedInput()){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
+    if(!away||hasUnsavedInput()||documentObject.querySelector(IN_PROGRESS)){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
     autoReloaded=true;
-    try{storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));}catch{}
+    try{
+      storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));
+      storage('sessionStorage')?.setItem(RELOADED_NOW,'1');
+    }catch{}
     controller.reloadClient();
+  }
+
+  /** The page that a tab reloaded for an update says so, once. */
+  function sayReloaded(){
+    try{
+      if(!storage('sessionStorage')?.getItem(RELOADED_NOW))return;
+      storage('sessionStorage').removeItem(RELOADED_NOW);
+    }catch{return;}
+    getApp()?.toast('oneloop was updated','info');
   }
 
   const requestContext=()=>({sessionGeneration,connectivityGeneration,sessionId:data.session?.id??null,userId:data.session?.userId??null});
@@ -397,7 +403,7 @@ export function createRecoveryController({
     const state=visibleConnection();
     if(state==='offline')return {text:online()?'Cannot reach oneloop — changes are not being saved':'Offline — changes are not being saved',action:'reconnect',label:'Reconnect'};
     if(state==='reconnecting')return {text:'Reconnecting to live updates…',action:'reconnect',label:'Reconnect'};
-    if(updatedBuild)return {text:'oneloop was updated. Reload when you are ready; reloading discards unsaved input.',action:'reloadClient',label:'Reload'};
+    if(updatedBuild)return {text:'oneloop was updated. The page reloads by itself when nothing you typed would be lost.',action:'reloadClient',label:'Reload now'};
     if(resumeLive)return {text:'Live updates are paused in this tab.',action:'resumeLive',label:'Resume'};
     if(refreshFailureScope===viewScope())return {text:'Could not refresh this view.',action:'retryRefresh',label:'Retry'};
     return null;
@@ -707,9 +713,6 @@ export function createRecoveryController({
     trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
     /** The server runs another version than this page; `build` is that version. */
     buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
-    /** Whether this browser reloads by itself after an update. */
-    get autoReload(){return autoReloadOn();},
-    setAutoReload(on){try{if(on)storage('localStorage')?.setItem(AUTO_RELOAD,'on');else storage('localStorage')?.removeItem(AUTO_RELOAD);}catch{}scheduleHiddenCheck();reloadWhenSafe();},
     reloadClient(){windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
@@ -728,10 +731,10 @@ export function createRecoveryController({
     retryLoad(){beginRouteLoad();reconcile({background:false}).then((result)=>{cancelRouteLoading();if(!result?.error){pageError=null;renderPreservingEditor();}});},
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
-    /** Start following the page: focus, input, activity, visibility, storage and the connection. */
-    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('storage',storageChanged);scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));}return controller;},
+    /** Start following the page: focus, input, activity, visibility and the connection. */
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
-    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);windowObject.removeEventListener('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
+    dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
 }

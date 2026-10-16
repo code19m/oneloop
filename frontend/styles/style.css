@@ -1062,9 +1062,6 @@ div.ms-label {cursor:default}
 .profile-menu button { font-weight:500;gap:10px; }
 .profile-menu .menu-icon { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:16px;height:16px; }
 .profile-menu .menu-icon svg { width:16px;height:16px; }
-/* Reload after updates is a toggle; its check sits at the end of the row. */
-.profile-menu .menu-check { display:flex;align-items:center;justify-content:center;flex:0 0 14px;margin-left:auto; }
-.profile-menu .menu-check svg { width:13px;height:13px; }
 
 /* Approved Waypoint identity; labels stay vector-sharp at every density. */
 .logo { color:var(--ink); }

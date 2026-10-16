@@ -386,7 +386,6 @@ Object.assign(App, {
     const r = ev.currentTarget.getBoundingClientRect();
     openMenu([
       { theme: true },
-      { autoReload: true },
       { sep: true },
       { label: 'Profile', icon: I.person, fn: () => App.nav('profile') },
       ...(isAdmin() ? [{ label: 'Users', icon: I.users, fn: () => App.nav('users') },{ label: 'Storage', icon: I.storage, fn: () => App.nav('storage') }] : []),
@@ -395,17 +394,6 @@ Object.assign(App, {
     ], r.left, r.top, { version: true, above: true, trigger:ev.currentTarget });
   },
   setTheme(value) { window.Theme.set(value); },
-  toggleAutoReload() {
-    recovery.setAutoReload(!recovery.autoReload);
-    App.autoReloadChanged();
-  },
-  /** Show Reload after updates as it is now, also after another tab changed it. */
-  autoReloadChanged() {
-    const on = !!recovery.autoReload, button = document.querySelector('[data-auto-reload]');
-    if (!button || button.getAttribute('aria-pressed') === String(on)) return;
-    button.setAttribute('aria-pressed', String(on));
-    setHTML(button.querySelector('.menu-check'), on ? I.tick : '');
-  },
   /** Enter leaves a field that saves itself when it loses focus, and types nothing. */
   leaveField(event, field) { event.preventDefault(); field.blur(); },
 

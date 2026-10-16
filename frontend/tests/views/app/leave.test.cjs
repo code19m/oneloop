@@ -349,28 +349,3 @@ test('Escape in a dialog\'s date field undoes the typed date first, then reaches
   escape();
   assert.equal(t.d.querySelector('.modal'), null, 'the next one closes the dialog');
 });
-
-test('Reload after updates is a choice in the account menu, which stays open', () => {
-  const t = bootApp({ route: 'board' });
-  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
-  const toggle = () => t.d.querySelector('[data-auto-reload]');
-  assert.equal(toggle().textContent, 'Reload after updates'); assert.equal(toggle().getAttribute('aria-pressed'), 'false');
-  t.A.toggleAutoReload();
-  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(t.d.querySelector('.profile-menu'), 'the menu stays open');
-  assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), 'on'); assert.equal(t.w.Recovery.autoReload, true);
-  t.A.toggleAutoReload();
-  assert.equal(toggle().getAttribute('aria-pressed'), 'false'); assert.equal(t.w.localStorage.getItem('oneloop.autoReload'), null);
-});
-
-test('the account menu follows Reload after updates when another tab changes it', () => {
-  const t = bootApp({ route: 'board' });
-  t.A.userMenu({ currentTarget: t.d.querySelector('.me-chip') });
-  const toggle = () => t.d.querySelector('[data-auto-reload]');
-  // Another tab of the same browser turns it on: this tab hears of it through storage.
-  t.w.localStorage.setItem('oneloop.autoReload', 'on');
-  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: 'oneloop.autoReload', newValue: 'on' }));
-  assert.equal(toggle().getAttribute('aria-pressed'), 'true'); assert(toggle().querySelector('.menu-check svg'));
-  t.w.localStorage.clear();
-  t.w.dispatchEvent(new t.w.StorageEvent('storage', { key: null }));
-  assert.equal(toggle().getAttribute('aria-pressed'), 'false');
-});
