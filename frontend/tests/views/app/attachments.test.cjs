@@ -413,3 +413,13 @@ test('the Temporary switch in a file preview changes the file', async () => {
   const sent = t.calls.filter(call => call.method === 'updateAttachment').map(call => call.args);
   assert.equal(JSON.stringify(sent), JSON.stringify([['f1', { isEphemeral: true, expectedRevision: 1 }]]));
 });
+
+test('closing a preview gives focus back to its file name after a live update drew the list again', async () => {
+  const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')], { '/source/notes': 'notes' });
+  const opener = t.d.querySelector('.attachment-title');
+  opener.focus(); t.A.previewAttachment('BIR-079', 'notes');
+  t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' });
+  await waitFor(() => !opener.isConnected, 'the live read draws the list again');
+  t.d.querySelector('[data-file-close]').click();
+  assert.equal(t.d.activeElement, t.d.querySelector('.attachment-title'));
+});
