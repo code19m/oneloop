@@ -48,6 +48,11 @@ All notable changes to oneloop are recorded here. The format follows
 - Closing a file preview now gives focus back to the file name that opened
   it, also when the task's attachments changed while the preview showed.
   Before, keyboard users landed at the top of the page.
+- Uploads, and the storage check that runs every minute, now count stored
+  files and unfinished uploads but not image thumbnails, so they no longer
+  slow down as an instance collects images. Thumbnails go when files and
+  unfinished uploads reach 80% of the storage limit. **Clean up now** still
+  counts them, as the **Storage** page does.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

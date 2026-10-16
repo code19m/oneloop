@@ -1809,6 +1809,36 @@ async fn high_watermark_admission_does_not_walk_originals() {
 }
 
 #[tokio::test]
+async fn thumbnails_stay_until_files_and_uploads_reach_the_threshold() {
+    let f = Fixture::new().await;
+    let service = f.service(100);
+    upload(&service, &f.manager, "first", "first.bin", &[0; 50], false).await;
+    // Thumbnails that take usage past 80% together with the files.
+    let store = f.store();
+    let thumbnail = store
+        .prepare_thumbnail_parent(&store.new_storage_key().unwrap())
+        .await
+        .unwrap();
+    std::fs::write(&thumbnail, [0; 40]).unwrap();
+    service.cleanup_if_needed().await.unwrap();
+    upload(
+        &service,
+        &f.manager,
+        "second",
+        "second.bin",
+        &[0; 20],
+        false,
+    )
+    .await;
+    assert!(thumbnail.exists());
+    // The Storage page counts thumbnails, and so does Clean up now.
+    let usage = service.storage_usage(&f.admin).await.unwrap();
+    assert_eq!(usage.used_bytes, 110);
+    service.cleanup_for(&f.admin).await.unwrap();
+    assert!(!thumbnail.exists());
+}
+
+#[tokio::test]
 async fn a_deletion_backlog_larger_than_one_batch_drains() {
     let f = Fixture::new().await;
     let store = oneloop::files::FileStore::new(f.db.layout().clone());

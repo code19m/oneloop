@@ -261,7 +261,11 @@ impl FileService {
         // cleanup would only remove them again, so from there nothing is decoded.
         let current = match *used {
             Some(current) => current,
-            None => self.capacity_usage().await?.total(),
+            None => self
+                .capacity_usage()
+                .await?
+                .total()
+                .saturating_add(self.thumbnail_bytes().await?),
         };
         *used = Some(current);
         let threshold = self.high_watermark();

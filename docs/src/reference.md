@@ -88,21 +88,23 @@ until they change it.
 ### Storage
 
 The storage limit covers uploaded files (attachments and avatars), their
-previews and unfinished uploads. The database doesn't count, and neither do
-Knowledge files, which oneloop keeps in the database.
+image thumbnails and unfinished uploads. The database doesn't count, and
+neither do Knowledge files, which oneloop keeps in the database.
 
-When usage reaches 80% of the limit, oneloop removes all image thumbnails, then
-temporary attachments that nobody has opened for 24 hours, until usage is back
-at 70%. It also removes them, at any usage, when an upload would leave less
-free disk space than `ONELOOP_DISK_MIN_FREE`. It makes a thumbnail again when
-someone views the image, while usage stays under 80%. It never removes other
-files by itself.
+When files and unfinished uploads reach 80% of the limit, oneloop removes all
+image thumbnails, then temporary attachments that nobody has opened for 24
+hours, until usage is back at 70%. oneloop also removes them, at any usage,
+when an upload would leave less free disk space than `ONELOOP_DISK_MIN_FREE`.
+It makes a thumbnail again when someone views the image, while usage with
+thumbnails stays under 80%. **Clean up now** counts thumbnails too. oneloop
+never removes other files by itself.
 
-oneloop refuses an upload when the limit is reached, or when the upload would
-still leave less free disk space than `ONELOOP_DISK_MIN_FREE`. Space that
-running uploads and Knowledge downloads need counts as used. A deleted file,
-or a file of a deleted task, still counts, as pending deletion, until oneloop
-removes it after the [Undo](user-guide.md#undo-a-deletion) window.
+oneloop refuses an upload when files and unfinished uploads reach the limit,
+or when the upload would still leave less free disk space than
+`ONELOOP_DISK_MIN_FREE`. Space that running uploads and Knowledge downloads
+need counts as used. A deleted file, or a file of a deleted task, still
+counts, as pending deletion, until oneloop removes it after the
+[Undo](user-guide.md#undo-a-deletion) window.
 
 Write sizes as a whole number followed by a unit, without a space: `B`, `KB`,
 `MB`, `GB` or `TB` (powers of 1000), or `KiB`, `MiB`, `GiB` or `TiB` (powers of

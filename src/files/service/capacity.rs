@@ -38,12 +38,14 @@ const CAPACITY_USED_SQL: &str = "SELECT
        coalesce((SELECT sum(size_bytes) FROM upload_reservations
                  WHERE committed_at IS NULL AND expires_at>?1),0)";
 
+/// Stored files and unfinished uploads, which uploads and the minute's check
+/// compare with the limit. Measuring thumbnails walks every one, so only the
+/// Storage report, cleanup and the thumbnail worker add them.
 #[derive(Default)]
 pub(super) struct CapacityUsage {
     blob_bytes: u64,
     reserved_bytes: u64,
     staging_bytes: u64,
-    preview_bytes: u64,
     unreserved_staging_bytes: u64,
 }
 
@@ -51,12 +53,6 @@ impl CapacityUsage {
     pub(super) fn total(&self) -> u64 {
         self.blob_bytes
             .saturating_add(self.reserved_bytes)
-            .saturating_add(self.preview_bytes)
-            .saturating_add(self.unreserved_staging_bytes)
-    }
-
-    fn non_database_bytes(&self) -> u64 {
-        self.preview_bytes
             .saturating_add(self.unreserved_staging_bytes)
     }
 }
@@ -78,49 +74,36 @@ impl FileService {
     pub(super) async fn admit(&self, size: u64) -> AppResult<u64> {
         self.store.ensure_directories().await?;
         let mut usage = self.capacity_usage().await?;
-        if self.cleanup_for_usage(&usage).await?.bytes_reclaimed > 0 {
+        if self.cleanup_at(usage.total()).await?.bytes_reclaimed > 0 {
             usage = self.capacity_usage().await?;
         }
         let deficit = self.disk.deficit(size)?;
         if deficit > 0 && self.cleanup_for_deficit(deficit).await?.bytes_reclaimed > 0 {
             usage = self.capacity_usage().await?;
         }
-        Ok(usage.non_database_bytes())
+        Ok(usage.unreserved_staging_bytes)
     }
 
     pub async fn cleanup_if_needed(&self) -> AppResult<FileRuntimeReport> {
-        self.cleanup_for_usage(&self.capacity_usage().await?).await
+        self.cleanup_at(self.capacity_usage().await?.total()).await
     }
 
-    /// Storage cleanup that an administrator asked for.
+    /// Storage cleanup that an administrator asked for. It counts thumbnails,
+    /// as the Storage report that offers it does.
     pub async fn cleanup_for(&self, actor: &Actor) -> AppResult<FileRuntimeReport> {
         actor.require_admin()?;
         let actor = actor.clone();
         self.db
             .run(move |connection| refresh_actor_connection(connection, &actor)?.require_admin())
             .await?;
-        self.cleanup_if_needed().await
+        let used = self.capacity_usage().await?.total();
+        self.cleanup_at(used.saturating_add(self.thumbnail_bytes().await?))
+            .await
     }
 
-    async fn cleanup_for_usage(&self, usage: &CapacityUsage) -> AppResult<FileRuntimeReport> {
-        if usage.total() < self.high_watermark() {
+    async fn cleanup_at(&self, used: u64) -> AppResult<FileRuntimeReport> {
+        if used < self.high_watermark() {
             return Ok(FileRuntimeReport::default());
-        }
-        if usage.preview_bytes == 0 {
-            let now = unix_now()?;
-            // An indexed existence probe stays fresh after retention edits and reads;
-            // unlike a cached timestamp it cannot miss newly eligible files.
-            let eligible = self.db.run(move |connection| {
-                Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-                     WHERE a.is_ephemeral=1 AND a.last_accessed_at<=?1 AND a.created_at<=?1
-                       AND b.state='available' AND a.deleted_at IS NULL
-                       AND NOT EXISTS(SELECT 1 FROM file_leases l WHERE l.blob_id=b.id AND l.expires_at>?2))",
-                    params![now-ACCESS_GRACE_SECONDS,now], |r| r.get::<_,bool>(0))?)
-            }).await?;
-            if !eligible {
-                return Ok(FileRuntimeReport::default());
-            }
         }
         self.cleanup_to_low_watermark().await
     }
@@ -210,12 +193,13 @@ impl FileService {
             })
             .await?;
         let capacity = self.capacity_usage().await?;
+        let preview_bytes = self.thumbnail_bytes().await?;
         Ok(StorageUsage {
             budget_bytes: self.storage_limit_bytes,
-            used_bytes: capacity.total(),
+            used_bytes: capacity.total().saturating_add(preview_bytes),
             reserved_bytes: capacity.reserved_bytes,
             staging_bytes: capacity.staging_bytes,
-            preview_bytes: capacity.preview_bytes,
+            preview_bytes,
             permanent_bytes: permanent,
             temporary_bytes: temporary,
             pending_deletion_bytes: pending_deletion,
@@ -248,9 +232,13 @@ impl FileService {
             return Ok(FileRuntimeReport::default());
         };
         let mut report = FileRuntimeReport::default();
-        let usage = self.capacity_usage().await?.total();
-        let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
+        // Thumbnails count here, measured by the walk that finds them.
         let previews = self.regular_files(self.store.previews()).await?;
+        let usage = previews
+            .iter()
+            .map(|(_, size)| *size)
+            .fold(self.capacity_usage().await?.total(), u64::saturating_add);
+        let mut needed = target.map_or(deficit, |target| usage.saturating_sub(target));
         let now = unix_now()?;
         let candidates = self.db.run(move |connection| {
             let mut statement = connection.prepare(
@@ -275,7 +263,8 @@ impl FileService {
                 "storage safety floor cannot be recovered from eligible temporary files",
             ));
         }
-        if needed == 0 && previews.is_empty() {
+        // With nothing to remove, no run is recorded.
+        if previews.is_empty() && (needed == 0 || candidates.is_empty()) {
             return Ok(report);
         }
         let run_id = Uuid::now_v7().to_string();
@@ -412,9 +401,13 @@ impl FileService {
             blob_bytes,
             reserved_bytes,
             staging_bytes,
-            preview_bytes: self.tree_bytes(self.store.previews()).await?,
             unreserved_staging_bytes,
         })
+    }
+
+    /// Bytes of thumbnails, from a walk of the previews folder.
+    pub(super) async fn thumbnail_bytes(&self) -> AppResult<u64> {
+        self.tree_bytes(self.store.previews()).await
     }
 }
 
