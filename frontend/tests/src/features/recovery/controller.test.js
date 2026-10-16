@@ -456,6 +456,14 @@ test('only a reload the tab made by itself makes the next page say oneloop was u
   assert.equal(browser.reloads,0,'the browser reloads');assert.deepEqual(updatable({stores:browser.stores}).toasts,[]);
 });
 
+test('a page that the browser\'s prompt kept after Reload now still reloads by itself later',()=>{
+  const page=updatable();page.controller.buildChanged(newVersion);page.controller.activateNotice();
+  assert.equal(page.reloads,1,'Reload now asks the browser to reload');
+  // The browser asked to leave the page, and the person stayed: no pagehide.
+  page.show(false);
+  assert.equal(page.reloads,2,'the tab reloads by itself once it hides');
+});
+
 test('a page back from the browser\'s back-forward cache reloads by itself again',()=>{
   const page=updatable();page.controller.buildChanged(newVersion);
   page.leave();assert.equal(page.reloads,0);

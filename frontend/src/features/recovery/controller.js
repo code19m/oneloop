@@ -240,7 +240,7 @@ export function createRecoveryController({
   /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
   let writes=0;
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
-  // A page that is leaving, by Reload now or the browser, hides on its way out: no moment to reload by itself.
+  // A page that is leaving (pagehide), by Reload now or the browser, hides on its way out: no moment to reload by itself.
   let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now(),leaving=false;
 
   function entityKey(entity){
@@ -714,7 +714,7 @@ export function createRecoveryController({
     trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
     /** The server runs another version than this page; `build` is that version. */
     buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
-    reloadClient(){leaving=true;windowObject.location.reload();},
+    reloadClient(){windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
     liveConnected(){liveOpen=true;liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
