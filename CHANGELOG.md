@@ -55,12 +55,11 @@ All notable changes to oneloop are recorded here. The format follows
   counts them, as the **Storage** page does.
 - oneloop now looks for files that nothing refers to, such as files that a
   crash left behind, once an hour instead of every minute.
-- Opening a permanent attachment no longer writes to the database, and
-  thumbnails, avatars and files that the browser already has no longer wait
-  for other changes to finish, such as a Knowledge sync. An attachment's
-  `lastAccessedAt` now changes only while the attachment is temporary, and
-  the 24 hours of a temporary attachment start again when someone marks it
-  temporary.
+- Image thumbnails, and files and avatars that the browser already has, no
+  longer wait for other changes to finish, such as a Knowledge sync. An
+  attachment's `lastAccessedAt` now changes only while the attachment is
+  temporary, and the 24 hours of a temporary attachment start again when
+  someone marks it temporary.
 - Large Knowledge files download faster.
 
 ## [0.1.0-rc.5] - 2026-10-16
