@@ -14,7 +14,7 @@ const BATCH: i64 = 500;
 /// expressions in migrations/0001_initial.sql exactly: SQLite uses an
 /// expression index only for the same expression, so another spelling, or a
 /// parameter in place of `2592000`, scans the whole table without an error.
-const PRUNES: [(&str, i64); 10] = [
+const PRUNES: [(&str, i64); 11] = [
     (
         "DELETE FROM outbox_messages WHERE rowid IN (SELECT rowid FROM outbox_messages WHERE delivered_at<=?1 AND rowid<>(SELECT MAX(rowid) FROM outbox_messages) LIMIT ?2)",
         7 * DAY,
@@ -34,6 +34,11 @@ const PRUNES: [(&str, i64); 10] = [
     (
         "DELETE FROM mcp_tokens WHERE rowid IN (SELECT rowid FROM mcp_tokens WHERE MIN(expires_at,COALESCE(revoked_at,expires_at))<=?1 LIMIT ?2)",
         90 * DAY,
+    ),
+    // Before `mcp_grants`, so a grant whose receipts expired goes in the same pass.
+    (
+        "DELETE FROM idempotency_keys WHERE rowid IN (SELECT rowid FROM idempotency_keys WHERE expires_at<=?1 LIMIT ?2)",
+        0,
     ),
     (
         "DELETE FROM mcp_grants WHERE rowid IN (SELECT rowid FROM mcp_grants g WHERE MIN(expires_at,COALESCE(revoked_at,expires_at),COALESCE(last_used_at,created_at)+2592000)<=?1 AND NOT EXISTS(SELECT 1 FROM mcp_tokens t WHERE t.grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM activity_events a WHERE a.actor_mcp_grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM notification_events n WHERE n.actor_mcp_grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM idempotency_keys i WHERE i.actor_mcp_grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM file_deletion_jobs j WHERE j.actor_mcp_grant_id=g.id) LIMIT ?2)",

@@ -15,6 +15,10 @@ All notable changes to oneloop are recorded here. The format follows
 - An open connection, such as the one each browser tab keeps for live
   updates, now uses about 20 KB of server memory. Before, each one kept its
   own copy of the routes, about 300 KB, so 100 open tabs took 30 MB.
+- After many writes in a short time, such as an import through MCP, the first
+  write a day later no longer holds up all other writes while it removes the
+  expired retry keys. Database maintenance now removes them, a batch at a
+  time. Before, 50,000 expired keys held up writes for about a second.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

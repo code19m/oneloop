@@ -120,7 +120,15 @@ pub(crate) fn replay<T: DeserializeOwned>(
     hash: &str,
     now: i64,
 ) -> AppResult<Option<T>> {
-    tx.execute("DELETE FROM idempotency_keys WHERE expires_at<=?1", [now])?;
+    // Only this key: database maintenance removes the other expired receipts
+    // a batch at a time, so one write never pays for a whole burst.
+    tx.execute(
+        &format!(
+            "DELETE FROM idempotency_keys WHERE {} AND expires_at<=?4",
+            key_predicate(actor)
+        ),
+        params![actor.user_id, key, actor.mcp_grant_id(), now],
+    )?;
     let row = tx
         .query_row(
             &format!(
