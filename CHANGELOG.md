@@ -18,6 +18,9 @@ All notable changes to oneloop are recorded here. The format follows
   after, so every visit opens one round trip sooner.
 - When a Board tab shows again, reconnects, or hears of a change to an epic,
   track, milestone or member, it now reads the Board once instead of twice.
+- A tab no longer checks your access every 30 seconds while it is hidden or
+  gets live updates. Live updates already report lost access, and a hidden
+  tab refreshes when it shows again.
 
 ### Fixed
 

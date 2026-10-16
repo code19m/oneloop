@@ -222,7 +222,7 @@ export function createRecoveryController({
   // What the person was typing when their session ended, kept in memory for their next sign-in.
   /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any}|null} */
   let resume=null;
-  let apiReachable=online(),liveReachable=true,reconnectAttempt=0,reconnectTimer=null,liveAttempt=0,liveTimer=null,reconcilePromise=null,accessTimer=null;
+  let apiReachable=online(),liveReachable=true,liveOpen=false,reconnectAttempt=0,reconnectTimer=null,liveAttempt=0,liveTimer=null,reconcilePromise=null,accessTimer=null;
   let bound=false,disposed=false;
   let sessionGeneration=0,connectivityGeneration=0,reconnectGeneration=0;
   let routeLoadingTimer=null,routeLoadingGeneration=0;
@@ -496,6 +496,9 @@ export function createRecoveryController({
     if(disposed||!data?.session||data.session.temporary||!apiReachable)return;
     const context=getApp()?.context();if(!context)return;
     try{
+      // The open live stream reports lost access, and a hidden tab reconciles
+      // when it shows again.
+      if(liveOpen&&!resumeLive||documentObject.visibilityState==='hidden')return;
       if(context.view==='task'&&context.taskId){
         const task=data.tasks?.find((item)=>item.id===context.taskId||item.internalId===context.taskId);
         if(task)await api.task(task.internalId,{background:true});
@@ -707,11 +710,11 @@ export function createRecoveryController({
     reloadClient(){windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
-    liveConnected(){liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
+    liveConnected(){liveOpen=true;liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
     /** A newer tab took this tab's live updates; `resume` takes them back. */
     livePaused,
     liveDisconnected(reconnectLive){
-      setConnectivity(apiReachable,false);clearTimer(liveTimer);
+      liveOpen=false;setConnectivity(apiReachable,false);clearTimer(liveTimer);
       if(typeof reconnectLive==='function'){
         const delay=Math.min(1000*(2**liveAttempt),30_000)*(0.9+random()*0.2);liveAttempt++;
         liveTimer=setTimer(()=>{if(!disposed&&data?.session)reconnectLive();},delay);
@@ -724,7 +727,7 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility, storage and the connection. */
     start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('storage',storageChanged);scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);windowObject.removeEventListener('storage',storageChanged);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
