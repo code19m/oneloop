@@ -532,13 +532,15 @@ fn comment_page_context(
             "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                     c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
              FROM comments c JOIN users u ON u.id=c.author_id
-             WHERE c.id IN (SELECT value FROM json_each(?1)) AND c.task_id=?2 ORDER BY c.id",
+             WHERE c.id IN (SELECT value FROM json_each(?1)) ORDER BY c.id",
         )?
         .query_map(
-            params![encode(missing.difference(&included).collect())?, task_id],
+            [encode(missing.difference(&included).collect())?],
             comment_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;
+    // Checked here: with the task in the query, SQLite reads all its comments.
+    context.retain(|view| view.task_id == task_id);
     let shown = items
         .iter()
         .chain(&context)
