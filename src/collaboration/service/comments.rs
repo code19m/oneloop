@@ -523,31 +523,45 @@ fn comment_page_context(
         .collect::<BTreeSet<_>>();
     let mut missing = roots.clone();
     missing.extend(items.iter().filter_map(|item| item.reply_to_id.clone()));
-    let mut context = Vec::new();
-    for id in missing.difference(&included) {
-        if let Some(view) = connection.query_row(
+    let encode = |ids: Vec<&String>| {
+        serde_json::to_string(&ids)
+            .map_err(|error| AppError::internal(format!("serialize comment IDs: {error}")))
+    };
+    let mut context = connection
+        .prepare_cached(
             "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
                     c.content,c.created_at,c.edited_at,c.deleted_at,c.revision
-             FROM comments c JOIN users u ON u.id=c.author_id WHERE c.id=?1 AND c.task_id=?2",
-            params![id, task_id], comment_row,
-        ).optional()? {
-            context.push(view);
-        }
-    }
-    for item in items
-        .iter_mut()
-        .chain(context.iter_mut())
+             FROM comments c JOIN users u ON u.id=c.author_id
+             WHERE c.id IN (SELECT value FROM json_each(?1)) AND c.task_id=?2 ORDER BY c.id",
+        )?
+        .query_map(
+            params![encode(missing.difference(&included).collect())?, task_id],
+            comment_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let shown = items
+        .iter()
+        .chain(&context)
         .filter(|item| item.deleted_at.is_none())
-    {
-        item.mentions = mentions::load(connection, Mentioned::Comment(&item.id))?;
+        .map(|item| item.id.as_str())
+        .collect::<Vec<_>>();
+    let mut mentions = mentions::load_comments(connection, &shown)?;
+    for item in items.iter_mut().chain(context.iter_mut()) {
+        item.mentions = mentions.remove(&item.id).unwrap_or_default();
     }
-    let mut reply_counts = std::collections::BTreeMap::new();
-    for root in roots {
-        let count = connection.query_row(
-            "SELECT COUNT(*) FROM comments WHERE root_id=?1 AND id<>?1",
-            [&root],
-            |row| row.get(0),
-        )?;
+    // Every root has a count, also one without replies.
+    let mut reply_counts = roots
+        .iter()
+        .map(|root| (root.clone(), 0))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut statement = connection.prepare_cached(
+        "SELECT root_id,COUNT(*) FROM comments
+         WHERE root_id IN (SELECT value FROM json_each(?1)) AND id<>root_id GROUP BY root_id",
+    )?;
+    for row in statement.query_map([encode(roots.iter().collect())?], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })? {
+        let (root, count) = row?;
         reply_counts.insert(root, count);
     }
     Ok(CommentPage {

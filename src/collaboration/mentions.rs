@@ -97,6 +97,25 @@ pub(crate) fn load(connection: &Connection, item: Mentioned<'_>) -> AppResult<Ve
         .collect::<Result<Vec<_>, _>>()?)
 }
 
+/// The stored mentions of each of these comments, in text order.
+pub(crate) fn load_comments(
+    connection: &Connection,
+    ids: &[&str],
+) -> AppResult<HashMap<String, Vec<MentionToken>>> {
+    let ids = serde_json::to_string(ids)
+        .map_err(|error| AppError::internal(format!("serialize comment IDs: {error}")))?;
+    let mut statement = connection.prepare_cached(
+        "SELECT comment_id,kind,user_id,start_offset,end_offset,label FROM comment_mentions
+         WHERE comment_id IN (SELECT value FROM json_each(?1)) ORDER BY start_offset,id",
+    )?;
+    let mut mentions: HashMap<String, Vec<MentionToken>> = HashMap::new();
+    for row in statement.query_map([ids], |row| Ok((row.get::<_, String>(0)?, token(row, 1)?)))? {
+        let (id, mention) = row?;
+        mentions.entry(id).or_default().push(mention);
+    }
+    Ok(mentions)
+}
+
 /// Reads a mention from five columns, starting at `first`: kind, user ID,
 /// start offset, end offset and label.
 pub(crate) fn token(row: &Row<'_>, first: usize) -> rusqlite::Result<MentionToken> {
