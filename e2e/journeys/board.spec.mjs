@@ -106,6 +106,43 @@ test('creating, deleting with Undo and turning a Pool item into a task keep the 
   await expect(page.getByRole('heading', { name: 'No tasks yet' })).toHaveCount(0);
 });
 
+test('the Board keeps its filters and search in its address through a refresh, reads only the filtered cards, and Back leaves it', async ({ page, instance }) => {
+  const { project, track, task } = instance.projects[0];
+  const [otherTrack] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Other track' })).entities;
+  const [otherEpic] = (await command(instance.api, 'epic.create', { projectId: project.id, trackId: otherTrack.id, title: 'Other epic', startDate: '2026-09-24' })).entities;
+  await command(instance.api, 'task.create', { projectId: project.id, epicId: otherEpic.id, title: 'Elsewhere task' });
+  const [gone] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Gone track' })).entities;
+  await command(instance.api, 'track.delete', { id: gone.id }, gone.revision);
+  await openApp(page, instance, 'roadmap');
+  await page.locator('.nav-item[title="Board"]').click();
+  const titles = page.locator('.board .card-title-button'), trackFilter = page.locator('[data-filter-key=fTrack]');
+  await expect(titles).toHaveCount(2);
+  await trackFilter.click();
+  await page.locator('.pop [data-v]').filter({ hasText: track.name }).click();
+  await page.keyboard.press('Escape');
+  await page.getByLabel('Search tasks', { exact: true }).fill('seeded');
+  await expect(page).toHaveURL(`${instance.url}/#/board/${project.id}?search=seeded&track=${track.id}`);
+  await expect(titles).toHaveText([task.title]);
+  const requests = [];
+  page.on('request', request => requests.push(new URL(request.url())));
+  await page.reload();
+  await expect(page.getByLabel('Search tasks', { exact: true })).toHaveValue('seeded');
+  await expect(trackFilter).toContainText(track.name);
+  await expect(titles).toHaveText([task.title]);
+  // The page asks for the filtered cards only, so it never shows the others first.
+  const bootstraps = requests.filter(url => url.pathname === '/api/bootstrap');
+  expect(bootstraps.map(url => [url.searchParams.get('projectId'), url.searchParams.get('view')])).toEqual([[project.id, 'metadata']]);
+  const reads = requests.filter(url => url.pathname.endsWith('/board-view'));
+  expect(reads.map(url => [url.searchParams.get('trackIds'), url.searchParams.get('search')])).toEqual([[track.id, 'seeded']]);
+  await page.goBack();
+  await expect(page).toHaveURL(`${instance.url}/#/roadmap/${project.id}`);
+  // A link with a track that is gone shows all tracks, and the address says so.
+  await page.evaluate(([projectId, trackId]) => { location.hash = `#/board/${projectId}?track=${trackId}`; }, [project.id, gone.id]);
+  await expect(page).toHaveURL(`${instance.url}/#/board/${project.id}`);
+  await expect(trackFilter).toContainText('All tracks');
+  await expect(titles).toHaveCount(2);
+});
+
 test('Board search coalesces typing', async ({ page, instance }) => {
   await openApp(page, instance, 'board');
   await expect(page.locator('.board .card').first()).toBeVisible();

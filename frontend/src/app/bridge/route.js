@@ -3,6 +3,7 @@
 /** The view bridge's page changes: asking before typed text is lost, and loading what each page shows. */
 
 import { saveDoneOrder } from '../../data/done-order.js';
+import { pageOf } from '../address.js';
 
 /**
  * @param {import('../view-bridge.js').BridgeContext} ctx
@@ -53,12 +54,21 @@ export function installRoute(ctx, account) {
     // is loaded yet, so there is no page to load.
     if(!data.session||data.session.temporary)return;
     const routeHash=location.hash;
-    const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===location.hash;
+    // A filter or a Knowledge section rewrites the address, but the page stays.
+    const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&pageOf(routeHash)===pageOf(location.hash);
     if(!['users','settings'].includes(current.view))account.leaveUsers();
     if(current.view!=='profile')account.leaveProfile();
     try{
-      if(current.view==='board'){if(!reuseBootstrap||!reads.adoptBoard(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
-      else if(current.view==='roadmap'&&current.projectId){if(!reuseBootstrap)await reads.roadmap(current.projectId,{background});}
+      let reuse=reuseBootstrap;
+      // An address can name a project whose tracks, epics and people aren't
+      // loaded, as after a Knowledge link, Back or a pasted link. They load
+      // first, while the page shows its skeleton.
+      if(['board','roadmap','settings','knowledge'].includes(current.view)&&current.projectId!==data.bootstrapProjectId&&data.projects.some((item)=>item.id===current.projectId)){
+        if((await reloadBootstrap({background}))?.stale||!stillCurrent())return {stale:true};
+        app.refreshAfterDialog();reuse=true;Object.assign(current,context());
+      }
+      if(current.view==='board'){if(!reuse||!reads.adoptBoard(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
+      else if(current.view==='roadmap'&&current.projectId){if(!reuse)await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
           if(current.view!=='task'){recovery.clearPageError();app.openTask(task(current.taskId).id);}
@@ -82,7 +92,7 @@ export function installRoute(ctx, account) {
       else if(current.view==='profile')await loadProfileAccess({background});
       if(!stillCurrent())return {stale:true};
       const projectId=context().projectId;
-      if(!reuseBootstrap&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId,{background});
+      if(!reuse&&(['roadmap','task','knowledge'].includes(current.view)||routeHash?.startsWith('#/task/'))&&data.projects.some((item)=>item.id===projectId))await reads.counts(projectId,{background});
       return {stale:!stillCurrent()};
     }catch(error){
       if(!stillCurrent())return {stale:true};

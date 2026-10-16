@@ -263,7 +263,7 @@ test('Back with typed text puts the address back and asks, also through a redraw
   await waitFor(() => t.A.context().view !== 'task', 'Discard leaves the task');
   assert.equal(ask(t), null, 'Discard asks once');
   // Cancel left history as it was, so Back still leads to the Board.
-  assert.equal(t.w.location.hash, '#/board'); assert.equal(t.A.context().view, 'board');
+  assert.equal(t.w.location.hash, '#/board/p1'); assert.equal(t.A.context().view, 'board');
 });
 
 test('a link to another page with typed text asks once, and Discard follows it', async () => {

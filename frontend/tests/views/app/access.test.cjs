@@ -63,7 +63,7 @@ for(const [route,page] of [['board','.board .card[data-task="BIR-079"]'],['roadm
  t.D.projects[0].members.push({userId:'blairq',permissions:['manage_board']});t.A.refresh();
  assert.doesNotMatch(t.d.querySelector('#main').textContent,/No projects available/);
  assert(t.d.querySelector(`#main ${page}`));assert.equal(t.d.querySelector('.switcher-btn').getAttribute('aria-label'),'Project: Birch Grove');
- assert.equal(t.w.location.hash,`#/${route}`);
+ assert.equal(t.w.location.hash,`#/${route}/p1`,'the address then names the project');
 });
 
 test('ending the session closes open previews and the task page', () => {

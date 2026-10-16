@@ -56,6 +56,14 @@ All notable changes to oneloop are recorded here. The format follows
   temporary, and the 24 hours of a temporary attachment start again when
   someone marks it temporary.
 - Large Knowledge files download faster.
+- The address now names the project on the **Board**, the **Roadmap**,
+  **Knowledge** and **Settings**, and the Board's address also holds its
+  filters and search. A refresh, a bookmark or a link opens the same project
+  and filters, switching projects is a step in the browser's history, and
+  **Back** leaves the Board instead of undoing filters. An address without a
+  project, such as an older bookmark, opens the project you last switched to in
+  this browser. Before, a refresh opened the first project by name and lost
+  the filters.
 
 ### Fixed
 
@@ -90,6 +98,9 @@ All notable changes to oneloop are recorded here. The format follows
   a task no longer empty the **Board** in a project that isn't the first by
   name. Before, the Board said "No tasks yet" until something else loaded it
   again. The new card also shows one request sooner.
+- After you follow a link into another project, such as a **Knowledge** link,
+  its **Board** shows the project's cards. Before, it said "No tasks yet",
+  because the first project's tracks and epics stayed loaded.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

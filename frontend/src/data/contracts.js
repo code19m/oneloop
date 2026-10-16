@@ -17,12 +17,12 @@
  *   context:()=>LegacyContext, refresh:()=>void, toast:(message:string,kind?:string,options?:{action?:{label:string,run:()=>void}})=>void,
  *   acceptMoreBoard:ViewMethod, acceptMoreUsers:ViewMethod, askToDiscard:ViewMethod, autoReloadChanged:ViewMethod,
  *   clearTaskSaving:ViewMethod, closeOverlays:ViewMethod, commentDraft:ViewMethod, confirm:ViewMethod, fieldError:ViewMethod,
- *   followAddress:ViewMethod, isRendering:ViewMethod, nav:ViewMethod, noteTaskSaved:ViewMethod, noteTaskSaving:ViewMethod,
+ *   followAddress:ViewMethod, isRendering:ViewMethod, keepKnownFilters:ViewMethod, nav:ViewMethod, noteTaskSaved:ViewMethod, noteTaskSaving:ViewMethod,
  *   offerUndo:ViewMethod, openModal:ViewMethod, openPeek:ViewMethod, openTask:ViewMethod, prepareBlock:ViewMethod,
  *   redrawDialog:ViewMethod, refreshAfterDialog:ViewMethod, refreshBackground:ViewMethod, refreshBoard:ViewMethod,
  *   refreshCounts:ViewMethod, refreshEpic:ViewMethod, refreshPool:ViewMethod, refreshProfileAccess:ViewMethod,
  *   refreshRoadmap:ViewMethod, refreshTaskDrafts:ViewMethod, refreshTaskHeader:ViewMethod, refreshUsers:ViewMethod,
- *   restoreCommentDraft:ViewMethod, selectProject:ViewMethod, showBlocked:ViewMethod, showTemporaryPassword:ViewMethod,
+ *   resolveRoute:ViewMethod, restoreCommentDraft:ViewMethod, selectProject:ViewMethod, showBlocked:ViewMethod, showTemporaryPassword:ViewMethod,
  *   signOutText:ViewMethod, togglePoolDescription:ViewMethod, updateDocumentTitle:ViewMethod, validateFormDates:ViewMethod,
  * } & Record<string,unknown>} LegacyApp
  */

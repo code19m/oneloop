@@ -48,7 +48,9 @@ const reportError = (error, form = null) => {
   if (app) app.toast(feedback.message || 'The request could not be completed.', 'error');
   else showStartupError(error);
 };
-const bootstrap = createBootstrapController({ api, data, onReady: (projection) => runtimeHooks?.publish({ type:'bootstrap', projection }), onError: (error) => {
+// A Board filter that names a value the loaded project lacks, such as a deleted
+// track, is dropped before any read sends it.
+const bootstrap = createBootstrapController({ api, data, onReady: (projection) => { app?.keepKnownFilters(); runtimeHooks?.publish({ type:'bootstrap', projection }); }, onError: (error) => {
   if(error instanceof ApiError&&(error.code==='network_error'||error.status===401))return;
   if(error instanceof ApiError&&[403,404].includes(error.status))return;
   reportError(error);
@@ -69,10 +71,11 @@ const auth = createAuthController({
   getApp: () => app,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
   onSessionChange:(session)=>{
-    signInLoad.sessionChanged(session);
+    signInLoad.sessionChanged();
     runtimeHooks?.publish({type:'auth',session});
     recovery?.sessionChanged(session);
     if(session&&!session.temporary&&pendingAuthorization){const target=pendingAuthorization;pendingAuthorization=null;location.replace(target);return;}
+    if(session&&!session.temporary)app?.resolveRoute();
     if(session)queueMicrotask(()=>routeLoader({reuseBootstrap:true}));
   },
 });
@@ -107,7 +110,7 @@ try {
   await auth.initialize();
   ({ App: app } = await import('../../views/app.js'));
   recovery.start();
-  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load({projectId:app.context().projectId,...routeScope(),...scope})});
+  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load({...routeScope(),...scope})});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
   app.refresh();
   routeLoader=async(options={})=>{try{await bridge.loadCurrentRoute(options);}catch(error){if(!recovery.handleRouteError(error))reportError(error);}};

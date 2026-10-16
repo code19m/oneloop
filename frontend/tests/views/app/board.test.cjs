@@ -145,6 +145,38 @@ test('Clear filters keeps No matching tasks until the Board read lands, then emp
   assert(t.d.querySelector('.board .card')); assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, '');
 });
 
+test('a Board address shows its filters, and values the project no longer has are dropped before the Board is read', async () => {
+  // A deleted track, a person who is no longer active, and an epic outside the chosen track.
+  const t = bootApp({ route: 'board/p1?search=reader&track=t2,gone&epic=e1&assignee=danaell,none,robin' });
+  assert.equal(t.w.location.hash, '#/board/p1?search=reader&track=t2&assignee=none,robin');
+  assert.equal(t.w.history.length, 1, 'the address changes in place');
+  assert.equal(t.d.querySelector('.board-search').value, 'reader');
+  assert.deepEqual([...t.d.querySelectorAll('[data-filter-key] .sel-label')].map(label => label.textContent), ['Web Apps', 'All epics', '2 assignees']);
+  await t.bridge.loadCurrentRoute();
+  // The page's arrays belong to its window, so they compare as JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(t.reads.calls.filter(([name]) => name === 'board').map(([, projectId, filters]) => [projectId, filters]))),
+    [['p1', { trackIds: ['t2'], epicIds: [], assigneeIds: ['__unassigned__', 'robin'], search: 'reader', blocked: false }]]);
+});
+
+test('a filter or search change rewrites the Board address in place, so Back leaves the Board, and Clear filters empties its query', t => {
+  const board = bootApp({ route: 'board/p1' });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  board.A.setBlockedFilter(board.d.querySelector('.blocked-filter'));
+  assert.equal(board.w.location.hash, '#/board/p1?blocked=1');
+  const search = board.d.querySelector('.board-search');
+  search.focus(); search.value = 'reader'; board.A.setBoardQ('reader', { isComposing: false });
+  assert.equal(board.w.location.hash, '#/board/p1?blocked=1', 'the search waits for its pause');
+  t.mock.timers.tick(180);
+  assert.equal(board.w.location.hash, '#/board/p1?search=reader&blocked=1');
+  // A live update draws the page again, and typing goes on in the search box.
+  board.A.refreshBackground();
+  assert.equal(board.d.activeElement, board.d.querySelector('.board-search')); assert.equal(board.d.activeElement.value, 'reader');
+  board.A.clearBoardFilters();
+  assert.equal(board.w.location.hash, '#/board/p1');
+  assert.equal(board.w.history.length, 1);
+  t.mock.timers.reset();
+});
+
 test('a blocked card describes its block reason', () => {
   const { w, d } = bootApp({ media: () => true });
   const task = w.DATA.tasks.find(item => item.state !== 'done');
@@ -384,7 +416,7 @@ test('the click that ends a card drag never opens the card, however late it come
   // Firefox clicks only after the drop's redraw, which a busy page can take a second to finish.
   const now = t.w.Date.now; t.w.Date.now = () => now() + 1000;
   click();
-  assert.equal(t.w.location.hash, '#/board');
+  assert.equal(t.w.location.hash, '#/board/p1');
   // The next press forgets the drag, so a plain click opens the card.
   pointer('pointerdown', 10); pointer('pointerup', 10); click();
   assert.equal(t.w.location.hash, `#/task/${card.dataset.task}`);

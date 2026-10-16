@@ -2,6 +2,7 @@
 
 import { ApiError } from '../../data/api-client.js';
 import { UIAction, escapeHtml } from '../../app/markup.js';
+import { pageOf } from '../../app/address.js';
 
 const EDITOR_ROOT = '.modal,.task-page,.peek,.settings,.workspace-page';
 const EDITOR_REVISIONS = new WeakMap();
@@ -570,7 +571,7 @@ export function createRecoveryController({
    */
   function resumeEditing() {
     const next=resume;if(!next||!data?.session||data.session.temporary)return false;
-    if(data.session.userId!==next.userId||windowObject.location.hash!==next.hash){resume=null;return false;}
+    if(data.session.userId!==next.userId||pageOf(windowObject.location.hash)!==pageOf(next.hash)){resume=null;return false;}
     if(next.editor&&![...documentObject.querySelectorAll(EDITOR_ROOT)].some((candidate)=>next.editor.rootClass.every((name)=>candidate.classList.contains(name))))return false;
     resume=null;
     if(next.comment)getApp()?.restoreCommentDraft(next.comment);

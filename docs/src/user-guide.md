@@ -13,6 +13,12 @@
 An epic without an end date is **ongoing**. Use ongoing epics for recurring
 work, such as "Small fixes".
 
+The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
+names the project, so a refresh, a bookmark or a link opens the same project.
+An address without a project, such as an older bookmark, opens the project you
+last switched to in this browser. A link to a project you can't open shows
+**Page not found**.
+
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
 still comment. See [Permissions](admin-guide.md#permissions).
@@ -76,7 +82,10 @@ a review.
   works well with a keyboard.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
-  filters together show fewer.
+  filters together show fewer. The filters are part of the page's address, so
+  a refresh keeps them and you can share a filtered Board as a link. Changing
+  them adds no step to the browser's history, so **Back** leaves the Board. A
+  choice the project no longer has, such as a deleted track, is dropped.
 - **Newest first**, at the top of **Done**, lists the most recently finished
   tasks first. Each browser remembers this choice. While it is on, a task you
   move to Done goes to the top, and you can't reorder Done by hand. The manual

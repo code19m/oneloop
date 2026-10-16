@@ -5,7 +5,7 @@ import {createBootstrapController} from '../../../src/data/bootstrap-controller.
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
-import {settle,waitFor} from '../../support/helpers.cjs';
+import {settle,useGlobals,waitFor} from '../../support/helpers.cjs';
 
 const projection=(projectId,extra={})=>({timeZone:projectId,session:{userId:'u1',isAdmin:true},users:[{id:'u1',name:'Owner',isAdmin:true,isActive:true}],
   projects:[{id:'p1',name:'One',taskPrefix:'ONE',revision:1},{id:'p2',name:'Two',taskPrefix:'TWO',revision:1}],memberships:[],
@@ -109,10 +109,23 @@ test('a refresh that shows the admin role is gone leaves an admin page or dialog
   }
 });
 
-test('the route decides the bootstrap view',()=>{
-  assert.deepEqual(routeScope('#/task/ONE-1',null),{taskId:'ONE-1',view:'task'});
-  assert.deepEqual(routeScope('#/board',{context:()=>({board:{search:'x'}})}),{view:'metadata'});
+/** The browser's local storage, holding `entries`. */
+function storage(entries={}){
+  const values=new Map(Object.entries(entries));
+  return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key),values};
+}
+
+test('the address decides what the bootstrap loads, and the project on screen fills in for an address without one',t=>{
+  const onScreen={context:()=>({projectId:'p1'})};
+  assert.deepEqual(routeScope('#/task/ONE-1',onScreen),{taskId:'ONE-1',view:'task'});
+  assert.deepEqual(routeScope('#/board/p2',onScreen),{projectId:'p2',view:'board'});
+  assert.deepEqual(routeScope('#/board/p2?search=x',onScreen),{projectId:'p2',view:'metadata'},'a filtered Board reads its cards afterwards');
+  assert.deepEqual(routeScope('#/roadmap/p2',onScreen),{projectId:'p2',view:'roadmap'});
+  assert.deepEqual(routeScope('#/knowledge/p2/tree/guides',onScreen),{projectId:'p2',view:'metadata'});
+  assert.deepEqual(routeScope('#/inbox',onScreen),{projectId:'p1',view:'metadata'});
   assert.deepEqual(routeScope('',null),{view:'roadmap'});
+  useGlobals(t,{localStorage:storage({'oneloop.project':'p2'})});
+  assert.deepEqual(routeScope('#/board',null),{projectId:'p2',view:'board'},'a new tab opens the project this browser switched to last');
 });
 
 test('an unavailable destination is reported to the caller instead of the page when asked',async()=>{
@@ -179,28 +192,39 @@ test('a session change drops the read that started with the session check',async
   assert.equal(t.reads.length,2);
 });
 
-test('signing in again loads the project the tab showed when the session ended',async()=>{
-  const {signIn,loads}=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'});
-  signIn.sessionChanged(null);
-  await signIn.load();
-  assert.deepEqual(loads,[{projectId:'p2',view:'board'}],'the Board loads the project its switcher shows');
+test('signing in again loads the project the address names, or else the one on screen',async()=>{
+  for(const [hash,projectId] of [['#/board/p2','p2'],['#/inbox','p1']]){
+    const {signIn,loads}=signInPage({view:'board',projectId:'p1',board:{},hash});
+    signIn.sessionChanged();
+    await signIn.load();
+    assert.deepEqual(loads.map(scope=>scope.projectId),[projectId],hash);
+  }
 });
 
 test('a first sign-in loads the default project',async()=>{
   const {signIn,loads}=signInPage(null);
-  signIn.sessionChanged(null);
+  signIn.sessionChanged();
   await signIn.load();
   assert.deepEqual(loads,[{view:'board'}]);
 });
 
 test('a project the account can no longer open loads the default project, and a task only metadata',async()=>{
   const gone=new ApiError('project not found',{status:404,code:'not_found'});
-  const board=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'},async scope=>{if(scope.projectId)throw gone;return {stale:false};});
-  board.signIn.sessionChanged(null);await board.signIn.load();
+  const board=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board/p2'},async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  board.signIn.sessionChanged();await board.signIn.load();
   assert.deepEqual(board.loads,[{projectId:'p2',view:'board'},{view:'board'}]);
   const task=signInPage({view:'task',projectId:'p2',taskId:'TWO-1',hash:'#/task/TWO-1'},async scope=>{if(scope.taskId)throw gone;return {stale:false};});
-  task.signIn.sessionChanged(null);await task.signIn.load();
-  assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
+  task.signIn.sessionChanged();await task.signIn.load();
+  assert.deepEqual(task.loads,[{taskId:'TWO-1',view:'task'},{view:'metadata'}]);
+});
+
+test('a remembered project that is gone opens the default project and is forgotten',async t=>{
+  const remembered=storage({'oneloop.project':'p2'});useGlobals(t,{localStorage:remembered});
+  const gone=new ApiError('project not found',{status:404,code:'not_found'});
+  const {signIn,loads}=signInPage(null,async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  await signIn.load();
+  assert.deepEqual(loads,[{projectId:'p2',view:'board'},{view:'board'}]);
+  assert.equal(remembered.values.has('oneloop.project'),false);
 });
 
 // Without the drawer read, the fourth call never comes and the test times out.

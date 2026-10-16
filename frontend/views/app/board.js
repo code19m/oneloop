@@ -14,7 +14,7 @@ import {
   instanceTimeZone, instanceToday, overdue, setHTML, stIcon, today,
 } from './format.js';
 import {
-  App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal,
+  App, D, blockedCount, canBoard, epicById, epics, firstBoardPages, instanceNow, me, poolTotal, project,
   projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
@@ -37,7 +37,7 @@ function taskBits(t) {
 }
 
 /** The filters the Board shows, as App.context().board names them. */
-const boardFilters = () => ({ search: state.boardQ, blocked: state.boardBlocked, trackIds: state.boardTracks, epicIds: state.boardEpics, assigneeIds: state.boardAssignees });
+export const boardFilters = () => ({ search: state.boardQ, blocked: state.boardBlocked, trackIds: state.boardTracks, epicIds: state.boardEpics, assigneeIds: state.boardAssignees });
 
 /** The project's loaded tasks that pass the Board's filters. */
 function boardTasks() {
@@ -130,11 +130,62 @@ export function resetBoardFilters() {
   state.boardLimits = firstBoardPages();
 }
 
+/** The epics the epic filter offers: those on the chosen tracks, or all, in start order. */
+const epicChoices = () => (state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start));
+
+/** The people the assignee filter offers: you, No assignee, and the project's active members. */
+function assigneeChoices() {
+  const meId = me().id;
+  return [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
+}
+
+/** Show a filter's choice on its button, which the toolbar drew before the choice changed. */
+function showFilterChoice(key) {
+  const def = MULTI[key], button = document.querySelector(`[data-filter-key="${esc(key)}"]`);
+  if (!def || !button) return;
+  const label = def.summary();
+  button.querySelector('.sel-label').textContent = label; button.dataset.tip = label; button.classList.toggle('empty', !def.values().length);
+}
+
+/**
+ * Drop the filter values that the project doesn't have (a deleted track or
+ * epic, a person who left or is inactive, an epic outside the chosen tracks),
+ * so a Board read never sends unknown IDs, and show what is left in the
+ * toolbar and the address. Until the project's tracks, epics and people load,
+ * nothing is known yet.
+ */
+function keepKnownFilters() {
+  if (D.bootstrapProjectId !== state.projectId || !project()) return;
+  const keep = (list, known) => {
+    const kept = list.filter((id) => known.has(id));
+    if (kept.length === list.length) return false;
+    list.splice(0, list.length, ...kept); return true;
+  };
+  const tracksDropped = keep(state.boardTracks, new Set(tracks().map((t) => t.id)));
+  const epicsDropped = keep(state.boardEpics, new Set(epicChoices().map((e) => e.id)));
+  const assigneesDropped = keep(state.boardAssignees, new Set(assigneeChoices().map((o) => o.v)));
+  if (!tracksDropped && !epicsDropped && !assigneesDropped) return;
+  state.boardLimits = firstBoardPages();
+  ['fTrack', 'fEpic', 'fAssignee'].forEach(showFilterChoice);
+  App.replaceAddress();
+}
+
+/** Show the filters an address names, then keep only the values the project has. */
+export function showBoardFilters(filters) {
+  const next = filters ?? { search: '', trackIds: [], epicIds: [], assigneeIds: [], blocked: false };
+  if (JSON.stringify(normalizeBoardFilters(next)) !== JSON.stringify(normalizeBoardFilters(boardFilters()))) {
+    state.boardQ = next.search; state.boardBlocked = next.blocked;
+    state.boardTracks = [...next.trackIds]; state.boardEpics = [...next.epicIds]; state.boardAssignees = [...next.assigneeIds];
+    state.boardLimits = firstBoardPages();
+  }
+  keepKnownFilters();
+}
+
 function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
   if (!fromServer) cancelBoardSearch();
   App.updateDocumentTitle();
   if(reset) state.boardLimits = firstBoardPages();
-  if(!fromServer){runtime().filterBoard(App.context().board).catch(report);return;}
+  if(!fromServer){App.replaceAddress();runtime().filterBoard(App.context().board).catch(report);return;}
   const board = document.querySelector('.board');
   if (!board || state.view !== 'board') return;
   const snapshot = boardSnapshot();
@@ -218,13 +269,10 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
 /** The Board's page header: search, filters, Pool and New task. */
 export function boardTopbarHtml() {
   const applyBoard = applyBoardFilters;
-  const epicOpts = (state.boardTracks.length ? epics().filter((e) => state.boardTracks.includes(e.trackId)) : epics()).slice().sort((a, b) => d(a.start) - d(b.start));
   const updateEpicFilter = () => {
-    const choices = (state.boardTracks.length ? epics().filter(epic => state.boardTracks.includes(epic.trackId)) : epics()).slice().sort((a,b)=>d(a.start)-d(b.start));
-    const allowed = new Set(choices.map(epic=>epic.id));
+    const choices = epicChoices(), allowed = new Set(choices.map(epic=>epic.id));
     state.boardEpics.splice(0,state.boardEpics.length,...state.boardEpics.filter(id=>allowed.has(id)));
-    const def = MULTI.fEpic;
-    if(def) { def.options=choices.map(epic=>({v:epic.id,l:epic.title})); const button=document.querySelector('[data-filter-key="fEpic"]');if(button){button.querySelector('.sel-label').textContent=def.summary();button.dataset.tip=def.summary();button.classList.toggle('empty',!state.boardEpics.length);} }
+    if(MULTI.fEpic) { MULTI.fEpic.options=choices.map(epic=>({v:epic.id,l:epic.title})); showFilterChoice('fEpic'); }
   };
   const mk = (key, arr, all, noun, options, extra) => multiHtml(key, Object.assign({
     options, search: options.length > 6,
@@ -233,14 +281,12 @@ export function boardTopbarHtml() {
     clear: () => { arr.length = 0; if(key==='fTrack')updateEpicFilter(); applyBoard(); },
     summary: () => arr.length === 0 ? all : arr.length === 1 ? ((MULTI[key]?.options || options).find((o) => o.v === arr[0]) || {}).l || all : `${arr.length} ${noun}`,
   }, extra || {}));
-  const meId = me().id;
-  const assigneeOpts = [{ v: meId, l: me().name, sub: 'My tasks', pinned: true }, { v: NO_ASSIGNEE, l: 'No assignee', pinned: true }, ...projectMembers().filter((u) => u.id !== meId).map((u) => ({ v: u.id, l: u.name, sub: userHandle(u) }))];
   return `<h1>Board</h1>
   <div class="right board-filters">
     <input class="ctl board-search" data-board-search aria-label="Search tasks" placeholder="Search tasks" value="${esc(state.boardQ)}" ${UIAction.on('input', 'setBoardQ', UIAction.value, UIAction.event)} ${UIAction.on('keydown', 'boardSearchKey', UIAction.event)}>
     ${mk('fTrack', state.boardTracks, 'All tracks', 'tracks', tracks().map((t) => ({ v: t.id, l: t.name })), { width: 140 })}
-    ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicOpts.map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
-    ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeOpts, { search: true, width: 150 })}
+    ${mk('fEpic', state.boardEpics, 'All epics', 'epics', epicChoices().map((e) => ({ v: e.id, l: e.title })), { search: true, width: 180 })}
+    ${mk('fAssignee', state.boardAssignees, 'All assignees', 'assignees', assigneeChoices(), { search: true, width: 150 })}
     <button class="btn blocked-filter" aria-pressed="${state.boardBlocked}" ${UIAction('setBlockedFilter', UIAction.element)}>${I.blocked}Blocked<span class="blocked-filter-count" title="Blocked tasks in this project">${blockedCount()}</span></button>
     <button class="btn quiet" ${UIAction('openModal', 'pool')}>Pool <span class="mono subtle" data-pool-count>${poolTotal()}</span></button>
     ${canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Task</button>` : '<span class="read-only-pill">read only</span>'}
@@ -407,6 +453,7 @@ function settleCard(card, from) {
 document.addEventListener('compositionend', (e) => { if(e.target.matches?.('[data-board-search]'))App.setBoardQ(e.target.value,e); }, true);
 
 Object.assign(App, {
+  keepKnownFilters,
   // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
   refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
   acceptMoreBoard(col) {
@@ -499,7 +546,7 @@ Object.assign(App, {
   },
   // The header's search and filter menus show the arrays that the reset replaced.
   // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
-  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.replaceAddress();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
