@@ -47,12 +47,14 @@ function fixture(context,overrides={}){
   return {app,data,reads,bridge,opened,calls,paints,toasts,saved,get closed(){return closed;}};
 }
 
-test('an unloaded valid task hash is fetched before the shell decides it is missing',async()=>{
-  location.hash='#/task/ONE-1';
-  const state=fixture({view:'notfound',taskId:'ONE-1',projectId:'p1',board:{}});
-  await state.bridge.loadCurrentRoute();
-  assert.deepEqual(state.calls,[['task','ONE-1'],['counts','p1']]);
-  assert.deepEqual(state.opened,['ONE-1']);
+test('a task hash is read before the shell decides it is missing, and drawn again only when the page does not show it yet',async()=>{
+  for(const [view,pageError,opened] of [['notfound',null,['ONE-1']],['task','loading',['ONE-1']],['task',null,[]]]){
+    location.hash='#/task/ONE-1';
+    const state=fixture({view,taskId:'ONE-1',projectId:'p1',board:{}},{recovery:{pageError}});
+    await state.bridge.loadCurrentRoute();
+    assert.deepEqual(state.calls,[['task','ONE-1'],['counts','p1']]);
+    assert.deepEqual(state.opened,opened,`${view}, ${pageError}`);
+  }
 });
 
 test('a live refresh of Profile, Users and Settings reads passively, and a visit does not',async()=>{
@@ -307,6 +309,20 @@ test('only the latest project selection may apply a completed bootstrap',async()
   const b=state.bridge.selectProject('p2');
   second.resolve({stale:false});await b;first.resolve({stale:true});await a;
   assert.deepEqual(selected,['p2']);
+});
+
+test('a slow Board search or project switch marks the page busy after a moment, until its read ends',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const page=document.createElement('main');page.className='content';document.body.append(page);
+  const starts={search:bridge=>bridge.filterBoard({search:'slow'}),'project switch':bridge=>bridge.selectProject('p1')};
+  for(const [name,start] of Object.entries(starts))for(const ending of ['resolve','reject']){
+    const read=deferred(),state=fixture({view:'board',projectId:'p1',board:{}},{reads:{board:()=>read.promise},reloadBootstrap:()=>read.promise});
+    const done=start(state.bridge).catch(()=>{});await settle();
+    t.mock.timers.tick(119);assert.equal(page.getAttribute('aria-busy'),null,`${name}: a quick read shows nothing`);
+    t.mock.timers.tick(1);assert.equal(page.getAttribute('aria-busy'),'true',name);
+    read[ending](ending==='resolve'?{stale:true}:new Error('offline'));await done;
+    assert.equal(page.getAttribute('aria-busy'),null,`${name}: the busy state ends when the read does (${ending})`);
+  }
 });
 
 test('a delayed task read cannot leave a newer Profile route',async()=>{

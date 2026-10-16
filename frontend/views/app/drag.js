@@ -68,10 +68,12 @@ function pointerScroll() {
   if(!pointer.source.isConnected || !drag.item){finishPointerDrag(false);return;}
   const speed=(value,min,max)=>value<min+40?-Math.min(18,(min+40-value)/3):value>max-40?Math.min(18,(value-max+40)/3):0;
   const viewport=document.querySelector(pointer.kind==='task'?'.board':'.rm-scroll');
-  if(viewport){const rect=viewport.getBoundingClientRect();viewport.scrollLeft+=speed(pointer.x,rect.left,rect.right);if(pointer.kind==='track')viewport.scrollTop+=speed(pointer.y,rect.top,rect.bottom);}
+  // Under a still pointer only a scroll moves the content; pointermove retargets after a move.
+  let scrolled=false;
+  if(viewport){const rect=viewport.getBoundingClientRect(),x=speed(pointer.x,rect.left,rect.right),y=pointer.kind==='track'?speed(pointer.y,rect.top,rect.bottom):0;if(x||y){viewport.scrollLeft+=x;viewport.scrollTop+=y;scrolled=true;}}
   const list=pointer.target?.querySelector('.col-cards');
-  if(list){const rect=list.getBoundingClientRect();list.scrollTop+=speed(pointer.y,rect.top,rect.bottom);}
-  updatePointerTarget();pointer.frame=requestAnimationFrame(pointerScroll);
+  if(list){const rect=list.getBoundingClientRect(),y=speed(pointer.y,rect.top,rect.bottom);if(y){list.scrollTop+=y;scrolled=true;}}
+  if(scrolled)updatePointerTarget();pointer.frame=requestAnimationFrame(pointerScroll);
 }
 
 function finishPointerDrag(commit,event) {

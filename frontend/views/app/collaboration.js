@@ -66,17 +66,20 @@ function commentBodyHtml(task,c){
  const key=commentBodyKey(c),expandedBody=expandedCommentBodies.has(key),bodyId=`${key}-content`;
  return `<section class="comment-reading${expandedBody?'':' is-collapsed'}" data-comment-body-key="${esc(key)}"><div class="description-preview"><div class="cmt-body comment-body-content" id="${esc(bodyId)}" role="group" aria-labelledby="comment-author-${esc(c.id)} comment-time-${esc(c.id)}">${renderText(c)}</div></div><button type="button" class="description-toggle" aria-controls="${esc(bodyId)}" aria-expanded="${expandedBody}" ${UIAction('toggleCommentText',task.id,c.id)} hidden>${expandedBody?'Show less':'Show more'}</button></section>`;
 }
-// Batch layout writes, measurements and final writes across the entire feed.
+// Read, then write, across the entire feed: each read after a write costs a layout.
+// Bodies are measured at their natural height, as a fold to zero would shrink the page under the reader.
 function sizeCommentBodies(){
  const bodies=[...document.querySelectorAll('.comment-reading')].map(section=>({section,body:section.querySelector('.comment-body-content'),toggle:section.querySelector('.description-toggle')})).filter(item=>item.body&&item.toggle);
- for(const item of bodies){item.expanded=expandedCommentBodies.has(item.section.dataset.commentBodyKey);item.scrollTop=item.body.scrollTop;item.body.style.overflowY='hidden';item.body.style.height='0px';}
+ for(const item of bodies){item.expanded=expandedCommentBodies.has(item.section.dataset.commentBodyKey);item.scrollTop=item.body.scrollTop;}
+ for(const {body} of bodies){body.style.overflowY='hidden';body.style.height='auto';}
  const heights=bodies.map(({body})=>body.scrollHeight),limit=Math.max(240,Math.round(innerHeight*.8));
- bodies.forEach(({section,body,toggle,expanded,scrollTop},index)=>{
+ bodies.forEach(({section,body,toggle,expanded},index)=>{
   const fullHeight=heights[index],isLong=fullHeight>240;
-  body.style.height=Math.min(fullHeight,expanded?limit:240)+'px';body.style.overflowY=expanded?'auto':'hidden';body.scrollTop=expanded?scrollTop:0;
+  body.style.height=Math.min(fullHeight,expanded?limit:240)+'px';body.style.overflowY=expanded?'auto':'hidden';
   if(isLong&&(!expanded||fullHeight>limit))body.setAttribute('tabindex','0');else body.removeAttribute('tabindex');
   toggle.hidden=!isLong;section.classList.toggle('is-collapsed',isLong&&!expanded);toggle.textContent=expanded?'Show less':'Show more';toggle.setAttribute('aria-expanded',String(expanded));
  });
+ for(const {body,expanded,scrollTop} of bodies)body.scrollTop=expanded?scrollTop:0;
 }
 function mountCommentBodies(){
  cancelAnimationFrame(commentResizeFrame);commentResizeFrame=0;sizeCommentBodies();commentResizeObserver?.disconnect();
@@ -340,7 +343,7 @@ function mount(updateSnapshot=true){badge();mountCommentBodies();if(mention&&!me
 }
 /** Retry the open task's comments and activity. */
 export function retryTaskPage(id){return controller.loadTaskPage(id);}
-export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,composerHtml,feedHtml,inboxHtml,inboxNav,mount as mountCollaboration,taskFeedState};
+export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,composerHtml,feedHtml,inboxHtml,inboxNav,mount as mountCollaboration,sizeCommentBodies,taskFeedState};
 
 // Leaving oneloop would lose comments kept for an empty box. While no one
 // is signed in, that is any of them, and any comment still on its way when
@@ -351,7 +354,7 @@ Object.assign(App,{
  loadOlderActivity:(taskId)=>controller.moreTask(taskId),
  commentDraft,restoreCommentDraft(draft){resumedComment=draft;mount(false);},
  addComment:post,replyComment:(taskId,target)=>setMode(taskId,'reply',target),editComment:(taskId,target)=>setMode(taskId,'edit',target),
- toggleCommentText(taskId,commentId){const comment=taskById(taskId)?.comments?.find(item=>item.id===commentId);if(!comment||comment.deleted)return;const key=commentBodyKey(comment);expandedCommentBodies.has(key)?expandedCommentBodies.delete(key):expandedCommentBodies.add(key);sizeCommentBodies();},
+ toggleCommentText(taskId,commentId){const comment=taskById(taskId)?.comments?.find(item=>item.id===commentId);if(!comment||comment.deleted)return;const key=commentBodyKey(comment),body=document.getElementById(`${key}-content`),before=body?.getBoundingClientRect().height;expandedCommentBodies.has(key)?expandedCommentBodies.delete(key):expandedCommentBodies.add(key);sizeCommentBodies();UIMotion.height(body,before);},
  cancelCommentMode(taskId){const task=taskById(taskId),previous=commentMode;commentEditor=null;commentMode={mode:'comment',target:null};refreshComments(task,true);const row=[...document.querySelectorAll('[data-comment]')].find(el=>el.dataset.comment===previous.target),focus=row?.querySelector(previous.mode==='edit'?'.comment-menu-button':'.reply-action')||document.getElementById('cmtIn');focus?.focus({preventScroll:true});},
  toggleReplies(taskId,rootId){if(commentMode.mode==='edit'&&taskById(taskId)?.comments.find(c=>c.id===commentMode.target)?.parentId===rootId)return;const open=!expanded.has(rootId);open?expanded.add(rootId):expanded.delete(rootId);const task=taskById(taskId),thread=[...document.querySelectorAll('[data-thread-root]')].find(el=>el.dataset.threadRoot===rootId),button=[...document.querySelectorAll('[data-reply-root]')].find(el=>el.dataset.replyRoot===rootId),root=task?.comments.find(c=>c.id===rootId);if(!thread||!button||!root){refreshComments(task);return;}thread.classList.toggle('is-expanded',open);thread.setAttribute('aria-hidden',String(!open));thread.inert=!open;button.setAttribute('aria-expanded',String(open));const replies=task.comments.filter(c=>c.parentId===rootId).sort(chronological);setHTML(button,replySummary(task,root,replies,open));if(open)(globalThis.requestAnimationFrame||setTimeout)(()=>sizeCommentBodies());},
  commentMenu(ev,taskId,commentId){const task=taskById(taskId),comment=task?.comments.find(c=>c.id===commentId);if(!comment||comment.deleted||!canComment(task)||comment.who!==me()?.id&&!me()?.admin)return;const r=ev.currentTarget.getBoundingClientRect();openMenu([{label:'Edit',icon:commentIcons.edit,fn:()=>{App.closeOverlays();setMode(taskId,'edit',commentId);}},{label:'Delete',icon:commentIcons.remove,danger:true,fn:()=>{App.closeOverlays();App.deleteComment(taskId,commentId);}}],r.right,r.bottom+4,{commentId,trigger:ev.currentTarget});},
