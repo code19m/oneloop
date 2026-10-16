@@ -323,11 +323,14 @@ test('a dropped card settles into its new column, not back to its old one', asyn
 test('Done can list the newest finished tasks first, and the browser keeps the choice', async ({ page, instance }) => {
   const { project, epic } = instance.projects[0];
   // Each task is newer than the one before, so the order holds even when two
-  // finish within the same second.
+  // finish within the same second. The later one goes below the earlier one,
+  // so the manual order is the other way round.
   const create = async (title) => (await command(instance.api, 'task.create', { projectId: project.id, epicId: epic.id, title })).entities[0];
+  let earlier;
   for (const title of ['Finished earlier', 'Finished later']) {
     const task = await create(title);
-    await command(instance.api, 'task.move', { taskId: task.id, status: 'done' }, task.revision);
+    await command(instance.api, 'task.move', { taskId: task.id, status: 'done', ...(earlier ? { afterTaskId: earlier.id } : {}) }, task.revision);
+    earlier ??= task;
   }
   const now = await create('Finished now');
   await openApp(page, instance, 'board');

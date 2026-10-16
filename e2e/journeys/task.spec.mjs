@@ -208,8 +208,12 @@ test('live metadata, delayed reads and completed saves preserve task typing and 
 
 test('a task evicted from the Board keeps its attachments and discussion after return', async ({ page, instance }) => {
   const { project, epic } = instance.projects[0];
+  // New tasks go to the top, so the first one ends past the Board's first page.
   let task;
-  for (let i = 0; i < 52; i++) [task] = (await command(instance.api, 'task.create', { projectId: project.id, epicId: epic.id, title: `Pagination ${i}` })).entities;
+  for (let i = 0; i < 52; i++) {
+    const [created] = (await command(instance.api, 'task.create', { projectId: project.id, epicId: epic.id, title: `Pagination ${i}` })).entities;
+    task ??= created;
+  }
   await openApp(page, instance, `task/${task.taskKey}`);
   await page.locator('#attIn').setInputFiles({ name: 'retained.txt', mimeType: 'text/plain', buffer: Buffer.from('retained') });
   await expect(page.locator('.attachment-title')).toHaveCount(1);

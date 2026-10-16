@@ -208,6 +208,11 @@ schema describes the payload of each operation.
   `in_review` and `done`. `search_tasks` without a status returns the first page
   of each. Dates are `YYYY-MM-DD` in the instance time zone that `list_projects`
   returns.
+- **Moving tasks.** `task.move` puts a task where `position`, `beforeTaskId` or
+  `afterTaskId` says; `position` counts from 0 at the top of the column.
+  Without a place, the task goes to the top of its new column, as it does after
+  `task.unblock-and-complete`. New tasks start at the top of Planning.
+  `search_tasks` lists every column, Done too, in this order.
 - **Mentions.** A mention names the member by ID and marks its place in the
   text. A name alone doesn't notify anyone. `@everyone` has a
   [rate limit](reference.md#limits) in each project.

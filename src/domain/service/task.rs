@@ -33,8 +33,9 @@ pub(super) fn create_task(
         params![input.project_id, number],
     )?;
     let key = format!("{prefix}-{number:03}");
-    let position = task_append_position(tx, &input.project_id, "planning")?;
     let id = Uuid::now_v7().to_string();
+    // A new task starts at the top of Planning, where every Board shows it.
+    let position = task_insert_position(tx, &input.project_id, "planning", &id, 0)?;
     tx.execute(
         INSERT_TASK_SQL,
         params![
@@ -307,7 +308,8 @@ pub(super) fn move_task(
             "provide one of position, beforeTaskId or afterTaskId when reordering a column",
         ));
     }
-    let requested = if let Some(anchor) = input
+    // The task's index in the destination column, which the activity records.
+    let position = if let Some(anchor) = input
         .before_task_id
         .as_deref()
         .or(input.after_task_id.as_deref())
@@ -324,37 +326,25 @@ pub(super) fn move_task(
         let index: i64 = tx.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3 AND position<?4",
             params![before.project_id, status, input.task_id, anchor_position], |r| r.get(0))?;
-        Some(index + i64::from(input.after_task_id.is_some()))
+        index + i64::from(input.after_task_id.is_some())
     } else {
+        // Without a place, a task goes to the top of its new column, where
+        // every Board shows it.
         input
             .position
             .map(i64::try_from)
             .transpose()
             .map_err(|_| AppError::validation("position", "is outside the status column"))?
+            .unwrap_or(0)
     };
-    if status == before.status && requested == Some(old_index) {
+    if status == before.status && position == old_index {
         return Err(AppError::validation(
             "position",
             "task is already at that position",
         ));
     }
-    // The task's index in the destination column, which the activity records.
-    let (position, stored_position) = match requested {
-        Some(index) => (
-            index,
-            task_insert_position(tx, &before.project_id, status, &input.task_id, index)?,
-        ),
-        // An append comes from another column, so the count reads only an
-        // index, and the end of the column is one lookup.
-        None => (
-            tx.query_row(
-                "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL",
-                params![before.project_id, status],
-                |r| r.get(0),
-            )?,
-            task_append_position(tx, &before.project_id, status)?,
-        ),
-    };
+    let stored_position =
+        task_insert_position(tx, &before.project_id, status, &input.task_id, position)?;
     tx.execute(
         MOVE_TASK_SQL,
         params![

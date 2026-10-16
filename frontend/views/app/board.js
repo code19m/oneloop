@@ -319,12 +319,6 @@ export function boardTopbarHtml() {
 /** The cards a Board column shows, in order. */
 const shownColumn = (col) => boardTasks().filter((item) => item.state === col).slice(0, state.boardLimits[col] || 50);
 
-/** Whether a column shows its last card: the server has no more, and every loaded card is drawn. */
-function columnEndShown(col, except) {
-  const page = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[col] : null;
-  return !page?.nextCursor && boardTasks().filter((item) => item.state === col && item !== except).length <= (state.boardLimits[col] || 50);
-}
-
 // Without a target card, a card follows the last card its column shows, or
 // goes to the top with `atTop`.
 function taskMovePlan(t, col, beforeId = null, atTop = false) {
@@ -392,7 +386,7 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
     ...origin, previousState, optimisticState:col, previousOrders, optimisticOrders,
     pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
     countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
-    payload:{ taskId:t.internalId||t.id, status:col, ...(newest ? {} : plan.placement), optimistic:true },
+    payload:{ taskId:t.internalId||t.id, status:col, ...plan.placement, optimistic:true },
   };
 }
 
@@ -443,8 +437,8 @@ function setTaskState(t, col) {
   if (pendingMove) return false;
   if (t.state === col) return;
   if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
-  // A column that does not show its end takes the card at the top, where it stays in view.
-  const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);
+  // A move without a place goes to the top of the column, as on the server.
+  const change=applyTaskMove(t,col,null,true);if(!change)return false;submitTaskMove(change);
 }
 
 function focusMovedTask(id) {

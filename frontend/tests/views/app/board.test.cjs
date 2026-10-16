@@ -344,7 +344,7 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
   assert.notEqual(original,task.state);
 });
 
-test('a newest-first Done takes a finished card on top, keeps the manual order and offers no reordering', async () => {
+test('a newest-first Done takes a finished card on top and offers no reordering', async () => {
   const t=heldBoard(),projectId=t.A.context().projectId;
   t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
@@ -352,7 +352,7 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
   const before=done(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   dropCard(t,task.id,'done',before.at(-1));
   assert.deepEqual(done(),[task.id,...before]);
-  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['moveTask',['optimistic','status','taskId']]],'the server keeps the manual order');
+  assert.deepEqual(t.calls.map(([action,payload])=>[action,payload.position,payload.beforeTaskId]),[['moveTask',0,undefined]],'the card goes to the top of the manual order too');
   t.requests[0].resolve({});await tick();
   const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
   t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move'),stopPropagation(){}},card.dataset.task);
@@ -435,25 +435,17 @@ function longDone(count, more) {
 }
 const chooseMenuItem = (t, label) => { const button = [...t.d.querySelectorAll('#overlay-root > .menu button')].find(item => item.textContent.trim() === label); t.A.menuAction(JSON.parse(button.dataset.args)[0]); };
 
-test('Move to a column that does not show its end puts the card at its top, in view and focused', () => {
-  const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
-  assert.equal(shown.length, 50);
-  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]]);
-  assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
-  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
-});
-
-test('Move to a column that shows its end puts the card last and draws it', () => {
-  // 50 cards fill the first page exactly, so the column shows its end at the boundary.
-  const count = 50;
-  const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
-  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
-  assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
-  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);
+test('Move to puts the card at the top of its new column, in view and focused', () => {
+  // A long column that doesn't show its end, and one whose 50 cards fill the first page exactly.
+  for (const [count, more] of [[60, true], [50, false]]) {
+    const t = longDone(count, more), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
+    assert.equal(shown.length, 50);
+    const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
+    t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
+    assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]], `${count} cards`);
+    assert.deepEqual(t.doneCards(), [task.id, ...shown], `${count} cards: every card Done showed stays, below the moved card`);
+    assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
+  }
 });
 
 test('a card dropped below a long column follows its last shown card and stays drawn', () => {

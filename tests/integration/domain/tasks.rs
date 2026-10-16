@@ -1352,9 +1352,12 @@ async fn task_update_returns_and_replays_the_activated_epic() {
         .unwrap();
 }
 
+/// Creates Planning tasks that read in the order of `titles`, and returns
+/// their IDs in that order. A new task goes to the top, so the last title is
+/// created first.
 async fn planning_tasks(f: &Fixture, titles: &[&str]) -> Vec<String> {
     let mut ids = Vec::new();
-    for title in titles {
+    for title in titles.iter().rev() {
         let created = f
             .service
             .execute(
@@ -1370,6 +1373,7 @@ async fn planning_tasks(f: &Fixture, titles: &[&str]) -> Vec<String> {
             .unwrap();
         ids.push(created.entities[0]["id"].as_str().unwrap().to_owned());
     }
+    ids.reverse();
     ids
 }
 

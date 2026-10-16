@@ -82,6 +82,10 @@ a review.
 - Drag a card to change its status or its place in the column. On a touch
   screen, drag it by its **⋮** button. The **⋮** menu can also move it, which
   works well with a keyboard.
+- A new task, also one made from a Pool idea, starts at the top of
+  **Planning**. A task that changes status without a place, such as with
+  **Move to** or its **Status**, goes to the top of its new column. A card you
+  drag, or move with **Move up** and **Move down**, goes exactly there.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
   filters together show fewer. The filters are part of the page's address, so
@@ -89,9 +93,8 @@ a review.
   them adds no step to the browser's history, so **Back** leaves the Board. A
   choice the project no longer has, such as a deleted track, is dropped.
 - **Newest first**, at the top of **Done**, lists the most recently finished
-  tasks first. Each browser remembers this choice. While it is on, a task you
-  move to Done goes to the top, and you can't reorder Done by hand. The manual
-  order stays as it was for when you turn it off.
+  tasks first. Each browser remembers this choice. While it is on, you can't
+  reorder Done by hand; turn it off to see and change Done's own order.
 
 ### Pool
 

@@ -185,9 +185,11 @@ async fn http_board_read_parses_multi_filters_and_blocked_across_the_dataset() {
 async fn filtered_board_moves_use_server_validated_visible_anchors() {
     let f = fixture().await;
     let mut ids = Vec::new();
+    // A new task goes to the top, so the column reads Alpha, Beta, Gamma.
     for (index, title) in ["Visible Alpha", "Hidden Beta", "Visible Gamma"]
         .into_iter()
         .enumerate()
+        .rev()
     {
         let result = f
             .service
@@ -204,6 +206,7 @@ async fn filtered_board_moves_use_server_validated_visible_anchors() {
             .unwrap();
         ids.push(result.entities[0]["id"].as_str().unwrap().to_owned());
     }
+    ids.reverse();
     f.service
         .execute(
             &f.manager,
@@ -409,7 +412,7 @@ async fn ordering_writes_only_displaced_cards_and_preserves_retry_revision_and_a
 }
 
 #[tokio::test]
-async fn completing_blocked_task_appends_without_compacting_done_column() {
+async fn completing_blocked_task_goes_first_without_moving_done_cards() {
     let f = fixture().await;
     seed_ordering_column(&f, 3).await;
     f.service
@@ -449,7 +452,7 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
         )
         .await
         .unwrap();
-    // The new card goes last and the existing one keeps its place. Both count
+    // The new card goes first and the existing one keeps its place. Both count
     // as completed, in the order they reached Done.
     let done = column(&f, "done").await;
     assert_eq!(
@@ -460,9 +463,107 @@ async fn completing_blocked_task_appends_without_compacting_done_column() {
                 card.completion_order
             ))
             .collect::<Vec<_>>(),
-        [("order-4", true, Some(1)), ("order-1", true, Some(2))]
+        [("order-1", true, Some(2)), ("order-4", true, Some(1))]
     );
-    assert_eq!(done[0].position, existing);
+    assert_eq!(done[1].position, existing);
+}
+
+#[tokio::test]
+async fn a_move_without_a_place_goes_to_the_top_of_its_new_column() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 3).await;
+    let move_to = async |id: &str, status: &str, revision| {
+        f.service
+            .execute(
+                &f.manager,
+                command(
+                    DomainOperation::MoveTask,
+                    json!({"taskId":id,"status":status}),
+                    &format!("{id}-{status}"),
+                    Some(revision),
+                ),
+            )
+            .await
+            .unwrap()
+    };
+    let ids = async |status| {
+        column(&f, status)
+            .await
+            .into_iter()
+            .map(|card| card.id)
+            .collect::<Vec<_>>()
+    };
+    move_to("order-3", "in_review", 1).await;
+    assert_eq!(
+        ids("in_review").await,
+        ["order-3", "order-4", "order-5", "order-6"]
+    );
+    move_to("order-5", "done", 1).await;
+    move_to("order-6", "done", 1).await;
+    assert_eq!(ids("done").await, ["order-6", "order-5"]);
+    // Leaving Done clears the completion, and the task goes to the top too.
+    let reopened = move_to("order-5", "planning", 2).await;
+    assert!(reopened.entities[0]["completedAt"].is_null());
+    assert!(reopened.entities[0]["completionOrder"].is_null());
+    assert_eq!(ids("planning").await, ["order-5", "order-1", "order-2"]);
+}
+
+#[tokio::test]
+async fn new_and_promoted_tasks_start_at_the_top_of_planning() {
+    let f = fixture().await;
+    seed_ordering_column(&f, 2).await;
+    let created = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreateTask,
+                json!({"projectId":"p1","epicId":"e1","title":"New task"}),
+                "top-create",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let item = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::CreatePoolItem,
+                json!({"projectId":"p1","scope":"team","title":"Idea"}),
+                "top-idea",
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    let promoted = f
+        .service
+        .execute(
+            &f.manager,
+            command(
+                DomainOperation::PromotePoolItem,
+                json!({"poolItemId":item.entities[0]["id"],"epicId":"e1"}),
+                "top-promote",
+                Some(1),
+            ),
+        )
+        .await
+        .unwrap();
+    let planning = column(&f, "planning").await;
+    assert_eq!(
+        planning
+            .iter()
+            .map(|card| card.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            promoted.entities[0]["id"].as_str().unwrap(),
+            created.entities[0]["id"].as_str().unwrap(),
+            "order-1",
+            "order-2"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -570,7 +671,7 @@ proptest::proptest! {
             for index in 0..6 {
                 let created = f.service.execute(&f.manager, command(DomainOperation::CreateTask,
                     json!({"projectId":"p1","epicId":"e1","title":format!("Model {index}")}), &format!("model-create-{index}"), None)).await.unwrap();
-                model[0].push(created.entities[0]["id"].as_str().unwrap().to_owned());
+                model[0].insert(0, created.entities[0]["id"].as_str().unwrap().to_owned());
             }
             let ids = model[0].clone();
             for (step, (moving, target, requested)) in moves.iter().copied().enumerate() {
@@ -948,7 +1049,7 @@ async fn newest_first_done_pages_follow_completion_time() {
 }
 
 #[tokio::test]
-async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
+async fn a_task_moved_to_done_comes_first_in_both_orders() {
     let f = fixture().await;
     seed_done_column(&f).await;
     let created = f
@@ -988,10 +1089,12 @@ async fn a_task_moved_to_done_comes_first_only_in_newest_first_order() {
         .await
         .unwrap();
     assert_eq!(newest.items[0].id, id);
-    let mut manual = board_query("done", None);
-    manual.limit = Some(50);
-    let manual = f.service.board_page(&f.member, manual).await.unwrap();
-    assert_eq!(manual.items.last().unwrap().id, id);
+    let manual = f
+        .service
+        .board_page(&f.member, board_query("done", None))
+        .await
+        .unwrap();
+    assert_eq!(manual.items[0].id, id);
     let reopened = f
         .service
         .execute(

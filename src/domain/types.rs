@@ -363,15 +363,19 @@ pub struct TaskUpdate {
     pub assignee_ids: Option<Vec<String>>,
 }
 
+/// Moves a task to `status`, at the place that one of `position`, `beforeTaskId` and `afterTaskId` gives. Without a place, the task goes to the top of the column; a move within the task's own column needs one.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskMove {
     pub task_id: String,
     pub status: TaskStatus,
+    /// The task's index in the column, counted from 0 at the top, without the task itself.
     #[serde(default)]
     pub position: Option<usize>,
+    /// Puts the task just above this task of the column.
     #[serde(default)]
     pub before_task_id: Option<String>,
+    /// Puts the task just below this task of the column.
     #[serde(default)]
     pub after_task_id: Option<String>,
 }

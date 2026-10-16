@@ -87,6 +87,14 @@ All notable changes to oneloop are recorded here. The format follows
 - Markdown previews and the Knowledge base now load the math renderer, about
   80 KB, only for text with math. Before, any `$`, such as in a price or a
   shell variable, loaded it.
+- A task that changes status without a place now goes to the top of its new
+  column, Done too: with **Move to**, the task's **Status**, **Unblock and
+  complete**, or `task.move` in MCP without `position`, `beforeTaskId` or
+  `afterTaskId`. New tasks, also ones made from a Pool idea, start at the top
+  of **Planning**. Before, most of these went to the bottom, where a long
+  column hid them until **Load more**, and Done mixed both orders. A drag,
+  **Move up** and **Move down** still put a task exactly there, and
+  **Newest first** still lists Done by completion time.
 
 ### Fixed
 

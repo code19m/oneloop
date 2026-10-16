@@ -1,5 +1,5 @@
 //! Blocking and unblocking tasks, and editing a block reason.
-use super::ordering::task_append_position;
+use super::ordering::task_insert_position;
 use super::*;
 
 pub(super) fn block_task(
@@ -214,8 +214,9 @@ pub(super) fn unblock_task(
         params![actor.user_id, now, resolution, block_id, block_revision],
     )?;
     if complete {
-        // A blocked task is never Done yet, so this always completes it.
-        let position = task_append_position(tx, &task.project_id, "done")?;
+        // A blocked task is never Done yet, so this always completes it, at
+        // the top of Done as any move without a place.
+        let position = task_insert_position(tx, &task.project_id, "done", &input.task_id, 0)?;
         tx.execute(
             MOVE_TASK_SQL,
             params!["done", position, Some(now), now, input.task_id, expected],
