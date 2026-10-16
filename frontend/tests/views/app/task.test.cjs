@@ -149,6 +149,23 @@ test('Escape and Ctrl+Enter save the description, which shows again once saved, 
   }
 });
 
+test('a press below the description keeps the editor in place until the press ends, so its click lands', async () => {
+  for (const changed of [false, true]) {
+    const t = describedTask('One line'), task = t.D.tasks.find(item => item.id === 'BIR-079'), below = t.d.querySelector('.task-activity h2');
+    const pointer = type => below.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+    t.A.editDescription(task.id);
+    const editor = t.d.getElementById('task-description');
+    if (changed) editor.value = 'One line, changed';
+    // The press moves focus out of the editor before its click.
+    pointer('pointerdown'); editor.blur();
+    if (changed) await accept(t, [{ entityType: 'task', id: task.internalId, description: 'One line, changed', revision: 2 }]);
+    assert.equal(t.d.getElementById('task-description'), editor, `the editor keeps its place while the button is down (changed: ${changed})`);
+    pointer('pointerup'); click(t, below);
+    await waitFor(() => !t.d.getElementById('task-description'), 'the description shows its text once the press ends');
+    assert.equal(t.d.getElementById('task-description-content').textContent.trim(), changed ? 'One line, changed' : 'One line');
+  }
+});
+
 test('a description keeps its editor while a conflict question or a Not saved draft holds its text', async () => {
   const t = conflictPage({ desc: 'Their description' }), editor = () => t.d.getElementById('task-description');
   t.task.desc = 'Saved description'; t.A.refresh();

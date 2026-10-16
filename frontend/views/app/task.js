@@ -118,6 +118,8 @@ const descriptionHeadingHtml = (t, canEdit) => `<div class="description-heading"
  * Show the open task's description in place as it is now: its editor with
  * the text that waits to be saved, or its rendered text, with Edit and its
  * Not saved note. The editor being typed in keeps what the person is typing.
+ * The editor opens at once; anything else waits for a press on the page to
+ * end, so what lies below doesn't move under the pointer.
  */
 function paintDescription(t) {
   const section = document.querySelector('.task-page .task-description');
@@ -127,6 +129,7 @@ function paintDescription(t) {
   const wanted = input && input === document.activeElement || showsDescriptionEditor(t, canEdit) ? 'editor' : desc ? 'reader' : 'empty';
   if (wanted === 'editor' && shown === 'editor') { if (input !== document.activeElement && input.value !== desc) { input.value = desc; sizeDescription(); } }
   else if (wanted !== shown || wanted === 'reader' && body.querySelector('[data-markdown]').getAttribute('data-markdown') !== desc) {
+    if (wanted !== 'editor' && App.afterPress(repaintDescription)) return;
     const before = body.getBoundingClientRect().height;
     setHTML(body, descriptionBodyHtml(t, canEdit));
     section.querySelector('.description-toggle')?.setAttribute('aria-controls', descriptionBodyId(t, canEdit));
@@ -134,6 +137,7 @@ function paintDescription(t) {
   }
   placeEditButton(t); placeDraftNote(section, t, 'desc');
 }
+function repaintDescription() { const t = state.view === 'task' ? taskById(state.taskId) : null; if (t) paintDescription(t); }
 document.addEventListener('focusin', (event) => {
   const t = event.target.id === 'task-description' && state.view === 'task' ? taskById(state.taskId) : null;
   if (!t) return;
