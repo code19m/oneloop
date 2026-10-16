@@ -86,6 +86,10 @@ All notable changes to oneloop are recorded here. The format follows
   faster than its comments, as could happen when you opened it from the
   **Board**. Before, the comments and activity appeared only when something
   else drew the page again.
+- Creating a task, deleting one or undoing that, and turning a Pool item into
+  a task no longer empty the **Board** in a project that isn't the first by
+  name. Before, the Board said "No tasks yet" until something else loaded it
+  again. The new card also shows one request sooner.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
