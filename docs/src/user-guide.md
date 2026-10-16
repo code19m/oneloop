@@ -138,6 +138,20 @@ and it doesn't save the page as a file, except from inside an HTML file preview.
   dialog with text you typed asks before **Escape** closes it.
 - To delete a task, use the **⋮** menu at the top of the page.
 
+### Checklist
+
+A task's **Checklist**, below its description, splits the work into steps.
+
+- **Add an item** stays ready after Enter, so you can type the next step at
+  once. A task has up to 50 steps, each one line of up to 140 characters.
+- A step's text saves when you press Enter or leave it. To move a step, drag
+  its handle, or focus the handle and use the arrow keys, Home and End.
+- **×** removes a step at once, without Undo.
+- The heading and the Board card count the done steps, such as **2/5**. The
+  card's count turns green once every step is done. Steps don't move the task,
+  so a task can be Done with steps open.
+- People who can't change the Board see the steps, but not an empty checklist.
+
 ### Blocking
 
 When something stops the work, choose **Block task** and write the reason.

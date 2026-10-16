@@ -9,6 +9,7 @@
 
 import { sessionKey } from '../data/projection-store.js';
 import { installAccount } from './bridge/account.js';
+import { installChecklist } from './bridge/checklist.js';
 import { createCommands } from './bridge/commands.js';
 import { installPool } from './bridge/pool.js';
 import { installProjects } from './bridge/projects.js';
@@ -52,9 +53,10 @@ export function installViewBridge({ app, data, gateway, auth, api, reads, recove
   const ctx = { ...base, ...commands, ...createSaves({ ...base, ...commands }) };
   const account = installAccount(ctx);
   const tasks = installTasks(ctx);
+  const checklist = installChecklist(ctx);
   const roadmap = installRoadmap(ctx);
   const pool = installPool(ctx);
   installProjects(ctx);
   const route = installRoute(ctx, account);
-  return Object.freeze({ ...tasks, ...roadmap, ...pool, ...route, report: commands.report });
+  return Object.freeze({ ...tasks, ...checklist, ...roadmap, ...pool, ...route, report: commands.report });
 }

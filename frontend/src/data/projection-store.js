@@ -67,7 +67,10 @@ const FIELDS = {
     ['projectId'], ['epicId'], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
     ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['completedAt', 'completedAt', millisecondsOrNull],
     ['completionOrder', 'completionOrder', orNull], ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
+    // Only detail reads carry the checklist; every read carries its counts.
+    ['checklistDone', 'checklistDone', orZero], ['checklistTotal', 'checklistTotal', orZero], ['checklist', 'checklist', (items) => items?.map(mapChecklistItem)],
   ],
+  checklistItem: [['taskId'], ['title'], ['done']],
   poolItem: [['projectId'], ['scope', 'scope', toLegacyScope], ['ownerUserId', 'ownerId', orNull], ['title'], ['description', 'desc', text], ['createdAt', 'created', milliseconds]],
   taskBlock: [['reason'], ['createdBy', 'by'], ['createdAt', 'at', milliseconds], ['mentions', 'mentions', (mentions) => mentions ?? []], ['resolution', 'resolution', orNull]],
 };
@@ -110,6 +113,8 @@ function mapBlock(block) {
   return block ? fromWire('taskBlock', block) : null;
 }
 
+const mapChecklistItem = (item) => fromWire('checklistItem', item);
+
 function mapTask(task) {
   return {
     internalId: task.id, ...fromWire('task', task), detailsLoaded: typeof task.description === 'string',
@@ -127,7 +132,9 @@ function isOlder(existing, incoming) {
 function retainTaskDetails(previous, mapped) {
   if (isOlder(previous, mapped)) return previous;
   if (!previous) return mapped;
-  if(!mapped.detailsLoaded&&previous.detailsLoaded&&previous.revision===mapped.revision){mapped.desc=previous.desc;mapped.detailsLoaded=true;}
+  // A card has no details. A checklist change leaves the task's revision, so
+  // only the same counts tell that the checklist read before still holds.
+  if(!mapped.detailsLoaded&&previous.detailsLoaded&&previous.revision===mapped.revision&&previous.checklistDone===mapped.checklistDone&&previous.checklistTotal===mapped.checklistTotal){mapped.desc=previous.desc;mapped.checklist=previous.checklist;mapped.detailsLoaded=true;}
   for (const key of ['attachments','comments','activity']) if (previous[key]) mapped[key]=previous[key];
   return mapped;
 }

@@ -4,6 +4,7 @@
    the save status in its top bar. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { checklistHtml, refreshChecklist } from '../../src/features/checklist/checklist.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
@@ -183,6 +184,7 @@ export function renderTask() {
       <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}">${descriptionHeadingHtml(t, canEdit)}
         <div class="description-preview">${descriptionBodyHtml(t, canEdit)}</div>
         <button type="button" class="description-toggle" aria-controls="${descriptionBodyId(t, canEdit)}" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
+      ${checklistHtml(t, canEdit)}
       ${attachmentsHtml(t, canEdit)}
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
@@ -299,11 +301,19 @@ Object.assign(App, {
   /**
    * Show the open task as it is saved now, after a change from elsewhere,
    * such as a teammate, another tab or an MCP agent: its header, Status,
-   * title and description at once, in place, and the rest of the page once
-   * focus leaves it. The field being typed in keeps what the person is
-   * typing.
+   * title, description and checklist at once, in place, and the rest of the
+   * page once focus leaves it. The field being typed in keeps what the person
+   * is typing. The checklist waits for a press on the page to end: a row that
+   * moves under the pointer would lose its click.
    */
-  refreshTask(id) { App.refreshTaskHeader(); App.refreshTaskDrafts(id); App.refreshBackground(); },
+  refreshTask(id) {
+    App.refreshTaskHeader(); App.refreshTaskDrafts(id);
+    const checklist = () => App.refreshTaskChecklist(id);
+    if (!App.afterPress(checklist)) checklist();
+    App.refreshBackground();
+  },
+  /** Show a task's checklist as it is now, in place, when its page is open. */
+  refreshTaskChecklist(id) { refreshChecklist(taskById(id)); },
   noteTaskSaving: taskSaving,
   clearTaskSaving,
   retryTaskActivity(id){retryTaskPage(id);},

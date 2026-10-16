@@ -1,4 +1,5 @@
 //! Creating, editing, moving, deleting and restoring tasks.
+use super::checklist::{checklist_titles, insert_item};
 use super::ordering::{task_append_position, task_insert_position};
 use super::validation::optional_date;
 use super::*;
@@ -16,6 +17,7 @@ pub(super) fn create_task(
     let description = text::optional(&input.description, "description", TASK_DESCRIPTION_MAX)?;
     let deadline = optional_date(input.deadline, "deadline")?;
     let assignees = validate_assignees(tx, &input.project_id, input.assignee_ids)?;
+    let checklist = checklist_titles(&input.checklist)?;
     let (number, prefix): (i64, String) = tx
         .query_row(
             "SELECT s.next_task_number,p.task_prefix FROM project_sequences s JOIN projects p ON \
@@ -53,6 +55,9 @@ pub(super) fn create_task(
         ],
     )?;
     set_assignees(tx, &id, &actor.user_id, &[], &assignees, now)?;
+    for (position, title) in checklist.iter().enumerate() {
+        insert_item(tx, &id, position as i64, title, now)?;
+    }
     let entity = task_entity(tx, &id)?;
     let event = record_activity_tx(
         tx,

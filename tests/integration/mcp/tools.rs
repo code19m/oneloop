@@ -2158,3 +2158,101 @@ async fn every_tool_that_names_a_task_accepts_its_key() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn an_agent_creates_a_task_with_its_steps_and_ticks_them() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "roadmap_manage"],
+        &["project-1"],
+    )
+    .await;
+    let seeded = create_protocol_task(&mut mcp, "project-1", "steps").await;
+    let epic =
+        tool_value(&mcp.call("read_task", json!({"taskId": seeded})).await)["epicId"].clone();
+    let created = tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.create", "idempotencyKey": "with-steps",
+                   "payload": {"projectId": "project-1", "epicId": epic, "title": "Release",
+                               "checklist": ["Write notes", "Tag", "Publish"]}}),
+        )
+        .await,
+    );
+    let task = created["entities"][0]["id"].clone();
+    let first = created["entities"][0]["checklist"][0]["id"].clone();
+    tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.checklist.update", "idempotencyKey": "tick-notes",
+                   "expectedRevision": 1, "payload": {"itemId": first, "done": true}}),
+        )
+        .await,
+    );
+    let found = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "search": "Release"}),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            &found["items"][0]["checklistDone"],
+            &found["items"][0]["checklistTotal"]
+        ),
+        (&json!(1), &json!(3))
+    );
+    let read = tool_value(&mcp.call("read_task", json!({"taskId": task})).await);
+    let steps: Vec<_> = read["checklist"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["title"].as_str().unwrap(),
+                item["done"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [("Write notes", true), ("Tag", false), ("Publish", false)]
+    );
+}
+
+#[tokio::test]
+async fn removing_a_checklist_item_takes_the_destructive_tool_and_access() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "roadmap_manage"],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "remove-step").await;
+    let added = tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.checklist.add", "idempotencyKey": "add-step",
+                   "payload": {"taskId": task, "title": "Step"}}),
+        )
+        .await,
+    );
+    let remove = |tool: &str| {
+        json!({"operation": "task.checklist.delete", "idempotencyKey": format!("remove-{tool}"),
+               "expectedRevision": 1, "payload": {"id": added["entities"][0]["id"]}})
+    };
+    assert_tool_error(
+        &mcp.call("execute_work_command", remove("work")).await,
+        "execute_destructive_command",
+    );
+    assert_tool_error(
+        &mcp.call("execute_destructive_command", remove("destructive"))
+            .await,
+        "forbidden",
+    );
+}

@@ -281,6 +281,19 @@ test('compact deadlines show the year when it differs and expose the complete da
  assert(t.d.querySelector('[data-task="BIR-079"] .dl').textContent.includes(String(year+1)));
 });
 
+test('a card counts its checklist after the created date, green once every item is done', () => {
+ const t=bootApp({route:'board',prepare:D=>{Object.assign(D.tasks.find(task=>task.id==='BIR-079'),{checklistDone:2,checklistTotal:5});}});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079'),card=()=>t.d.querySelector('[data-task="BIR-079"]'),count=()=>card().querySelector('.card-checklist');
+ assert.equal(count().previousElementSibling,card().querySelector('.card-created'));
+ assert.equal(count().textContent,'2/5');assert(count().querySelector('svg'));assert(!count().classList.contains('complete'));
+ assert.equal(count().dataset.tip,'Checklist: 2 of 5 done');
+ assert.match(t.d.getElementById(card().querySelector('.title').getAttribute('aria-describedby')).textContent,/Checklist 2 of 5 done/);
+ task.checklistDone=5;t.A.refreshBoard();
+ assert.equal(count().textContent,'5/5');assert(count().classList.contains('complete'));
+ Object.assign(task,{checklistDone:0,checklistTotal:0});t.A.refreshBoard();
+ assert.equal(count(),null);
+});
+
 test('multi-select filters keep keyboard position through toggles, name the choice and return focus on Escape', () => {
  const t=bootApp({route:'board'}),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
  assert.match(trigger.textContent,/All tracks/);

@@ -284,6 +284,11 @@ pub(super) fn board_counts_connection(
     Ok(counts)
 }
 
+/// How many checklist items each task of a page has, and how many are done.
+pub(super) const CHECKLIST_COUNTS_SQL: &str =
+    "SELECT task_id,COUNT(*),SUM(done) FROM task_checklist_items
+    WHERE task_id IN (SELECT value FROM json_each(?1)) GROUP BY task_id";
+
 /// Open blocks on unfinished tasks. As a join, the plan depended on the
 /// statistics: with statistics for `tasks` but none for an empty
 /// `task_blocks`, SQLite read every task of the instance.
@@ -291,13 +296,53 @@ pub(super) const BLOCKED_COUNT_SQL: &str = "SELECT COUNT(*) FROM task_blocks b
     WHERE b.resolved_at IS NULL AND b.project_id=?1 AND EXISTS(SELECT 1 FROM tasks t
       WHERE t.id=b.task_id AND t.deleted_at IS NULL AND t.status!='done')";
 
+/// One task with its details: its description and its checklist.
 pub(in crate::domain) fn task_view(
     connection: &rusqlite::Connection,
     id: &str,
 ) -> AppResult<TaskView> {
-    task_views(connection, &[id.to_owned()], true)?
+    let mut task = task_views(connection, &[id.to_owned()], true)?
         .pop()
-        .ok_or(AppError::NotFound { resource: "task" })
+        .ok_or(AppError::NotFound { resource: "task" })?;
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT {CHECKLIST_ITEM_COLUMNS} FROM task_checklist_items WHERE task_id=?1 ORDER BY position"
+    ))?;
+    task.checklist = Some(
+        statement
+            .query_map([id], checklist_item_row)?
+            .collect::<Result<_, _>>()?,
+    );
+    Ok(task)
+}
+
+/// One checklist item, as a command that changed it returns it.
+pub(in crate::domain) fn checklist_item(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> AppResult<ChecklistItemView> {
+    connection
+        .prepare_cached(&format!(
+            "SELECT {CHECKLIST_ITEM_COLUMNS} FROM task_checklist_items WHERE id=?1"
+        ))?
+        .query_row([id], checklist_item_row)
+        .optional()?
+        .ok_or(AppError::NotFound {
+            resource: "checklist item",
+        })
+}
+
+/// The columns `checklist_item_row` reads, in its order.
+const CHECKLIST_ITEM_COLUMNS: &str = "id,task_id,position,title,done,revision";
+
+fn checklist_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChecklistItemView> {
+    Ok(ChecklistItemView {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        position: row.get(2)?,
+        title: row.get(3)?,
+        done: row.get(4)?,
+        revision: row.get(5)?,
+    })
 }
 
 /// One bounded set of queries for a page, preserving the caller's order.
@@ -341,6 +386,9 @@ pub(super) fn task_views(
                 revision: r.get(12)?,
                 assignee_ids: Vec::new(),
                 active_block: None,
+                checklist_done: 0,
+                checklist_total: 0,
+                checklist: None,
             })
         })?
         .map(|row| row.map(|task| (task.id.clone(), task)))
@@ -377,6 +425,21 @@ pub(super) fn task_views(
         let (id, block) = row?;
         if let Some(task) = tasks.get_mut(&id) {
             task.active_block = Some(block);
+        }
+    }
+    // One grouped read gives each task of the page its checklist counts.
+    let mut statement = connection.prepare_cached(CHECKLIST_COUNTS_SQL)?;
+    for row in statement.query_map([&encoded], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })? {
+        let (id, total, done) = row?;
+        if let Some(task) = tasks.get_mut(&id) {
+            task.checklist_total = total;
+            task.checklist_done = done;
         }
     }
     // Mentions are needed when opening an existing blocker editor from a card.

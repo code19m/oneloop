@@ -26,12 +26,12 @@ use crate::{
 };
 
 use super::{
-    BlockView, BoardCounts, BoardView, BootstrapView, DomainService, DoneOrder, EpicSummary,
-    EpicView, MembershipView, MilestoneView, Page, PageSummary, PoolItemView, PoolScope,
-    ProjectMembers, ProjectView, SessionView, TaskStatus, TaskView, TrackView, UserView,
+    BlockView, BoardCounts, BoardView, BootstrapView, ChecklistItemView, DomainService, DoneOrder,
+    EpicSummary, EpicView, MembershipView, MilestoneView, Page, PageSummary, PoolItemView,
+    PoolScope, ProjectMembers, ProjectView, SessionView, TaskStatus, TaskView, TrackView, UserView,
 };
 
-pub(super) use board::task_view;
+pub(super) use board::{checklist_item, task_view};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

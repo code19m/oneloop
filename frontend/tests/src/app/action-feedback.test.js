@@ -131,7 +131,8 @@ test('task insertion indices are not compared with gapped ordering keys',()=>{
 });
 
 test('a save the server says changes nothing stays quiet',()=>{
-  for(const message of ['invalid payload: no task fields changed','invalid position: task is already at that position','invalid position: track is already at that position'])
+  for(const message of ['invalid payload: no task fields changed','invalid position: task is already at that position','invalid position: track is already at that position',
+    'invalid payload: no checklist item fields changed','invalid position: item is already at that position'])
     assert.equal(actionErrorFeedback(new ApiError(message,{status:400,code:'validation_failed'})).silent,true,message);
 });
 

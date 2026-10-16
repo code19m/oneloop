@@ -175,6 +175,34 @@ test('unchanged task saves stay quiet and send no command', async ({ page, insta
   expect(commands).toEqual([]);
 });
 
+test('a checklist grows, ticks and moves by keyboard, and follows a change made elsewhere', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  const checklist = async () => (await (await instance.api.get(`/api/tasks/${task.id}`)).json()).checklist;
+  const saved = async () => (await checklist()).map(item => [item.title, item.done]);
+  await openApp(page, instance);
+  const add = page.getByLabel('Add a checklist item');
+  for (const title of ['Write the copy', 'Review it']) { await add.fill(title); await add.press('Enter'); }
+  await expect(page.locator('.checklist-item')).toHaveCount(2);
+  await expect(add).toBeFocused();
+  await page.getByLabel('Done: Write the copy').press('Space');
+  await expect(page.locator('.checklist-count')).toHaveText('1/2');
+  const title = page.getByRole('textbox', { name: 'Checklist item', exact: true }).last();
+  await title.fill('Review the copy');
+  await title.press('Enter');
+  await expect.poll(saved).toEqual([['Write the copy', true], ['Review the copy', false]]);
+  const grip = page.getByRole('button', { name: 'Move Review the copy', exact: true });
+  await grip.press('ArrowUp');
+  await expect(grip).toBeFocused();
+  await expect.poll(saved).toEqual([['Review the copy', false], ['Write the copy', true]]);
+  // Another person ticks the other item; the page and the Board card show it.
+  const other = (await checklist()).find(item => item.title === 'Review the copy');
+  await command(instance.writer, 'task.checklist.update', { itemId: other.id, done: true }, other.revision);
+  await expect(page.getByLabel('Done: Review the copy')).toBeChecked();
+  await expect(page.locator('.checklist-count')).toHaveText('2/2');
+  await page.getByRole('button', { name: 'Back to Board' }).click();
+  await expect(page.locator(`[data-task="${task.taskKey}"] .card-checklist`)).toHaveText('2/2');
+});
+
 test('live metadata, delayed reads and completed saves preserve task typing and pickers', async ({ page, instance }) => {
   await openApp(page, instance);
   const description = page.locator('#task-description'), title = page.locator('.tp-title');

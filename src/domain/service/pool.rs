@@ -188,6 +188,7 @@ pub(super) fn promote_pool_item(
         description: input.description.unwrap_or(item.description),
         deadline: input.deadline,
         assignee_ids: input.assignee_ids,
+        checklist: Vec::new(),
     };
     let mut mutation = create_task(tx, actor, task, now, Some(&input.pool_item_id))?;
     tx.execute(

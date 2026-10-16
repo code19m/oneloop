@@ -43,9 +43,11 @@ test('a read and a command result give each entity the same fields under the cli
     ['epic', data.epics, { id:'e2', projectId:'p1', trackId:'tr1', title:'Beta', description:'Try', startDate:'2026-10-01', endDate:'2026-11-01', state:'planning', position:2, taskTotal:3, taskDone:1, taskOpen:2, completedThisWeek:1, completedSinceStart:1, weeklyCompletions:[1], revision:1 },
       { projectId:'p1', trackId:'tr1', title:'Beta', desc:'Try', start:'2026-10-01', end:'2026-11-01', state:'planning', order:2, total:3, done:1, open:2, closedThisWeek:1, completedSinceStart:1, weekly:[1], counted:true }],
     ['milestone', data.milestones, { id:'m2', projectId:'p1', title:'Beta', description:'Ready', milestoneDate:'2026-11-01', revision:1 }, { projectId:'p1', name:'Beta', desc:'Ready', date:'2026-11-01' }],
-    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1 },
+    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1,
+      checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', position:0, title:'Plan', done:true, revision:3 }] },
       { internalId:'opaque-2', id:'BIR-002', projectId:'p1', epicId:'e1', title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, completedAt:null, completionOrder:null, assignees:['u1'],
-        block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null } }],
+        block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null },
+        checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', title:'Plan', done:true, revision:3 }] }],
     ['poolItem', data.pool, { id:'i2', projectId:'p1', scope:'team', ownerUserId:null, title:'Idea', description:'Later', createdAt:100, revision:1 }, { projectId:'p1', scope:'project', ownerId:null, title:'Idea', desc:'Later', created:100000 }],
   ];
   for (const [entityType, collection, view, expected] of cases) {
@@ -246,6 +248,18 @@ test('same-size people replacements invalidate renderer lookup ownership',()=>{
   assert.ok(data.peopleVersion>hydrated);assert.equal(data.users.length,1);
 });
 
+
+test('a card read keeps a task\'s loaded checklist only while its counts stay the same',()=>{
+  const data=createLegacyData();hydrateLegacyData(data,bootstrap());
+  const item={id:'i1',taskId:'opaque-task',position:0,title:'Plan',done:false,revision:1};
+  replaceTaskDetail(data,{...bootstrap().tasks[0],checklist:[item],checklistDone:0,checklistTotal:1});
+  const card={...bootstrap().tasks[0],checklistDone:0,checklistTotal:1};delete card.description;
+  replaceBoardTasks(data,'p1',[card]);
+  assert.deepEqual([data.tasks[0].detailsLoaded,data.tasks[0].checklist?.[0]?.title],[true,'Plan']);
+  // A tick leaves the task's revision as it is; only the counts tell that the checklist changed.
+  replaceBoardTasks(data,'p1',[{...card,checklistDone:1}]);
+  assert.deepEqual([data.tasks[0].detailsLoaded,data.tasks[0].checklist],[false,undefined]);
+});
 
 test('older command responses cannot roll back a newer task snapshot or membership',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());

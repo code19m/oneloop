@@ -154,7 +154,7 @@ and deleting needs `destructive` too.
 | `list_project_members` | Lists a project's members and their permissions | Read |
 | `read_roadmap` | Reads a project's tracks, epics and milestones | Read |
 | `search_tasks` | Searches a project's tasks by status, track, epic, assignee or blocked state | Read |
-| `read_task` | Reads one task by ID or task key, such as `WEB-042` | Read |
+| `read_task` | Reads one task and its checklist by ID or task key, such as `WEB-042` | Read |
 | `read_epic` | Reads an epic's tasks and activity | Read |
 | `read_pool` | Reads the Team Pool, or your My Pool | Read |
 | `read_comments` | Reads a task's comments and replies, or one comment in context | Read |
@@ -180,9 +180,9 @@ schema describes the payload of each operation.
 
 | Tool | Operations |
 | --- | --- |
-| `execute_work_command` | `track.create`, `track.update`, `track.reorder`, `epic.create`, `epic.update`, `epic.complete`, `epic.reopen`, `milestone.create`, `milestone.update`, `task.create`, `task.update`, `task.move`, `task.block`, `task.block.update`, `task.unblock`, `task.unblock-and-complete`, `pool.create`, `pool.update`, `pool.promote` |
+| `execute_work_command` | `track.create`, `track.update`, `track.reorder`, `epic.create`, `epic.update`, `epic.complete`, `epic.reopen`, `milestone.create`, `milestone.update`, `task.create`, `task.update`, `task.move`, `task.block`, `task.block.update`, `task.unblock`, `task.unblock-and-complete`, `task.checklist.add`, `task.checklist.update`, `task.checklist.move`, `pool.create`, `pool.update`, `pool.promote` |
 | `execute_discussion_command` | `discussion.comment.create`, `discussion.comment.edit`, `inbox.markRead`, `inbox.markUnread`, `inbox.archive`, `inbox.restore`, `inbox.bulkMarkRead`, `inbox.bulkArchive` |
-| `execute_destructive_command` | `track.delete`, `epic.delete`, `milestone.delete`, `task.delete`, `pool.delete`, `discussion.comment.delete` |
+| `execute_destructive_command` | `track.delete`, `epic.delete`, `milestone.delete`, `task.delete`, `task.checklist.delete`, `pool.delete`, `discussion.comment.delete` |
 
 ### Rules for every call
 
@@ -212,6 +212,11 @@ schema describes the payload of each operation.
   Without a place, the task goes to the top of its new column, as it does after
   `task.unblock-and-complete`. New tasks start at the top of Planning.
   `search_tasks` lists every column, Done too, in this order.
+- **Checklists.** `read_task` returns a task's checklist items, and every task
+  in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
+  `task.create` takes the items' titles in `checklist`, so a task and its
+  steps take one call. An item has its own revision: change it with the
+  item's `expectedRevision`, which leaves the task's revision as it is.
 - **Mentions.** A mention names the member by ID and marks its place in the
   text. A name alone doesn't notify anyone. `@everyone` has a
   [rate limit](reference.md#limits) in each project.

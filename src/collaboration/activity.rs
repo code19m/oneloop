@@ -217,6 +217,20 @@ fn project_activity_tx(tx: &Transaction<'_>, context: &ProjectionContext<'_, '_>
             },
         );
     }
+    // Checklist items are notes for the work, so the feeds stay quiet about
+    // them, as about positions.
+    if input.entity_type == "task" && input.field_key == Some("checklist") {
+        return insert_projection(
+            tx,
+            context,
+            ProjectionState {
+                is_open: false,
+                is_hidden: true,
+                visibility,
+                private_owner_user_id,
+            },
+        );
+    }
     if input.entity_type == "task" && input.field_key == Some("status") {
         tx.execute("UPDATE activity_projection SET is_open=0 WHERE entity_type='task' AND entity_id=?1 AND field_key='position' AND is_open=1", [input.entity_id])?;
     }

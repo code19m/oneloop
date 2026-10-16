@@ -68,6 +68,7 @@ export function createCommands(ctx) {
 
   function latestEntity(operation,payload,original){
     if(operation.startsWith('task.block'))return data.tasks.find((item)=>item.block?.id===payload.blockId)?.block??task(payload.taskId??original?.internalId);
+    if(operation.startsWith('task.checklist.')){const id=payload.itemId??payload.id;return data.tasks.flatMap((item)=>item.checklist??[]).find((item)=>item.id===id)??original;}
     if(operation.startsWith('task.'))return task(payload.taskId??payload.id??original?.internalId);
     if(operation.startsWith('epic.'))return epic(payload.epicId??payload.id??original?.id);
     if(operation.startsWith('track.'))return track(payload.trackId??payload.id??original?.id);
@@ -79,7 +80,8 @@ export function createCommands(ctx) {
   }
 
   async function reloadConflict(operation,payload,original,options){
-    if(operation.startsWith('task.')){const item=task(payload.taskId??payload.id??original?.internalId??original?.id);if(item)await reads.task(item.internalId);return;}
+    // A checklist item names its task.
+    if(operation.startsWith('task.')){const item=task(original?.taskId??payload.taskId??payload.id??original?.internalId??original?.id);if(item)await reads.task(item.internalId);return;}
     if(operation.startsWith('pool.')){await reads.pool(context().projectId,options.poolScope??toWireScope(original?.scope));return;}
     if(/^(?:epic|track|milestone)\./.test(operation)){const projectId=original?.projectId??context().projectId;if(projectId)await reads.roadmap(projectId);return;}
     await reloadBootstrap({projectId:context().projectId});app.refresh();
@@ -87,7 +89,7 @@ export function createCommands(ctx) {
 
   /** The one field a save changes, or null when it changes several. */
   function conflictField(payload){
-    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','blockId','projectId','userId','id','mentions']);
+    const ignored=new Set(['taskId','epicId','trackId','milestoneId','poolItemId','blockId','itemId','projectId','userId','id','mentions']);
     const keys=Object.keys(payload).filter((key)=>!ignored.has(key));
     return keys.length===1?keys[0]:null;
   }

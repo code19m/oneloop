@@ -10,7 +10,7 @@ All notable changes to oneloop are recorded here. The format follows
 
 - Stop oneloop, install the new version, and run
   `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
-  upgrades the database to schema 7. Older versions refuse a schema 7
+  upgrades the database to schema 8. Older versions refuse a schema 8
   database. To go back to one, restore the backup that `db migrate` made.
 
 ### Added
@@ -31,6 +31,12 @@ All notable changes to oneloop are recorded here. The format follows
   `delete_attachment` deletes it. This needs no destructive access, so an
   assistant can update its own documents without asking you to delete the old
   version. If the upload fails, the old file stays.
+- Tasks have a **Checklist**: short steps that you add, tick, rename, move and
+  remove on the task's page. A Board card shows how many steps are done, such
+  as 2/5, in green once all are. In MCP, `task.create` takes the steps in
+  `checklist`, `read_task` returns them, `search_tasks` and `read_epic` count
+  them, and `task.checklist.add`, `task.checklist.update`,
+  `task.checklist.move` and `task.checklist.delete` change them.
 
 ### Changed
 

@@ -24,6 +24,7 @@ import { installTooltips } from './tooltips.js';
 import { installSaveShortcut } from './save-shortcut.js';
 import { installDisclosures } from './motion.js';
 import { installPreviews } from '../features/files/preview.js';
+import { installChecklistControls } from '../features/checklist/checklist.js';
 
 installTrustedTypes();
 // First, so actions run before the document's other listeners, as inline handlers did.
@@ -98,6 +99,7 @@ installTooltips(document);
 installSaveShortcut(document,recovery);
 installDisclosures(document);
 installPreviews(document,runtimeHooks);
+installChecklistControls(document);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
