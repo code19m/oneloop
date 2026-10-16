@@ -84,6 +84,10 @@ const filterAnimations = new Set();
 const filterExitLayers = new Set();
 const filterScroll = new WeakMap();
 export const boardSnapshots = new WeakMap();
+/** The markup each row was drawn from, so a redraw leaves the rows that did not change. */
+const rowMarkup = new WeakMap();
+/** Remember the rows of a Board that was drawn whole. */
+export function rememberBoardRows(board) { for (const row of board.querySelectorAll('.col-cards > *')) rowMarkup.set(row, row.outerHTML); }
 let boardSearchTimer;
 
 export function cancelBoardSearch() { clearTimeout(boardSearchTimer); boardSearchTimer = null; }
@@ -181,8 +185,10 @@ function applyBoardFilters(reset = true, fromServer = false, { animate: motion =
     // A row keeps its element while its actions stay; a permission change
     // replaces a card, so its drag handlers come and go together.
     placeRows(list, desired.map((row) => {
-      const old=previous.get(boardRowKey(row,column.dataset.col))?.card;
-      return old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+      const old=previous.get(boardRowKey(row,column.dataset.col))?.card,markup=row.outerHTML;
+      if(old&&rowMarkup.get(old)===markup)return old;
+      const kept=old && old.hasAttribute('data-reorderable')===row.hasAttribute('data-reorderable') ? patchInPlace(old,row) : row;
+      rowMarkup.set(kept,markup);return kept;
     }));
     const count=column.querySelector('.col-head .row1 .mono'),nextCount=next.querySelector('.col-head .row1 .mono').textContent;
     if(count.textContent!==nextCount)count.textContent=nextCount;
