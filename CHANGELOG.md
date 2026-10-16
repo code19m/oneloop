@@ -144,6 +144,9 @@ All notable changes to oneloop are recorded here. The format follows
 - Opening a Markdown file with a very long run of backticks (`` ` ``) or
   tildes (`~`) no longer freezes the tab. Before, such a 200 KB file could
   freeze it for more than a minute.
+- A click on a task's file, or on **browse files**, now works also while the
+  task changes, such as right after you edit one of its fields. Before, the
+  change drew the files again under the pointer, and the click did nothing.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

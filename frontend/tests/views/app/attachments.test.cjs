@@ -355,6 +355,17 @@ test('a task page reads its attachments once each time it opens and once per liv
   assert.equal(t.d.querySelector('.attachment-title').textContent, 'notes.txt');
 });
 
+test('a live reload of the files waits for a press on the page to end, so its click lands', async () => {
+  const t = await withServerFiles([serverFile('notes', 'notes.txt', 'text')]);
+  const card = () => t.d.querySelector('[data-attachment-id="notes"]'), pressed = card();
+  const pointer = type => pressed.dispatchEvent(new t.w.PointerEvent(type, { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  pointer('pointerdown');
+  t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' }); await settle();
+  assert.equal(card(), pressed, 'the file stays under the pressed button');
+  pointer('pointerup'); pressed.dispatchEvent(new t.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await waitFor(() => card() !== pressed, 'the files are drawn again once the press ends');
+});
+
 test('a live re-read of attachments that lost access stays quiet', async () => {
   let reads = 0;
   const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').internalId = 'bir-079'; }, api: { attachments: async () => { if (++reads > 1) throw new ApiError('task not found', { status: 404, code: 'not_found' }); return { items: [] }; } } });

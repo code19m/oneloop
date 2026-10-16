@@ -271,15 +271,21 @@ export function attachmentsHtml(task,editable){
         ${editable ? `<input type="file" id="attIn" multiple hidden ${UIAction.on('change', 'attachFiles', task.id, UIAction.element)}>` : ''}
         ${renderAttachments(task,editable)}<div class="upload-list"></div></div>`;
 }
-/** Draw the attachments section of the open task again, and its activity, which lists attachment changes. */
+/**
+ * Draw the attachments section of the open task again, and its activity, which
+ * lists attachment changes. While a press on the page is in progress, such as
+ * on a file's name or Add files, it waits for the press to end: replacing the
+ * section under the pointer would lose the click.
+ */
 function refreshAttachments(id){
-  const context=App.context();if(context.view!=='task'||context.taskId!==id)return;
+  const context=App.context();if(context.view!=='task'||context.taskId!==id||App.afterPress(refreshShownAttachments))return;
   const template=document.createElement('template');setHTML(template,attachmentsHtml(taskById(id),canEdit(id)));
   const oldAttachments=document.querySelector('.task-attachments'),before=oldAttachments?.getBoundingClientRect().height,rows=UIMotion.rows(oldAttachments,'[data-attachment-id]','data-attachment-id');
   oldAttachments?.replaceWith(template.content.querySelector('.task-attachments'));
   const nextAttachments=document.querySelector('.task-attachments');UIMotion.height(nextAttachments,before);UIMotion.reflow(nextAttachments,'[data-attachment-id]','data-attachment-id',rows);
   App.refreshTaskActivity(id);mountAttachments(id);
 }
+function refreshShownAttachments(){const context=App.context();if(context.view==='task')refreshAttachments(context.taskId);}
 
 // Another person signing in, a new projection and live updates change what
 // the attachments show. The first page that shows them starts following.
