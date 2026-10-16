@@ -2,7 +2,6 @@
 
 /** The view bridge's page changes: asking before typed text is lost, and loading what each page shows. */
 
-import { boardFiltered } from '../../data/board-filters.js';
 import { saveDoneOrder } from '../../data/done-order.js';
 
 /**
@@ -81,11 +80,7 @@ export function installRoute(ctx, account) {
     /** @param {string} order `completed` lists the newest Done task first; anything else keeps the manual order. */
     async setDoneOrder(order){saveDoneOrder(order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);},
     /** @param {{search?:string,blocked?:boolean,trackIds?:string[],epicIds?:string[],assigneeIds?:string[]}} filters */
-    async filterBoard(filters){
-      const result=await reads.board(context().projectId,filters,{skipUnchanged:true});
-      if(!boardFiltered(filters)&&!result.stale)app.refresh();
-      return result;
-    },
+    filterBoard(filters){return reads.board(context().projectId,filters,{skipUnchanged:true});},
     /** @param {string} status */
     async loadMoreBoard(status){const result=await reads.moreBoard(status);if(!result.stale)app.acceptMoreBoard(status);return result;},
     /** Switch to another project, once typed text may be left. @param {string} projectId */

@@ -491,7 +491,8 @@ Object.assign(App, {
     UIMotion.layout(before,'.card[data-task]',id);settleCard(document.querySelector(`[data-task="${esc(id)}"]`),from);
     submitTaskMove(change,{onRollback:()=>{const rollbackBefore=UIMotion.positions('.card[data-task]');App.refreshBoard({animate:false});UIMotion.layout(rollbackBefore,'.card[data-task]');}});
   },
-  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();runtime().filterBoard(App.context().board).catch(report);},
+  // The header's search and filter menus show the arrays that the reset replaced.
+  clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.refresh();runtime().filterBoard(App.context().board).catch(report);},
   toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){

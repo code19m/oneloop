@@ -28,6 +28,10 @@ All notable changes to oneloop are recorded here. The format follows
   takes more than 30 seconds to download, as on a slow mobile connection.
   When the renderer can't load, the preview now says to check the
   connection, instead of blaming the diagram's syntax.
+- The web app does less work on slow computers and phones. Clearing a Board
+  filter or the search no longer draws the whole page again, so the cards
+  move smoothly into place.
+
 ### Fixed
 
 - Long comments on a task page no longer fold to nothing and grow back when

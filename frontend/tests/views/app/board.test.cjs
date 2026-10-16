@@ -111,6 +111,17 @@ test('Board text search coalesces typing, respects composition, flushes Enter or
   t.mock.timers.reset();
 });
 
+test('Clear filters empties the search box and names every filter menu\'s default again', () => {
+  const t = bootApp({ route: 'board' }), trigger = () => t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
+  t.D.boardPageInfo = { projectId: t.A.context().projectId, filters: {}, pages: {} };
+  t.A.popMulti({ preventDefault() {}, currentTarget: trigger() }, 'fTrack');
+  for (const key of ['ArrowDown', 'Enter', 'Escape']) t.d.dispatchEvent(new t.w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  t.A.setBoardQ('no task has this title');
+  assert.doesNotMatch(trigger().textContent, /All tracks/); assert(t.d.querySelector('.board .page-empty'));
+  t.A.clearBoardFilters();
+  assert.match(trigger().textContent, /All tracks/); assert.equal(t.d.querySelector('.board-search').value, ''); assert(t.d.querySelector('.board .card'));
+});
+
 test('a blocked card describes its block reason', () => {
   const { w, d } = bootApp({ media: () => true });
   const task = w.DATA.tasks.find(item => item.state !== 'done');
