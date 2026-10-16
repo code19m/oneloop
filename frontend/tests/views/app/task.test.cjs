@@ -117,6 +117,20 @@ test('the activity feed loads older records a page at a time', async () => {
  t.answer('activity',page(50,null));await settle();assert.equal(rows(),100);assert.equal(t.d.querySelector('[data-feed-key="load-older"]'),null);
 });
 
+test('an open task page reads its attachments, comments and activity again after a full reload of the workspace', async () => {
+ const reads=[];
+ const t=bootApp({route:'task/BIR-079',api:{
+  attachments:async()=>{reads.push('attachments');return {items:[]};},
+  comments:async()=>{reads.push('comments');return {items:[],nextCursor:null};},
+  activity:async()=>{reads.push('activity');return {items:[],nextCursor:null};},
+ }});
+ await waitFor(()=>reads.length===3,'the page reads its lists');await settle();
+ // A full reload replaces each task with one that keeps its lists, as hydrateLegacyData does, and the page draws again.
+ t.D.tasks.splice(0,Infinity,...t.D.tasks.map(task=>({...task})));
+ t.runtime.publish({type:'bootstrap',projection:{}});t.A.refreshBackground();await settle();
+ assert.deepEqual(reads.slice(3).sort(),['activity','attachments','comments']);
+});
+
 /** A task page whose commands the test answers; reading the task again brings someone else's `latest` change. */
 function conflictPage(latest = { title: 'Their title', deadline: '2026-11-30' }) {
   let task;
