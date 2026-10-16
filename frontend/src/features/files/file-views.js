@@ -262,9 +262,10 @@ function nameHeadings(fragment,source,tokens,nonce){
 }
 /**
  * What a page adds to the Markdown it shows. Knowledge resolves relative links
- * and images inside its folder and themes diagrams; descriptions give the app
- * route of the task keys they link. Attachments add nothing.
- * @typedef {{resolveLink?:(href:string)=>unknown,resolveImage?:(src:string)=>unknown,diagramTheme?:()=>object,taskLink?:(key:string)=>unknown}} MarkdownContext
+ * and images inside its folder and themes diagrams. Descriptions break lines
+ * where their text does, as GitHub shows an issue, and give the app route of
+ * the task keys they link. Attachments add nothing.
+ * @typedef {{resolveLink?:(href:string)=>unknown,resolveImage?:(src:string)=>unknown,diagramTheme?:()=>object,breaks?:boolean,taskLink?:(key:string)=>unknown}} MarkdownContext
  */
 
 /**
@@ -331,7 +332,7 @@ function renderMarkdown(view,text,context){
   if(!vendor.marked||!vendor.DOMPurify)return false;
   const maths=[];
   const mathPlaceholder=token=>{const index=maths.push({text:token.text,display:!!token.displayMode})-1;return `<${token.displayMode?'div':'span'} data-md-math="${index}"></${token.displayMode?'div':'span'}>`;};
-  const parser=new vendor.marked.Marked({gfm:true,breaks:false,async:false});
+  const breaks=!!context.breaks,parser=new vendor.marked.Marked({gfm:true,breaks,async:false});
   // Mark rendered headings with an unguessable value, so the ids can follow
   // the source's headings and uploaded HTML can't claim one.
   const nonce=Array.from(crypto.getRandomValues(new Uint32Array(2)),part=>part.toString(36)).join(''),headings=[];
@@ -347,7 +348,7 @@ function renderMarkdown(view,text,context){
   }
   let parsed;
   const source=text.replace(/^\uFEFF/,'');
-  try{parsed=parser.parse(source,{gfm:true,breaks:false,async:false});}catch{return false;}
+  try{parsed=parser.parse(source,{gfm:true,breaks,async:false});}catch{return false;}
   const scroll=view.scrollTop;
   const fragment=vendor.DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover','for','popovertarget','popovertargetaction','commandfor','command'],SANITIZE_NAMED_PROPS:true});
   fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(/^data-(?:action|args)\b/.test(attr.name))el.removeAttribute(attr.name);}));

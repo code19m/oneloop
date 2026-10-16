@@ -151,7 +151,7 @@ function load(dom, name) {
 }
 
 /** The browser libraries that Markdown previews load on demand, already present. */
-const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight'];
+const previewLibraries = ['vendor/marked/marked', 'vendor/dompurify/purify', 'vendor/cdn-assets/highlight', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
 
 /** Knowledge, which view tests leave out: a page and sections with nothing in them. */
 const knowledgeStub = () => ({ route: (_route, projectId) => projectId, render: () => '', topbar: () => '<h1>Knowledge base</h1>', beforeRender() {}, mount() {}, settingsHtml: () => '', modalHtml: () => '', clear() {} });

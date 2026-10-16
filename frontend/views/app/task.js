@@ -1,6 +1,7 @@
 // @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
-/* A task's page: its fields, block, attachments and activity, the drafts of
-   fields not saved yet, and the save status in its top bar. */
+/* A task's page: its fields, its description as Markdown or in its editor,
+   block, attachments and activity, the drafts of fields not saved yet, and
+   the save status in its top bar. */
 
 import { UIMotion } from '../../src/app/motion.js';
 import { attachmentsHtml } from './attachments.js';
@@ -10,7 +11,7 @@ import { dateHtml, multiHtml, selectHtml } from './controls.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, overdue, setHTML, stIcon,
 } from './format.js';
-import { sizeDescription, sizeTaskTitle } from './forms.js';
+import { mountDescription, sizeDescription, sizeTaskTitle } from './forms.js';
 import {
   App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
 } from './model.js';
@@ -73,8 +74,78 @@ function taskDraftNote(t, field) {
   if (!canBoard()) return `<p class="save-feedback" data-draft-note="${esc(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
   return `<p class="save-feedback" data-draft-note="${esc(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
 }
+/** Put the Not saved note of `field` at the end of `host`, or take it away. A note that stays the same keeps its element, and so its focus. */
+function placeDraftNote(host, t, field) {
+  const old = host.querySelector('[data-draft-note]'), template = document.createElement('template'); setHTML(template, taskDraftNote(t, field));
+  const note = template.content.firstElementChild;
+  if (old && note && old.outerHTML === note.outerHTML) return;
+  old?.remove(); if (note) host.append(note);
+}
 // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
 const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
+
+// ---------- description ----------
+// The description shows its saved text as Markdown. Its editor shows instead
+// while the person has it open, while its text waits to be saved (a save on
+// its way, a Not saved draft or a conflict question), and while it is empty
+// for someone who can edit it.
+
+// The task whose description editor the person has open, from when it gets
+// focus until focus moves elsewhere on the page. Drawing the page again, a
+// window that loses focus, Cmd+S and a session that ends keep it open.
+let descriptionOpen = null;
+const descriptionIsOpen = (t) => descriptionOpen?.taskId === t.id && descriptionOpen.userId === me()?.id;
+const descriptionText = (t) => taskDraft(t, 'desc')?.value ?? t.desc ?? '';
+function showsDescriptionEditor(t, canEdit) {
+  const draft = taskDraft(t, 'desc');
+  return !!draft?.unsaved || canEdit && (!!draft || descriptionIsOpen(t) || !descriptionText(t));
+}
+/** The description's editor, its rendered text, or for read-only members "No description". */
+function descriptionBodyHtml(t, canEdit) {
+  const desc = descriptionText(t);
+  if (showsDescriptionEditor(t, canEdit)) return `<textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? `${UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value)} ${UIAction.on('keydown', 'descriptionKey', UIAction.event)}` : lockedField(t, 'desc')}>${esc(desc)}</textarea>`;
+  if (!desc) return '<p class="description-content description-empty" id="task-description-content">No description</p>';
+  // A click opens the editor; links, boxes and selections inside keep their own.
+  return `<div class="description-content" id="task-description-content" role="group" aria-labelledby="task-description-label" data-markdown="${esc(desc)}" ${canEdit ? UIAction('editDescription', t.id, UIAction.event) : ''}>${esc(desc)}</div>`;
+}
+const descriptionBodyId = (t, canEdit) => showsDescriptionEditor(t, canEdit) ? 'task-description' : 'task-description-content';
+// Edit shows while the editor is closed and there is text to edit.
+const editHidden = (t) => descriptionIsOpen(t) || !descriptionText(t);
+const placeEditButton = (t) => document.querySelector('.task-page .description-edit')?.toggleAttribute('hidden', editHidden(t));
+/** The Description heading, with Edit for keyboards and screen readers. */
+const descriptionHeadingHtml = (t, canEdit) => `<div class="description-heading"><h2 id="task-description-label">Description</h2>${canEdit ? `<button type="button" class="btn quiet description-edit" aria-label="Edit description" ${UIAction('editDescription', t.id)} ${editHidden(t) ? 'hidden' : ''}>Edit</button>` : ''}</div>`;
+/**
+ * Show the open task's description in place as it is now: its editor with
+ * the text that waits to be saved, or its rendered text, with Edit and its
+ * Not saved note. The editor being typed in keeps what the person is typing.
+ */
+function paintDescription(t) {
+  const section = document.querySelector('.task-page .task-description');
+  if (!section) return;
+  const canEdit = canBoard(), body = section.querySelector('.description-preview'), input = body.querySelector('#task-description'), desc = descriptionText(t);
+  const shown = input ? 'editor' : body.querySelector('[data-markdown]') ? 'reader' : 'empty';
+  const wanted = input && input === document.activeElement || showsDescriptionEditor(t, canEdit) ? 'editor' : desc ? 'reader' : 'empty';
+  if (wanted === 'editor' && shown === 'editor') { if (input !== document.activeElement && input.value !== desc) { input.value = desc; sizeDescription(); } }
+  else if (wanted !== shown || wanted === 'reader' && body.querySelector('[data-markdown]').getAttribute('data-markdown') !== desc) {
+    const before = body.getBoundingClientRect().height;
+    setHTML(body, descriptionBodyHtml(t, canEdit));
+    section.querySelector('.description-toggle')?.setAttribute('aria-controls', descriptionBodyId(t, canEdit));
+    mountDescription(); UIMotion.height(body, before);
+  }
+  placeEditButton(t); placeDraftNote(section, t, 'desc');
+}
+document.addEventListener('focusin', (event) => {
+  const t = event.target.id === 'task-description' && state.view === 'task' ? taskById(state.taskId) : null;
+  if (!t) return;
+  descriptionOpen = { taskId: t.id, userId: me()?.id }; placeEditButton(t);
+});
+document.addEventListener('focusout', (event) => {
+  const t = event.target.id === 'task-description' && state.view === 'task' ? taskById(state.taskId) : null;
+  if (!t || App.isRendering() || document.activeElement === event.target) return;
+  descriptionOpen = null;
+  // An editor that stays, such as one whose text waits for its save, stays as it is.
+  if (showsDescriptionEditor(t, canBoard())) placeEditButton(t); else paintDescription(t);
+});
 /** The task page's status and Blocked badge in the top bar, and its Properties heading with Block task. */
 const taskStatusHtml = (t) => `<span class="chip idle task-status-chip">${stIcon(t.state)}${STATUS[t.state]}</span>${t.block ? `<span class="blocked-badge">${I.blocked}Blocked</span>` : ''}`;
 const taskPropertiesHeadingHtml = (t, canEdit) => `<div class="task-properties-heading"><h2 id="task-properties-heading">Properties</h2>${canEdit && t.state !== 'done' && !t.block ? `<button class="btn block-task-action" ${UIAction('openModal', 'block', t.id)}>${I.blocked}Block task</button>` : ''}</div>`;
@@ -83,8 +154,9 @@ export function renderTask() {
   const t = taskById(state.taskId);
   if (!t) { state.view = 'board'; return renderBoard(); }
   const canEdit = canBoard();
-  const title = taskDraft(t, 'title')?.value ?? t.title, desc = taskDraft(t, 'desc')?.value ?? t.desc ?? '';
+  const title = taskDraft(t, 'title')?.value ?? t.title;
   const feed = taskActivityHtml(t);
+  if (descriptionOpen && !descriptionIsOpen(t)) descriptionOpen = null;
 
   const late = overdue(t);
   return `<div class="task-page"><div class="task-layout${t.block ? ' has-block' : ''}">
@@ -101,9 +173,9 @@ export function renderTask() {
       </dl>
     </aside>
     <div class="tp-main">
-      <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}"><h2 id="task-description-label">Description</h2>
-        <div class="description-preview"><textarea id="task-description" class="ctl" aria-labelledby="task-description-label" placeholder="${canEdit ? 'Add a description…' : 'No description'}" aria-required="false" maxlength="4000" data-autosave ${UIAction.on('focus', 'expandDescription')} ${UIAction.on('input', 'sizeDescription')} ${canEdit ? UIAction.on('blur', 'updTask', t.id, 'desc', UIAction.value) : lockedField(t, 'desc')}>${esc(desc)}</textarea></div>
-        <button type="button" class="description-toggle" aria-controls="task-description" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
+      <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}">${descriptionHeadingHtml(t, canEdit)}
+        <div class="description-preview">${descriptionBodyHtml(t, canEdit)}</div>
+        <button type="button" class="description-toggle" aria-controls="${descriptionBodyId(t, canEdit)}" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
       ${attachmentsHtml(t, canEdit)}
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
@@ -156,21 +228,43 @@ document.addEventListener('input', (e) => { if(e.target.closest('.task-page'))cl
 
 Object.assign(App, {
   /**
-   * Show each title and description field's draft, or its saved value once
-   * the draft is gone (such as after Use latest), with its Not saved note.
-   * The field being edited keeps what the person is typing.
+   * Show the title's and description's drafts, or their saved values once
+   * the drafts are gone (such as after Use latest), with their Not saved
+   * notes. The field being edited keeps what the person is typing.
    */
   refreshTaskDrafts(id) {
     if (state.view !== 'task' || state.taskId !== id) return;
     const t = taskById(id); if (!t) return;
-    for (const [field, selector, control] of [['title', '.task-title-field', '.tp-title'], ['desc', '.task-description', '#task-description']]) {
-      const host = document.querySelector(`.task-page ${selector}`); if (!host) continue;
-      const input = host.querySelector(control), value = taskDraft(t, field)?.value ?? (field === 'title' ? t.title : t.desc ?? '');
-      if (input && input !== document.activeElement && input.value !== value) { input.value = value; if (field === 'title') sizeTaskTitle(); else sizeDescription(); }
-      host.querySelector('[data-draft-note]')?.remove();
-      const template = document.createElement('template'); setHTML(template, taskDraftNote(t, field));
-      host.append(template.content);
+    const host = document.querySelector('.task-page .task-title-field');
+    if (host) {
+      const input = host.querySelector('.tp-title'), value = taskDraft(t, 'title')?.value ?? t.title;
+      if (input && input !== document.activeElement && input.value !== value) { input.value = value; sizeTaskTitle(); }
+      placeDraftNote(host, t, 'title');
     }
+    paintDescription(t);
+  },
+  /**
+   * Open the description's editor, focused with the caret at the end. A
+   * click that lands on a link, a box or a summary, or that ends a text
+   * selection, leaves the description as it is.
+   */
+  editDescription(id, event) {
+    const t = taskById(id);
+    if (!t || state.view !== 'task' || taskById(state.taskId) !== t || !canBoard()) return;
+    if (event && (event.target.closest('a,input,summary') || !getSelection().isCollapsed)) return;
+    descriptionOpen = { taskId: t.id, userId: me()?.id };
+    paintDescription(t);
+    const input = document.getElementById('task-description');
+    if (!input) return;
+    input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); input.scrollTop = input.scrollHeight;
+  },
+  /** Escape and Cmd/Ctrl+Enter leave the description, which saves it, and give focus to Edit. */
+  descriptionKey(event) {
+    if (event.isComposing || event.keyCode === 229 || !(event.key === 'Escape' || event.key === 'Enter' && (event.metaKey || event.ctrlKey))) return;
+    event.preventDefault(); event.stopPropagation();
+    const input = event.currentTarget, edit = input.closest('.task-description')?.querySelector('.description-edit');
+    input.blur();
+    if (edit && !edit.hidden) edit.focus({ preventScroll: true });
   },
   /**
    * Show the saved status, block and deadline of the open task around its

@@ -224,6 +224,17 @@ test('text typed when the session ends waits for the same person to sign in agai
  assert.equal(t.w.Recovery.keepsInput, false, 'it is put back once');
 });
 
+test('a description being edited when the session ends opens again with its text for the same person', () => {
+ const t = bootApp({ route: 'task/BIR-079', prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The saved description'; } });
+ t.A.editDescription('BIR-079');
+ t.d.getElementById('task-description').value = 'Typed as the session ended';
+ const session = endSession(t);
+ signInAgain(t, { ...session, id: 'next-session' });
+ const description = t.d.getElementById('task-description');
+ assert.equal(description?.value, 'Typed as the session ended');
+ assert.equal(t.d.activeElement, description);
+});
+
 test('a comment still being sent when the session ends is kept for its writer, and closing the tab asks first', async () => {
  const t = bootApp({ route: 'task/BIR-079' });
  t.d.getElementById('cmtIn').value = 'Sent as the session ended'; t.A.addComment('BIR-079'); await settle();

@@ -6,6 +6,15 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A task's description now shows as formatted Markdown, as people and AI
+  assistants write it: headings, lists, tables, code and more. Task keys of
+  your projects, such as `WEB-042`, link to their tasks. Click the text, or
+  choose **Edit**, to change it; leaving the field, Esc or Ctrl+Enter
+  (Cmd+Enter on macOS) saves it and shows it formatted again. An epic's
+  description shows formatted too.
+
 ### Changed
 
 - oneloop now compresses the web app's files with gzip, so a first visit
@@ -122,6 +131,8 @@ All notable changes to oneloop are recorded here. The format follows
 - A link to a oneloop page in a Markdown preview or a Knowledge file, such as
   `[the task](#/task/WEB-042)` or the page's full address, now opens that
   page. Before, it went nowhere.
+- Code blocks in Markdown files now have a visible background in the dark
+  theme. Before, it matched the page.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

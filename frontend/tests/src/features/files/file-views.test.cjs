@@ -5,8 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM, bootApp, importModule, source, previewLibraries, waitFor, settle, fixtures } = require('../../../support/dom.cjs');
 
-const markdownLibraries = ['vendor/katex/katex.min', 'vendor/marked-katex-extension/index', 'vendor/marked-footnote/index', 'vendor/marked-alert/index'];
-const libraries = [...previewLibraries, ...markdownLibraries];
+const libraries = [...previewLibraries, 'vendor/katex/katex.min', 'vendor/marked-katex-extension/index'];
 // KaTeX refuses to render in quirks mode.
 const boot = options => { const t = bootApp({ route: 'task/BIR-079', libraries, html: '<!doctype html><meta name="theme-color"><div id="app"></div>', ...options }); return { ...t, views: t.module('src/features/files/file-views.js') }; };
 
@@ -345,7 +344,7 @@ test('HTML previews keep Source usable without parsing, and show nothing without
 function directPreviews() {
   const dom = new JSDOM('<!doctype html><div id="host"></div>', { url: 'http://localhost/', runScripts: 'outside-only', pretendToBeVisual: true }), w = dom.window;
   w.matchMedia = () => ({ matches: true });
-  for (const name of [...previewLibraries, 'vendor/marked-footnote/index', 'vendor/marked-alert/index']) w.eval(source(name));
+  for (const name of previewLibraries) w.eval(source(name));
   return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
 
