@@ -194,6 +194,10 @@ All notable changes to oneloop are recorded here. The format follows
 - After you move a file with the arrow keys, focus now stays on it, so you
   can move it again. Before, it fell to the page once oneloop saved the new
   order.
+- When you turn **Newest first** on or off in one tab, the browser's other
+  **Board** tabs keep showing live changes, in the order they show, and use
+  the new choice when they load again. Before, they stopped showing changes
+  until they read the Board again.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

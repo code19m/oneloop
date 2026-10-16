@@ -28,6 +28,26 @@ test('live Board moves keep loaded cards in position and ID order across columns
  assert.equal(t.D.boardPageInfo.pages.planning.nextCursor,'planning-next');assert.equal(t.D.boardPageInfo.pages.progress.nextCursor,'progress-next');
 });
 
+test('a Done order chosen in another tab leaves this tab\'s Board taking live changes', async () => {
+  const t = bootApp({ route: 'board' }), projectId = t.A.context().projectId;
+  t.D.tasks.splice(0); t.D.projectTaskCounts = {};
+  // The page's own read controller, which reads the order from this window's storage.
+  const { createReadController } = t.module('src/data/read-controller.js');
+  const task = (id, position) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title: id, status: 'planning', position, revision: 1, assigneeIds: [] });
+  const empty = { items: [], total: 0, nextCursor: null };
+  let changed;
+  const reads = createReadController({ data: t.D, onBoard: () => t.A.refreshBoard(), api: {
+    boardView: async () => ({ planning: { items: [task('a', 1024)], total: 1, nextCursor: null }, inProgress: empty, inReview: empty, done: empty, counts: { planning: 1, inProgress: 0, inReview: 0, done: 0, blocked: 0 } }),
+    task: async () => changed, counts: async () => ({ planning: 2, inProgress: 0, inReview: 0, done: 0, blocked: 0 }),
+  } });
+  await reads.board(projectId);
+  // Another tab of this browser turns Newest first on, as its toggle saves it.
+  t.w.localStorage.setItem('oneloop.doneOrder', 'completed');
+  changed = task('b', 0);
+  await reads.patchBoard(projectId, {}, [{ entityId: 'b' }]);
+  assert.deepEqual([...t.d.querySelectorAll('[data-col="planning"] .card')].map(card => card.dataset.task), ['BIR-b', 'BIR-a']);
+});
+
 test('Board search renders matching titles and keys with surrounding whitespace',()=>{
  const t=bootApp({route:'board'}),task=t.D.tasks.find(item=>item.id==='BIR-079');
  for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
