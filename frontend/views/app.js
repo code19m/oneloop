@@ -8,6 +8,7 @@
 import { pageOf, projectAddress, readAddress, rememberProject } from '../src/app/address.js';
 import { UIMotion } from '../src/app/motion.js';
 import { checkPreviewAccess } from '../src/features/files/preview.js';
+import { routeHash } from '../src/features/knowledge/model.js';
 import { accountTopbarHtml, renderProfile, renderSettings, renderUsers } from './app/account.js';
 import { mountAttachments } from './app/attachments.js';
 import {
@@ -457,8 +458,10 @@ function resolveRoute() {
 }
 /** The address of a page of the project on screen; the Board's carries its filters. Other pages keep theirs. */
 function addressOf(view){
-  if(['board','roadmap','settings','knowledge'].includes(view))return state.projectId?projectAddress(view,state.projectId,view==='board'?boardFilters():null):`#/${view}`;
-  return ['inbox','profile','users','storage'].includes(view)?`#/${view}`:location.hash;
+  if(!['board','roadmap','settings','knowledge'].includes(view))return ['inbox','profile','users','storage'].includes(view)?`#/${view}`:location.hash;
+  if(!state.projectId)return `#/${view}`;
+  // Knowledge builds its own addresses, which go on to a folder or a file.
+  return view==='knowledge'?routeHash(state.projectId):projectAddress(view,state.projectId,view==='board'?boardFilters():null);
 }
 /** Show the page's address in place, as after a filter change, with no new history entry. */
 function replaceAddress(){

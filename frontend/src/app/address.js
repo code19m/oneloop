@@ -61,9 +61,10 @@ export function readAddress(hash) {
 }
 
 /**
- * The address of a project page. The Board's adds the filters that are on,
- * each list as comma-separated IDs in a fixed order.
- * @param {string} page @param {string} projectId @param {import('../data/board-filters.js').BoardFilters|null} [filters]
+ * The address of a project's Board, Roadmap or Settings. The Board's adds the
+ * filters that are on, each list as comma-separated IDs in a fixed order.
+ * Knowledge builds its own (`routeHash`).
+ * @param {'board'|'roadmap'|'settings'} page @param {string} projectId @param {import('../data/board-filters.js').BoardFilters|null} [filters]
  */
 export function projectAddress(page, projectId, filters = null) {
   const address = `#/${page}/${encodeURIComponent(projectId)}`;

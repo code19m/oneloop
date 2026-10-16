@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { bootApp } = require('../../support/dom.cjs');
 
 test('an address from before projects had one gets the project on screen in place', () => {
-  for (const [route, address] of [['', '#/roadmap/p1'], ['board', '#/board/p1'], ['roadmap', '#/roadmap/p1'], ['settings', '#/settings/p1'], ['knowledge', '#/knowledge/p1']]) {
+  for (const [route, address] of [['', '#/roadmap/p1'], ['board', '#/board/p1'], ['roadmap', '#/roadmap/p1'], ['settings', '#/settings/p1'], ['knowledge', '#/knowledge/p1/tree']]) {
     const t = bootApp({ route });
     assert.equal(t.w.location.hash, address, route); assert.equal(t.w.history.length, 1, route);
   }

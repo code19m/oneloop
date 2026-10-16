@@ -33,7 +33,7 @@ test('every member can open Knowledge from the sidebar, which routes, renders an
     const item = [...t.d.querySelectorAll('.nav-item')].find((button) => button.textContent.includes('Knowledge'));
     assert.equal(item?.querySelector('.lbl').textContent, 'Knowledge', 'the sidebar keeps the short name');
     t.A.nav('knowledge');
-    assert.equal(t.w.location.hash, '#/knowledge/p1');
+    assert.equal(t.w.location.hash, '#/knowledge/p1/tree');
     assert.deepEqual(t.calls.find(([name]) => name === 'route'), ['route', 'knowledge', 'p1']);
     assert.equal(t.d.querySelector('main .knowledge-workspace').dataset.project, 'p1');
     assert.equal(t.d.querySelector('.topbar h1').textContent, 'Knowledge base');
@@ -55,7 +55,7 @@ test('a Knowledge link names its project; an unknown project is not found', () =
 test('switching projects keeps the Knowledge page and starts at its top folder', () => {
   const t = boot('knowledge/p1/tree/guides');
   t.A.selectProject('p2');
-  assert.equal(t.w.location.hash, '#/knowledge/p2');
+  assert.equal(t.w.location.hash, '#/knowledge/p2/tree');
   assert.deepEqual(t.calls.filter(([name]) => name === 'route').at(-1), ['route', 'knowledge', 'p2']);
   assert.equal(t.d.querySelector('main .knowledge-workspace').dataset.project, 'p2');
 });
