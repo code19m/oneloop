@@ -137,6 +137,10 @@ All notable changes to oneloop are recorded here. The format follows
   page. Before, it went nowhere.
 - Code blocks in Markdown files now have a visible background in the dark
   theme. Before, it matched the page.
+- When someone else changes the open task's status, such as a teammate, another
+  tab or an AI assistant, the page header and **Status** now show it at once,
+  also while you type in one of the task's fields. Before, they changed only
+  after you left the task's fields.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -7,7 +7,7 @@ import { UIMotion } from '../../src/app/motion.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
-import { dateHtml, multiHtml, selectHtml } from './controls.js';
+import { dateHtml, multiHtml, selectHtml, setSelectValue } from './controls.js';
 import {
   I, STATUS, UIAction, ago, avatarHtml, d, esc, formatInstant, overdue, setHTML, stIcon,
 } from './format.js';
@@ -268,8 +268,9 @@ Object.assign(App, {
   },
   /**
    * Show the saved status, block and deadline of the open task around its
-   * fields: the header chip and badge, the Status icon, Block task and
-   * Overdue. A field save draws the page again only once focus leaves it.
+   * fields: the header chip and badge, Status, Block task and Overdue. A
+   * field save, and a change from elsewhere, draw the page again only once
+   * focus leaves it.
    */
   refreshTaskHeader() {
     const t = state.view === 'task' ? taskById(state.taskId) : null, page = document.querySelector('.task-page');
@@ -283,6 +284,7 @@ Object.assign(App, {
     const heading = page.querySelector('.task-properties-heading');
     if (heading && !heading.contains(document.activeElement)) heading.replaceWith(html(taskPropertiesHeadingHtml(t, canBoard())));
     page.querySelector('#select-tpState > svg')?.replaceWith(html(stIcon(t.state)));
+    setSelectValue('tpState', t.state);
     const late = overdue(t);
     page.querySelector('.task-property-date')?.classList.toggle('late', late);
     page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);

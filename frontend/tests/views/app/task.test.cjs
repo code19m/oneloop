@@ -291,6 +291,19 @@ test('a saved status shows in the header, the Status icon and Block task while S
   assert.equal(t.d.activeElement, select);
 });
 
+test('a status changed elsewhere shows at once in the header and Status, while the description being typed in stays', async () => {
+  const view = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'in_progress', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2 };
+  const t = bootApp({ route: 'task/BIR-079', api: { task: async () => view } });
+  const description = t.d.getElementById('task-description'), status = t.d.getElementById('select-tpState');
+  description.focus(); description.value = 'Typed while a teammate works';
+  t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: 2 });
+  await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', 'the header shows the new status');
+  assert.equal(status.querySelector('.sel-label').textContent, 'In Progress'); assert.equal(status.dataset.tip, 'In Progress');
+  assert.equal(t.d.activeElement, description); assert.equal(description.value, 'Typed while a teammate works');
+  t.A.popSelect({ currentTarget: status, preventDefault() {} }, 'tpState');
+  assert.equal(t.d.querySelector('.pop-opt[aria-selected="true"]').textContent, 'In Progress', 'its list marks the new status');
+});
+
 test('Enter in the title leaves it, which saves it, but not while text is being composed', () => {
   const t = bootApp({ route: 'task/BIR-079', actions: true }), title = t.d.querySelector('.tp-title');
   const enter = init => { const event = new t.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init }); title.dispatchEvent(event); return event; };

@@ -412,6 +412,7 @@ controller=collaborationController.bind(App,{
  },
  commentDeleted(taskId,commentId){const task=taskById(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);if(comment)App.offerUndo('Comment deleted',again=>controller.restoreComment({task,comment,again}));else App.toast('Comment deleted');},
  commentRestored(taskId){const task=taskById(taskId);if(task){refreshComments(task);App.toast('Comment restored');}},
- canonicalTask(){App.refreshBackground();},
+ // A change from elsewhere shows in the header and Status at once, as the person's own saves do.
+ canonicalTask(){App.refreshTaskHeader();App.refreshBackground();},
  target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},
 });
