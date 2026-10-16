@@ -109,6 +109,34 @@ test('a title saves as it loses focus, and a refused one stays as typed until it
   assert.equal(title().value, 'Build it'); assert.equal(t.commands.length, 2);
 });
 
+test('Cmd/Ctrl+S saves a title in place, and the next save still meets a change from elsewhere', async () => {
+  let reads = 0;
+  // Someone else renames the item after the shortcut saved it.
+  const elsewhere = taskView([item('c1', 'Plan', true), item('c2', 'Build the API', false, 3), item('c3', 'Ship')], 2);
+  const t = checklistPage({ api: { task: async () => { reads += 1; return elsewhere; } } }), title = t.row('c2').querySelector('textarea');
+  title.focus(); title.value = 'Build it'; title.setSelectionRange(3, 3);
+  title.dispatchEvent(new t.w.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ctrlKey: true, key: 's', code: 'KeyS' }));
+  assert.deepEqual(t.sent(), [['task.checklist.update', { itemId: 'c2', title: 'Build it' }, 1]]);
+  assert.equal(t.d.activeElement, title); assert.equal(title.selectionStart, 3);
+  assert.equal(t.w.Recovery.hasUnsavedInput({ leaving: false }), false, 'the shortcut counts as saved');
+  await accept(t, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build it', done: false, revision: 2 }, [item('c1', 'Plan', true), item('c2', 'Build it', false, 2), item('c3', 'Ship')]);
+  hint(t); await waitFor(() => reads === 1, 'the live read lands'); await settle();
+  title.value = 'Build it now'; t.key(title, 'Enter');
+  assert.equal(t.commands.at(-1).expectedRevision, 2, 'built on the revision the shortcut saved, so the rename comes up');
+});
+
+test('a change from elsewhere waits for a press on the checklist to end', async () => {
+  const view = taskView([item('c3', 'Ship'), item('c1', 'Plan', true), item('c2', 'Build')], 1);
+  const t = checklistPage({ api: { task: async () => view } });
+  t.row('c2').querySelector('[data-checklist-remove]').dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  hint(t);
+  await waitFor(() => t.task !== t.D.tasks.find(entry => entry.id === 'BIR-079'), 'the live read lands'); await settle();
+  assert.deepEqual(t.titles(), ['Plan', 'Build', 'Ship'], 'rows stay under the pointer');
+  t.w.dispatchEvent(new t.w.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }));
+  await waitFor(() => t.titles()[0] === 'Ship', 'the change shows once the press ends');
+  assert.deepEqual(t.titles(), ['Ship', 'Plan', 'Build']);
+});
+
 test('a title someone else changed meanwhile asks which one to keep', async () => {
   const t = checklistPage({ reads: { task: async () => { const latest = t.task.checklist[1]; Object.assign(latest, { title: 'Build the API', revision: 2 }); return { stale: false }; } } });
   const title = () => t.row('c2').querySelector('textarea');

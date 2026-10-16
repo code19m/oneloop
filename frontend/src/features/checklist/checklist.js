@@ -164,13 +164,14 @@ export function installChecklistControls(doc) {
     const title = /** @type {HTMLTextAreaElement} */ (event.target);
     if (title.matches?.('textarea[data-checklist-title]') && !bases.has(title)) bases.set(title, Number(/** @type {HTMLElement} */ (title.closest('[data-checklist-item]'))?.dataset.revision));
   });
-  // Blur doesn't bubble; listening as it travels down also hears a blur
-  // that a save shortcut sends to the field itself.
+  // Blur doesn't bubble; listening as it travels down also hears the blur
+  // that Cmd/Ctrl+S sends to the field itself, which saves it in place.
   doc.addEventListener('blur', event => {
     const title = /** @type {HTMLTextAreaElement} */ (event.target);
     if (!title.matches?.('textarea[data-checklist-title]')) return;
     const base = bases.get(title), value = oneLine(title.value), { taskId, itemId } = owner(title);
-    bases.delete(title);
+    // A title saved with the shortcut keeps focus, and its next save builds on the same revision.
+    if (doc.activeElement !== title) bases.delete(title);
     if (!taskId || !itemId) return;
     // An emptied title puts back the one it showed.
     if (!value) { title.value = title.defaultValue; return; }
