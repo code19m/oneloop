@@ -24,7 +24,7 @@ test('Ctrl+S saves the task title where it is typed and never saves the page', {
 });
 
 test('a description shows as Markdown, opens for editing on a click, saves on Escape and links to app pages in place', async ({ page, instance }) => {
-  const { task } = instance.projects[0];
+  const { project, task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: '## Plan\n\nSee [the Board](#/board) and **this**.' }, task.revision);
   await openApp(page, instance);
   const reader = page.locator('#task-description-content');
@@ -38,7 +38,8 @@ test('a description shows as Markdown, opens for editing on a click, saves on Es
   await expect(reader).toContainText('this. More.');
   expect((await (await instance.api.get(`/api/tasks/${task.id}`)).json()).description).toBe('## Plan\n\nSee [the Board](#/board) and **this**. More.');
   await reader.getByRole('link', { name: 'the Board' }).click();
-  await expect(page).toHaveURL(/#\/board$/);
+  // An address without a project opens the Board of the project on screen.
+  await expect(page).toHaveURL(new RegExp(`#/board/${project.id}$`));
   await expect(page.locator('.board')).toBeVisible();
 });
 
