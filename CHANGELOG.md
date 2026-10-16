@@ -53,6 +53,8 @@ All notable changes to oneloop are recorded here. The format follows
   slow down as an instance collects images. Thumbnails go when files and
   unfinished uploads reach 80% of the storage limit. **Clean up now** still
   counts them, as the **Storage** page does.
+- oneloop now looks for files that nothing refers to, such as files that a
+  crash left behind, once an hour instead of every minute.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
