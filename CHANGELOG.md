@@ -6,6 +6,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The **Board**, its counts and, in MCP, `search_tasks` without a status no
+  longer slow down on an instance with many tasks where no task was ever
+  blocked. Before, counting the blocked tasks could read every task of the
+  instance, which took about 0.1 seconds at 100,000 tasks.
+
 ## [0.1.0-rc.5] - 2026-10-16
 
 The fifth release candidate. It fixes many bugs in the web app, in MCP and in

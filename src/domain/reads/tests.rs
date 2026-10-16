@@ -1,4 +1,4 @@
-use super::board::{NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL, UNDATED_DONE_SQL};
+use super::board::{BLOCKED_COUNT_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL, UNDATED_DONE_SQL};
 use super::roadmap::{EPIC_SUMMARY_SQL, epics_on, local_midnight};
 use super::*;
 use crate::db::query_plan;
@@ -59,6 +59,30 @@ fn newest_done_pages_read_the_partial_index_in_order() {
         plan.contains("(completed_at,completion_order,id)<(?,?,?)"),
         "{plan}"
     );
+}
+
+#[test]
+fn the_blocked_count_reads_open_blocks_first_whatever_the_statistics() {
+    let (_root, c) = crate::db::migrated_connection();
+    // No statistics; statistics for `tasks` only, as `PRAGMA optimize` leaves
+    // them while nobody has blocked a task; and statistics for both tables.
+    // `ANALYZE sqlite_schema` makes SQLite load the rows written here.
+    for statistics in [
+        "",
+        "ANALYZE sqlite_schema;
+         INSERT INTO sqlite_stat1 VALUES('tasks','tasks_project_summary_idx','100000 1112 1112 1112 1112 1112'),
+           ('tasks','sqlite_autoindex_tasks_1','100000 1');
+         ANALYZE sqlite_schema;",
+        "INSERT INTO sqlite_stat1 VALUES('task_blocks','task_blocks_one_open_idx','8 1');
+         ANALYZE sqlite_schema;",
+    ] {
+        c.execute_batch(statistics).unwrap();
+        let plan = query_plan(&c, BLOCKED_COUNT_SQL);
+        assert!(
+            plan.starts_with("SCAN b") && plan.contains("SEARCH t"),
+            "{plan}"
+        );
+    }
 }
 
 mod epic_date_tests {

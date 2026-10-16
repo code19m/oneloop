@@ -276,14 +276,18 @@ pub(super) fn board_counts_connection(
             _ => return Err(AppError::internal("stored task has an invalid status")),
         }
     }
-    counts.blocked = connection.query_row(
-        "SELECT COUNT(*) FROM task_blocks b JOIN tasks t ON t.id=b.task_id WHERE b.resolved_at IS \
-                     NULL AND b.project_id=?1 AND t.deleted_at IS NULL AND t.status!='done'",
-        [project_id],
-        |row| row.get(0),
-    )?;
+    counts.blocked = connection
+        .prepare_cached(BLOCKED_COUNT_SQL)?
+        .query_row([project_id], |row| row.get(0))?;
     Ok(counts)
 }
+
+/// Open blocks on unfinished tasks. As a join, the plan depended on the
+/// statistics: with statistics for `tasks` but none for an empty
+/// `task_blocks`, SQLite read every task of the instance.
+pub(super) const BLOCKED_COUNT_SQL: &str = "SELECT COUNT(*) FROM task_blocks b
+    WHERE b.resolved_at IS NULL AND b.project_id=?1 AND EXISTS(SELECT 1 FROM tasks t
+      WHERE t.id=b.task_id AND t.deleted_at IS NULL AND t.status!='done')";
 
 pub(in crate::domain) fn task_view(
     connection: &rusqlite::Connection,
