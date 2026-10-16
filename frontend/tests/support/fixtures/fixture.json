@@ -403,6 +403,7 @@
       "revision": 1
     }
   ],
+  "boardPageInfo": { "projectId": "p1", "filters": {}, "pages": {} },
   "tasks": [
     {
       "id": "BIR-064",

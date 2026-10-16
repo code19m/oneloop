@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, waitFor, settle } = require('../../support/dom.cjs');
 const { ApiError } = require('../../../src/data/api-client.js');
+const { createReadController } = require('../../../src/data/read-controller.js');
 
 const receipt = '<style>h1{color:blue}</style><h1>Receipt</h1><script>parent.evil=true</script><img src="https://example.invalid/pixel" onerror="alert(1)"><a href="https://example.invalid">Leave</a><iframe srcdoc="bad"></iframe><meta http-equiv="refresh" content="0;url=https://example.invalid"><form action="https://example.invalid"><input value="Visible field"><button>Submit</button></form>';
 
@@ -328,6 +329,30 @@ test('live updates read attachments and storage usage again passively', async ()
   listener({ type: 'bootstrap' }); t.A.refresh();
   await answered(6, 'a refresh reads usage again');
   assert.deepEqual(reads, [['attachments', false], ['attachments', true], ['attachments', true], ['storage', false], ['storage', true], ['storage', true]]);
+});
+
+test('a task page reads its attachments once each time it opens and once per live change, though task reads replace the task', async () => {
+  let reads = 0, taskReads;
+  // The task as the server sends it. Reading it replaces the task's object, as the projection does.
+  const view = (revision, title) => ({ id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title, description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: revision, assigneeIds: [], activeBlock: null, revision });
+  let latest = view(1, 'Flexible reading schedule');
+  const t = bootApp({ route: 'board', api: {
+    attachments: async () => { reads++; return { items: [serverFile('notes', 'notes.txt', 'text')] }; },
+    task: async () => latest,
+  }, reads: { task: id => taskReads.task(id) } });
+  // The route loader's task read draws the page again, as boot.js wires it.
+  taskReads = createReadController({ api: t.api, data: t.D, onTask: task => { const context = t.A.context(); if (context.view === 'task' && context.taskId === task.id) t.A.refresh(); } });
+  const open = async () => { t.A.openTask('BIR-079'); await settle(); await t.bridge.loadCurrentRoute(); await settle(); };
+  await open();
+  assert.equal(reads, 1, 'the task opens');
+  // Another person changes the task: the live hint reads the attachments, and the live read of the task replaces it.
+  latest = view(2, 'Changed elsewhere');
+  t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: 2 });
+  await waitFor(() => t.d.querySelector('.tp-title').value === 'Changed elsewhere', 'the live read draws the changed task'); await settle();
+  assert.equal(reads, 2, 'the live change');
+  t.A.nav('board'); await open();
+  assert.equal(reads, 3, 'the task opens again');
+  assert.equal(t.d.querySelector('.attachment-title').textContent, 'notes.txt');
 });
 
 test('a live re-read of attachments that lost access stays quiet', async () => {

@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { bootApp, settle, waitFor, deferred } = require('../../support/dom.cjs');
 const { ApiError } = require('../../../src/data/api-client.js');
+const { createReadController } = require('../../../src/data/read-controller.js');
 
 // Comments and blocks share one membership check: a new mention needs an active member, a saved one is kept.
 // One case per outcome: an active member for blocks (new comment mentions are sent below), removed and
@@ -444,6 +445,48 @@ test('a tab whose live updates a newer tab took says so, and Resume takes them b
  assert.equal(t.events.length,2,'Resume opens a new stream');
  t.events[1].emit('open');
  assert.equal(notice(),null);
+});
+
+test('a task page reads its comments and activity once each time it opens and once per live change, though task reads replace the task', async () => {
+ const reads=[];let taskReads;
+ // The task as the server sends it. Reading it replaces the task's object, as the projection does.
+ const view=(revision,title)=>({id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title,description:'',status:'planning',position:1,createdAt:1,updatedAt:revision,assigneeIds:[],activeBlock:null,revision});
+ let latest=view(1,'Flexible reading schedule');
+ const t=bootApp({route:'board',api:{
+  comments:async()=>{reads.push('comments');return {items:[],nextCursor:null};},
+  activity:async()=>{reads.push('activity');return {items:[],nextCursor:null};},
+  attachments:async()=>({items:[]}),task:async()=>latest,
+ },reads:{task:id=>taskReads.task(id)}});
+ // The route loader's task read draws the page again, as boot.js wires it.
+ taskReads=createReadController({api:t.api,data:t.D,onTask:task=>{const context=t.A.context();if(context.view==='task'&&context.taskId===task.id)t.A.refresh();}});
+ const open=async()=>{t.A.openTask('BIR-079');await settle();await t.bridge.loadCurrentRoute();await settle();};
+ await open();
+ assert.deepEqual(reads,['comments','activity'],'the task opens');
+ // Another person changes the task: the live read of the task replaces it, then reads the page.
+ latest=view(2,'Changed elsewhere');
+ t.events.at(-1).emit('hint',{kind:'activity.changed',projectId:'p1',taskId:'bir-079',entityType:'task',entityId:'bir-079',entityRevision:2});
+ await waitFor(()=>reads.length>=4,'the live read reads the page');await settle();
+ assert.deepEqual(reads.slice(2),['comments','activity'],'the live change');
+ t.A.nav('board');await open();
+ assert.deepEqual(reads.slice(4),['comments','activity'],'the task opens again');
+});
+
+test('a task page shows its comments and activity when the task read lands before them', async () => {
+ const held=[];let taskReads;
+ const view={id:'bir-079',taskKey:'BIR-079',projectId:'p1',epicId:'e2',title:'Flexible reading schedule',description:'',status:'planning',position:1,createdAt:1,updatedAt:1,assigneeIds:[],activeBlock:null,revision:1};
+ const t=bootApp({route:'board',api:{
+  comments:()=>{const read=deferred();held.push(read);return read.promise;},
+  activity:async()=>({items:[],nextCursor:null}),attachments:async()=>({items:[]}),task:async()=>view,
+ },reads:{task:id=>taskReads.task(id)}});
+ // The route loader's task read draws the page again, as boot.js wires it.
+ taskReads=createReadController({api:t.api,data:t.D,onTask:task=>{const context=t.A.context();if(context.view==='task'&&context.taskId===task.id)t.A.refresh();}});
+ // The comments are still on their way when the task read lands and replaces the task.
+ t.A.openTask('BIR-079');await settle();
+ await t.bridge.loadCurrentRoute();await settle();
+ for(const read of held.splice(0))read.resolve({items:[{id:'c1',projectId:'p1',taskId:'bir-079',authorId:'taylorwu',authorName:'Taylor Wu',rootId:'c1',replyToId:null,content:'Arrived late',mentions:[],createdAt:20,editedAt:null,deletedAt:null,revision:1}],nextCursor:null});
+ const timeline=()=>t.d.querySelector('.task-page .timeline').textContent;
+ await waitFor(()=>timeline().includes('Arrived late'),'the comment shows');
+ assert.doesNotMatch(timeline(),/Loading activity/);
 });
 
 test('a block reason with extra spaces keeps its mention where the reason shows it', () => {

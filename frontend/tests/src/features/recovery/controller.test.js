@@ -4,7 +4,7 @@ import {ApiError,createApiClient} from '../../../../src/data/api-client.js';
 import {createRequire} from 'node:module';
 import {leaveUnavailableProject} from '../../../../src/features/recovery/controller.js';
 import {createBuildMonitor} from '../../../../src/app/build-info.js';
-import {settle} from '../../../support/helpers.cjs';
+import {deferred,settle} from '../../../support/helpers.cjs';
 const {JSDOM,importModule}=createRequire(import.meta.url)('../../../support/dom.cjs');
 
 /** A jsdom page holding `html`, with the recovery module loaded into it, as the app loads it. */
@@ -24,7 +24,7 @@ function fixture(overrides={}){
   const controller=createRecoveryController({
     data,api:{me:async()=>({}),...overrides.api},gateway:{invalidate(){},hasPending:()=>false,...overrides.gateway},getApp:()=>app,getAuth:()=>({expire(){expires++;}}),
     reload:async()=>{reloads++;return {};},
-    setTimer:overrides.setTimer??(()=>0),clearTimer:()=>{},online:overrides.online??(()=>true),random:()=>0,
+    setTimer:overrides.setTimer??(()=>0),clearTimer:overrides.clearTimer??(()=>{}),online:overrides.online??(()=>true),random:()=>0,
   });
   return {controller,data,app,window,document,get expires(){return expires;},get reloads(){return reloads;}};
 }
@@ -317,6 +317,22 @@ test('access probes wait while live updates are open or the tab is hidden',async
   assert.equal(probes,1,'a hidden tab reconciles when it shows again');
   visibility='visible';await timers.at(-1)();
   assert.equal(probes,2);
+  state.controller.dispose();
+});
+
+test('access probes go on after the server could not be reached',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const answer=deferred();let probes=0;
+  const state=fixture({api:{me:()=>answer.promise,counts:async()=>{probes++;}},setTimer:setTimeout,clearTimer:clearTimeout});
+  state.controller.start();
+  // The server stops answering, and is still down when the next probe is due.
+  state.controller.observeResponse({ok:false,error:new ApiError('Network',{code:'network_error'})});
+  t.mock.timers.tick(30_000);await settle();
+  assert.equal(probes,0,'an unreachable server is not probed');
+  // It answers the reconnect.
+  answer.resolve({});await settle();
+  t.mock.timers.tick(30_000);await settle();
+  assert.equal(probes,1,'the next probe runs on time');
   state.controller.dispose();
 });
 

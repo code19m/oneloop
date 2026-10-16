@@ -36,10 +36,19 @@ test('Board search renders matching titles and keys with surrounding whitespace'
 });
 
 test('the Board shows its loading skeleton, not No tasks yet, until its first read lands',()=>{
- const t=bootApp({route:'board',prepare:D=>{D.tasks.splice(0);}});
+ const t=bootApp({route:'board',prepare:D=>{D.tasks.splice(0);D.boardPageInfo=null;}});
  assert(t.d.querySelector('.board .loading-board'));assert(!t.d.querySelector('.board .page-empty'));
  t.D.boardPageInfo={projectId:t.A.context().projectId,filters:{},pages:{}};t.A.refreshBoard();
  assert.equal(t.d.querySelector('.board .page-empty h2').textContent,'No tasks yet');assert(!t.d.querySelector('.board .loading-board'));
+});
+
+test('after a link to a task, the Board shows its loading skeleton, not that one task, until its first read lands',()=>{
+ // The link loads that task and no Board.
+ const t=bootApp({route:'task/BIR-079',prepare:D=>{D.tasks.splice(0,Infinity,...D.tasks.filter(task=>task.id==='BIR-079'));D.boardPageInfo=null;}});
+ t.A.nav('board');
+ assert(t.d.querySelector('.board .loading-board'));assert(!t.d.querySelector('.board .card'));
+ t.D.boardPageInfo={projectId:t.A.context().projectId,filters:{},pages:{}};t.A.refreshBoard();
+ assert(t.d.querySelector('.board .card[data-task="BIR-079"]'));assert(!t.d.querySelector('.board .loading-board'));
 });
 
 test('live Pool content patches visible titles, descriptions and labels without losing an active draft',()=>{

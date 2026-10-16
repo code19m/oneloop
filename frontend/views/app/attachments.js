@@ -14,6 +14,9 @@ import { askConfirmation } from './overlays.js';
 
 const maxFile=()=>D.limits.maxAttachmentBytes,maxFiles=()=>D.limits.maxAttachmentsPerTask;
 const jobs=[],loading=new Map(),refreshPending=new Map(),retentionPending=new Set(),reorderPending=new Set();
+// The attachment lists read from the server, or changed here since. Reading
+// a task replaces its object but keeps its list, so the list stays read; a
+// task that comes back without its list, as after a Board search, reads it again.
 let loaded=new WeakSet(),next=0;
 // Tasks whose attachments this account has read. Reading them again, after a
 // live update or a refresh replaced the task, is passive: it never keeps an
@@ -28,16 +31,18 @@ const available=task=>(task.attachments||[]).filter(f=>!f.state||f.state==='avai
 const serverFile=file=>({id:file.id,name:file.name,size:file.size,type:file.mediaType,previewKind:file.previewKind,checksum:file.checksum,ephemeral:file.isEphemeral,uploadedBy:file.uploadedBy,uploadedAt:file.uploadedAt*1000,lastAccessAt:file.lastAccessedAt*1000,state:file.state,revision:file.revision,url:file.contentUrl||file.downloadUrl,downloadUrl:file.downloadUrl,contentUrl:file.contentUrl,thumbnailUrl:file.thumbnailUrl,sourceUrl:file.sourceUrl,htmlPreviewUrl:file.htmlPreviewUrl});
 // A live update replaces task objects, so a reply finds its task again by id.
 const sameTask=(taskId,task)=>{const current=taskById(taskId);return current&&(current===task||!!current.internalId&&current.internalId===task.internalId)?current:null;};
+/** Give `task` the attachment list `files`, as the server lists it or as changed here. */
+function setFiles(task,files){task.attachments=files;loaded.add(files);}
 function loadAttachments(taskId,force=false,background=false){
   const api=transport(),task=taskById(taskId);
-  if(!task||!force&&loaded.has(task))return;
+  if(!task||!force&&loaded.has(task.attachments))return;
   const sessionId=D.session?.id,internalId=task.internalId||taskId;
   background||=attachmentsRead.has(internalId);
   if(loading.has(taskId)){
     if(force)refreshPending.set(taskId,(refreshPending.get(taskId)??true)&&background);
     return loading.get(taskId);
   }
-  if(force)loaded.delete(task);
+  if(force)loaded.delete(task.attachments);
   // A task detail read can replace its projection while this request is in flight.
   const currentTask=()=>{
     const current=taskById(taskId);
@@ -45,8 +50,7 @@ function loadAttachments(taskId,force=false,background=false){
   };
   const request=api.attachments(internalId,{background}).then(result=>{
     const current=currentTask();if(!current)return;
-    current.attachments=(result.items||[]).map(serverFile);
-    loaded.add(current);attachmentsRead.add(internalId);
+    setFiles(current,(result.items||[]).map(serverFile));attachmentsRead.add(internalId);
     const shown=shownPreview();
     if(shown?.key===taskId){
       const file=current.attachments.find(item=>item.id===shown.fileId);
@@ -56,7 +60,7 @@ function loadAttachments(taskId,force=false,background=false){
   }).catch(error=>{
     const current=currentTask();if(!current)return;
     if([401,403,404].includes(error?.status)){
-      current.attachments=[];loaded.delete(current);
+      current.attachments=[];
       if(shownPreview()?.key===taskId)closePreview();
       refreshAttachments(taskId);
       // Lost access during a live refresh: the page itself says what happened.
@@ -71,9 +75,12 @@ function loadAttachments(taskId,force=false,background=false){
   });
   loading.set(taskId,request);
 }
-/** Load the attachments of task `id` once, and show its uploads, after its page draws. */
-export function mountAttachments(id){
-  followChanges();loadAttachments(id);
+/**
+ * Load the attachments of task `id` each time its page opens (`opened`), and
+ * when the task lost its list, and show its uploads, after its page draws.
+ */
+export function mountAttachments(id,opened=false){
+  followChanges();loadAttachments(id,opened);
   const host=document.querySelector('.upload-list');if(!host)return;
   const zone=host.closest('.task-attachments');if(zone)zone.dataset.uploadTask=id;
   const current=jobs.filter(job=>job.taskId===id);
@@ -101,7 +108,7 @@ async function upload(job,task){
     recovery.trackWrite(sending);const value=await sending;
     if(job.cancelled)return;const current=sameTask(job.taskId,task);if(!current)throw new Error('The task is no longer available.');
     const mapped=serverFile(value),index=(current.attachments||[]).findIndex(file=>file.id===mapped.id);if(index>=0)current.attachments[index]=mapped;else(current.attachments ||= []).push(mapped);
-    loaded.add(current);jobs.splice(jobs.indexOf(job),1);refreshAttachments(job.taskId);App.toast('Attachment added');
+    loaded.add(current.attachments);jobs.splice(jobs.indexOf(job),1);refreshAttachments(job.taskId);App.toast('Attachment added');
   }catch(error){if(job.cancelled)return;reject(job,errorMessage(error,'Upload failed. Please try again.'),error?.status===400&&error?.code==='validation_failed');}
 }
 function editableAttachment(taskId,fileId,includeCleaned=false){
@@ -178,8 +185,8 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   const target=task.attachments.find(f=>f.id===targetId&&f.state!=='removed');if(!target)return false;
   const before=task.attachments.map(f=>f.id),ordered=task.attachments.filter(f=>f.id!==fileId),index=ordered.indexOf(target)+(after?1:0);ordered.splice(index,0,file);
   if(ordered.every((f,i)=>f===task.attachments[i]))return false;
-  task.attachments=ordered;
-  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;current.attachments=(result.items||[]).map(serverFile);refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){current.attachments=before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean);refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
+  setFiles(task,ordered);
+  reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
   refreshAttachments(taskId);
   [...document.querySelectorAll('[data-reorder-file]')].find(el=>el.dataset.reorderFile===fileId)?.focus({preventScroll:true});return true;
 }
@@ -290,7 +297,7 @@ function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.read
 
 Object.assign(App, {
   reorderAttachment,openAttachment,previewAttachment,downloadAttachment:download,setAttachmentTemporary:setTemporary,
-  delAttachment(id,index){const task=taskById(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;askConfirmation({title:'Delete attachment?',text:`${displayText(file.name)} will be deleted. You can undo this right after.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){App.toast('This task is no longer available.','error');return;}transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)current.attachments=current.attachments.filter(item=>item.id!==file.id);forgetPreview(file.id);if(shownPreview()?.fileId===file.id)closePreview();refreshAttachments(id);App.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadAttachments(id,true);App.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});}});},
+  delAttachment(id,index){const task=taskById(id),file=task?.attachments?.[index];if(!editableAttachment(id,file?.id,true))return;askConfirmation({title:'Delete attachment?',text:`${displayText(file.name)} will be deleted. You can undo this right after.`,action:'Delete attachment',confirm:()=>{if(!editableAttachment(id,file.id,true))return;if(!sameTask(id,task)){App.toast('This task is no longer available.','error');return;}transport().deleteAttachment(file.id,{expectedRevision:file.revision,idempotencyKey:file.deleteKey ||= crypto.randomUUID()}).then(()=>{const current=sameTask(id,task);if(current)setFiles(current,current.attachments.filter(item=>item.id!==file.id));forgetPreview(file.id);if(shownPreview()?.fileId===file.id)closePreview();refreshAttachments(id);App.offerUndo('Attachment deleted',again=>restoreAttachment(id,task,file,again));}).catch(error=>{if(error?.status===404||error?.status===409||error?.uncertain)loadAttachments(id,true);App.toast(errorMessage(error,'Attachment could not be deleted.'),'error');});}});},
   chooseAttachments(){document.getElementById('attIn')?.click();},
   attachFiles(id,input){if(!canEdit(id)){App.toast('You no longer have permission to upload attachments','error');return;}for(const file of [...input.files]){const job={id:'upload-'+(++next),taskId:id,file,owner:D.session?.userId,ephemeral:false,state:'queued',progress:0};jobs.push(job);start(job);}input.value='';},
 });

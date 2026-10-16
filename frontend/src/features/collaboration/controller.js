@@ -41,7 +41,7 @@ export function installCollaborationController({ transport, recovery, eventSourc
   if (!transport?.api || !transport?.commands || !transport?.data) throw new TypeError('Expected the runtime transport');
   const data=transport.data;
   let app=null,facade=/** @type {{feedback?:(message:string)=>void,filter:()=>{projects:string[],unread:boolean,archived:boolean},inboxBusy?:(busy:boolean)=>void,inboxPage?:(meta:any)=>void,unreadCount?:(count:number)=>void,taskPage?:(id:string,meta:any)=>void,commentSaved?:(id:string,comment:any,result:any)=>void,commentAcknowledged?:(input:any,comment:any)=>void,commentEditor?:(input:any)=>HTMLTextAreaElement|null,acceptCommentLatest?:(input:any,comment:any)=>void,commentDeleted?:(id:string,commentId:string)=>void,commentRestored?:(id:string,commentId:string)=>void,canonicalTask?:(id:string)=>void,target?:(target:any)=>void}|null} */(null),source=null,unsubscribe=null;
-  let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false;
+  let sessionKey='',routeKey='',taskGeneration=0,inboxGeneration=0,inboxEntry=false,taskEntry=false;
   let projectReconcileTimer=null,projectReconcileProjectId=null,projectReconcileRunning=false;
   let sessionCheck=null,disposed=false;
   let taskController=null,inboxController=null;
@@ -107,7 +107,10 @@ export function installCollaborationController({ transport, recovery, eventSourc
           [activity,page.activityDepth??1,cursor=>transport.api.activity(task.projectId,{taskId:task.internalId,cursor,limit:50,signal:taskController.signal,background})],
         ]){for(let index=1;index<depth&&rows.nextCursor;index++){const next=await read(rows.nextCursor);rows.items.push(...next.items);rows.context=[...(rows.context??[]),...(next.context??[])];rows.replyCounts={...rows.replyCounts,...next.replyCounts};rows.nextCursor=next.nextCursor;}}
       }
-      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||currentTask(task.internalId)!==task){page.loading=false;return {stale:true};}
+      // A task read can replace the task's object while this read runs; the result then goes to the object the page shows.
+      const shown=currentTask(task.internalId);
+      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!shown){page.loading=false;return {stale:true};}
+      task=shown;
       const commentRows=new Map([...(comments.context??[]),...(comments.items??[]),...(target?.context??[]),...(target?.items??[])].map((item)=>[item.id,item]));
       const replyCounts={...comments.replyCounts,...target?.replyCounts};
       const mappedComments=[...commentRows.values()].map((item)=>({...mapComment(item),replyCount:replyCounts[item.rootId]}));
@@ -122,12 +125,12 @@ export function installCollaborationController({ transport, recovery, eventSourc
       if(append){if(page.commentsCursor)page.commentsDepth=(page.commentsDepth??1)+1;if(page.activityCursor)page.activityDepth=(page.activityDepth??1)+1;}
       if(append||reconcile||!page.commentsLoaded)page.commentsCursor=comments.nextCursor??null;else if(!comments.nextCursor)page.commentsCursor=null;
       if(append||reconcile||!page.activityLoaded)page.activityCursor=activity.nextCursor??null;else if(!activity.nextCursor)page.activityCursor=null;
-      page.commentsLoaded=true;page.activityLoaded=true;page.loaded=true;page.loading=false;page.error=false;page.taskRef=new WeakRef(task);taskPages.set(task.internalId,page);
+      page.commentsLoaded=true;page.activityLoaded=true;page.loaded=true;page.loading=false;page.error=false;page.commentsRef=new WeakRef(task.comments);taskPages.set(task.internalId,page);
       facade?.taskPage?.(task.id,{loaded:true,loading:false,error:false,hasMore:!!(page.commentsCursor||page.activityCursor),background});
       return {stale:false};
     }catch(error){
       page.loading=false;
-      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||currentTask(task.internalId)!==task||error?.code==='aborted')return {stale:true};
+      if(generation!==taskGeneration||key!==`${currentSession()}:${task.internalId}`||expectedRoute!==routeKey||!currentTask(task.internalId)||error?.code==='aborted')return {stale:true};
       page.error=true;
       facade?.taskPage?.(task.id,{loaded:page.loaded,loading:false,error:true,hasMore:!!(page.commentsCursor||page.activityCursor),background});
       if([403,404].includes(error?.status))recovery.handleRouteError(error,{background:true});else report(error,false);
@@ -474,20 +477,23 @@ export function installCollaborationController({ transport, recovery, eventSourc
         if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
         if(change?.type==='bootstrap'){
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
+          // A new projection reads the open page's comments and activity again.
+          for(const page of taskPages.values())page.commentsRef=null;
         }
       });
       visibility?.removeEventListener?.('visibilitychange',visibilityChanged);
       visibility?.addEventListener?.('visibilitychange',visibilityChanged);
       startEvents(true);return controller;
     },
-    beforeRender(context){const next=JSON.stringify([context.userId,context.view,context.projectId,context.taskId]);if(next!==routeKey){taskGeneration++;taskController?.abort();clearLiveReads('task:');changedComments.clear();inboxEntry=context.view==='inbox';}routeKey=next;},
+    beforeRender(context){const next=JSON.stringify([context.userId,context.view,context.projectId,context.taskId]);if(next!==routeKey){taskGeneration++;taskController?.abort();clearLiveReads('task:');changedComments.clear();inboxEntry=context.view==='inbox';taskEntry=context.view==='task';}routeKey=next;},
     mount(context){
       if(!data.session)return;
       if(context.view==='task'){
         const task=currentTask(context.taskId),page=task&&taskPages.get(task.internalId);
-        // Reading a page again after a refresh replaced its task is passive. A
-        // queued live read for the task reads the page itself, once.
-        if(task&&(!page?.loaded||page.taskRef?.deref()!==task)&&!page?.loading&&!page?.error&&!liveReads.has(`task:${currentSession()}:${task.internalId}`))readTask(task,{background:!!page?.loaded});
+        // A visit reads the page once. A refresh that replaces the task keeps
+        // its comments, unless it comes back without them; reading them again
+        // then is passive. A queued live read for the task reads the page itself, once.
+        if(task&&(taskEntry||!page?.loaded||page.commentsRef?.deref()!==task.comments)&&!page?.loading&&!page?.error&&!liveReads.has(`task:${currentSession()}:${task.internalId}`)){taskEntry=false;readTask(task,{background:!!page?.loaded});}
       }else if(context.view==='inbox'){
         const key=`${currentSession()}:${filterKey(facade.filter())}`;if((inboxEntry||!inboxPage.loaded||inboxPage.key!==key)&&!inboxPage.loading&&!(inboxPage.error&&inboxPage.key===key)){inboxEntry=false;readInbox(facade.filter(),{background:inboxPage.loaded});}
       }
