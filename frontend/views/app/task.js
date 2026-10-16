@@ -98,6 +98,8 @@ function paintTitle(t) {
   placeDraftNote(host, t, 'title');
 }
 function repaintTitle() { const t = state.view === 'task' ? taskById(state.taskId) : null; if (t) paintTitle(t); }
+/** Show the open task's checklist as it is now: once for all the changes that waited for a press. */
+function refreshShownChecklist() { if (state.view === 'task') App.refreshTaskChecklist(state.taskId); }
 
 // ---------- description ----------
 // The description shows its saved text as Markdown. Its editor shows instead
@@ -316,8 +318,7 @@ Object.assign(App, {
    */
   refreshTask(id) {
     App.refreshTaskHeader(); App.refreshTaskDrafts(id);
-    const checklist = () => App.refreshTaskChecklist(id);
-    if (!App.afterPress(checklist)) checklist();
+    if (!App.afterPress(refreshShownChecklist)) App.refreshTaskChecklist(id);
     App.refreshBackground();
   },
   /** Show a task's checklist as it is now, in place, when its page is open. */

@@ -137,6 +137,17 @@ test('a change from elsewhere waits for a press on the checklist to end', async 
   assert.deepEqual(t.titles(), ['Ship', 'Plan', 'Build']);
 });
 
+test('changes from elsewhere during one press patch the checklist once, when it ends', async () => {
+  const t = checklistPage(), patches = [], patch = t.A.refreshTaskChecklist;
+  t.A.refreshTaskChecklist = id => { patches.push(id); patch(id); };
+  t.row('c2').querySelector('[data-checklist-remove]').dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  t.A.refreshTask('BIR-079'); t.A.refreshTask('BIR-079');
+  assert.deepEqual(patches, [], 'nothing moves while the button is down');
+  t.w.dispatchEvent(new t.w.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }));
+  await waitFor(() => patches.length > 0, 'the press ends'); await settle();
+  assert.deepEqual(patches, ['BIR-079']);
+});
+
 test('a title someone else changed meanwhile asks which one to keep', async () => {
   const t = checklistPage({ reads: { task: async () => { const latest = t.task.checklist[1]; Object.assign(latest, { title: 'Build the API', revision: 2 }); return { stale: false }; } } });
   const title = () => t.row('c2').querySelector('textarea');
