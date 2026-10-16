@@ -368,6 +368,21 @@ test('a Knowledge context links relative files and shows relative images; attach
   assert(!d.querySelector('.markdown-body img'));
 });
 
+test('deciding what hostile Markdown needs takes a few plain passes over it, not one per character', () => {
+  // The libraries never arrive, so markdownInto only checks which ones the text needs.
+  const dom = new JSDOM('<!doctype html><div></div>', { url: 'http://localhost/', runScripts: 'outside-only' }), d = dom.window.document;
+  d.head.append = () => {};
+  const views = importModule(dom, 'src/features/files/file-views.js');
+  // CPU work, best of three: the machine's speed and load affect the checks and a plain pass alike.
+  const work = run => { let best = Infinity; for (let round = 0; round < 3; round++) { const start = process.cpuUsage(); run(); const used = process.cpuUsage(start); best = Math.min(best, used.user + used.system); } return best; };
+  for (const unit of ['\\$', '\\$a', '`', '$`a', '~', '<code ']) {
+    const text = unit.repeat(Math.ceil(2 ** 20 / unit.length));
+    const pass = work(() => { let dollars = 0; for (let at = 0; at < text.length; at++) if (text.charCodeAt(at) === 36) dollars++; return dollars; });
+    const checks = work(() => views.markdownInto(d.createElement('div'), text));
+    assert(checks < 100 * pass, `${JSON.stringify(unit)} × 1 MB: ${checks} µs of checks, ${pass} µs for a plain pass`);
+  }
+});
+
 test('a link to a oneloop page opens it in place, while other links keep their rules', () => {
   const { d, host, views } = directPreviews();
   const text = ['[Task](#/task/WEB-002)', '[Board](http://localhost/#/board)', '[Section](#setup)', '[Other app](http://localhost:9000/#/board)', '[Docs](https://example.invalid/docs)'].join('\n\n');

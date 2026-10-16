@@ -141,6 +141,9 @@ All notable changes to oneloop are recorded here. The format follows
   an AI assistant, its status in the page header and in **Status**, its title
   and its description now show at once, also while you type in another of its
   fields. Before, they changed only after you left the task's fields.
+- Opening a Markdown file with a very long run of backticks (`` ` ``) or
+  tildes (`~`) no longer freezes the tab. Before, such a 200 KB file could
+  freeze it for more than a minute.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -35,14 +35,31 @@ let markdownLoad=null;
 let markdownReady=null;
 const ready=()=>markdownReady??=['marked','DOMPurify','markedFootnote','markedAlert'].every(name=>!!vendor[name]);
 let mathLoad=null;
-const needsHighlight=text=>/[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^>]*\blanguage-/i.test(text);
-// Math is a math fence, GitHub's $`…`$, a $$ pair, a block that starts with a
-// line of $, or $…$ on one line closed before a space, punctuation or the end
-// of a run of text, as the math extension reads it, also in quotes, lists and
-// tables. Prices and shell variables, such as "$5 and $10" or "$HOME", don't
-// load KaTeX. Inline math that the extension reads across another $ still
-// ends with a $…$ found here.
-const needsMath=text=>/(?:`{3,}|~{3,})\s*math\b|\$`[^\n]+?`\$|\$\$[\s\S]*?\$\$|^[>*+\-.)\d \t]*\$[ \t]*$|\$(?!\$)(?:\\.|[^\\\n$])*?(?:\\.|[^\\\n$])\$(?=[\s?!.,:？！。，：*_~)\]|]|$)/m.test(text);
+// A fence or HTML code that names a language. A run of backticks or tildes is
+// read from its first character only, so a long run stays quick.
+const needsHighlight=text=>/(?<![`~])[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^<>]*\blanguage-/i.test(text);
+// Math is a $$ pair, a math fence, a line of $ that opens or closes a block,
+// GitHub's $`…`$, or $…$ on one line between two $ that no backslash escapes,
+// closed before a space, punctuation or the end of a run of text, as the math
+// extension reads it, also in quotes, lists and tables. Prices and shell
+// variables, such as "$5 and $10" or "$HOME", don't load KaTeX. One pass over
+// the lines, as marked splits them, so a long file stays quick.
+function needsMath(text){
+  const pair=text.indexOf('$$');
+  if(pair>=0&&text.indexOf('$$',pair+2)>=0)return true;
+  for(const line of text.split(/\r\n?|\n/)){
+    if(/(?<!`)`{3,}\s*math\b|(?<!~)~{3,}\s*math\b|^[>*+\-.)\d \t]*\$[ \t]*$/.test(line))return true;
+    const tick=line.indexOf('$`');
+    if(tick>=0&&line.indexOf('`$',tick+3)>=0)return true;
+    for(let at=0,open=-1;at<line.length;at++){
+      if(line[at]==='\\'){at++;continue;}
+      if(line[at]!=='$')continue;
+      if(open>=0&&at>open+1&&(at+1===line.length||/[\s?!.,:？！。，：*_~)\]|]/.test(line[at+1])))return true;
+      open=at;
+    }
+  }
+  return false;
+}
 const readyFor=text=>ready()&&(!needsHighlight(text)||!!vendor.hljs)&&(!needsMath(text)||!!vendor.katex&&!!vendor.markedKatex);
 
 function loadMarkdownAsset(path,globalName){
