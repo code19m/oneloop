@@ -92,9 +92,10 @@ a review.
   a refresh keeps them and you can share a filtered Board as a link. Changing
   them adds no step to the browser's history, so **Back** leaves the Board. A
   choice the project no longer has, such as a deleted track, is dropped.
-- **Newest first**, at the top of **Done**, lists the most recently finished
-  tasks first. Each browser remembers this choice. While it is on, you can't
-  reorder Done by hand; turn it off to see and change Done's own order.
+- **Newest first**, the sort button at the top of **Done**, lists the most
+  recently finished tasks first. Each browser remembers this choice. While it
+  is on, you can't reorder Done by hand; turn it off to see and change Done's
+  own order.
 
 ### Pool
 

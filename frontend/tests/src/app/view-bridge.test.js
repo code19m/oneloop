@@ -327,10 +327,11 @@ test('only the latest project selection may apply a completed bootstrap',async()
   assert.deepEqual(selected,['p2']);
 });
 
-test('a slow Board search or project switch marks the page busy after a moment, until its read ends',async t=>{
+test('a slow Board search, Done order or project switch marks the page busy after a moment, until its read ends',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
+  t.after(()=>saveDoneOrder('manual',undefined));
   const page=document.createElement('main');page.className='content';document.body.append(page);
-  const starts={search:bridge=>bridge.filterBoard({search:'slow'}),'project switch':bridge=>bridge.selectProject('p1')};
+  const starts={search:bridge=>bridge.filterBoard({search:'slow'}),'Done order':bridge=>bridge.setDoneOrder('completed'),'project switch':bridge=>bridge.selectProject('p1')};
   for(const [name,start] of Object.entries(starts))for(const ending of ['resolve','reject']){
     const read=deferred(),state=fixture({view:'board',projectId:'p1',board:{}},{reads:{board:()=>read.promise},reloadBootstrap:()=>read.promise});
     const done=start(state.bridge).catch(()=>{});await settle();

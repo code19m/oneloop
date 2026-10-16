@@ -6,6 +6,7 @@ import { UIMotion } from '../../src/app/motion.js';
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
 } from '../../src/data/board-filters.js';
+import { savedDoneOrder } from '../../src/data/done-order.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
@@ -29,6 +30,8 @@ const COLS = [
 ];
 /** Whether the loaded Done column lists the most recently completed task first. */
 const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
+/** Whether this browser chose Newest first, which the toggle shows before the column it asks for loads. */
+const newestChosen = () => savedDoneOrder() === 'completed';
 
 function taskBits(t) {
   if (t.state === 'done') return { right: stIcon('done'), cls: 'done' };
@@ -96,7 +99,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
         </div></div>`;
     }).join('');
     return `<section class="col" aria-labelledby="col-${c.key}" data-col="${esc(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
+      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn icon done-order" aria-pressed="${newestChosen()}" aria-label="Newest first" data-tip="Newest first" ${UIAction('toggleDoneOrder', UIAction.element)}>${I.sortDescending}</button>` : ''}</div>
       </div>
       <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
   }).join('');
@@ -565,7 +568,7 @@ Object.assign(App, {
   // The header's search and filter menus show the arrays that the reset replaced.
   // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
   clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.replaceAddress();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
-  toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
+  toggleDoneOrder(button){const newest=!newestChosen();button?.setAttribute('aria-pressed',String(newest));runtime().setDoneOrder(newest?'completed':'manual').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
     event.stopPropagation(); // The card around the button would open the task.

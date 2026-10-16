@@ -346,6 +346,7 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
 
 test('a newest-first Done takes a finished card on top and offers no reordering', async () => {
   const t=heldBoard(),projectId=t.A.context().projectId;
+  t.module('src/data/done-order.js').saveDoneOrder('completed');
   t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
@@ -368,13 +369,18 @@ test('a newest-first Done takes a finished card on top and offers no reordering'
 
 test('the manual Done order keeps the drop position and reordering', () => {
   const t=heldBoard();
-  const toggle=t.d.querySelector('[data-col="done"] .done-order');
-  assert.equal(toggle.getAttribute('aria-pressed'),'false');
+  assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'false');
   const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   dropCard(t,task.id,'done',done.at(-1));
   assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
-  t.A.toggleDoneOrder();
+});
+
+test('the Newest first toggle has its name as a tooltip and shows a new choice before the Board reads it', () => {
+  const t=heldBoard(),toggle=t.d.querySelector('[data-col="done"] .done-order');
+  assert.equal(toggle.getAttribute('aria-label'),'Newest first');assert.equal(toggle.dataset.tip,'Newest first');
+  t.A.toggleDoneOrder(toggle);
   assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','completed']));
+  assert.equal(toggle.getAttribute('aria-pressed'),'true','the read is still on its way');
 });
 
 test('a rejected Board move rolls back its card', async () => {

@@ -95,6 +95,10 @@ All notable changes to oneloop are recorded here. The format follows
   column hid them until **Load more**, and Done mixed both orders. A drag,
   **Move up** and **Move down** still put a task exactly there, and
   **Newest first** still lists Done by completion time.
+- **Newest first** is now a small sort button at the top of **Done**, so
+  Done's header is as tall as the others and its cards line up with theirs.
+  The button shows your choice at once, and the page dims while a slow Board
+  read loads the new order.
 
 ### Fixed
 
