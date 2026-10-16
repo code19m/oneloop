@@ -21,20 +21,6 @@ All notable changes to oneloop are recorded here. The format follows
 - A tab no longer checks your access every 30 seconds while it is hidden or
   gets live updates. Live updates already report lost access, and a hidden
   tab refreshes when it shows again.
-
-### Fixed
-
-- A Mermaid diagram in a Markdown preview no longer fails when its renderer
-  takes more than 30 seconds to download, as on a slow mobile connection.
-  When the renderer can't load, the preview now says to check the
-  connection, instead of blaming the diagram's syntax.
-- The web app does less work on slow computers and phones. Clearing a Board
-  filter or the search no longer draws the whole page again, so the cards
-  move smoothly into place. A change to one card, a drop or a filter no
-  longer redraws every loaded card, and dragging a card is smoother. Opening
-  a task draws its page two times instead of three, and a change from
-  another tab to the open task reads its comments and activity once instead
-  of twice.
 - The web app does less work on slow computers and phones. Turning off a
   Board filter or emptying the search no longer draws the whole page again,
   so the cards move smoothly into place. A change to one card, a drop or a
@@ -48,6 +34,10 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- A Mermaid diagram in a Markdown preview no longer fails when its renderer
+  takes more than 30 seconds to download, as on a slow mobile connection.
+  When the renderer can't load, the preview now says to check the
+  connection, instead of blaming the diagram's syntax.
 - Long comments on a task page no longer fold to nothing and grow back when
   the page draws again, such as after a change from another tab or a saved
   field. The page also stays at the comment you were reading. Before, it
