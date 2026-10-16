@@ -240,7 +240,8 @@ export function createRecoveryController({
   /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
   let writes=0;
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
-  let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now();
+  // A page that is leaving, by Reload now or the browser, hides on its way out: no moment to reload by itself.
+  let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now(),leaving=false;
 
   function entityKey(entity){
     if(!entity)return null;
@@ -349,7 +350,7 @@ export function createRecoveryController({
    */
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
-    if(disposed||!updatedBuild||autoReloaded)return;
+    if(disposed||leaving||!updatedBuild||autoReloaded)return;
     const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
     if(reloadedFor().includes(version))return;
     const away=documentObject.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
@@ -713,7 +714,7 @@ export function createRecoveryController({
     trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
     /** The server runs another version than this page; `build` is that version. */
     buildChanged(build){updatedBuild=true;newBuild=build??null;updateNotice();reloadWhenSafe();},
-    reloadClient(){windowObject.location.reload();},
+    reloadClient(){leaving=true;windowObject.location.reload();},
     reconnect,
     // The SSE reconcile event owns the post-reconnect refresh.
     liveConnected(){liveOpen=true;liveAttempt=0;clearTimer(liveTimer);livePaused(null);setConnectivity(apiReachable,true);},
@@ -732,7 +733,7 @@ export function createRecoveryController({
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility and the connection. */
-    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
     sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };

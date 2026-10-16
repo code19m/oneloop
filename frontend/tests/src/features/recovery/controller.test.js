@@ -354,11 +354,11 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
  * version the server answers with. `html` is what the page shows.
  */
 function updatable({hidden=false,stores={session:new Map()},html=''}={}){
-  const timers=new Map();let clock=0,next=0,reloads=0,saving=false,checks=0,visibility=hidden?'hidden':'visible';
+  const timers=new Map(),listeners={};let clock=0,next=0,reloads=0,saving=false,checks=0,visibility=hidden?'hidden':'visible';
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
   const {window,document,createRecoveryController}=page(html);
   Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visibility});
-  const windowObject={sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener(){},removeEventListener(){}};
+  const windowObject={sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);},removeEventListener(){}};
   const app=appFor(()=>({view:'board',projectId:'p1'}));
   let server=oldVersion;
   const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
@@ -370,6 +370,10 @@ function updatable({hidden=false,stores={session:new Map()},html=''}={}){
   return {controller,stores,monitor,document,toasts:app.toasts,get reloads(){return reloads;},get checks(){return checks;},set saving(value){saving=value;},set server(value){server=value;},fire,
     /** The tab hides, or shows again. */
     show(visible){visibility=visible?'visible':'hidden';fire('visibilitychange');},
+    /** The page goes away, as a browser takes it, such as for a reload: first pagehide, then it hides. */
+    leave(){for(const listener of listeners.pagehide??[])listener({persisted:false});visibility='hidden';fire('visibilitychange');},
+    /** The page comes back from the browser's back-forward cache. */
+    restore(){visibility='visible';fire('visibilitychange');for(const listener of listeners.pageshow??[])listener({persisted:true});},
     /** Move the clock on, run the timers that are due, and let the checks they start finish. */
     async advance(ms){clock+=ms;for(const [id,timer] of [...timers].sort((a,b)=>a[1].at-b[1].at))if(timer.at<=clock&&timers.delete(id))timer.callback();await settle();}};
 }
@@ -440,13 +444,23 @@ test('a tab reloads by itself once for each version, so servers that disagree ca
   assert.equal(third.reloads,0);assert.match(third.controller.connectionHtml(),/Reload/);
 });
 
-test('a page that a tab reloaded by itself for an update says so once, and one reloaded by the person does not',()=>{
-  const first=updatable({hidden:true});first.controller.buildChanged(newVersion);
-  assert.equal(first.reloads,1);
-  assert.deepEqual(updatable({stores:first.stores}).toasts,[['oneloop was updated','info']]);
-  assert.deepEqual(updatable({stores:first.stores}).toasts,[],'only the first page after the reload');
-  const manual=updatable();manual.controller.buildChanged(newVersion);manual.controller.activateNotice();
-  assert.equal(manual.reloads,1,'Reload now');assert.deepEqual(updatable({stores:manual.stores}).toasts,[]);
+test('only a reload the tab made by itself makes the next page say oneloop was updated, once',()=>{
+  const automatic=updatable({hidden:true});automatic.controller.buildChanged(newVersion);
+  assert.equal(automatic.reloads,1);
+  assert.deepEqual(updatable({stores:automatic.stores}).toasts,[['oneloop was updated','info']]);
+  assert.deepEqual(updatable({stores:automatic.stores}).toasts,[],'only the first page after the reload');
+  // Reload now, and the browser's own reload: the page hides on its way out.
+  const reloadNow=updatable();reloadNow.controller.buildChanged(newVersion);reloadNow.controller.activateNotice();reloadNow.leave();
+  assert.equal(reloadNow.reloads,1,'Reload now reloads once');assert.deepEqual(updatable({stores:reloadNow.stores}).toasts,[]);
+  const browser=updatable();browser.controller.buildChanged(newVersion);browser.leave();
+  assert.equal(browser.reloads,0,'the browser reloads');assert.deepEqual(updatable({stores:browser.stores}).toasts,[]);
+});
+
+test('a page back from the browser\'s back-forward cache reloads by itself again',()=>{
+  const page=updatable();page.controller.buildChanged(newVersion);
+  page.leave();assert.equal(page.reloads,0);
+  page.restore();page.show(false);
+  assert.equal(page.reloads,1);
 });
 
 /**
