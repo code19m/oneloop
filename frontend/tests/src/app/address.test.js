@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { projectAddress, readAddress, rememberProject, rememberedProject } from '../../../src/app/address.js';
+import { lastSwitch, projectAddress, readAddress, rememberSwitch } from '../../../src/app/address.js';
 import { NO_ASSIGNEE } from '../../../src/data/board-filters.js';
 
 const unfiltered = { search: '', trackIds: [], epicIds: [], assigneeIds: [], blocked: false };
@@ -28,14 +28,16 @@ test('each page reads its project, task or nothing from the address, and an addr
   assert.equal(projectAddress('settings', 'p/1'), '#/settings/p%2F1');
 });
 
-test('this browser remembers the project of the last switch, and storage it may not use changes nothing', () => {
+test('this browser remembers the last switch with its person, only that person forgets it, and storage it may not use changes nothing', () => {
   const values = new Map(), storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
-  assert.equal(rememberedProject(storage), null);
-  rememberProject('p2', storage);
-  assert.equal(rememberedProject(storage), 'p2');
-  rememberProject(null, storage);
+  assert.equal(lastSwitch(storage), null);
+  rememberSwitch('u1', 'p2', storage);
+  assert.deepEqual(lastSwitch(storage), { userId: 'u1', projectId: 'p2' });
+  rememberSwitch('u2', null, storage);
+  assert.deepEqual(lastSwitch(storage), { userId: 'u1', projectId: 'p2' });
+  rememberSwitch('u1', null, storage);
   assert.equal(values.has('oneloop.project'), false);
   const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
-  rememberProject('p2', blocked);
-  assert.equal(rememberedProject(blocked), null);
+  rememberSwitch('u1', 'p2', blocked);
+  assert.equal(lastSwitch(blocked), null);
 });

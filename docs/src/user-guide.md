@@ -16,8 +16,8 @@ work, such as "Small fixes".
 The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
 names the project, so a refresh, a bookmark or a link opens the same project.
 An address without a project, such as an older bookmark, opens the project you
-last switched to in this browser. A link to a project you can't open shows
-**Page not found**.
+last switched to in this browser, or else your first project. A link to a
+project you can't open shows **Page not found**.
 
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can

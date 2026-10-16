@@ -59,7 +59,7 @@ const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
-const signInLoad = createSignInLoad({bootstrap,api,getApp:()=>app});
+const signInLoad = createSignInLoad({bootstrap,api,data,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 

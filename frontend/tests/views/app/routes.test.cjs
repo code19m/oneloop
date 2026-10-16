@@ -19,9 +19,9 @@ test('an address that names a project you can\'t open says Page not found, with 
   }
 });
 
-test('a project switch is a history entry that keeps the page, and new tabs of this browser open that project', () => {
+test('a project switch is a history entry that keeps the page, and is remembered with the person who made it', () => {
   const t = bootApp({ route: 'roadmap/p1' });
   t.A.selectProject('p2');
   assert.equal(t.w.location.hash, '#/roadmap/p2'); assert.equal(t.w.history.length, 2);
-  assert.equal(t.w.localStorage.getItem('oneloop.project'), 'p2');
+  assert.deepEqual(JSON.parse(t.w.localStorage.getItem('oneloop.project')), { userId: 'taylorwu', projectId: 'p2' });
 });

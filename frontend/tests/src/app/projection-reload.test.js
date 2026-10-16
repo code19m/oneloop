@@ -115,7 +115,7 @@ function storage(entries={}){
   return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key),values};
 }
 
-test('the address decides what the bootstrap loads, and the project on screen fills in for an address without one',t=>{
+test('the address decides what the bootstrap loads, and the project on screen fills in for an address without one',()=>{
   const onScreen={context:()=>({projectId:'p1'})};
   assert.deepEqual(routeScope('#/task/ONE-1',onScreen),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board/p2',onScreen),{projectId:'p2',view:'board'});
@@ -124,8 +124,6 @@ test('the address decides what the bootstrap loads, and the project on screen fi
   assert.deepEqual(routeScope('#/knowledge/p2/tree/guides',onScreen),{projectId:'p2',view:'metadata'});
   assert.deepEqual(routeScope('#/inbox',onScreen),{projectId:'p1',view:'metadata'});
   assert.deepEqual(routeScope('',null),{view:'roadmap'});
-  useGlobals(t,{localStorage:storage({'oneloop.project':'p2'})});
-  assert.deepEqual(routeScope('#/board',null),{projectId:'p2',view:'board'},'a new tab opens the project this browser switched to last');
 });
 
 test('an unavailable destination is reported to the caller instead of the page when asked',async()=>{
@@ -158,10 +156,10 @@ test('a full refresh of the Board uses the cards its bootstrap carries, unless a
   }
 });
 
-/** A sign-in on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
-function signInPage(context,answer=async()=>({stale:false})){
+/** A sign-in of `person` on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
+function signInPage(context,answer=async()=>({stale:false}),person='u1'){
   const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};
-  const signIn=createSignInLoad({bootstrap,api:{},getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
+  const signIn=createSignInLoad({bootstrap,api:{},data:{session:{id:'s1',userId:person}},getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
   return {signIn,loads};
 }
 
@@ -169,7 +167,7 @@ function signInPage(context,answer=async()=>({stale:false})){
 function firstVisit(answer){
   const data=createLegacyData(),reads=[];
   const api={bootstrap:async scope=>{reads.push(scope);return answer(reads.length);}};
-  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,getApp:()=>null,location:{hash:'#/board'}});
+  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,data,getApp:()=>null,location:{hash:'#/board'}});
   return {data,reads,signIn};
 }
 
@@ -218,9 +216,26 @@ test('a project the account can no longer open loads the default project, and a 
   assert.deepEqual(task.loads,[{taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });
 
-test('a remembered project that is gone opens the default project and is forgotten',async t=>{
-  const remembered=storage({'oneloop.project':'p2'});useGlobals(t,{localStorage:remembered});
+test('a new tab opens the project its person switched to last, and never another person\'s',async t=>{
+  useGlobals(t,{localStorage:storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})})});
+  for(const person of ['u1','u2']){
+    // Each read answers with its own project, for the person signing in.
+    const visit=firstVisit(count=>projection(count===1?'p2':'p1',{session:{userId:person,isAdmin:true},users:[{id:person,name:person,isAdmin:true,isActive:true}]}));
+    visit.signIn.prefetch();
+    visit.data.session={id:'s1',userId:person};
+    await visit.signIn.load();
+    // Before the session is known, the read asks for the last switch; only its own person gets it.
+    assert.deepEqual(visit.reads.map(scope=>[scope.projectId??null,scope.view]),person==='u1'?[['p2','board']]:[['p2','board'],[null,'board']],person);
+    assert.equal(visit.data.timeZone,person==='u1'?'p2':'p1',`${person} sees the project of the read for them`);
+  }
+});
+
+test('a remembered project that is gone opens the default project and is forgotten, but only by its person',async t=>{
+  const remembered=storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})});useGlobals(t,{localStorage:remembered});
   const gone=new ApiError('project not found',{status:404,code:'not_found'});
+  const other=signInPage({view:'board',projectId:null,board:{},hash:'#/board/p2'},async scope=>{if(scope.projectId)throw gone;return {stale:false};},'u2');
+  await other.signIn.load();
+  assert.equal(remembered.values.has('oneloop.project'),true,'someone else who can\'t open it leaves the switch alone');
   const {signIn,loads}=signInPage(null,async scope=>{if(scope.projectId)throw gone;return {stale:false};});
   await signIn.load();
   assert.deepEqual(loads,[{projectId:'p2',view:'board'},{view:'board'}]);

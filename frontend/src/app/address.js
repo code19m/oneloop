@@ -16,7 +16,7 @@ const PROJECT_PAGES = new Set(['board', 'roadmap', 'settings', 'knowledge']);
 const OTHER_PAGES = new Set(['inbox', 'profile', 'users', 'storage']);
 /** How a Board address names No assignee. */
 const NONE = 'none';
-const REMEMBERED = 'oneloop.project';
+const LAST_SWITCH = 'oneloop.project';
 
 /** @param {string} part */
 function decode(part) {
@@ -86,24 +86,29 @@ export function projectAddress(page, projectId, filters = null) {
 export const pageOf = (hash) => hash.split('?')[0];
 
 /**
- * The project this browser switched to last, which an address that names no
- * project opens.
+ * The last project switch in this browser: who made it, and to which
+ * project. An address that names no project opens that project again, but
+ * only for the same person.
  * @param {Storage} [storage] the browser's local storage unless given
+ * @returns {{userId:string,projectId:string}|null}
  */
-export function rememberedProject(storage) {
-  try { return (storage ?? globalThis.localStorage)?.getItem(REMEMBERED) || null; } catch { return null; }
+export function lastSwitch(storage) {
+  try {
+    const saved = JSON.parse((storage ?? globalThis.localStorage)?.getItem(LAST_SWITCH) ?? 'null');
+    return typeof saved?.userId === 'string' && typeof saved.projectId === 'string' ? { userId: saved.userId, projectId: saved.projectId } : null;
+  } catch { return null; }
 }
 
 /**
- * Remember a switch to `projectId`; null forgets the project, such as one that
- * is gone. Without storage, as in some private windows, new tabs open the
- * first project instead.
- * @param {string|null} projectId @param {Storage} [storage] the browser's local storage unless given
+ * Remember that `userId` switched to `projectId`. Null forgets their switch,
+ * such as one to a project that is gone, and leaves anyone else's. Without
+ * storage, as in some private windows, new tabs open the first project.
+ * @param {string} userId @param {string|null} projectId @param {Storage} [storage] the browser's local storage unless given
  */
-export function rememberProject(projectId, storage) {
+export function rememberSwitch(userId, projectId, storage) {
   try {
     const store = storage ?? globalThis.localStorage;
-    if (projectId) store?.setItem(REMEMBERED, projectId);
-    else store?.removeItem(REMEMBERED);
+    if (projectId) store?.setItem(LAST_SWITCH, JSON.stringify({ userId, projectId }));
+    else if (lastSwitch(store)?.userId === userId) store?.removeItem(LAST_SWITCH);
   } catch { /* The switch still holds for this tab. */ }
 }

@@ -5,7 +5,7 @@
    server-backed actions to `App`. See frontend/README.md before changing an
    action. */
 
-import { pageOf, projectAddress, readAddress, rememberProject } from '../src/app/address.js';
+import { pageOf, projectAddress, readAddress, rememberSwitch } from '../src/app/address.js';
 import { UIMotion } from '../src/app/motion.js';
 import { checkPreviewAccess } from '../src/features/files/preview.js';
 import { routeHash } from '../src/features/knowledge/model.js';
@@ -346,12 +346,13 @@ Object.assign(App, {
   /**
    * Switch to a project whose data the caller loaded. The page stays, but a
    * task page goes to the Board and Knowledge to its top folder. The switch is
-   * a new history entry, and new tabs of this browser open the project.
+   * a new history entry, and this person's new tabs in this browser open the
+   * project.
    */
   selectProject(id) {
     if(!visibleProjects().some(project=>project.id===id))return;
     const leaveTask=state.view==='task'&&state.projectId!==id;
-    state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberProject(id);
+    state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);
     if(leaveTask){state.view='board';state.taskId=null;}
     if(state.view==='knowledge')knowledge.route('knowledge',id);
     pushAddress(addressOf(state.view));render();
