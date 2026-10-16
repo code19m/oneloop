@@ -112,6 +112,10 @@ All notable changes to oneloop are recorded here. The format follows
   also showed the commit the build came from, which made the menu scroll
   sideways in release images. `/healthz` and `oneloop --version` still give
   the commit.
+- After **Load more** on the **Board**, typing in the search and erasing it
+  quickly, or turning a filter on and off before its cards arrive, keeps every
+  loaded card in view. Before, each column fell back to its first 50 cards with
+  no **Load more**, while its count still showed more.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

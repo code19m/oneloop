@@ -220,6 +220,22 @@ test('a Load more page that lands after the search changed draws nothing, and th
   assert(titles.length && titles.every(title => /reader/i.test(title)), 'the search\'s cards show');
 });
 
+test('after Load more, a search typed and erased before its read keeps every loaded card', async () => {
+  // Planning holds more than its first page; Load more brings the last page.
+  const t = bootApp({ route: 'board', prepare: D => {
+    for (let index = 0; index < 60; index++) D.tasks.push({ id: `BIR-${900 + index}`, internalId: `more-${index}`, projectId: 'p1', epicId: 'e1', state: 'planning', title: `More work ${index}`, order: 1000 + index, assignees: [], created: Date.now(), revision: 1, comments: [], attachments: [], activity: [] });
+    D.boardPageInfo = { projectId: 'p1', filters: {}, pages: { planning: { nextCursor: 'next', total: 0 } } };
+  } });
+  const planning = () => t.d.querySelectorAll('[data-col="planning"] .card').length, loaded = t.D.tasks.filter(task => task.projectId === 'p1' && task.state === 'planning').length;
+  assert.equal(planning(), 50);
+  t.D.boardPageInfo.pages.planning.nextCursor = null;
+  t.A.loadMoreBoard('planning'); await settle();
+  assert.equal(planning(), loaded);
+  t.A.setBoardQ('e', { isComposing: false });
+  t.A.setBoardQ('', { isComposing: false }); await settle();
+  assert.equal(planning(), loaded, 'the cards Load more showed stay');
+});
+
 test('a blocked card describes its block reason', () => {
   const { w, d } = bootApp({ media: () => true });
   const task = w.DATA.tasks.find(item => item.state !== 'done');

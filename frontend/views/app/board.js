@@ -46,6 +46,22 @@ export const boardFilters = () => ({ search: state.boardQ, blocked: state.boardB
  */
 const cardsLoaded = () => D.boardPageInfo?.projectId === state.projectId && sameBoardFilters(D.boardPageInfo.filters, normalizeBoardFilters(boardFilters()));
 
+/** The loaded pages, by project and filters, whose cards the column limits count. */
+let limitsPages = null;
+
+/**
+ * Each column shows the cards its loaded pages hold. Pages read for another
+ * project or other filters start again at their first page; pages read again
+ * for the same ones, as when a filter goes off before its read lands, keep
+ * what Load more showed, as their read keeps it.
+ */
+function fitLimits() {
+  const pages = D.boardPageInfo;
+  if (limitsPages?.projectId === pages?.projectId && sameBoardFilters(limitsPages?.filters, pages?.filters)) return;
+  limitsPages = pages ? { projectId: pages.projectId, filters: pages.filters } : null;
+  state.boardLimits = firstBoardPages();
+}
+
 /** The project's loaded tasks that pass the Board's filters. */
 function boardTasks() {
   const filters = normalizeBoardFilters(boardFilters());
@@ -58,6 +74,7 @@ export function renderBoard({column=null,excludeIds=null}={}) {
   const filtered = boardFiltered(boardFilters());
   // Cards loaded for another project or other filters would show a wrong set, or No matching tasks.
   if (!cardsLoaded()) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
+  fitLimits();
   if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
   const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
     const list = ts.filter((t) => t.state === c.key);
@@ -131,10 +148,9 @@ function boardRowKey(row, column) {
   return `${column}:${row.classList.contains('empty-note') ? 'empty' : 'more'}`;
 }
 
-/** Show the Board unfiltered, from the first page of each column, as for another project. */
+/** Show the Board unfiltered, as for another project. */
 export function resetBoardFilters() {
   state.boardTracks = []; state.boardEpics = []; state.boardAssignees = []; state.boardQ = ''; state.boardBlocked = false;
-  state.boardLimits = firstBoardPages();
 }
 
 /** The epics the epic filter offers: those on the chosen tracks, or all, in start order. */
@@ -173,7 +189,6 @@ function keepKnownFilters() {
   const epicsDropped = keep(state.boardEpics, new Set(epicChoices().map((e) => e.id)));
   const assigneesDropped = keep(state.boardAssignees, new Set(assigneeChoices().map((o) => o.v)));
   if (!tracksDropped && !epicsDropped && !assigneesDropped) return;
-  state.boardLimits = firstBoardPages();
   ['fTrack', 'fEpic', 'fAssignee'].forEach(showFilterChoice);
   App.replaceAddress();
 }
@@ -184,18 +199,17 @@ export function showBoardFilters(filters) {
   if (JSON.stringify(normalizeBoardFilters(next)) !== JSON.stringify(normalizeBoardFilters(boardFilters()))) {
     state.boardQ = next.search; state.boardBlocked = next.blocked;
     state.boardTracks = [...next.trackIds]; state.boardEpics = [...next.epicIds]; state.boardAssignees = [...next.assigneeIds];
-    state.boardLimits = firstBoardPages();
   }
   keepKnownFilters();
 }
 
-function applyBoardFilters(reset = true, fromServer = false, { animate: motion = true } = {}) {
+function applyBoardFilters(fromServer = false, { animate: motion = true } = {}) {
   if (!fromServer) cancelBoardSearch();
   App.updateDocumentTitle();
-  if(reset) state.boardLimits = firstBoardPages();
   if(!fromServer){App.replaceAddress();runtime().filterBoard(App.context().board).catch(report);return;}
   const board = document.querySelector('.board');
   if (!board || state.view !== 'board') return;
+  if (cardsLoaded()) fitLimits();
   const snapshot = boardSnapshot();
   if (boardSnapshots.get(board) === snapshot) return;
   today.setTime(instanceToday().getTime());
@@ -463,7 +477,7 @@ document.addEventListener('compositionend', (e) => { if(e.target.matches?.('[dat
 Object.assign(App, {
   keepKnownFilters,
   // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
-  refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
+  refreshBoard(options) { applyBoardFilters(true,options); App.refreshCounts(); },
   acceptMoreBoard(col) {
     // The filters changed while the page loaded; the read for them draws the Board.
     if(!cardsLoaded())return;
