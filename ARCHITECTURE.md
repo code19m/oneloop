@@ -122,10 +122,11 @@ small hints over SSE, and clients then fetch what changed.
 - `legacy_values.rs`: maps values stored under an old name, such as the task
   status `planned`, when they are read. See the audit trail rule below.
 - `runtime.rs`: background maintenance and the supervision of every worker.
-  File maintenance runs every minute; database maintenance prunes login
-  throttles and expired transient rows (with `retention.rs`), refreshes
-  planner statistics, empties deleted comments and clears old archived Inbox
-  items, each job on its own timer.
+  File maintenance runs every minute, and its scan for files that nothing
+  refers to every hour; database maintenance prunes login throttles and
+  expired transient rows (with `retention.rs`), refreshes planner statistics,
+  empties deleted comments and clears old archived Inbox items, each job on its
+  own timer.
 - `blocking.rs`: lanes that bound blocking work, such as password hashing,
   file scans, image decodes and Knowledge searches, and one place per person
   in a lane's queue. `disk.rs`: the disk budget that uploads and Knowledge

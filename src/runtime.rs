@@ -21,8 +21,8 @@ pub async fn prepare_files(files: &FileService) -> AppResult<()> {
     Ok(())
 }
 
-/// File reconciliation and cleanup every minute, the thumbnail worker and
-/// database maintenance.
+/// File upkeep and cleanup every minute, the thumbnail worker and database
+/// maintenance.
 pub fn spawn_maintenance(
     files: FileService,
     db: Db,
@@ -144,12 +144,13 @@ async fn database_maintenance(db: Db, mut shutdown: watch::Receiver<bool>) {
     }
 }
 
+/// The scans for files that nothing refers to walk every stored file, so they
+/// run once an hour; the other upkeep runs every minute.
 async fn file_maintenance(files: FileService, mut shutdown: watch::Receiver<bool>) {
+    // prepare_files reconciled before the listener was bound.
+    let mut reconciled = Instant::now();
     let mut timer = interval(MINUTE);
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // prepare_files already reconciled before the listener was bound.
-    // The immediate first tick only performs capacity cleanup.
-    let mut first_tick = true;
     loop {
         if *shutdown.borrow() {
             break;
@@ -161,11 +162,15 @@ async fn file_maintenance(files: FileService, mut shutdown: watch::Receiver<bool
             _ = timer.tick() => {
                 // Finish a claimed filesystem operation before honoring shutdown.
                 // Abrupt process interruption is handled by durable reconciliation.
-                if !first_tick && let Err(error) = files.reconcile().await {
+                let scan = reconciled.elapsed() >= HOUR;
+                let upkeep = if scan { files.reconcile().await } else { files.maintain().await };
+                if let Err(error) = upkeep {
                     tracing::error!(error = %error, "file reconciliation failed; will retry");
                     continue;
                 }
-                first_tick = false;
+                if scan {
+                    reconciled = Instant::now();
+                }
                 if let Err(error) = files.cleanup_if_needed().await {
                     tracing::error!(error = %error, "temporary file cleanup failed; will retry");
                 }
@@ -293,6 +298,52 @@ mod tests {
             waited += 1;
         }
         assert!(!comment_kept(&db, "second").await);
+        stop.send(true).unwrap();
+        maintenance.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn files_that_nothing_refers_to_go_at_the_hourly_scan() {
+        let (_root, db) = crate::db::migrated_db();
+        db.layout().ensure_runtime_directories().unwrap();
+        let orphan = db.layout().files().join("orphan");
+        std::fs::write(&orphan, b"orphan").unwrap();
+        let pending = async || -> i64 {
+            db.run(|connection| {
+                Ok(connection.query_row(
+                    "SELECT count(*) FROM file_blobs WHERE state='pending'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap()
+        };
+        let files = FileService::new(db.clone(), 1_000_000, 0);
+        let key = crate::files::FileStore::new(db.layout().clone())
+            .new_storage_key()
+            .unwrap();
+        let (stop, signal) = watch::channel(false);
+        let maintenance = tokio::spawn(file_maintenance(files, signal));
+        // An upload that a crash left goes in the next minute's upkeep.
+        tokio::time::sleep(MINUTE * 30 + MINUTE / 2).await;
+        db.run(move |connection| {
+            connection.execute(
+                "INSERT INTO file_blobs(id,storage_key,checksum_sha256,size_bytes,media_type,state,created_at)
+                 VALUES('stale',?1,?2,1,'text/plain','pending',1)",
+                rusqlite::params![key, "0".repeat(64)],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(MINUTE).await;
+        assert_eq!(pending().await, 0);
+        // The scan for orphans waits for the hour.
+        tokio::time::sleep(MINUTE * 28).await;
+        assert!(orphan.exists());
+        tokio::time::sleep(MINUTE).await;
+        assert!(!orphan.exists());
         stop.send(true).unwrap();
         maintenance.await.unwrap();
     }

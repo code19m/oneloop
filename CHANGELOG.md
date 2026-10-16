@@ -43,6 +43,19 @@ All notable changes to oneloop are recorded here. The format follows
   expired retry keys. Database maintenance now removes them, a batch at a
   time. Before, 50,000 expired keys held up writes for a few hundred
   milliseconds.
+- Uploads, and the storage check that runs every minute, now count stored
+  files and unfinished uploads but not image thumbnails, so they no longer
+  slow down as an instance collects images. Thumbnails go when files and
+  unfinished uploads reach 80% of the storage limit. **Clean up now** still
+  counts them, as the **Storage** page does.
+- oneloop now looks for files that nothing refers to, such as files that a
+  crash left behind, once an hour instead of every minute.
+- Image thumbnails, and files and avatars that the browser already has, no
+  longer wait for other changes to finish, such as a Knowledge sync. An
+  attachment's `lastAccessedAt` now changes only while the attachment is
+  temporary, and the 24 hours of a temporary attachment start again when
+  someone marks it temporary.
+- Large Knowledge files download faster.
 
 ### Fixed
 

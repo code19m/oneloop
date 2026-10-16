@@ -1,5 +1,5 @@
-//! Recovery after a crash, and reconciliation, which removes expired uploads
-//! and files that nothing refers to, and the scans of the file folders.
+//! Recovery after a crash, the minute's upkeep of uploads and deletion jobs,
+//! and reconciliation, which also removes files that nothing refers to.
 
 use std::{
     collections::HashSet,
@@ -46,7 +46,9 @@ impl FileService {
             .await
     }
 
-    pub async fn reconcile(&self) -> AppResult<FileRuntimeReport> {
+    /// The minute's upkeep: expired uploads, deletion jobs and staging files
+    /// that no upload owns. It reads the database and the flat staging folder.
+    pub async fn maintain(&self) -> AppResult<FileRuntimeReport> {
         self.store.ensure_directories().await?;
         self.remove_abandoned_backup_pins().await;
         let lease = self.db.acquire_data_lease().await?;
@@ -108,33 +110,9 @@ impl FileService {
         }
         self.schedule_deleted_parent_files().await?;
         report.deletion_jobs_completed += self.process_deletion_jobs().await?;
-        // The rest removes only files that no backup copies: orphans,
-        // thumbnails and staging files, each checked again under the gate. So
-        // the scans of a large folder don't hold the lease, and a command that
-        // waits for the data lock isn't held up by them.
+        // Staging files are never in a backup, and each is checked again
+        // under the gate, so this needs no lease.
         drop(lease);
-        let referenced: HashSet<String> = self
-            .db
-            .run(|connection| {
-                let mut s = connection
-                    .prepare("SELECT storage_key FROM file_blobs WHERE storage_key IS NOT NULL")?;
-                Ok(s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
-            })
-            .await?;
-        let orphan_thumbnails = self.orphan_thumbnail_candidates(&referenced).await?;
-        // Scan without blocking publication. Only apparent orphans need the gate;
-        // their reference is rechecked under it before unlinking, so an upload
-        // committed after the snapshot is never mistaken for an orphan.
-        for path in self.unreferenced_files(referenced).await? {
-            let key = self.store.file_key(&path);
-            report.orphan_files_removed +=
-                u64::from(self.remove_unless_referenced(&path, key).await?);
-        }
-        for path in orphan_thumbnails {
-            let key = self.store.thumbnail_key(&path);
-            report.orphan_files_removed +=
-                u64::from(self.remove_unless_referenced(&path, key).await?);
-        }
         let active_staging: HashSet<String> = self
             .db
             .run(move |connection| {
@@ -182,9 +160,42 @@ impl FileService {
         Ok(report)
     }
 
+    /// The upkeep, then the scans of `files/` and `previews/` for files that
+    /// nothing refers to, such as what a crash left. The scans walk every
+    /// stored file, so the server runs them at startup and once an hour.
+    pub async fn reconcile(&self) -> AppResult<FileRuntimeReport> {
+        let mut report = self.maintain().await?;
+        // No backup copies orphans or thumbnails, and each is checked again
+        // under the gate, so the scans of a large folder don't hold the lease
+        // and a command that waits for the data lock isn't held up by them.
+        let referenced: HashSet<String> = self
+            .db
+            .run(|connection| {
+                let mut s = connection
+                    .prepare("SELECT storage_key FROM file_blobs WHERE storage_key IS NOT NULL")?;
+                Ok(s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
+            })
+            .await?;
+        let orphan_thumbnails = self.orphan_thumbnail_candidates(&referenced).await?;
+        // Scan without blocking publication. Only apparent orphans need the gate;
+        // their reference is rechecked under it before unlinking, so an upload
+        // committed after the snapshot is never mistaken for an orphan.
+        for path in self.unreferenced_files(referenced).await? {
+            let key = self.store.file_key(&path);
+            report.orphan_files_removed +=
+                u64::from(self.remove_unless_referenced(&path, key).await?);
+        }
+        for path in orphan_thumbnails {
+            let key = self.store.thumbnail_key(&path);
+            report.orphan_files_removed +=
+                u64::from(self.remove_unless_referenced(&path, key).await?);
+        }
+        Ok(report)
+    }
+
     /// A backup that was stopped leaves links to the files it copied, which
-    /// keep deleted files on disk. They go at startup and in every
-    /// reconciliation once no backup runs; a failure is only reported.
+    /// keep deleted files on disk. They go at startup and in every upkeep
+    /// once no backup runs; a failure is only reported.
     async fn remove_abandoned_backup_pins(&self) {
         let layout = self.store.layout().clone();
         let removed =

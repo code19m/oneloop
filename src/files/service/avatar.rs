@@ -241,6 +241,8 @@ impl FileService {
         log_cleanup_failure(self.schedule_blob_deletion(blob_id, "rollback").await);
     }
 
+    /// An avatar, checked in a read snapshot, so a revalidation doesn't wait
+    /// for the writer. Sending the bytes takes a read lease.
     pub(crate) async fn open_avatar_conditional(
         &self,
         actor: &Actor,
@@ -249,58 +251,29 @@ impl FileService {
     ) -> AppResult<ConditionalRead> {
         actor.require_ready()?;
         let _lease = self.db.acquire_data_lease().await?;
-        let actor = actor.clone();
-        let user_id = user_id.to_owned();
-        let user_id_tx = user_id.clone();
-        let lease_id = Uuid::now_v7().to_string();
-        let lease_id_tx = lease_id.clone();
-        let (row, etag, modified) = self
+        let (actor_tx, user_id_tx) = (actor.clone(), user_id.to_owned());
+        let (_, _, checksum, _) = self
             .db
-            .transaction(move |tx| {
-                let now = unix_now()?;
-                let current_admin = refresh_actor_connection(tx, &actor)?.is_admin;
-                let visible: bool = actor.user_id == user_id_tx
-                    || current_admin
-                    || tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM project_memberships a
-                         JOIN project_memberships b ON b.project_id=a.project_id
-                         JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
-                         WHERE a.user_id=?1 AND b.user_id=?2)",
-                        params![actor.user_id, user_id_tx],
-                        |r| r.get(0),
-                    )?;
-                if !visible {
-                    return Err(AppError::NotFound { resource: "avatar" });
-                }
-                let row = tx
-                    .query_row(
-                        "SELECT b.storage_key,b.size_bytes,b.checksum_sha256,b.id FROM users u
-                         JOIN file_blobs b ON b.id=u.avatar_blob_id
-                         WHERE u.id=?1 AND u.is_active=1 AND b.state='available'",
-                        [&user_id_tx],
-                        |r| {
-                            Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, i64>(1)?,
-                                r.get::<_, String>(2)?,
-                                r.get::<_, String>(3)?,
-                            ))
-                        },
-                    )
-                    .optional()?
-                    .ok_or(AppError::NotFound { resource: "avatar" })?;
-                let etag = file_etag(&row.2, false);
-                if etag_matches(validator.as_deref(), &etag) {
-                    return Ok((row, etag, false));
-                }
-                insert_read_lease(tx, &lease_id_tx, &row.3, "preview", &actor.user_id, now)?;
-                Ok((row, etag, true))
-            })
+            .snapshot(move |connection| visible_avatar(connection, &actor_tx, &user_id_tx))
             .await?;
-        if !modified {
+        let etag = file_etag(&checksum, false);
+        if etag_matches(validator.as_deref(), &etag) {
             return Ok(ConditionalRead::NotModified(etag));
         }
-        let (key, size, _, _) = row;
+        let (actor, user_id) = (actor.clone(), user_id.to_owned());
+        let lease_id = Uuid::now_v7().to_string();
+        let lease_id_tx = lease_id.clone();
+        // A deletion that claimed the file meanwhile wins here, and a later
+        // one sees the lease.
+        let (key, size, checksum) = self
+            .db
+            .transaction(move |tx| {
+                let (key, size, checksum, blob) = visible_avatar(tx, &actor, &user_id)?;
+                let now = unix_now()?;
+                insert_read_lease(tx, &lease_id_tx, &blob, "preview", &actor.user_id, now)?;
+                Ok((key, size, checksum))
+            })
+            .await?;
         let file = self.open_leased(&key, lease_id, "avatar").await?;
         Ok(ConditionalRead::Modified(Box::new(FileRead {
             file,
@@ -308,9 +281,43 @@ impl FileService {
             size: size as u64,
             media_type: "image/png".into(),
             byte_limit: None,
-            etag,
+            etag: file_etag(&checksum, false),
         })))
     }
+}
+
+/// The storage key, size, checksum and blob of `user_id`'s avatar, when
+/// `actor` may see it: their own, an administrator's view, or a person they
+/// share a project with.
+fn visible_avatar(
+    connection: &rusqlite::Connection,
+    actor: &Actor,
+    user_id: &str,
+) -> AppResult<(String, i64, String, String)> {
+    let current_admin = refresh_actor_connection(connection, actor)?.is_admin;
+    let visible: bool = actor.user_id == user_id
+        || current_admin
+        || connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_memberships a
+             JOIN project_memberships b ON b.project_id=a.project_id
+             JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
+             WHERE a.user_id=?1 AND b.user_id=?2)",
+            params![actor.user_id, user_id],
+            |r| r.get(0),
+        )?;
+    if !visible {
+        return Err(AppError::NotFound { resource: "avatar" });
+    }
+    connection
+        .query_row(
+            "SELECT b.storage_key,b.size_bytes,b.checksum_sha256,b.id FROM users u
+             JOIN file_blobs b ON b.id=u.avatar_blob_id
+             WHERE u.id=?1 AND u.is_active=1 AND b.state='available'",
+            [user_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "avatar" })
 }
 
 fn normalize_avatar(bytes: &[u8]) -> AppResult<Vec<u8>> {

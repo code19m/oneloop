@@ -11,12 +11,12 @@ use axum::{
     http::{HeaderMap, Request, StatusCode, header},
 };
 use image::{ImageEncoder, codecs::jpeg::JpegEncoder};
-use oneloop::files::{AttachmentView, FileStore};
+use oneloop::files::{AttachmentView, FileService, FileStore};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::{http::Fixture, png};
-use crate::support::http::body_bytes;
+use crate::support::{eventually, http::body_bytes, now, query_one};
 
 /// A JPEG whose left half is red and right half blue, stored with `exif`.
 fn jpeg(width: u32, height: u32, exif: Option<Vec<u8>>) -> Vec<u8> {
@@ -278,6 +278,104 @@ async fn a_thumbnail_view_serves_the_original_until_the_thumbnail_is_ready() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
     assert_eq!(decoded(&body).width(), 256);
+}
+
+#[tokio::test]
+async fn ready_thumbnails_and_revalidations_do_not_wait_for_a_write() {
+    let fixture = Fixture::new().await;
+    let image = fixture
+        .attach("busy", "busy.png", &png(300, 300, false))
+        .await;
+    fixture.files.make_queued_thumbnails().await;
+    let avatar = fixture
+        .files
+        .upload_avatar(
+            &fixture.manager,
+            fixture.files.avatar_slot(&fixture.manager).unwrap(),
+            png(1, 1, false),
+        )
+        .await
+        .unwrap();
+    let (_, headers, _) = fixture.get(&avatar, None).await;
+    let avatar_etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    // A long write holds the one writer until the end of the test.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (started, writing) = tokio::sync::oneshot::channel();
+    let db = fixture.db.clone();
+    let writer = tokio::spawn(async move {
+        db.transaction(move |_| {
+            started.send(()).unwrap();
+            held.recv().unwrap();
+            Ok(())
+        })
+        .await
+    });
+    writing.await.unwrap();
+    let thumbnail = image.thumbnail_url.as_deref().unwrap();
+    let thumbnail_etag = format!("\"{}-thumbnail-256\"", image.checksum);
+    let image_etag = format!("\"{}\"", image.checksum);
+    for (url, validator, status) in [
+        (thumbnail, None, StatusCode::OK),
+        (thumbnail, Some(&thumbnail_etag), StatusCode::NOT_MODIFIED),
+        (
+            image.content_url.as_deref().unwrap(),
+            Some(&image_etag),
+            StatusCode::NOT_MODIFIED,
+        ),
+        (&avatar, Some(&avatar_etag), StatusCode::NOT_MODIFIED),
+    ] {
+        let (answer, _, _) = fixture.get(url, validator.map(String::as_str)).await;
+        assert_eq!(answer, status, "{url}");
+    }
+    release.send(()).unwrap();
+    writer.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn opening_a_temporary_image_keeps_it_another_day() {
+    let fixture = Fixture::new().await;
+    let mut images = Vec::new();
+    for name in ["revalidated", "downloaded", "unopened"] {
+        let file = format!("{name}.png");
+        images.push(fixture.attach(name, &file, &png(300, 300, false)).await);
+    }
+    fixture.files.make_queued_thumbnails().await;
+    // Temporary images that nobody opened for two days.
+    let old = now() - 2 * 24 * 60 * 60;
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute(
+                "UPDATE task_attachments SET is_ephemeral=1,created_at=?1,last_accessed_at=?1",
+                [old],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let etag = format!("\"{}-thumbnail-256\"", images[0].checksum);
+    let thumbnail = images[0].thumbnail_url.as_deref().unwrap();
+    let (status, _, _) = fixture.get(thumbnail, Some(&etag)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    let download = images[1].download_url.as_deref().unwrap();
+    let (status, _, _) = fixture.get(download, None).await;
+    assert_eq!(status, StatusCode::OK);
+    eventually("the download's read lease is released", async || {
+        let leases: i64 = query_one(&fixture.db, "SELECT count(*) FROM file_leases", []).await;
+        (leases == 0).then_some(())
+    })
+    .await;
+
+    let cleanup = FileService::new(fixture.db.clone(), 1, 0);
+    let report = cleanup.cleanup_to_low_watermark().await.unwrap();
+    assert_eq!(report.temporary_files_cleaned, 1);
+    let state: String = query_one(
+        &fixture.db,
+        "SELECT b.state FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
+        [images[2].id.clone()],
+    )
+    .await;
+    assert_eq!(state, "cleaned");
 }
 
 #[tokio::test]

@@ -308,6 +308,47 @@ async fn temporary_cleanup_keeps_metadata_while_permanent_bytes_survive() {
 }
 
 #[tokio::test]
+async fn a_file_marked_temporary_is_kept_for_a_day() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let file = upload(
+        &service,
+        &fixture.manager,
+        "marked",
+        "marked.bin",
+        b"marked-content",
+        false,
+    )
+    .await;
+    // A permanent file uploaded and last opened two days ago.
+    let old = now() - 2 * 24 * 60 * 60;
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute(
+                "UPDATE task_attachments SET created_at=?1,last_accessed_at=?1",
+                [old],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    service
+        .set_ephemeral(
+            &fixture.manager,
+            &file.id,
+            AttachmentPatch {
+                is_ephemeral: true,
+                expected_revision: file.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let report = fixture.service(1).cleanup_to_low_watermark().await.unwrap();
+    assert_eq!(report.temporary_files_cleaned, 0);
+}
+
+#[tokio::test]
 async fn failed_deletion_of_a_cleaned_attachment_can_retry_with_its_key() {
     let fixture = Fixture::new().await;
     let roomy = fixture.service(100 * 1024 * 1024);
@@ -1800,6 +1841,36 @@ async fn high_watermark_admission_does_not_walk_originals() {
     );
     pending.abort().await.unwrap();
     assert_eq!(service.reconcile().await.unwrap().orphan_files_removed, 1);
+}
+
+#[tokio::test]
+async fn thumbnails_stay_until_files_and_uploads_reach_the_threshold() {
+    let f = Fixture::new().await;
+    let service = f.service(100);
+    upload(&service, &f.manager, "first", "first.bin", &[0; 50], false).await;
+    // Thumbnails that take usage past 80% together with the files.
+    let store = f.store();
+    let thumbnail = store
+        .prepare_thumbnail_parent(&store.new_storage_key().unwrap())
+        .await
+        .unwrap();
+    std::fs::write(&thumbnail, [0; 40]).unwrap();
+    service.cleanup_if_needed().await.unwrap();
+    upload(
+        &service,
+        &f.manager,
+        "second",
+        "second.bin",
+        &[0; 20],
+        false,
+    )
+    .await;
+    assert!(thumbnail.exists());
+    // The Storage page counts thumbnails, and so does Clean up now.
+    let usage = service.storage_usage(&f.admin).await.unwrap();
+    assert_eq!(usage.used_bytes, 110);
+    service.cleanup_for(&f.admin).await.unwrap();
+    assert!(!thumbnail.exists());
 }
 
 #[tokio::test]

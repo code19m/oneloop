@@ -31,10 +31,11 @@ pub(super) fn detect_preview(name: &str, bytes: &[u8]) -> Option<PreviewKind> {
     if bytes.starts_with(b"%PDF-") {
         return Some(PreviewKind::Pdf);
     }
-    let text = std::str::from_utf8(bytes).ok()?;
-    if text
-        .chars()
-        .any(|character| character < ' ' && !matches!(character, '\t' | '\n' | '\u{000c}' | '\r'))
+    std::str::from_utf8(bytes).ok()?;
+    // In UTF-8, a byte below 0x20 is always a whole character.
+    if bytes
+        .iter()
+        .any(|byte| *byte < b' ' && !matches!(byte, b'\t' | b'\n' | 0x0c | b'\r'))
     {
         return None;
     }
