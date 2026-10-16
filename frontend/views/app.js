@@ -341,8 +341,9 @@ Object.assign(App, {
   clearAddress() {
     const {page}=readAddress(location.hash);
     state.projectId=null;state.taskId=null;state.rmScrollLeft=null;resetBoardFilters();
-    // A task names its project too, so its address gives way to the Board's.
-    try{history.replaceState(history.state,'',`#/${['roadmap','settings','knowledge','inbox','profile','users','storage'].includes(page)?page:'board'}`);}catch{}
+    // A task names its project too, so it gives way to the Board, as does an address that can't be read.
+    state.view=['task','notfound'].includes(page)?'board':page;
+    replaceAddress();
   },
   /** Read the address again once someone signs in, since their projects decide what it shows. */
   resolveRoute,
