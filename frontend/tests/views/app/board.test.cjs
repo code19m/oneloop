@@ -200,6 +200,26 @@ test('Back to a Board address with other filters shows the placeholder, not No m
   assert(cards().length && cards().every(id => second.has(id)), 'the second track\'s cards show');
 });
 
+test('a Load more page that lands after the search changed draws nothing, and the search\'s read then draws its cards', async () => {
+  // Reads wait for the test.
+  const pages = [], reads = [];
+  const t = bootApp({ route: 'board', reads: {
+    moreBoard: () => { const page = deferred(); pages.push(page); return page.promise; },
+    board: (_projectId, filters) => { const read = deferred(); reads.push({ filters, read }); return read.promise; },
+  } });
+  t.A.loadMoreBoard('planning'); await settle();
+  // The search changes at once; its read waits for a pause in typing.
+  t.A.setBoardQ('reader', { isComposing: false });
+  pages[0].resolve({ stale: false, done: true }); await settle();
+  assert.doesNotMatch(t.d.getElementById('toast-region').textContent, /could not be completed/);
+  t.A.boardSearchKey({ key: 'Enter', isComposing: false, keyCode: 13, preventDefault() {} }); await settle();
+  const [{ filters, read }] = reads;
+  t.D.boardPageInfo = { projectId: 'p1', filters: normalizeBoardFilters(filters), pages: {} };
+  t.A.refreshBoard(); read.resolve({ stale: false }); await settle();
+  const titles = [...t.d.querySelectorAll('.board .card .card-title-button')].map(title => title.textContent);
+  assert(titles.length && titles.every(title => /reader/i.test(title)), 'the search\'s cards show');
+});
+
 test('a blocked card describes its block reason', () => {
   const { w, d } = bootApp({ media: () => true });
   const task = w.DATA.tasks.find(item => item.state !== 'done');

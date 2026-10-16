@@ -39,6 +39,13 @@ function taskBits(t) {
 /** The filters the Board shows, as App.context().board names them. */
 export const boardFilters = () => ({ search: state.boardQ, blocked: state.boardBlocked, trackIds: state.boardTracks, epicIds: state.boardEpics, assigneeIds: state.boardAssignees });
 
+/**
+ * Whether the loaded pages hold the cards of the project and filters on
+ * screen. They don't before the Board's first read, nor while a read for
+ * other filters is on its way, as after Back or a keystroke in the search.
+ */
+const cardsLoaded = () => D.boardPageInfo?.projectId === state.projectId && sameBoardFilters(D.boardPageInfo.filters, normalizeBoardFilters(boardFilters()));
+
 /** The project's loaded tasks that pass the Board's filters. */
 function boardTasks() {
   const filters = normalizeBoardFilters(boardFilters());
@@ -49,11 +56,8 @@ function boardTasks() {
 export function renderBoard({column=null,excludeIds=null}={}) {
   const ts = boardTasks();
   const filtered = boardFiltered(boardFilters());
-  // A session that starts on another page, such as the Roadmap or a link to a
-  // task, has none of the Board's cards until its first read lands. Cards
-  // loaded for other filters, as before Back to a Board with other filters,
-  // would show a wrong set, or No matching tasks.
-  if (D.boardPageInfo?.projectId !== state.projectId || !sameBoardFilters(D.boardPageInfo.filters, normalizeBoardFilters(boardFilters()))) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
+  // Cards loaded for another project or other filters would show a wrong set, or No matching tasks.
+  if (!cardsLoaded()) return `<div class="board board-empty">${recovery.errorHtml('loading')}</div>`;
   if (!ts.length) return `<div class="board board-empty"><div class="page-empty"><h2>${filtered ? 'No matching tasks' : 'No tasks yet'}</h2>${filtered ? `<button class="btn quiet" ${UIAction('clearBoardFilters')}>Clear filters</button>` : canBoard() ? `<button class="btn primary" ${UIAction('openModal', 'task')}>${I.plus} Create task</button>` : ''}</div></div>`;
   const cols = COLS.filter(c=>!column||c.key===column).map((c) => {
     const list = ts.filter((t) => t.state === c.key);
@@ -461,6 +465,8 @@ Object.assign(App, {
   // A drop animates its own card; it passes { animate: false } so the refresh does not move it again.
   refreshBoard(options) { applyBoardFilters(false,true,options); App.refreshCounts(); },
   acceptMoreBoard(col) {
+    // The filters changed while the page loaded; the read for them draws the Board.
+    if(!cardsLoaded())return;
     state.boardLimits[col]=(state.boardLimits[col]||50)+50;
     const board=document.querySelector('.board'),column=board?.querySelector(`[data-col="${esc(col)}"]`),list=column?.querySelector('.col-cards');
     if(!list||state.view!=='board')return;
