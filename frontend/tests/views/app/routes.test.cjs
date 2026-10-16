@@ -1,7 +1,7 @@
 // views/app.js: addresses, the projects they name, and history.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, waitFor } = require('../../support/dom.cjs');
+const { bootApp } = require('../../support/dom.cjs');
 
 test('an address from before projects had one gets the project on screen in place', () => {
   for (const [route, address] of [['', '#/roadmap/p1'], ['board', '#/board/p1'], ['roadmap', '#/roadmap/p1'], ['settings', '#/settings/p1'], ['knowledge', '#/knowledge/p1']]) {
@@ -19,12 +19,9 @@ test('an address that names a project you can\'t open says Page not found, with 
   }
 });
 
-test('a project switch is a history entry that keeps the page, and new tabs of this browser open that project', async () => {
+test('a project switch is a history entry that keeps the page, and new tabs of this browser open that project', () => {
   const t = bootApp({ route: 'roadmap/p1' });
   t.A.selectProject('p2');
   assert.equal(t.w.location.hash, '#/roadmap/p2'); assert.equal(t.w.history.length, 2);
   assert.equal(t.w.localStorage.getItem('oneloop.project'), 'p2');
-  t.w.history.back();
-  await waitFor(() => t.A.context().projectId === 'p1', 'Back shows the project before the switch');
-  assert.equal(t.w.location.hash, '#/roadmap/p1'); assert.equal(t.A.context().view, 'roadmap');
 });

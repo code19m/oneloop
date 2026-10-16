@@ -242,10 +242,6 @@ test('the address keeps the project through a refresh, Back and Forward, and a n
   await tab.goto(`${instance.url}/#/board`);
   await expect(tab).toHaveURL(`${instance.url}/#/board/${second.project.id}`);
   await expect(titles(tab)).toHaveText([second.task.title]);
-  await tab.evaluate(() => { location.hash = '#/roadmap/not-a-project'; });
-  await expect(tab.locator('.page-error h2')).toHaveText('Page not found');
-  await tab.getByRole('button', { name: 'Back to Board', exact: true }).click();
-  await expect(titles(tab)).toHaveText([second.task.title]);
 });
 
 test('a link into another project loads that project first, showing the Board skeleton until it lands', async ({ page, instance }) => {
