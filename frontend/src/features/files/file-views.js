@@ -3,7 +3,8 @@
 /**
  * How attachments and Knowledge show a file's text: rendered Markdown, an
  * HTML page in an opaque-origin sandbox without scripts, or plain text.
- * Originals stay unchanged.
+ * Originals stay unchanged. Task and epic descriptions use the same
+ * Markdown renderer.
  */
 
 import { UIMotion } from '../../app/motion.js';
@@ -35,8 +36,14 @@ let markdownReady=null;
 const ready=()=>markdownReady??=['marked','DOMPurify','markedFootnote','markedAlert'].every(name=>!!vendor[name]);
 let mathLoad=null;
 const needsHighlight=text=>/[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^>]*\blanguage-/i.test(text);
-// Broad detection preserves nested fences, GitHub math and safe embedded code.
-const needsMath=text=>/\$|(?:`{3,}|~{3,})\s*math\b/.test(text);
+// Math is a math fence, GitHub's $`…`$, a $$ pair, a block that starts with a
+// line of $, or $…$ on one line closed before a space, punctuation or the end
+// of a run of text, as the math extension reads it, also in quotes, lists and
+// tables. Prices and shell variables, such as "$5 and $10" or "$HOME", don't
+// load KaTeX. Inline math that the extension reads across another $ still
+// ends with a $…$ found here, and stopping at the next $ keeps a long line of
+// them quick.
+const needsMath=text=>/(?:`{3,}|~{3,})\s*math\b|\$`[^\n]+?`\$|\$\$[\s\S]*?\$\$|^[>*+\-.)\d \t]*\$[ \t]*$|\$(?!\$)(?:\\.|[^\\\n$])*?(?:\\.|[^\\\n$])\$(?=[\s?!.,:？！。，：*_~)\]|]|$)/m.test(text);
 const readyFor=text=>ready()&&(!needsHighlight(text)||!!vendor.hljs)&&(!needsMath(text)||!!vendor.katex&&!!vendor.markedKatex);
 
 function loadMarkdownAsset(path,globalName){
@@ -254,16 +261,25 @@ function nameHeadings(fragment,source,tokens,nonce){
   }
 }
 /**
- * Render Markdown. A Knowledge `context` resolves relative links and images
- * inside its folder and themes diagrams; attachments have no context.
+ * What a page adds to the Markdown it shows. Knowledge resolves relative links
+ * and images inside its folder and themes diagrams; descriptions give the app
+ * route of the task keys they link. Attachments add nothing.
+ * @typedef {{resolveLink?:(href:string)=>unknown,resolveImage?:(src:string)=>unknown,diagramTheme?:()=>object,taskLink?:(key:string)=>unknown}} MarkdownContext
+ */
+
+/**
+ * Render Markdown with its Preview and Source modes.
+ * @param {Element} host @param {{name:string}} file @param {string} text @param {boolean} truncated @param {MarkdownContext} [context]
  */
 export function markdownView(host,file,text,truncated,context={}){
   const ui=shell(host,'Markdown',text,truncated);ui.view.classList.add('markdown-scroll');ui.view.tabIndex=0;ui.view.setAttribute('aria-label','Rendered Markdown');
-  if(readyFor(text)){renderMarkdown(ui,text,context);return;}
+  if(!text.trim()){setTrustedHTML(ui.view,'<p class="preview-unavailable">This file is empty.</p>');return;}
+  const show=()=>{if(!renderMarkdown(ui.view,text,context))setTrustedHTML(ui.view,'<p class="preview-unavailable">This Markdown could not be rendered. Use Source or download the file.</p>');};
+  if(readyFor(text)){show();return;}
   const load=()=>{
     setTrustedHTML(ui.view,'<p class="preview-unavailable" role="status">Loading Markdown preview…</p>');
     const active=()=>ui.view.isConnected&&!ui.view.closest('[inert],[data-motion-exiting]');
-    loadMarkdown(text).then(()=>{if(active())renderMarkdown(ui,text,context);}).catch(()=>{
+    loadMarkdown(text).then(()=>{if(active())show();}).catch(()=>{
       if(!active())return;
       const notice=document.createElement('div');notice.className='preview-unavailable';notice.setAttribute('role','alert');
       const copy=document.createElement('p');copy.textContent='Markdown preview could not load. Use Source or download the file.';
@@ -273,8 +289,46 @@ export function markdownView(host,file,text,truncated,context={}){
   };
   load();
 }
-function renderMarkdown(ui,text,context){
-  if(!vendor.marked||!vendor.DOMPurify){setTrustedHTML(ui.view,'<p class="preview-unavailable">Markdown preview could not load. Use Source or download the file.</p>');return;}
+
+/**
+ * Show `text` as rendered Markdown in `view`, without the Preview and Source
+ * modes, as descriptions do: at once when the renderer is loaded, otherwise
+ * once it loads. Until then, and when it can't load, `view` keeps what it
+ * shows. `onLater` runs when the Markdown shows only after that wait.
+ * @param {Element} view @param {string} text @param {MarkdownContext} [context] @param {()=>void} [onLater]
+ */
+export function markdownInto(view,text,context={},onLater=()=>{}){
+  if(readyFor(text)){renderMarkdown(view,text,context);return;}
+  loadMarkdown(text).then(()=>{if(view.isConnected&&renderMarkdown(view,text,context))onLater();},()=>{});
+}
+
+// A link to a page of oneloop, such as #/task/WEB-042 or this page's own
+// address with one, opens that page in place.
+const appRoute=href=>{if(href.startsWith('#/'))return href;try{const url=new URL(href);return url.origin===location.origin&&url.pathname===location.pathname&&url.hash.startsWith('#/')?url.hash:null;}catch{return null;}};
+// Task keys, such as WEB-042: a project's prefix and the task's number.
+const TASK_KEY=/\b[A-Z0-9]{2,4}-(?:\d{3}|[1-9]\d{3,})\b/g;
+/** Link the task keys in the text of `root`, outside links and code, that `taskLink` gives an app route. */
+function linkTaskKeys(root,taskLink){
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),texts=/** @type {Text[]} */ ([]);
+  for(let node=walker.nextNode();node;node=walker.nextNode())if(!node.parentElement?.closest('a,code,pre,kbd,samp'))texts.push(/** @type {Text} */ (node));
+  for(const node of texts){
+    const text=node.nodeValue,parts=[];let end=0;
+    for(const match of text.matchAll(TASK_KEY)){
+      const route=taskLink(match[0]);if(typeof route!=='string'||!route.startsWith('#/'))continue;
+      const link=document.createElement('a');link.setAttribute('href',route);link.className='task-key-link';link.textContent=match[0];
+      parts.push(text.slice(end,match.index),link);end=match.index+match[0].length;
+    }
+    if(parts.length)node.replaceWith(...parts,text.slice(end));
+  }
+}
+
+/**
+ * Show `text` as Markdown in `view`, sanitized, and say whether it could: it
+ * can't without the renderer, or when the text doesn't parse.
+ * @param {Element} view @param {string} text @param {MarkdownContext} context
+ */
+function renderMarkdown(view,text,context){
+  if(!vendor.marked||!vendor.DOMPurify)return false;
   const maths=[];
   const mathPlaceholder=token=>{const index=maths.push({text:token.text,display:!!token.displayMode})-1;return `<${token.displayMode?'div':'span'} data-md-math="${index}"></${token.displayMode?'div':'span'}>`;};
   const parser=new vendor.marked.Marked({gfm:true,breaks:false,async:false});
@@ -293,35 +347,42 @@ function renderMarkdown(ui,text,context){
   }
   let parsed;
   const source=text.replace(/^\uFEFF/,'');
-  try{parsed=parser.parse(source,{gfm:true,breaks:false,async:false});}catch{setTrustedHTML(ui.view,'<p class="preview-unavailable">This Markdown could not be rendered. Use Source or download the file.</p>');return;}
-  const render=()=>{
-    if(!text.trim()){setTrustedHTML(ui.view,'<p class="preview-unavailable">This file is empty.</p>');return;}
-    const scroll=ui.view.scrollTop;
-    const fragment=vendor.DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover','for','popovertarget','popovertargetaction','commandfor','command'],SANITIZE_NAMED_PROPS:true});
-    fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(/^data-(?:action|args)\b/.test(attr.name))el.removeAttribute(attr.name);}));
-    // Keep renderer classes, never application chrome supplied by an upload.
-    fragment.querySelectorAll('[class]').forEach(el=>{
-      const classes=[...el.classList].filter(name=>/^(?:language-[\w-]+|hljs[\w-]*|markdown-alert[\w-]*|task-list-[\w-]+|footnotes|sr-only|octicon[\w-]*)$/.test(name));
-      if(classes.length)el.setAttribute('class',classes.join(' '));else el.removeAttribute('class');
-    });
-    fragment.querySelectorAll('[id]').forEach(el=>{const id=el.id.replace(/^user-content-/,'');if(id.startsWith('footnote-'))el.id='md-'+id;else el.removeAttribute('id');});
-    fragment.querySelectorAll('[aria-describedby]').forEach(el=>{const ids=el.getAttribute('aria-describedby').split(/\s+/).filter(id=>id.startsWith('footnote-')).map(id=>'md-'+id);if(ids.length)el.setAttribute('aria-describedby',ids.join(' '));else el.removeAttribute('aria-describedby');});
-    nameHeadings(fragment,source,headings,nonce);
-    fragment.querySelectorAll('input').forEach(el=>{if(el.type!=='checkbox'){el.remove();return;}el.disabled=true;el.classList.add('task-list-item-checkbox');el.closest('li')?.classList.add('task-list-item');});
-    fragment.querySelectorAll('a').forEach(link=>{if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}const href=link.getAttribute('href')||'';if(href.startsWith('#')){let name=href.slice(1);try{name=decodeURIComponent(name);}catch{}link.setAttribute('href','#md-'+name);link.removeAttribute('target');}else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}});
-    fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'',local=context.resolveImage?.(src);if(typeof local==='string'&&local.startsWith('/api/')){img.setAttribute('src',local);img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
-    fragment.querySelectorAll('pre code').forEach(code=>{const lang=[...code.classList].find(c=>c.startsWith('language-'))?.slice(9);if(vendor.hljs&&lang&&vendor.hljs.getLanguage(lang)){try{setTrustedHTML(code,vendor.hljs.highlight(code.textContent,{language:lang,ignoreIllegals:true}).value);code.classList.add('hljs');}catch{}}});
-    // Each block takes its direction, and so its alignment, from its own
-    // first letter, as descriptions and comments do. A list or table takes
-    // one direction for all of its items, which sets the side its bullets
-    // and columns start from. A direction the file sets stays.
-    fragment.querySelectorAll('p,h1,h2,h3,h4,h5,h6,summary,ul,ol,dl,table').forEach(el=>{if(!el.hasAttribute('dir')&&!el.parentElement?.closest('ul,ol,dl,table'))el.setAttribute('dir','auto');});
-    const article=document.createElement('article');article.className='markdown-body';article.append(fragment);ui.view.replaceChildren(article);ui.view.scrollTop=scroll;
-    article.querySelectorAll('[data-md-math]').forEach((/** @type {HTMLElement} */ el)=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!vendor.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{vendor.katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
-    renderDiagrams(article,context);
-  };
-  ui.view.onclick=event=>{const link=event.target.closest('a');if(!link)return;const href=link.getAttribute('href');if(href?.startsWith('#md-')){event.preventDefault();const target=[...ui.view.querySelectorAll('[id]')].find(el=>el.id===href.slice(1));if(target){const scroller=ui.view.closest('.knowledge-reader')||ui.view;scroller.scrollTo({top:scroller.scrollTop+target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});}}};
-  render();
+  try{parsed=parser.parse(source,{gfm:true,breaks:false,async:false});}catch{return false;}
+  const scroll=view.scrollTop;
+  const fragment=vendor.DOMPurify.sanitize(parsed,{RETURN_DOM_FRAGMENT:true,USE_PROFILES:{html:true},ADD_TAGS:['svg','path'],ALLOW_DATA_ATTR:false,ADD_ATTR:['viewBox','d','data-md-math','data-md-heading','data-footnote-ref','data-footnote-backref','data-footnotes'],FORBID_TAGS:['style','form','button','textarea','select','audio','video','source','picture','iframe','object','embed'],FORBID_ATTR:['tabindex','style','name','srcset','autofocus','form','formaction','popover','for','popovertarget','popovertargetaction','commandfor','command'],SANITIZE_NAMED_PROPS:true});
+  fragment.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(attr=>{if(/^data-(?:action|args)\b/.test(attr.name))el.removeAttribute(attr.name);}));
+  // Keep renderer classes, never application chrome supplied by an upload.
+  fragment.querySelectorAll('[class]').forEach(el=>{
+    const classes=[...el.classList].filter(name=>/^(?:language-[\w-]+|hljs[\w-]*|markdown-alert[\w-]*|task-list-[\w-]+|footnotes|sr-only|octicon[\w-]*)$/.test(name));
+    if(classes.length)el.setAttribute('class',classes.join(' '));else el.removeAttribute('class');
+  });
+  fragment.querySelectorAll('[id]').forEach(el=>{const id=el.id.replace(/^user-content-/,'');if(id.startsWith('footnote-'))el.id='md-'+id;else el.removeAttribute('id');});
+  fragment.querySelectorAll('[aria-describedby]').forEach(el=>{const ids=el.getAttribute('aria-describedby').split(/\s+/).filter(id=>id.startsWith('footnote-')).map(id=>'md-'+id);if(ids.length)el.setAttribute('aria-describedby',ids.join(' '));else el.removeAttribute('aria-describedby');});
+  nameHeadings(fragment,source,headings,nonce);
+  fragment.querySelectorAll('input').forEach(el=>{if(el.type!=='checkbox'){el.remove();return;}el.disabled=true;el.classList.add('task-list-item-checkbox');el.closest('li')?.classList.add('task-list-item');});
+  fragment.querySelectorAll('a').forEach(link=>{
+    if(link.namespaceURI!=='http://www.w3.org/1999/xhtml'){link.replaceWith(...link.childNodes);return;}
+    const href=link.getAttribute('href')||'',route=appRoute(href);
+    if(route){link.setAttribute('href',route);link.removeAttribute('target');}
+    else if(href.startsWith('#')){let name=href.slice(1);try{name=decodeURIComponent(name);}catch{}link.setAttribute('href','#md-'+name);link.removeAttribute('target');}
+    else if(/^(https?:\/\/|mailto:)/i.test(href)){link.setAttribute('target','_blank');link.setAttribute('rel','noopener noreferrer');}
+    else{const resolved=context.resolveLink?.(href);if(typeof resolved==='string'&&resolved.startsWith('#/')){link.setAttribute('href',resolved);link.removeAttribute('target');}else{link.removeAttribute('href');link.title='Relative links need the original project files.';}}
+  });
+  if(context.taskLink)linkTaskKeys(fragment,context.taskLink);
+  fragment.querySelectorAll('img').forEach(img=>{const src=img.getAttribute('src')||'',local=context.resolveImage?.(src);if(typeof local==='string'&&local.startsWith('/api/')){img.setAttribute('src',local);img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else if(embedded(src)||remote(src)){img.referrerPolicy='no-referrer';img.loading='lazy';img.onerror=()=>{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent=img.alt||'Image unavailable';img.replaceWith(label);};}else{const label=document.createElement('span');label.className='markdown-image-placeholder';label.textContent='Image: '+(img.alt||'attachment')+' (unavailable)';img.replaceWith(label);}});
+  fragment.querySelectorAll('pre code').forEach(code=>{const lang=[...code.classList].find(c=>c.startsWith('language-'))?.slice(9);if(vendor.hljs&&lang&&vendor.hljs.getLanguage(lang)){try{setTrustedHTML(code,vendor.hljs.highlight(code.textContent,{language:lang,ignoreIllegals:true}).value);code.classList.add('hljs');}catch{}}});
+  // Each block takes its direction, and so its alignment, from its own
+  // first letter, as descriptions and comments do. A list or table takes
+  // one direction for all of its items, which sets the side its bullets
+  // and columns start from. A direction the file sets stays.
+  fragment.querySelectorAll('p,h1,h2,h3,h4,h5,h6,summary,ul,ol,dl,table').forEach(el=>{if(!el.hasAttribute('dir')&&!el.parentElement?.closest('ul,ol,dl,table'))el.setAttribute('dir','auto');});
+  const article=document.createElement('article');article.className='markdown-body';article.append(fragment);
+  // In-document links, such as footnotes, move within whatever shows the article.
+  article.addEventListener('click',event=>{const href=/** @type {Element} */ (event.target).closest('a')?.getAttribute('href');if(!href?.startsWith('#md-'))return;event.preventDefault();const target=/** @type {HTMLElement|undefined} */ ([...article.querySelectorAll('[id]')].find(el=>el.id===href.slice(1)));if(!target)return;const holder=article.parentElement,scroller=holder.closest('.knowledge-reader')||holder;scroller.scrollTo({top:scroller.scrollTop+target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});});
+  view.replaceChildren(article);view.scrollTop=scroll;
+  article.querySelectorAll('[data-md-math]').forEach((/** @type {HTMLElement} */ el)=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!vendor.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{vendor.katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
+  renderDiagrams(article,context);
+  return true;
 }
 export function htmlView(host,file,text){
   const ui=shell(host,'HTML',text.slice(0,200000),file.size>200000||text.length>200000);

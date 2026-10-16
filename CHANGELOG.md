@@ -71,6 +71,9 @@ All notable changes to oneloop are recorded here. The format follows
   gone from the account menu. The bar says that the page reloads by itself and
   offers **Reload now**, and after such a reload the page says "oneloop was
   updated".
+- Markdown previews and the Knowledge base now load the math renderer, about
+  80 KB, only for text with math. Before, any `$`, such as in a price or a
+  shell variable, loaded it.
 
 ### Fixed
 
@@ -116,6 +119,9 @@ All notable changes to oneloop are recorded here. The format follows
   quickly, or turning a filter on and off before its cards arrive, keeps every
   loaded card in view. Before, each column fell back to its first 50 cards with
   no **Load more**, while its count still showed more.
+- A link to a oneloop page in a Markdown preview or a Knowledge file, such as
+  `[the task](#/task/WEB-042)` or the page's full address, now opens that
+  page. Before, it went nowhere.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

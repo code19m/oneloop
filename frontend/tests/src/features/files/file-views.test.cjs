@@ -316,6 +316,7 @@ function lazyPreviews() {
 test('Markdown loads only the libraries it needs and retries a failed math library once', async () => {
   const { host, loaded, open, settle } = lazyPreviews();
   await open('# Plain\n\nSimple text.'); assert(host.querySelector('h1')); assert(!loaded.some(name => /katex|highlight/.test(name)));
+  await open('It costs $5 or $10, and `echo $HOME` prints $HOME.'); assert(!loaded.some(name => /katex/.test(name)), 'prices and shell variables are no math');
   await open('> ~~~js\n> const answer = 42;\n> ~~~'); assert(host.querySelector('.hljs-keyword')); assert(!loaded.some(name => /katex/.test(name)));
   await open('Math: $x^2$'); assert(host.querySelector('[role="alert"]')); assert.equal(host.querySelector('.html-source').textContent, 'Math: $x^2$');
   host.querySelector('[role="alert"] button').click(); await settle();
@@ -366,6 +367,15 @@ test('a Knowledge context links relative files and shows relative images; attach
   views.markdownView(host, { name: 'README.md', size: text.length }, text, false);
   assert(!d.querySelector('.markdown-body a[href^="#/knowledge"]'));
   assert(!d.querySelector('.markdown-body img'));
+});
+
+test('a link to a oneloop page opens it in place, while other links keep their rules', () => {
+  const { d, host, views } = directPreviews();
+  const text = ['[Task](#/task/WEB-002)', '[Board](http://localhost/#/board)', '[Section](#setup)', '[Other app](http://localhost:9000/#/board)', '[Docs](https://example.invalid/docs)'].join('\n\n');
+  views.markdownView(host, { name: 'notes.md', size: text.length }, text, false);
+  assert.deepEqual([...d.querySelectorAll('.markdown-body a')].map(link => [link.getAttribute('href'), link.getAttribute('target')]), [
+    ['#/task/WEB-002', null], ['#/board', null], ['#md-setup', null], ['http://localhost:9000/#/board', '_blank'], ['https://example.invalid/docs', '_blank'],
+  ]);
 });
 
 test('plain text previews indent whole JSON files and say when they are cut', () => {
