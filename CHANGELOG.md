@@ -61,6 +61,7 @@ All notable changes to oneloop are recorded here. The format follows
   `lastAccessedAt` now changes only while the attachment is temporary, and
   the 24 hours of a temporary attachment start again when someone marks it
   temporary.
+- Large Knowledge files download faster.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
