@@ -14,6 +14,10 @@ All notable changes to oneloop are recorded here. The format follows
   choose **Edit**, to change it; leaving the field, Esc or Ctrl+Enter
   (Cmd+Enter on macOS) saves it and shows it formatted again. An epic's
   description shows formatted too.
+- Ctrl+S (Cmd+S on macOS) now saves the field you are typing in at once and
+  keeps you there. In a dialog, or while you edit a comment, it does what the
+  main button does. It never sends a new comment, and it no longer downloads
+  the page.
 
 ### Changed
 

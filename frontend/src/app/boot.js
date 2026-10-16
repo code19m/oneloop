@@ -21,6 +21,7 @@ import { createRecoveryController } from '../features/recovery/controller.js';
 import { createProjectionReload, createSignInLoad, routeScope as scopeOfRoute } from './projection-reload.js';
 import { installTrustedTypes } from './trusted-types.js';
 import { installTooltips } from './tooltips.js';
+import { installSaveShortcut } from './save-shortcut.js';
 import { installDisclosures } from './motion.js';
 import { installPreviews } from '../features/files/preview.js';
 
@@ -94,6 +95,7 @@ installCollaborationController({transport:runtimeHooks,recovery});
 installKnowledgeController({runtime:runtimeHooks,getApp:()=>app});
 
 installTooltips(document);
+installSaveShortcut(document,recovery);
 installDisclosures(document);
 installPreviews(document,runtimeHooks);
 

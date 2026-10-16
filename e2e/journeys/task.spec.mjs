@@ -11,6 +11,18 @@ test('the task page integrates comments and attachments', { tag: '@smoke' }, asy
   await expect(page.locator('#cmtIn')).toBeVisible();
 });
 
+test('Ctrl+S saves the task title where it is typed and never saves the page', { tag: '@smoke' }, async ({ page, instance }) => {
+  await openApp(page, instance);
+  await page.evaluate(() => window.addEventListener('keydown', event => { window.savePagePrevented = event.defaultPrevented; }));
+  const title = page.getByLabel('Task title');
+  await title.fill('Saved with the shortcut');
+  await page.keyboard.press('ControlOrMeta+s');
+  await expect(page.locator('.task-save-status')).toHaveText('Saved');
+  await expect(title).toBeFocused();
+  expect(await page.evaluate(() => window.savePagePrevented)).toBe(true);
+  expect((await (await instance.api.get(`/api/tasks/${instance.projects[0].task.id}`)).json()).title).toBe('Saved with the shortcut');
+});
+
 test('a description shows as Markdown, opens for editing on a click, saves on Escape and links to app pages in place', async ({ page, instance }) => {
   const { task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: '## Plan\n\nSee [the Board](#/board) and **this**.' }, task.revision);

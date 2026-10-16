@@ -105,7 +105,7 @@ function taskAssigneesHtml(m){
 export function taskModalHtml(m) {
   if(!taskDestinationEpics().length) return `<h2>New task</h2><div class="sub">No open epics are available.</div><div class="modal-actions"><button class="btn quiet" ${UIAction('closeOverlays')}>Cancel</button>${canRoadmap()?`<button class="btn primary" ${UIAction('openModal', 'epic')}>Create epic</button>`:''}</div>`;
   return `<h2>New task</h2>
-    <form novalidate ${UIAction.on('submit', 'saveTask', UIAction.event)}>
+    <form novalidate data-save-shortcut ${UIAction.on('submit', 'saveTask', UIAction.event)}>
       ${field('Title', `<input class="ctl" name="title" placeholder="Fix payment validation" value="${esc(m.title || '')}" maxlength="140" required autofocus>`)}
       ${field('Epic', selectHtml('mEpic', { name: 'epicId', value: taskDestinationEpics().some((e) => e.id === m.epicId) ? m.epicId : '', placeholder: 'Choose an epic', options: taskDestinationEpics().slice().sort((a, b) => d(a.start) - d(b.start)).map((e) => ({ v: e.id, l: e.title })) }))}
       <div class="field-row">

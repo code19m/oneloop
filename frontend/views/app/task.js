@@ -72,7 +72,7 @@ const taskDraft = (t, field) => runtime()?.taskDraft?.(t.internalId, field) || n
 function taskDraftNote(t, field) {
   if (!taskDraft(t, field)?.unsaved) return '';
   if (!canBoard()) return `<p class="save-feedback" data-draft-note="${esc(field)}" role="alert">Not saved. You no longer have permission to edit this task.</p>`;
-  return `<p class="save-feedback" data-draft-note="${esc(field)}" role="status">Not saved <button type="button" class="btn quiet" ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
+  return `<p class="save-feedback" data-draft-note="${esc(field)}" role="status">Not saved <button type="button" class="btn quiet" data-save-shortcut ${UIAction('saveTaskDraft', t.id, field)}>Save</button></p>`;
 }
 /** Put the Not saved note of `field` at the end of `host`, or take it away. A note that stays the same keeps its element, and so its focus. */
 function placeDraftNote(host, t, field) {

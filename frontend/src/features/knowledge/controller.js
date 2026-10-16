@@ -567,7 +567,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
       : `<input class="ctl" id="knowledge-token" name="token" type="password" autocomplete="new-password"><input type="hidden" name="tokenAction" value="set">`;
     const key = source?.deployKey ?? '';
     return `<h2>${connected ? 'Edit repository' : 'Connect repository'}</h2>
-      <form novalidate class="knowledge-form" data-knowledge-form>
+      <form novalidate class="knowledge-form" data-knowledge-form data-save-shortcut>
         <div class="field">${label('knowledge-url', 'Repository URL', 'HTTPS or SSH')}<input class="ctl" id="knowledge-url" name="url" required autocomplete="off" spellcheck="false" value="${esc(source?.url ?? '')}" placeholder="https://git.example.com/team/docs.git" autofocus></div>
         <div class="field-row"><div class="field"><label for="knowledge-branch">Branch</label><input class="ctl" id="knowledge-branch" name="branch" required autocomplete="off" spellcheck="false" value="${esc(source?.branch ?? 'main')}"></div><div class="field"><label for="knowledge-folder">Folder<span class="optional-mark">Optional</span></label><input class="ctl" id="knowledge-folder" name="folder" autocomplete="off" spellcheck="false" value="${esc(connected ? source.folder : 'docs')}" placeholder="Repository root"></div></div>
         <div class="field" data-access="https"${ssh ? ' hidden' : ''}>${label('knowledge-token', 'Access token', saved ? '' : 'Private repositories only')}${token}</div>

@@ -104,7 +104,11 @@ turn it into a task.
 
 ![A task page with an attachment, its activity and comments, and its properties on the right](assets/screenshots/task.png)
 
-Click a card to open the task. Your changes save automatically.
+Click a card to open the task. Your changes save automatically. To save the
+field you are typing in at once, press Ctrl+S (Cmd+S on macOS); you stay where
+you are. In a dialog, such as **New task**, or while you edit a comment, Ctrl+S
+does what the dialog's main button does. It never sends a new comment or reply,
+and it never saves the page as a file.
 
 - The **Description** shows formatted Markdown (GitHub style), such as
   headings, lists, tables and code, and keeps the line breaks you type. Click
