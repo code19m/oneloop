@@ -62,11 +62,11 @@ small hints over SSE, and clients then fetch what changed.
 - `auth/`: `AuthService` for accounts, Argon2id password hashes, browser
   sessions, sign-in throttling and connected-app grants. `Actor` is the caller
   of any request, from either a browser session or an MCP grant.
-- `domain/`: projects, members, tracks, epics, milestones, tasks, blocking and
-  the Pool. `DomainService::execute` is the single write entry point; it takes
-  a `Command` whose `DomainOperation` names the change, and `service/` groups
-  the handlers by kind of record. `reads` builds Board, Roadmap, task and Pool
-  views with cursor paging.
+- `domain/`: projects, members, tracks, epics, milestones, tasks, their
+  checklists, blocking and the Pool. `DomainService::execute` is the single
+  write entry point; it takes a `Command` whose `DomainOperation` names the
+  change, and `service/` groups the handlers by kind of record. `reads` builds
+  Board, Roadmap, task and Pool views with cursor paging.
 - `collaboration/`: comments, mentions, the consolidated activity feed,
   notifications and the Inbox. `CollaborationRuntime` runs the outbox worker
   and the live-update streams.

@@ -6,6 +6,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- Stop oneloop, install the new version, and run
+  `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
+  upgrades the database to schema 8. Older versions refuse a schema 8
+  database. To go back to one, restore the backup that `db migrate` made.
+
 ### Added
 
 - A task's description now shows as formatted Markdown, as people and AI
@@ -18,6 +25,18 @@ All notable changes to oneloop are recorded here. The format follows
   keeps you there. In a dialog, or while you edit a comment, it does what the
   main button does. It never sends a new comment, and it no longer downloads
   the page.
+- In MCP, `create_attachment_upload` can replace a file that you uploaded:
+  pass its ID as `replacesAttachmentId`. When the upload completes, the new
+  file takes the old one's place, and the old one is deleted as
+  `delete_attachment` deletes it. This needs no destructive access, so an
+  assistant can update its own documents without asking you to delete the old
+  version. If the upload fails, the old file stays.
+- Tasks have a **Checklist**: short steps that you add, tick, rename, move and
+  remove on the task's page. A Board card shows how many steps are done, such
+  as 2/5, in green once all are. In MCP, `task.create` takes the steps in
+  `checklist`, `read_task` returns them, `search_tasks` and `read_epic` count
+  them, and `task.checklist.add`, `task.checklist.update`,
+  `task.checklist.move` and `task.checklist.delete` change them.
 
 ### Changed
 
@@ -87,9 +106,34 @@ All notable changes to oneloop are recorded here. The format follows
 - Markdown previews and the Knowledge base now load the math renderer, about
   80 KB, only for text with math. Before, any `$`, such as in a price or a
   shell variable, loaded it.
+- A task that changes status without a place now goes to the top of its new
+  column, Done too: with **Move to**, the task's **Status**, **Unblock and
+  complete**, or `task.move` in MCP without `position`, `beforeTaskId` or
+  `afterTaskId`. New tasks, also ones made from a Pool idea, start at the top
+  of **Planning**. Before, most of these went to the bottom, where a long
+  column hid them until **Load more**, and Done mixed both orders. A drag,
+  **Move up** and **Move down** still put a task exactly there, and
+  **Newest first** still lists Done by completion time. A task at the top
+  takes a position above the first one, which leaves the other tasks where
+  they are, so a task's `position` in MCP reads can be below zero. **Undo**
+  puts a deleted task back at the same place in its column, also when a new
+  task took its place; before, it went to the end.
+- In MCP, every tool that names a task now also accepts its key, such as
+  `WEB-042`: `read_comments`, `read_activity`, `discussion.comment.create`,
+  `task.delete` and every other `task.*` operation, also in `beforeTaskId` and
+  `afterTaskId`. Moving a blocked task to Done now fails with a message that
+  names `task.unblock-and-complete`, and `set_attachment_temporary` is marked
+  as safe to repeat.
+- **Newest first** is now a small sort button at the top of **Done**, so
+  Done's header is as tall as the others and its cards line up with theirs.
+  The button shows your choice at once, and the page dims while a slow Board
+  read loads the new order.
 
 ### Fixed
 
+- In MCP, `read_activity` with a task key, or with a task that doesn't exist,
+  returned an empty page. It now returns the task's activity, or fails with
+  `not_found`.
 - A Mermaid diagram in a Markdown preview no longer fails when its renderer
   takes more than 30 seconds to download, as on a slow mobile connection.
   When the renderer can't load, the preview now says to check the
@@ -150,6 +194,10 @@ All notable changes to oneloop are recorded here. The format follows
 - After you move a file with the arrow keys, focus now stays on it, so you
   can move it again. Before, it fell to the page once oneloop saved the new
   order.
+- When you turn **Newest first** on or off in one tab, the browser's other
+  **Board** tabs keep showing live changes, in the order they show, and use
+  the new choice when they load again. Before, they stopped showing changes
+  until they read the Board again.
 
 ## [0.1.0-rc.5] - 2026-10-16
 

@@ -84,7 +84,7 @@ pub(super) struct KnowledgeSearchInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct TaskInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
 }
 
@@ -184,7 +184,7 @@ impl CommandInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PageInput {
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     /// Exact comment ID; cannot be combined with cursor or limit.
@@ -203,7 +203,7 @@ pub(super) struct ActivityInput {
     /// Stable project ID selected in this connection.
     pub project_id: String,
     #[serde(default)]
-    /// Stable task ID (read_task also accepts a task key).
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: Option<String>,
     /// Retrieve a bounded blocking episode for an exact Inbox destination.
     #[serde(default)]
@@ -496,7 +496,7 @@ impl OneloopMcp {
     #[tool(
         output_schema = object_output_schema(),
         name = "read_task",
-        description = "Read one task by immutable ID or task key if it is visible through this connection.",
+        description = "Read one task, with its checklist items, by immutable ID or task key if it is visible through this connection.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -908,6 +908,7 @@ impl OneloopMcp {
         annotations(
             read_only_hint = false,
             destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = false
         )
     )]
@@ -1138,6 +1139,9 @@ fn command_variants(tool: McpTool) -> Vec<Value> {
             DomainOperation::UnblockTask | DomainOperation::UnblockAndCompleteTask => {
                 payload_schema::<TaskUnblock>()
             }
+            DomainOperation::AddChecklistItem => payload_schema::<ChecklistItemAdd>(),
+            DomainOperation::UpdateChecklistItem => payload_schema::<ChecklistItemUpdate>(),
+            DomainOperation::MoveChecklistItem => payload_schema::<ChecklistItemMove>(),
             DomainOperation::CreatePoolItem => payload_schema::<PoolItemCreate>(),
             DomainOperation::UpdatePoolItem => payload_schema::<PoolItemUpdate>(),
             DomainOperation::PromotePoolItem => payload_schema::<PoolItemPromote>(),
@@ -1147,6 +1151,7 @@ fn command_variants(tool: McpTool) -> Vec<Value> {
             | DomainOperation::DeleteEpic
             | DomainOperation::DeleteMilestone
             | DomainOperation::DeleteTask
+            | DomainOperation::DeleteChecklistItem
             | DomainOperation::DeletePoolItem => payload_schema::<EntityId>(),
             DomainOperation::CreateProject
             | DomainOperation::UpdateProject

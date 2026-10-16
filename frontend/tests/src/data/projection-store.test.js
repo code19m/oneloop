@@ -43,9 +43,11 @@ test('a read and a command result give each entity the same fields under the cli
     ['epic', data.epics, { id:'e2', projectId:'p1', trackId:'tr1', title:'Beta', description:'Try', startDate:'2026-10-01', endDate:'2026-11-01', state:'planning', position:2, taskTotal:3, taskDone:1, taskOpen:2, completedThisWeek:1, completedSinceStart:1, weeklyCompletions:[1], revision:1 },
       { projectId:'p1', trackId:'tr1', title:'Beta', desc:'Try', start:'2026-10-01', end:'2026-11-01', state:'planning', order:2, total:3, done:1, open:2, closedThisWeek:1, completedSinceStart:1, weekly:[1], counted:true }],
     ['milestone', data.milestones, { id:'m2', projectId:'p1', title:'Beta', description:'Ready', milestoneDate:'2026-11-01', revision:1 }, { projectId:'p1', name:'Beta', desc:'Ready', date:'2026-11-01' }],
-    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1 },
+    ['task', data.tasks, { id:'opaque-2', projectId:'p1', epicId:'e1', taskKey:'BIR-002', title:'Test', description:'All', status:'in_review', position:2, deadline:'2026-12-01', createdAt:100, updatedAt:101, completedAt:null, completionOrder:null, assigneeIds:['u1'], activeBlock:block, revision:1,
+      checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', position:0, title:'Plan', done:true, revision:3 }] },
       { internalId:'opaque-2', id:'BIR-002', projectId:'p1', epicId:'e1', title:'Test', desc:'All', state:'review', order:2, deadline:'2026-12-01', created:100000, updatedAt:101000, completedAt:null, completionOrder:null, assignees:['u1'],
-        block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null } }],
+        block:{ id:'b1', reason:'Waiting', by:'u1', at:100000, revision:1, mentions:[], resolution:null },
+        checklistVersion:4, checklistDone:1, checklistTotal:1, checklist:[{ id:'i1', taskId:'opaque-2', title:'Plan', done:true, revision:3 }] }],
     ['poolItem', data.pool, { id:'i2', projectId:'p1', scope:'team', ownerUserId:null, title:'Idea', description:'Later', createdAt:100, revision:1 }, { projectId:'p1', scope:'project', ownerId:null, title:'Idea', desc:'Later', created:100000 }],
   ];
   for (const [entityType, collection, view, expected] of cases) {
@@ -246,6 +248,23 @@ test('same-size people replacements invalidate renderer lookup ownership',()=>{
   assert.ok(data.peopleVersion>hydrated);assert.equal(data.users.length,1);
 });
 
+
+test('a task keeps the newer of two checklists of one revision, whichever read or result brings them',()=>{
+  const data=createLegacyData();hydrateLegacyData(data,bootstrap());
+  // A tick leaves the task's revision as it is; the checklist's version tells which is newer.
+  const detail=(version,done)=>({...bootstrap().tasks[0],checklistVersion:version,checklistDone:Number(done),checklistTotal:1,checklist:[{id:'i1',taskId:'opaque-task',position:0,title:'Plan',done,revision:version+1}]});
+  const card=(version,done)=>{const view=detail(version,done);delete view.description;delete view.checklist;return view;};
+  const shown=()=>[data.tasks[0].checklistVersion,data.tasks[0].checklistDone,data.tasks[0].checklist?.[0]?.done,data.tasks[0].detailsLoaded];
+  replaceTaskDetail(data,detail(2,true));
+  replaceBoardTasks(data,'p1',[card(2,true)]);
+  assert.deepEqual(shown(),[2,1,true,true],'a card of the same version keeps the items');
+  for(const [older,read] of [['card',()=>replaceBoardTasks(data,'p1',[card(1,false)])],['detail',()=>replaceTaskDetail(data,detail(1,false))],['result',()=>reconcileCommandResult(data,{entities:[{entityType:'task',...detail(1,false)}]})]]){
+    read();
+    assert.deepEqual(shown(),[2,1,true,true],`an older ${older} leaves the newer checklist`);
+  }
+  replaceBoardTasks(data,'p1',[card(3,false)]);
+  assert.deepEqual(shown(),[3,0,undefined,false],'a newer card drops the old items, so the task page reads them again');
+});
 
 test('older command responses cannot roll back a newer task snapshot or membership',()=>{
   const data=createLegacyData();hydrateLegacyData(data,bootstrap());

@@ -67,7 +67,11 @@ const FIELDS = {
     ['projectId'], ['epicId'], ['taskKey', 'id'], ['title'], ['description', 'desc', text], ['status', 'state', toLegacyStatus], ['position', 'order'],
     ['deadline', 'deadline', orNull], ['createdAt', 'created', milliseconds], ['updatedAt', 'updatedAt', milliseconds], ['completedAt', 'completedAt', millisecondsOrNull],
     ['completionOrder', 'completionOrder', orNull], ['assigneeIds', 'assignees', (ids) => [...(ids ?? [])]], ['activeBlock', 'block', (block) => mapBlock(block)],
+    // Only detail reads carry the checklist; every read carries its counts and version.
+    ['checklistVersion', 'checklistVersion', orZero], ['checklistDone', 'checklistDone', orZero], ['checklistTotal', 'checklistTotal', orZero],
+    ['checklist', 'checklist', (items) => items?.map(mapChecklistItem)],
   ],
+  checklistItem: [['taskId'], ['title'], ['done']],
   poolItem: [['projectId'], ['scope', 'scope', toLegacyScope], ['ownerUserId', 'ownerId', orNull], ['title'], ['description', 'desc', text], ['createdAt', 'created', milliseconds]],
   taskBlock: [['reason'], ['createdBy', 'by'], ['createdAt', 'at', milliseconds], ['mentions', 'mentions', (mentions) => mentions ?? []], ['resolution', 'resolution', orNull]],
 };
@@ -110,6 +114,8 @@ function mapBlock(block) {
   return block ? fromWire('taskBlock', block) : null;
 }
 
+const mapChecklistItem = (item) => fromWire('checklistItem', item);
+
 function mapTask(task) {
   return {
     internalId: task.id, ...fromWire('task', task), detailsLoaded: typeof task.description === 'string',
@@ -124,10 +130,32 @@ function isOlder(existing, incoming) {
   return Number.isFinite(existing?.revision) && Number.isFinite(incoming?.revision) && incoming.revision < existing.revision;
 }
 
+/** The fields of a task's checklist, which its version orders. */
+const CHECKLIST_FIELDS = ['checklistVersion', 'checklistDone', 'checklistTotal', 'checklist'];
+
+/**
+ * Give `target` the checklist that a task keeps when `incoming` brings one for
+ * it, as the client shows it in `current`. A checklist change leaves the
+ * task's revision as it is, so only the checklist's version tells which is
+ * newer: an older checklist never replaces one with its items, and a card,
+ * which has no items, keeps those of the same version.
+ * @param {any} target @param {any} current @param {any} incoming
+ */
+function keepNewerChecklist(target, current, incoming) {
+  const { checklist: items, checklistVersion: version } = current;
+  const older = Number.isFinite(version) && Number.isFinite(incoming.checklistVersion) && incoming.checklistVersion < version;
+  const source = older && (items || !incoming.checklist) ? current : incoming;
+  for (const key of CHECKLIST_FIELDS) target[key] = source[key];
+  if (!target.checklist && target.checklistVersion === version) target.checklist = items;
+}
+
 function retainTaskDetails(previous, mapped) {
   if (isOlder(previous, mapped)) return previous;
   if (!previous) return mapped;
-  if(!mapped.detailsLoaded&&previous.detailsLoaded&&previous.revision===mapped.revision){mapped.desc=previous.desc;mapped.detailsLoaded=true;}
+  keepNewerChecklist(mapped, previous, mapped);
+  // A card has no description either; it keeps the one of the same revision,
+  // and has its details once it has the checklist's items too.
+  if(!mapped.detailsLoaded&&previous.detailsLoaded&&previous.revision===mapped.revision&&mapped.checklist){mapped.desc=previous.desc;mapped.detailsLoaded=true;}
   for (const key of ['attachments','comments','activity']) if (previous[key]) mapped[key]=previous[key];
   return mapped;
 }
@@ -349,7 +377,8 @@ function mapEntity(entity) {
 function patchEntity(target,entity){
   if(isOlder(target,entity))return target;
   if(Object.hasOwn(entity,'revision'))target.revision=entity.revision;
-  for(const [wire,client=wire,convert=(value)=>value] of FIELDS[entity.entityType]??[])if(Object.hasOwn(entity,wire))target[client]=convert(entity[wire]);
+  for(const [wire,client=wire,convert=(value)=>value] of FIELDS[entity.entityType]??[])if(Object.hasOwn(entity,wire)&&!CHECKLIST_FIELDS.includes(client))target[client]=convert(entity[wire]);
+  if(entity.entityType==='task'&&Object.hasOwn(entity,'checklistVersion'))keepNewerChecklist(target,target,fromWire('task',entity));
   if(entity.entityType==='epic'&&Object.hasOwn(entity,'taskTotal'))target.counted=true;
   return target;
 }

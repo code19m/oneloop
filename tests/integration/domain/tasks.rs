@@ -1194,10 +1194,13 @@ async fn display_text_rejects_spoofing_without_changing_multiline_unicode() {
         .begin_attachment_upload(
             &f.manager,
             task.entities[0]["id"].as_str().unwrap(),
-            "invoice\u{202e}fdp.exe",
-            1,
-            false,
-            "bidi-file",
+            oneloop::files::NewAttachment {
+                name: "invoice\u{202e}fdp.exe",
+                size: 1,
+                temporary: false,
+                idempotency_key: "bidi-file",
+                replaces: None,
+            },
         )
         .await;
     assert!(matches!(error,Err(AppError::Validation{ref field,..}) if field=="fileName"));
@@ -1352,9 +1355,12 @@ async fn task_update_returns_and_replays_the_activated_epic() {
         .unwrap();
 }
 
+/// Creates Planning tasks that read in the order of `titles`, and returns
+/// their IDs in that order. A new task goes to the top, so the last title is
+/// created first.
 async fn planning_tasks(f: &Fixture, titles: &[&str]) -> Vec<String> {
     let mut ids = Vec::new();
-    for title in titles {
+    for title in titles.iter().rev() {
         let created = f
             .service
             .execute(
@@ -1370,6 +1376,7 @@ async fn planning_tasks(f: &Fixture, titles: &[&str]) -> Vec<String> {
             .unwrap();
         ids.push(created.entities[0]["id"].as_str().unwrap().to_owned());
     }
+    ids.reverse();
     ids
 }
 
@@ -1487,7 +1494,7 @@ async fn only_people_who_could_delete_a_task_restore_it_in_time() {
 }
 
 #[tokio::test]
-async fn a_restored_task_goes_last_when_its_place_was_taken() {
+async fn a_restored_task_goes_back_among_its_neighbours_when_its_place_was_taken() {
     let f = fixture().await;
     let ids = planning_tasks(&f, &["First", "Second", "Third"]).await;
     f.service
@@ -1538,7 +1545,8 @@ async fn a_restored_task_goes_last_when_its_place_was_taken() {
         )
         .await
         .unwrap();
-    assert_eq!(planning_order(&f).await, ["Third", "Second", "First"]);
+    // First was at the top, so it goes back to the top, not to the end.
+    assert_eq!(planning_order(&f).await, ["First", "Third", "Second"]);
 }
 
 #[tokio::test]

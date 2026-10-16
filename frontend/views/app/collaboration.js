@@ -4,6 +4,7 @@
    collaboration controller in src/features/collaboration/. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { fadeOutRows, placeRows } from '../../src/app/rows.js';
 import { mentionFromWire, mentionsToWire as wireMentions } from '../../src/data/wire.js';
 import { multiHtml } from './controls.js';
 import { UIAction, ago, avatarHtml, esc, formatInstant, instanceDateKey, previousDate, setHTML } from './format.js';
@@ -12,7 +13,6 @@ import {
   trackById, userById, visibleProjects,
 } from './model.js';
 import { askConfirmation, openMenu } from './overlays.js';
-import { fadeOutRows, placeRows } from './rows.js';
 
 const id=prefix=>prefix+'-'+(crypto.randomUUID?.()||Date.now()+'-'+Math.random().toString(36).slice(2));
 let controller,mention=null,pendingTarget=null;

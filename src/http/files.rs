@@ -20,8 +20,8 @@ use crate::{
     auth::Actor,
     files::{
         AttachmentList, AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentView,
-        MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, ReadMode, ThumbnailRead, UploadDeadline,
-        check_attachment_size,
+        MAX_ATTACHMENT_BYTES, MAX_AVATAR_BYTES, NewAttachment, ReadMode, ThumbnailRead,
+        UploadDeadline, check_attachment_size,
     },
 };
 
@@ -122,10 +122,13 @@ async fn upload_attachment(
                     .begin_attachment_upload(
                         &actor,
                         &task_id,
-                        &name,
-                        declared_size,
-                        query.ephemeral,
-                        &idempotency_key,
+                        NewAttachment {
+                            name: &name,
+                            size: declared_size,
+                            temporary: query.ephemeral,
+                            idempotency_key: &idempotency_key,
+                            replaces: None,
+                        },
                     )
                     .await?,
             );

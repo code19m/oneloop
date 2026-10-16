@@ -129,6 +129,28 @@ pub struct TaskView {
     pub revision: i64,
     pub assignee_ids: Vec<String>,
     pub active_block: Option<BlockView>,
+    /// How many checklist items the task has, and how many of them are done.
+    #[serde(default)]
+    pub checklist_done: i64,
+    #[serde(default)]
+    pub checklist_total: i64,
+    /// Goes up with each change to the checklist, which leaves `revision` as it is.
+    #[serde(default)]
+    pub checklist_version: i64,
+    /// The checklist items in order, on detail reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<Vec<ChecklistItemView>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecklistItemView {
+    pub id: String,
+    pub task_id: String,
+    pub position: i64,
+    pub title: String,
+    pub done: bool,
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

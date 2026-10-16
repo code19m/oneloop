@@ -1930,3 +1930,364 @@ async fn a_search_without_status_reads_every_column_at_one_moment() {
         .count();
     assert_eq!(listed, 1, "{columns}");
 }
+
+/// Sends `bytes` with an upload ticket, as an MCP client does.
+async fn put_upload(
+    app: &Router,
+    ticket: &Value,
+    bytes: &'static [u8],
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/mcp/files/upload")
+                .header(
+                    header::AUTHORIZATION,
+                    ticket["authorization"].as_str().unwrap(),
+                )
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_upload_replaces_your_own_file_in_its_place_once() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    // Without destructive access: the file being replaced is the person's own.
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &[
+            "project_read",
+            "board_manage",
+            "roadmap_manage",
+            "attachments",
+        ],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "replace").await;
+    let mut upload = async |name: &str, key: &str, replaces: Option<&Value>| {
+        let mut input =
+            json!({"taskId": task, "fileName": name, "sizeBytes": 2, "idempotencyKey": key});
+        if let Some(replaces) = replaces {
+            input["replacesAttachmentId"] = replaces.clone();
+        }
+        let ticket = tool_value(&mcp.call("create_attachment_upload", input).await);
+        put_upload(&app, &ticket, b"ok").await
+    };
+    let mut ids = Vec::new();
+    for name in ["first.txt", "report-v1.txt", "last.txt"] {
+        ids.push(body_json(upload(name, name, None).await).await["value"]["id"].clone());
+    }
+    let replaced = body_json(upload("report-v2.txt", "replace", Some(&ids[1])).await).await;
+    let new_id = replaced["value"]["id"].clone();
+    // A retry replays the replacement, and its key can't replace another file.
+    let retry = body_json(upload("report-v2.txt", "replace", Some(&ids[1])).await).await;
+    assert_eq!(retry["value"]["id"], new_id);
+    let reused = upload("report-v2.txt", "replace", Some(&ids[0])).await;
+    assert_eq!(
+        body_json(reused).await["error"]["code"],
+        "idempotency_key_reused"
+    );
+
+    let listed = tool_value(&mcp.call("list_attachments", json!({"taskId": task})).await);
+    let names: Vec<_> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["first.txt", "report-v2.txt", "last.txt"]);
+    // The old file is deleted as any deletion is: hidden, with its bytes
+    // kept for the Undo window, and recorded.
+    let old = ids[1].as_str().unwrap().to_owned();
+    let kept: (bool, String) = db
+        .run(move |connection| {
+            Ok(connection.query_row(
+                "SELECT a.deleted_at IS NOT NULL,b.state FROM task_attachments a
+                 JOIN file_blobs b ON b.id=a.blob_id WHERE a.id=?1",
+                [old],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept, (true, "available".to_owned()));
+    let activity = tool_value(
+        &mcp.call(
+            "read_activity",
+            json!({"projectId": "project-1", "taskId": task}),
+        )
+        .await,
+    );
+    let events: Vec<_> = activity["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["entityType"] == "attachment")
+        .map(|item| {
+            (
+                item["eventType"].as_str().unwrap(),
+                item["metadata"]["name"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        events.contains(&("attachment.created", "report-v2.txt")),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&("attachment.deleted", "report-v1.txt")),
+        "{events:?}"
+    );
+}
+
+/// Runs a command tool and checks that the command changed `task`.
+async fn change_task(
+    mcp: &mut McpClient<'_>,
+    task: &str,
+    (tool, operation): (&str, &str),
+    payload: Value,
+    revision: Option<i64>,
+) -> Value {
+    let result = tool_value(
+        &mcp.call(
+            tool,
+            json!({"operation": operation, "payload": payload,
+                   "idempotencyKey": format!("{operation}-{revision:?}"),
+                   "expectedRevision": revision}),
+        )
+        .await,
+    );
+    assert_eq!(result["entities"][0]["id"], task, "{operation}");
+    result
+}
+
+#[tokio::test]
+async fn every_tool_that_names_a_task_accepts_its_key() {
+    let (_dir, db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(&app, &session, ALL_SCOPES, &["project-1"]).await;
+    let task = create_protocol_task(&mut mcp, "project-1", "keyed").await;
+    let anchor = create_protocol_task(&mut mcp, "project-1", "anchor").await;
+    let key_of = async |id: &str| -> String {
+        query_one(
+            &db,
+            "SELECT task_key FROM tasks WHERE id=?1",
+            [id.to_owned()],
+        )
+        .await
+    };
+    let (key, anchor_key) = (key_of(&task).await, key_of(&anchor).await);
+    const WORK: &str = "execute_work_command";
+    let update = json!({"taskId": key, "title": "Renamed"});
+    change_task(&mut mcp, &task, (WORK, "task.update"), update, Some(1)).await;
+    let review = json!({"taskId": key, "status": "in_review"});
+    change_task(&mut mcp, &task, (WORK, "task.move"), review, Some(2)).await;
+    // The anchor moves by its key too, to the top; then this task goes above it.
+    let anchor_review = json!({"taskId": anchor_key, "status": "in_review"});
+    change_task(
+        &mut mcp,
+        &anchor,
+        (WORK, "task.move"),
+        anchor_review,
+        Some(1),
+    )
+    .await;
+    let above = json!({"taskId": key, "status": "in_review", "beforeTaskId": anchor_key});
+    change_task(&mut mcp, &task, (WORK, "task.move"), above, Some(3)).await;
+    let block = json!({"taskId": key, "reason": "Waiting"});
+    let blocked = change_task(&mut mcp, &task, (WORK, "task.block"), block, Some(4)).await;
+    let block_id = blocked["entities"][1]["id"].clone();
+    let complete = json!({"taskId": key});
+    change_task(
+        &mut mcp,
+        &task,
+        (WORK, "task.unblock-and-complete"),
+        complete,
+        Some(5),
+    )
+    .await;
+    let comment = tool_value(
+        &mcp.call(
+            "execute_discussion_command",
+            json!({"operation": "discussion.comment.create", "payload": {"taskId": key, "content": "Done"},
+                   "idempotencyKey": "keyed-comment"}),
+        )
+        .await,
+    );
+    assert_eq!(comment["entities"][0]["taskId"], task);
+
+    let comments = tool_value(&mcp.call("read_comments", json!({"taskId": key})).await);
+    assert_eq!(comments["items"][0]["content"], "Done");
+    let activity = tool_value(
+        &mcp.call(
+            "read_activity",
+            json!({"projectId": "project-1", "taskId": key}),
+        )
+        .await,
+    );
+    assert!(!activity["items"].as_array().unwrap().is_empty());
+    let episode = tool_value(
+        &mcp.call(
+            "read_activity",
+            json!({"projectId": "project-1", "taskId": key, "blockId": block_id}),
+        )
+        .await,
+    );
+    assert_eq!(episode["items"][0]["entityId"], block_id);
+    // A key that names no task is not found, rather than an empty feed.
+    assert_tool_error(
+        &mcp.call(
+            "read_activity",
+            json!({"projectId": "project-1", "taskId": "PRJ-999"}),
+        )
+        .await,
+        "not_found",
+    );
+    let delete = json!({"id": key});
+    change_task(
+        &mut mcp,
+        &task,
+        ("execute_destructive_command", "task.delete"),
+        delete,
+        Some(6),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_agent_creates_a_task_with_its_steps_and_ticks_them() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "roadmap_manage"],
+        &["project-1"],
+    )
+    .await;
+    let seeded = create_protocol_task(&mut mcp, "project-1", "steps").await;
+    let epic =
+        tool_value(&mcp.call("read_task", json!({"taskId": seeded})).await)["epicId"].clone();
+    let created = tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.create", "idempotencyKey": "with-steps",
+                   "payload": {"projectId": "project-1", "epicId": epic, "title": "Release",
+                               "checklist": ["Write notes", "Tag", "Publish"]}}),
+        )
+        .await,
+    );
+    let task = created["entities"][0]["id"].clone();
+    let first = created["entities"][0]["checklist"][0]["id"].clone();
+    // The agent pages through the column and the epic one task at a time,
+    // ticking a step between pages.
+    let column = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "limit": 1}),
+        )
+        .await,
+    );
+    let epic_page = tool_value(
+        &mcp.call("read_epic", json!({"epicId": epic, "limit": 1}))
+            .await,
+    );
+    tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.checklist.update", "idempotencyKey": "tick-notes",
+                   "expectedRevision": 1, "payload": {"itemId": first, "done": true}}),
+        )
+        .await,
+    );
+    let next_column = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "limit": 1,
+                   "cursor": column["nextCursor"]}),
+        )
+        .await,
+    );
+    let next_epic_page = tool_value(
+        &mcp.call(
+            "read_epic",
+            json!({"epicId": epic, "limit": 1, "taskCursor": epic_page["tasks"]["nextCursor"]}),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            next_column["items"].as_array().map(Vec::len),
+            next_epic_page["tasks"]["items"].as_array().map(Vec::len)
+        ),
+        (Some(1), Some(1))
+    );
+    let found = tool_value(
+        &mcp.call(
+            "search_tasks",
+            json!({"projectId": "project-1", "status": "planning", "search": "Release"}),
+        )
+        .await,
+    );
+    assert_eq!(
+        (
+            &found["items"][0]["checklistDone"],
+            &found["items"][0]["checklistTotal"]
+        ),
+        (&json!(1), &json!(3))
+    );
+    let read = tool_value(&mcp.call("read_task", json!({"taskId": task})).await);
+    let steps: Vec<_> = read["checklist"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["title"].as_str().unwrap(),
+                item["done"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [("Write notes", true), ("Tag", false), ("Publish", false)]
+    );
+}
+
+#[tokio::test]
+async fn removing_a_checklist_item_takes_the_destructive_tool_and_access() {
+    let (_dir, _db, app, session, _user) = fixture().await;
+    let mut mcp = scoped_mcp(
+        &app,
+        &session,
+        &["project_read", "board_manage", "roadmap_manage"],
+        &["project-1"],
+    )
+    .await;
+    let task = create_protocol_task(&mut mcp, "project-1", "remove-step").await;
+    let added = tool_value(
+        &mcp.call(
+            "execute_work_command",
+            json!({"operation": "task.checklist.add", "idempotencyKey": "add-step",
+                   "payload": {"taskId": task, "title": "Step"}}),
+        )
+        .await,
+    );
+    let remove = |tool: &str| {
+        json!({"operation": "task.checklist.delete", "idempotencyKey": format!("remove-{tool}"),
+               "expectedRevision": 1, "payload": {"id": added["entities"][0]["id"]}})
+    };
+    assert_tool_error(
+        &mcp.call("execute_work_command", remove("work")).await,
+        "execute_destructive_command",
+    );
+    assert_tool_error(
+        &mcp.call("execute_destructive_command", remove("destructive"))
+            .await,
+        "forbidden",
+    );
+}

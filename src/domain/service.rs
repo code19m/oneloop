@@ -1,6 +1,7 @@
 //! Domain commands: one handler per operation, run once inside the shared
 //! command envelope, and the row helpers the handlers share.
 mod block;
+mod checklist;
 mod membership;
 mod ordering;
 mod pool;
@@ -10,6 +11,9 @@ mod task;
 mod validation;
 
 use block::{block_task, unblock_task, update_block_reason};
+use checklist::{
+    add_checklist_item, delete_checklist_item, move_checklist_item, update_checklist_item,
+};
 use membership::{add_membership, remove_membership, update_membership};
 use pool::{
     create_pool_item, delete_pool_item, promote_pool_item, require_pool_scope, update_pool_item,
@@ -45,12 +49,13 @@ use crate::{
 };
 
 use super::{
-    Access, BlockReasonUpdate, DomainOperation, EntityId, EpicCreate, EpicSummary, EpicUpdate,
-    EpicView, MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView,
-    MilestoneCreate, MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote,
-    PoolItemUpdate, PoolItemView, PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate,
-    TaskBlock, TaskCreate, TaskMove, TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate,
-    TrackReorder, TrackUpdate, TrackView, require_undo_window,
+    Access, BlockReasonUpdate, ChecklistItemAdd, ChecklistItemMove, ChecklistItemUpdate,
+    ChecklistItemView, DomainOperation, EntityId, EpicCreate, EpicSummary, EpicUpdate, EpicView,
+    MembershipCreate, MembershipDelete, MembershipUpdate, MembershipView, MilestoneCreate,
+    MilestoneUpdate, MilestoneView, PoolItemCreate, PoolItemPromote, PoolItemUpdate, PoolItemView,
+    PoolScope, ProjectCreate, ProjectDelete, ProjectUpdate, TaskBlock, TaskCreate, TaskMove,
+    TaskStatus, TaskUnblock, TaskUpdate, TaskView, TrackCreate, TrackReorder, TrackUpdate,
+    TrackView, require_undo_window, resolve_task_id,
 };
 
 const TASK_POSITION_GAP: i64 = 1024;
@@ -170,6 +175,18 @@ fn dispatch(
         }
         DomainOperation::UnblockAndCompleteTask => {
             unblock_task(tx, actor, payload!(TaskUnblock), expected, true, now)
+        }
+        DomainOperation::AddChecklistItem => {
+            add_checklist_item(tx, actor, payload!(ChecklistItemAdd), now)
+        }
+        DomainOperation::UpdateChecklistItem => {
+            update_checklist_item(tx, actor, payload!(ChecklistItemUpdate), expected, now)
+        }
+        DomainOperation::MoveChecklistItem => {
+            move_checklist_item(tx, actor, payload!(ChecklistItemMove), expected, now)
+        }
+        DomainOperation::DeleteChecklistItem => {
+            delete_checklist_item(tx, actor, payload!(EntityId), expected, now)
         }
         DomainOperation::CreatePoolItem => {
             create_pool_item(tx, actor, payload!(PoolItemCreate), now)
@@ -331,6 +348,7 @@ enum Entity {
     Epic(EpicView),
     Milestone(MilestoneView),
     Task(TaskView),
+    ChecklistItem(ChecklistItemView),
     PoolItem(PoolItemView),
 }
 

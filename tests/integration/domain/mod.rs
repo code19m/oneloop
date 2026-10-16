@@ -1,6 +1,7 @@
 //! Projects, tracks, epics, tasks, the personal Pool, the Board and reads.
 
 mod board;
+mod checklist;
 mod reads;
 mod structure;
 mod tasks;

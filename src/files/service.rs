@@ -231,12 +231,6 @@ impl FileService {
     }
 }
 
-/// The ID of the task that `task` names by its ID or its key, such as
-/// `WEB-042`.
-fn task_id_or_key(connection: &rusqlite::Connection, task: &str) -> AppResult<String> {
-    crate::domain::resolve_task_id(connection, task)?.ok_or(AppError::NotFound { resource: "task" })
-}
-
 fn task_project(connection: &rusqlite::Connection, task_id: &str) -> AppResult<String> {
     connection
         .query_row(
@@ -276,15 +270,22 @@ fn require_file_access(
 }
 
 /// Refuses another attachment of a task that has no free slot. Available
-/// files, files being removed and uploads under way take a slot.
-fn require_free_slot(tx: &Transaction<'_>, task_id: &str, now: i64) -> AppResult<()> {
+/// files, files being removed and uploads under way take a slot, except the
+/// file that the upload `replaces`.
+fn require_free_slot(
+    tx: &Transaction<'_>,
+    task_id: &str,
+    now: i64,
+    replaces: Option<&str>,
+) -> AppResult<()> {
     let occupied: i64 = tx.query_row(
         "SELECT
            (SELECT count(*) FROM task_attachments a JOIN file_blobs b ON b.id=a.blob_id
-            WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')) +
+            WHERE a.task_id=?1 AND a.deleted_at IS NULL AND b.state IN ('available','deleting')
+              AND a.id IS NOT ?3) +
            (SELECT count(*) FROM upload_reservations
             WHERE task_id=?1 AND committed_at IS NULL AND expires_at>?2)",
-        params![task_id, now],
+        params![task_id, now, replaces],
         |row| row.get(0),
     )?;
     if occupied >= MAX_ATTACHMENTS_PER_TASK {
@@ -401,6 +402,32 @@ fn record_attachment_deletion(
         None => record_system_activity_tx(tx, input, now)?,
     };
     Ok(())
+}
+
+/// Deletes an attachment for the Undo window and records who did: reads hide
+/// it at once, and file maintenance removes it after the window.
+fn delete_for_undo(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    attachment: &AttachmentView,
+    now: i64,
+) -> AppResult<()> {
+    tx.execute(
+        "UPDATE task_attachments SET deleted_at=?1,updated_at=?1,revision=revision+1
+         WHERE id=?2 AND revision=?3 AND deleted_at IS NULL",
+        params![now, attachment.id, attachment.revision],
+    )?;
+    record_attachment_deletion(
+        tx,
+        &DeleteActivityContext {
+            id: attachment.id.clone(),
+            project_id: Some(attachment.project_id.clone()),
+            task_id: Some(attachment.task_id.clone()),
+            name: attachment.name.clone(),
+        },
+        Some(actor),
+        now,
+    )
 }
 
 // Cleanup must never hide the original write/commit failure. Recovery retries

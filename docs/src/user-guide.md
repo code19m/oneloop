@@ -82,16 +82,20 @@ a review.
 - Drag a card to change its status or its place in the column. On a touch
   screen, drag it by its **⋮** button. The **⋮** menu can also move it, which
   works well with a keyboard.
+- A new task, also one made from a Pool idea, starts at the top of
+  **Planning**. A task that changes status without a place, such as with
+  **Move to** or its **Status**, goes to the top of its new column. A card you
+  drag, or move with **Move up** and **Move down**, goes exactly there.
 - Use the filters to find tasks by text, track, epic or assignee, or to show
   only blocked tasks. Several choices in one filter show more tasks; several
   filters together show fewer. The filters are part of the page's address, so
   a refresh keeps them and you can share a filtered Board as a link. Changing
   them adds no step to the browser's history, so **Back** leaves the Board. A
   choice the project no longer has, such as a deleted track, is dropped.
-- **Newest first**, at the top of **Done**, lists the most recently finished
-  tasks first. Each browser remembers this choice. While it is on, a task you
-  move to Done goes to the top, and you can't reorder Done by hand. The manual
-  order stays as it was for when you turn it off.
+- **Newest first**, the sort button at the top of **Done**, lists the most
+  recently finished tasks first. Each browser remembers this choice. While it
+  is on, you can't reorder Done by hand; turn it off to see and change Done's
+  own order.
 
 ### Pool
 
@@ -134,6 +138,20 @@ and it doesn't save the page as a file, except from inside an HTML file preview.
   dialog with text you typed asks before **Escape** closes it.
 - To delete a task, use the **⋮** menu at the top of the page.
 
+### Checklist
+
+A task's **Checklist**, below its description, splits the work into steps.
+
+- **Add an item** stays ready after Enter, so you can type the next step at
+  once. A task has up to 50 steps, each one line of up to 140 characters.
+- A step's text saves when you press Enter or leave it. To move a step, drag
+  its handle, or focus the handle and use the arrow keys, Home and End.
+- **×** removes a step at once, without Undo.
+- The heading and the Board card count the done steps, such as **2/5**. The
+  card's count turns green once every step is done. Steps don't move the task,
+  so a task can be Done with steps open.
+- People who can't change the Board see the steps, but not an empty checklist.
+
 ### Blocking
 
 When something stops the work, choose **Block task** and write the reason.
@@ -168,11 +186,12 @@ itself.
 After you delete a task, a file or a comment, the message that confirms it has
 an **Undo** button while it is shown. Ctrl+Z (Cmd+Z on macOS) does the same
 while focus is not in a text field and no dialog is open. The message stays
-while the pointer or focus is on it. Undo puts the item back where it was, or
-at the end of its list if another item took that place, with its comments and
-files. People who left the project meanwhile are no longer assigned to a
-restored task, unless it is done. The history keeps the deletion, the undo and
-these changes.
+while the pointer or focus is on it. Undo puts the item back where it was,
+with its comments and files. A task goes back to the same place in its column,
+also when a new task took its place meanwhile; another item goes at the end of
+its list then. People who left the project meanwhile are no longer assigned to
+a restored task, unless it is done. The history keeps the deletion, the undo
+and these changes.
 
 If Undo fails because the connection dropped or the server was busy, the
 message that says so offers **Undo** again until the item can no longer be

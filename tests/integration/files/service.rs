@@ -6,7 +6,7 @@ use oneloop::{
     db,
     files::{
         AttachmentPatch, AttachmentReorder, AttachmentRestore, AttachmentUpload, FileService,
-        FileStore, ReadMode,
+        FileStore, NewAttachment, ReadMode,
     },
 };
 use tempfile::TempDir;
@@ -92,7 +92,17 @@ async fn upload(
     temporary: bool,
 ) -> oneloop::files::AttachmentView {
     let AttachmentUpload::Pending(mut pending) = service
-        .begin_attachment_upload(actor, "task", name, bytes.len() as u64, temporary, key)
+        .begin_attachment_upload(
+            actor,
+            "task",
+            NewAttachment {
+                name,
+                size: bytes.len() as u64,
+                temporary,
+                idempotency_key: key,
+                replaces: None,
+            },
+        )
         .await
         .unwrap()
     else {
@@ -119,10 +129,13 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "../escape.txt",
-            4,
-            false,
-            "bad-name",
+            NewAttachment {
+                name: "../escape.txt",
+                size: 4,
+                temporary: false,
+                idempotency_key: "bad-name",
+                replaces: None,
+            },
         )
         .await;
     assert!(matches!(invalid, Err(AppError::Validation { .. })));
@@ -130,10 +143,13 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .begin_attachment_upload(
             &fixture.viewer,
             "task",
-            "read-only.txt",
-            4,
-            false,
-            "viewer-write",
+            NewAttachment {
+                name: "read-only.txt",
+                size: 4,
+                temporary: false,
+                idempotency_key: "viewer-write",
+                replaces: None,
+            },
         )
         .await;
     assert!(matches!(denied, Err(AppError::Forbidden)));
@@ -154,10 +170,13 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "notes.txt",
-            bytes.len() as u64,
-            false,
-            "same-upload",
+            NewAttachment {
+                name: "notes.txt",
+                size: bytes.len() as u64,
+                temporary: false,
+                idempotency_key: "same-upload",
+                replaces: None,
+            },
         )
         .await
         .unwrap();
@@ -171,10 +190,13 @@ async fn names_permissions_streaming_and_replay_are_enforced() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "different.txt",
-            bytes.len() as u64,
-            false,
-            "same-upload",
+            NewAttachment {
+                name: "different.txt",
+                size: bytes.len() as u64,
+                temporary: false,
+                idempotency_key: "same-upload",
+                replaces: None,
+            },
         )
         .await;
     assert_eq!(mismatch.err().unwrap().code(), "idempotency_key_reused");
@@ -204,10 +226,13 @@ async fn count_reservations_close_the_concurrent_twenty_fifth_slot() {
             .begin_attachment_upload(
                 &fixture.manager,
                 "task",
-                &format!("{index}.bin"),
-                1,
-                false,
-                &format!("reserve-{index}"),
+                NewAttachment {
+                    name: &format!("{index}.bin"),
+                    size: 1,
+                    temporary: false,
+                    idempotency_key: &format!("reserve-{index}"),
+                    replaces: None,
+                },
             )
             .await
             .unwrap()
@@ -220,13 +245,188 @@ async fn count_reservations_close_the_concurrent_twenty_fifth_slot() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "overflow.bin",
-            1,
-            false,
-            "reserve-overflow",
+            NewAttachment {
+                name: "overflow.bin",
+                size: 1,
+                temporary: false,
+                idempotency_key: "reserve-overflow",
+                replaces: None,
+            },
         )
         .await;
     assert!(matches!(overflow, Err(AppError::Conflict(_))));
+    for upload in pending {
+        upload.abort().await.unwrap();
+    }
+}
+
+/// Starts an upload of `name` to task `task` that replaces the attachment
+/// `replaces`.
+async fn begin_replacing(
+    service: &FileService,
+    actor: &Actor,
+    task: &str,
+    name: &str,
+    replaces: &str,
+) -> Result<AttachmentUpload, AppError> {
+    service
+        .begin_attachment_upload(
+            actor,
+            task,
+            NewAttachment {
+                name,
+                size: 1,
+                temporary: false,
+                idempotency_key: name,
+                replaces: Some(replaces),
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn an_upload_replaces_only_your_own_file_of_its_task_that_stays() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let theirs = upload(
+        &service,
+        &fixture.admin,
+        "theirs",
+        "theirs.txt",
+        b"x",
+        false,
+    )
+    .await;
+    let leaving = upload(
+        &service,
+        &fixture.manager,
+        "leaving",
+        "leaving.txt",
+        b"x",
+        false,
+    )
+    .await;
+    let leaving_id = leaving.id.clone();
+    fixture
+        .db
+        .run(move |connection| {
+            connection.execute_batch(&format!(
+                "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+                 VALUES ('other','p1','epic',2,'ONE-002','Other','planning',1,1,1);
+                 UPDATE file_blobs SET state='deleting'
+                 WHERE id=(SELECT blob_id FROM task_attachments WHERE id='{leaving_id}');"
+            ))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let other_task = service
+        .begin_attachment_upload(
+            &fixture.manager,
+            "other",
+            NewAttachment {
+                name: "other.txt",
+                size: 1,
+                temporary: false,
+                idempotency_key: "other",
+                replaces: None,
+            },
+        )
+        .await
+        .unwrap();
+    let AttachmentUpload::Pending(mut other_task) = other_task else {
+        panic!("a new upload")
+    };
+    other_task.write_chunk(b"x").await.unwrap();
+    let elsewhere = other_task.finish().await.unwrap();
+
+    let manager = &fixture.manager;
+    for (replaces, refusal) in [
+        (&theirs.id, "you uploaded"),
+        (&elsewhere.id, "the same task"),
+        (&leaving.id, "being removed"),
+    ] {
+        let error = begin_replacing(&service, manager, "task", "new.txt", replaces)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains(refusal), "{refusal}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn a_replacing_upload_that_fails_keeps_the_old_file() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let old = upload(&service, &fixture.manager, "old", "old.txt", b"x", false).await;
+    let AttachmentUpload::Pending(replacing) =
+        begin_replacing(&service, &fixture.manager, "task", "new.txt", &old.id)
+            .await
+            .unwrap()
+    else {
+        panic!("a new upload")
+    };
+    // The upload ends without the one byte it declared.
+    assert!(replacing.finish().await.is_err());
+    let listed = service
+        .list_attachments(&fixture.manager, "task")
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.items.iter().map(|item| &item.id).collect::<Vec<_>>(),
+        [&old.id]
+    );
+}
+
+#[tokio::test]
+async fn a_task_with_every_slot_taken_can_still_replace_a_file() {
+    let fixture = Fixture::new().await;
+    let service = fixture.service(100 * 1024 * 1024);
+    let old = upload(&service, &fixture.manager, "old", "old.txt", b"x", false).await;
+    let mut pending = Vec::new();
+    for index in 1..25 {
+        let AttachmentUpload::Pending(upload) = service
+            .begin_attachment_upload(
+                &fixture.manager,
+                "task",
+                NewAttachment {
+                    name: &format!("{index}.bin"),
+                    size: 1,
+                    temporary: false,
+                    idempotency_key: &format!("reserve-{index}"),
+                    replaces: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("a new upload")
+        };
+        pending.push(upload);
+    }
+    let full = service
+        .begin_attachment_upload(
+            &fixture.manager,
+            "task",
+            NewAttachment {
+                name: "full.bin",
+                size: 1,
+                temporary: false,
+                idempotency_key: "full",
+                replaces: None,
+            },
+        )
+        .await;
+    assert!(matches!(full, Err(AppError::Conflict(_))));
+    // The replaced file's slot counts as free.
+    let AttachmentUpload::Pending(replacing) =
+        begin_replacing(&service, &fixture.manager, "task", "new.txt", &old.id)
+            .await
+            .unwrap()
+    else {
+        panic!("a new upload")
+    };
+    replacing.abort().await.unwrap();
     for upload in pending {
         upload.abort().await.unwrap();
     }
@@ -918,7 +1118,17 @@ async fn capacity_counts_reservations_without_double_counting_partial_staging() 
     let admin = fixture.admin.clone();
     let service = fixture.service(100);
     let AttachmentUpload::Pending(mut pending) = service
-        .begin_attachment_upload(&admin, "task", "partial.bin", 10, false, "partial")
+        .begin_attachment_upload(
+            &admin,
+            "task",
+            NewAttachment {
+                name: "partial.bin",
+                size: 10,
+                temporary: false,
+                idempotency_key: "partial",
+                replaces: None,
+            },
+        )
         .await
         .unwrap()
     else {
@@ -1082,10 +1292,13 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "interrupted.bin",
-            8,
-            false,
-            "interrupted-upload",
+            NewAttachment {
+                name: "interrupted.bin",
+                size: 8,
+                temporary: false,
+                idempotency_key: "interrupted-upload",
+                replaces: None,
+            },
         )
         .await
         .unwrap()
@@ -1123,10 +1336,13 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "interrupted.bin",
-            8,
-            false,
-            "interrupted-upload",
+            NewAttachment {
+                name: "interrupted.bin",
+                size: 8,
+                temporary: false,
+                idempotency_key: "interrupted-upload",
+                replaces: None,
+            },
         )
         .await
         .unwrap();
@@ -1140,8 +1356,19 @@ async fn interrupted_uploads_release_their_slot_and_retry_identity() {
 async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let begin =
-        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let begin = || {
+        service.begin_attachment_upload(
+            &fixture.manager,
+            "task",
+            NewAttachment {
+                name: "late.txt",
+                size: 4,
+                temporary: false,
+                idempotency_key: "late",
+                replaces: None,
+            },
+        )
+    };
     let AttachmentUpload::Pending(mut pending) = begin().await.unwrap() else {
         panic!("new upload must not replay")
     };
@@ -1174,8 +1401,19 @@ async fn upload_that_fails_during_a_backup_can_retry_with_its_key() {
 async fn an_upload_whose_task_was_deleted_meanwhile_can_retry_after_undo() {
     let fixture = Fixture::new().await;
     let service = fixture.service(100 * 1024 * 1024);
-    let begin =
-        || service.begin_attachment_upload(&fixture.manager, "task", "late.txt", 4, false, "late");
+    let begin = || {
+        service.begin_attachment_upload(
+            &fixture.manager,
+            "task",
+            NewAttachment {
+                name: "late.txt",
+                size: 4,
+                temporary: false,
+                idempotency_key: "late",
+                replaces: None,
+            },
+        )
+    };
     let deleted = async |at: Option<i64>| {
         fixture
             .db
@@ -1216,10 +1454,13 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "cancel-safe.txt",
-            bytes.len() as u64,
-            false,
-            "cancel-during-commit",
+            NewAttachment {
+                name: "cancel-safe.txt",
+                size: bytes.len() as u64,
+                temporary: false,
+                idempotency_key: "cancel-during-commit",
+                replaces: None,
+            },
         )
         .await
         .unwrap()
@@ -1291,10 +1532,13 @@ async fn cancelling_finish_during_reconcile_preserves_the_durable_upload() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "cancel-safe.txt",
-            bytes.len() as u64,
-            false,
-            "cancel-during-commit",
+            NewAttachment {
+                name: "cancel-safe.txt",
+                size: bytes.len() as u64,
+                temporary: false,
+                idempotency_key: "cancel-during-commit",
+                replaces: None,
+            },
         )
         .await
         .unwrap();
@@ -1421,10 +1665,13 @@ async fn stalled_upload_does_not_hold_back_a_complete_backup() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "stalled.txt",
-            100,
-            false,
-            "stalled",
+            NewAttachment {
+                name: "stalled.txt",
+                size: 100,
+                temporary: false,
+                idempotency_key: "stalled",
+                replaces: None,
+            },
         )
         .await
         .unwrap()
@@ -1512,9 +1759,19 @@ async fn unrecoverable_disk_floor_preserves_eligible_temporary_files() {
     // Deterministically larger than the entire backing volume; no deletion can help.
     let full = FileService::new(fixture.db.clone(), 100 * 1024 * 1024, u64::MAX);
     assert!(
-        full.begin_attachment_upload(&fixture.manager, "task", "new.bin", 1, false, "floor")
-            .await
-            .is_err()
+        full.begin_attachment_upload(
+            &fixture.manager,
+            "task",
+            NewAttachment {
+                name: "new.bin",
+                size: 1,
+                temporary: false,
+                idempotency_key: "floor",
+                replaces: None
+            }
+        )
+        .await
+        .is_err()
     );
     assert!(
         full.upload_avatar(
@@ -1728,10 +1985,13 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
         .begin_attachment_upload(
             &fixture.manager,
             "task",
-            "crash.txt",
-            10,
-            false,
-            "crash-retry",
+            NewAttachment {
+                name: "crash.txt",
+                size: 10,
+                temporary: false,
+                idempotency_key: "crash-retry",
+                replaces: None,
+            },
         )
         .await
         .unwrap()
@@ -1794,10 +2054,13 @@ async fn startup_recovers_unexpired_crash_reservations_and_same_key_retry() {
             .begin_attachment_upload(
                 &fixture.manager,
                 "task",
-                "crash.txt",
-                10,
-                false,
-                "crash-retry"
+                NewAttachment {
+                    name: "crash.txt",
+                    size: 10,
+                    temporary: false,
+                    idempotency_key: "crash-retry",
+                    replaces: None
+                }
             )
             .await
             .unwrap(),
@@ -1829,7 +2092,17 @@ async fn high_watermark_admission_does_not_walk_originals() {
         0
     );
     let AttachmentUpload::Pending(pending) = service
-        .begin_attachment_upload(&f.manager, "task", "next.bin", 1, false, "next")
+        .begin_attachment_upload(
+            &f.manager,
+            "task",
+            NewAttachment {
+                name: "next.bin",
+                size: 1,
+                temporary: false,
+                idempotency_key: "next",
+                replaces: None,
+            },
+        )
         .await
         .unwrap()
     else {
@@ -2066,7 +2339,17 @@ async fn oversized_chunk_is_rejected_without_changing_the_upload() {
     let f = Fixture::new().await;
     let service = f.service(1000000);
     let AttachmentUpload::Pending(mut pending) = service
-        .begin_attachment_upload(&f.manager, "task", "size.bin", 4, false, "chunk-limit")
+        .begin_attachment_upload(
+            &f.manager,
+            "task",
+            NewAttachment {
+                name: "size.bin",
+                size: 4,
+                temporary: false,
+                idempotency_key: "chunk-limit",
+                replaces: None,
+            },
+        )
         .await
         .unwrap()
     else {

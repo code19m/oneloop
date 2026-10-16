@@ -102,7 +102,7 @@ export function installRoute(ctx, account) {
 
   return {
     /** @param {string} order `completed` lists the newest Done task first; anything else keeps the manual order. */
-    async setDoneOrder(order){saveDoneOrder(order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);},
+    async setDoneOrder(order){saveDoneOrder(order==='completed'?'completed':'manual');return whileBusy(reads.board(context().projectId,context().board));},
     /** @param {{search?:string,blocked?:boolean,trackIds?:string[],epicIds?:string[],assigneeIds?:string[]}} filters */
     filterBoard(filters){return whileBusy(reads.board(context().projectId,filters,{skipUnchanged:true}));},
     /** @param {string} status */

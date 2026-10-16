@@ -1,14 +1,15 @@
 //! Blocking and unblocking tasks, and editing a block reason.
-use super::ordering::task_append_position;
+use super::ordering::task_insert_position;
 use super::*;
 
 pub(super) fn block_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskBlock,
+    mut input: TaskBlock,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
     check_revision(expected, task.revision)?;
@@ -184,11 +185,12 @@ pub(super) fn update_block_reason(
 pub(super) fn unblock_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskUnblock,
+    mut input: TaskUnblock,
     expected: i64,
     complete: bool,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let task = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &task.project_id, Need::Board, false)?;
     check_revision(expected, task.revision)?;
@@ -214,8 +216,9 @@ pub(super) fn unblock_task(
         params![actor.user_id, now, resolution, block_id, block_revision],
     )?;
     if complete {
-        // A blocked task is never Done yet, so this always completes it.
-        let position = task_append_position(tx, &task.project_id, "done")?;
+        // A blocked task is never Done yet, so this always completes it, at
+        // the top of Done as any move without a place.
+        let position = task_insert_position(tx, &task.project_id, "done", &input.task_id, 0)?;
         tx.execute(
             MOVE_TASK_SQL,
             params!["done", position, Some(now), now, input.task_id, expected],

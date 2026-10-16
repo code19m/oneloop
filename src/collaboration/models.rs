@@ -77,6 +77,7 @@ pub struct MentionToken {
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommentCreate {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     pub content: String,
     #[serde(default)]

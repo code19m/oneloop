@@ -3,14 +3,20 @@
 /** @typedef {'manual'|'completed'} DoneOrder */
 
 // How the Board orders Done: the manual order, or the most recently completed
-// task first. Each browser keeps its own choice, like the sidebar width.
+// task first. Each browser keeps its own choice, like the sidebar width. A page
+// reads it once, so a choice made in another tab applies here on the next load:
+// until then, this tab's Board keeps the order its cards were read in, and live
+// changes, which are read in that order, keep reaching it.
 const KEY = 'oneloop.doneOrder';
-/** @type {DoneOrder|null} */ let chosen = null;
+/** The order this page uses: the saved one when the page first asked, or the one chosen here. @type {DoneOrder|null} */
+let chosen = null;
 
 /** @param {Storage|undefined} [storage] @returns {DoneOrder} */
 export function savedDoneOrder(storage = globalThis.localStorage) {
-  if (chosen) return chosen;
-  try { return storage?.getItem(KEY) === 'completed' ? 'completed' : 'manual'; } catch { return 'manual'; }
+  if (!chosen) {
+    try { chosen = storage?.getItem(KEY) === 'completed' ? 'completed' : 'manual'; } catch { chosen = 'manual'; }
+  }
+  return chosen;
 }
 
 /** Remember the choice; without storage, such as in some private windows, it lasts until the page reloads.

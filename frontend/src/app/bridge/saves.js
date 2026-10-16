@@ -29,6 +29,8 @@ export function createSaves(ctx) {
   const RECORD_FIELDS={task:'taskId',epic:'epicId',track:'trackId',milestone:'milestoneId',pool:'poolItemId',project:'projectId'};
   function recordOf(operation,payload){
     if(operation.startsWith('task.block.'))return payload.blockId?`taskBlock:${payload.blockId}`:null;
+    // Each checklist item saves on its own, and adds to one checklist run in order.
+    if(operation.startsWith('task.checklist.'))return payload.taskId?`checklist:${payload.taskId}`:`checklistItem:${payload.itemId??payload.id}`;
     const type=operation.split('.')[0];
     if(type==='membership')return payload.projectId&&payload.userId?`membership:${payload.projectId}:${payload.userId}`:null;
     const id=payload[RECORD_FIELDS[type]]??payload.id;

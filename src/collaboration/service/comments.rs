@@ -22,6 +22,7 @@ impl CollaborationService {
         let limit = paging::page_limit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
         access::read(&self.db, actor, move |connection, actor| {
             let cursor: Option<TimeCursor> = cursor.as_deref().map(paging::decode).transpose()?;
+            let task_id = resolve_task_id(connection, &task_id)?;
             access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let mut statement = connection.prepare(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
@@ -49,6 +50,7 @@ impl CollaborationService {
         let task_id = task_id.to_owned();
         let comment_id = comment_id.to_owned();
         access::read(&self.db, actor, move |connection, actor| {
+            let task_id = resolve_task_id(connection, &task_id)?;
             access::require_task(connection, actor, &task_id, Need::Read, false)?;
             let comment = connection.query_row(
                 "SELECT c.id,c.project_id,c.task_id,c.author_id,u.display_name,c.root_id,c.reply_to_id,
@@ -91,10 +93,11 @@ impl CollaborationService {
 pub(super) fn create_comment(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: CommentCreate,
+    mut input: CommentCreate,
     now: i64,
 ) -> AppResult<Mutation> {
     let content = crate::text::exact(&input.content, "content", COMMENT_MAX)?;
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let project_id = access::require_task(tx, actor, &input.task_id, Need::Discussion, false)?;
     let mentions = mentions::validate(tx, &project_id, &content, input.mentions, &[])?;
     let id = Uuid::now_v7().to_string();

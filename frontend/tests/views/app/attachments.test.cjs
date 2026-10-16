@@ -268,8 +268,8 @@ test('attachment order is shared by keyboard and pointer moves, which Escape and
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(order(), original); await keep();
   const pointer = (type, target, x, y) => { const event = new w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
   const geometry = () => { zone().getBoundingClientRect = () => ({ left: 0, right: 600, top: 0, bottom: 500 }); [...zone().querySelectorAll('[data-attachment-id]')].forEach((row, i) => row.getBoundingClientRect = () => ({ left: 0, right: 600, top: 100 + i * 100, bottom: 190 + i * 100, width: 600, height: 90 })); };
-  geometry(); pointer('pointerdown', grip(), 20, 120); pointer('pointermove', d, 20, 370); assert(d.querySelector('.attachment-insert-marker')); pointer('pointerup', d, 20, 370);
-  assert.equal(task.attachments.at(-1).id, original[0]); assert(!d.querySelector('.attachment-insert-marker')); assert(!d.body.classList.contains('attachment-sorting')); await keep();
+  geometry(); pointer('pointerdown', grip(), 20, 120); pointer('pointermove', d, 20, 370); assert(d.querySelector('.sort-marker')); pointer('pointerup', d, 20, 370);
+  assert.equal(task.attachments.at(-1).id, original[0]); assert(!d.querySelector('.sort-marker')); assert(!d.body.classList.contains('list-sorting')); await keep();
   const reordered = order(), sent = moves().length;
   geometry(); pointer('pointerdown', grip(), 20, 320); pointer('pointermove', d, 20, 110); d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); pointer('pointerup', d, 20, 110);
   assert.deepEqual(order(), reordered);

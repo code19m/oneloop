@@ -1,4 +1,7 @@
-use super::board::{BLOCKED_COUNT_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL, UNDATED_DONE_SQL};
+use super::board::{
+    BLOCKED_COUNT_SQL, CHECKLIST_COUNTS_SQL, NEWEST_DONE_AFTER_SQL, NEWEST_DONE_SQL,
+    UNDATED_DONE_SQL,
+};
 use super::roadmap::{EPIC_SUMMARY_SQL, epics_on, local_midnight};
 use super::*;
 use crate::db::query_plan;
@@ -182,4 +185,14 @@ mod epic_date_tests {
             assert_eq!(end - start, hours * 3600, "{name}");
         }
     }
+}
+
+#[test]
+fn checklist_counts_read_only_the_items_of_the_page() {
+    let (_root, c) = crate::db::migrated_connection();
+    let plan = query_plan(&c, CHECKLIST_COUNTS_SQL);
+    assert!(
+        plan.contains("SEARCH task_checklist_items USING INDEX") && !plan.contains("TEMP B-TREE"),
+        "{plan}"
+    );
 }

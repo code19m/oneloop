@@ -90,7 +90,7 @@ project; the assistant can't see other projects. Then choose capabilities:
 | Create and manage roadmap work | `roadmap_manage` | Create and edit tracks, epics and milestones | Yes |
 | Read and manage your private Inbox (selected projects only) | `inbox_private` | Read your Inbox, mark items read, and archive them | No |
 | Read and manage your private My Pool | `my_pool_private` | Read and manage your My Pool | No |
-| Read and manage attachments | `attachments` | List and download files; upload and reorder them if it may also manage tasks | Yes |
+| Read and manage attachments | `attachments` | List and download files; upload and reorder files, and replace your own, if it may also manage tasks | Yes |
 | Permanently delete permitted work and files | `destructive` | Delete tasks, epics, tracks, milestones, Pool items, files and your own comments | No |
 
 The page lists only the capabilities that the assistant asked for. Delete access
@@ -154,7 +154,7 @@ and deleting needs `destructive` too.
 | `list_project_members` | Lists a project's members and their permissions | Read |
 | `read_roadmap` | Reads a project's tracks, epics and milestones | Read |
 | `search_tasks` | Searches a project's tasks by status, track, epic, assignee or blocked state | Read |
-| `read_task` | Reads one task by ID or task key, such as `WEB-042` | Read |
+| `read_task` | Reads one task and its checklist by ID or task key, such as `WEB-042` | Read |
 | `read_epic` | Reads an epic's tasks and activity | Read |
 | `read_pool` | Reads the Team Pool, or your My Pool | Read |
 | `read_comments` | Reads a task's comments and replies, or one comment in context | Read |
@@ -168,7 +168,7 @@ and deleting needs `destructive` too.
 | `execute_destructive_command` | Permanently deletes work, or one of your own comments | Delete |
 | `list_attachments` | Lists a task's files | Read |
 | `create_attachment_download` | Creates a ticket to download a file | Read |
-| `create_attachment_upload` | Creates a ticket to upload a file to a task | Write |
+| `create_attachment_upload` | Creates a ticket to upload a file to a task, or to replace one of your files | Write |
 | `reorder_attachment` | Moves a file before or after another | Write |
 | `set_attachment_temporary` | Marks a file as temporary or permanent | Write |
 | `delete_attachment` | Permanently deletes a file | Delete |
@@ -180,15 +180,14 @@ schema describes the payload of each operation.
 
 | Tool | Operations |
 | --- | --- |
-| `execute_work_command` | `track.create`, `track.update`, `track.reorder`, `epic.create`, `epic.update`, `epic.complete`, `epic.reopen`, `milestone.create`, `milestone.update`, `task.create`, `task.update`, `task.move`, `task.block`, `task.block.update`, `task.unblock`, `task.unblock-and-complete`, `pool.create`, `pool.update`, `pool.promote` |
+| `execute_work_command` | `track.create`, `track.update`, `track.reorder`, `epic.create`, `epic.update`, `epic.complete`, `epic.reopen`, `milestone.create`, `milestone.update`, `task.create`, `task.update`, `task.move`, `task.block`, `task.block.update`, `task.unblock`, `task.unblock-and-complete`, `task.checklist.add`, `task.checklist.update`, `task.checklist.move`, `pool.create`, `pool.update`, `pool.promote` |
 | `execute_discussion_command` | `discussion.comment.create`, `discussion.comment.edit`, `inbox.markRead`, `inbox.markUnread`, `inbox.archive`, `inbox.restore`, `inbox.bulkMarkRead`, `inbox.bulkArchive` |
-| `execute_destructive_command` | `track.delete`, `epic.delete`, `milestone.delete`, `task.delete`, `pool.delete`, `discussion.comment.delete` |
+| `execute_destructive_command` | `track.delete`, `epic.delete`, `milestone.delete`, `task.delete`, `task.checklist.delete`, `pool.delete`, `discussion.comment.delete` |
 
 ### Rules for every call
 
-- **IDs.** Tools take the IDs that reads return. `read_task`,
-  `list_attachments`, `create_attachment_upload` and `reorder_attachment` also
-  accept a task key, such as `WEB-042`.
+- **IDs.** Tools take the IDs that reads return. Anywhere a tool takes a task
+  ID, it also accepts a task key, such as `WEB-042`.
 - **Retries.** Every write takes an `idempotencyKey` of 1 to 128 visible ASCII
   characters. If you retry with the same key and the same input, oneloop applies
   the change only once. The same key with different input fails with
@@ -208,6 +207,18 @@ schema describes the payload of each operation.
   `in_review` and `done`. `search_tasks` without a status returns the first page
   of each. Dates are `YYYY-MM-DD` in the instance time zone that `list_projects`
   returns.
+- **Moving tasks.** `task.move` puts a task where `position`, `beforeTaskId` or
+  `afterTaskId` says; `position` counts from 0 at the top of the column.
+  Without a place, the task goes to the top of its new column, as it does after
+  `task.unblock-and-complete`. New tasks start at the top of Planning.
+  `search_tasks` lists every column, Done too, in this order. A task's
+  `position` in a read only orders its column, and it can be below zero.
+- **Checklists.** `read_task` returns a task's checklist items, and every task
+  in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
+  `task.create` takes the items' titles in `checklist`, so a task and its
+  steps take one call. An item has its own revision: change it with the
+  item's `expectedRevision`, which leaves the task's revision as it is. A
+  task's `checklistVersion` goes up with every change to its checklist.
 - **Mentions.** A mention names the member by ID and marks its place in the
   text. A name alone doesn't notify anyone. `@everyone` has a
   [rate limit](reference.md#limits) in each project.
@@ -218,7 +229,10 @@ schema describes the payload of each operation.
   download. A download names the file in its `Content-Disposition` header.
   Never send a local file path. To retry a failed upload, ask for a new
   ticket with the same `idempotencyKey`, file name, size and bytes, so the
-  file is attached only once.
+  file is attached only once. To replace a file that you uploaded, pass its
+  ID as `replacesAttachmentId`: when the upload completes, the new file takes
+  its place and the old one is deleted. If the upload fails, the old file
+  stays. Another person's file can only be deleted, with `delete_attachment`.
 - **Knowledge base.** `read_knowledge_overview` returns the README and a list
   of files, each Markdown file with its title and headings; pass a `folder`, or
   use `search_knowledge`, to see more. `read_knowledge_file` returns text within

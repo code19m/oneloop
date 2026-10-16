@@ -4,6 +4,8 @@
    the save status in its top bar. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { fadeOutRows, placeRows } from '../../src/app/rows.js';
+import { checklistHtml, refreshChecklist } from '../../src/features/checklist/checklist.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
@@ -16,7 +18,6 @@ import {
   App, canBoard, epics, me, projectMembers, recovery, report, runtime, state, taskById, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
-import { fadeOutRows, placeRows } from './rows.js';
 
 let taskSaveFeedback = null, taskSaveTimer;
 function clearTaskSaved() {
@@ -83,6 +84,22 @@ function placeDraftNote(host, t, field) {
 }
 // A field the person can no longer edit stays readable when it holds their unsaved text, so they can copy it.
 const lockedField = (t, field) => taskDraft(t, field)?.unsaved ? 'readonly' : 'disabled';
+
+/**
+ * Show the open task's title as it is now, with its Not saved note. The title
+ * being typed keeps what the person is typing. A new title waits for a press
+ * on the page to end: it can take more lines and move what lies below.
+ */
+function paintTitle(t) {
+  const host = document.querySelector('.task-page .task-title-field');
+  if (!host) return;
+  const input = host.querySelector('.tp-title'), value = taskDraft(t, 'title')?.value ?? t.title;
+  if (input && input !== document.activeElement && input.value !== value && !App.afterPress(repaintTitle)) { input.value = value; sizeTaskTitle(); }
+  placeDraftNote(host, t, 'title');
+}
+function repaintTitle() { const t = state.view === 'task' ? taskById(state.taskId) : null; if (t) paintTitle(t); }
+/** Show the open task's checklist as it is now: once for all the changes that waited for a press. */
+function refreshShownChecklist() { if (state.view === 'task') App.refreshTaskChecklist(state.taskId); }
 
 // ---------- description ----------
 // The description shows its saved text as Markdown. Its editor shows instead
@@ -183,6 +200,7 @@ export function renderTask() {
       <div class="tp-sec task-description expandable-description" data-task="${esc(t.id)}" data-description-key="task-${esc(t.id)}">${descriptionHeadingHtml(t, canEdit)}
         <div class="description-preview">${descriptionBodyHtml(t, canEdit)}</div>
         <button type="button" class="description-toggle" aria-controls="${descriptionBodyId(t, canEdit)}" aria-expanded="false" ${UIAction('toggleDescription')} hidden>Show more</button>${taskDraftNote(t, 'desc')}</div>
+      ${checklistHtml(t, canEdit)}
       ${attachmentsHtml(t, canEdit)}
       <div class="tp-sec task-activity"><h2>Activity</h2>
         <div class="timeline">${feed}</div>
@@ -242,13 +260,7 @@ Object.assign(App, {
   refreshTaskDrafts(id) {
     if (state.view !== 'task' || state.taskId !== id) return;
     const t = taskById(id); if (!t) return;
-    const host = document.querySelector('.task-page .task-title-field');
-    if (host) {
-      const input = host.querySelector('.tp-title'), value = taskDraft(t, 'title')?.value ?? t.title;
-      if (input && input !== document.activeElement && input.value !== value) { input.value = value; sizeTaskTitle(); }
-      placeDraftNote(host, t, 'title');
-    }
-    paintDescription(t);
+    paintTitle(t); paintDescription(t);
   },
   /**
    * Open the description's editor, focused with the caret at the end. A
@@ -299,11 +311,18 @@ Object.assign(App, {
   /**
    * Show the open task as it is saved now, after a change from elsewhere,
    * such as a teammate, another tab or an MCP agent: its header, Status,
-   * title and description at once, in place, and the rest of the page once
-   * focus leaves it. The field being typed in keeps what the person is
-   * typing.
+   * title, description and checklist at once, in place, and the rest of the
+   * page once focus leaves it. The field being typed in keeps what the person
+   * is typing. The checklist waits for a press on the page to end: a row that
+   * moves under the pointer would lose its click.
    */
-  refreshTask(id) { App.refreshTaskHeader(); App.refreshTaskDrafts(id); App.refreshBackground(); },
+  refreshTask(id) {
+    App.refreshTaskHeader(); App.refreshTaskDrafts(id);
+    if (!App.afterPress(refreshShownChecklist)) App.refreshTaskChecklist(id);
+    App.refreshBackground();
+  },
+  /** Show a task's checklist as it is now, in place, when its page is open. */
+  refreshTaskChecklist(id) { refreshChecklist(taskById(id)); },
   noteTaskSaving: taskSaving,
   clearTaskSaving,
   retryTaskActivity(id){retryTaskPage(id);},

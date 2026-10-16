@@ -182,7 +182,7 @@ export function actionErrorFeedback(error) {
   const code = value?.code;
   const status = value?.status;
   // A save that would change nothing; the server has no code of its own for it yet.
-  if (code === 'validation_failed' && /no .+ fields changed|(?:task|track) is already at that position/i.test(raw)) {
+  if (code === 'validation_failed' && /no .+ fields changed|(?:task|track|item) is already at that position/i.test(raw)) {
     return { silent:true, field:null, message:'' };
   }
   if (code === 'member_has_open_tasks') {

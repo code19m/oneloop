@@ -222,6 +222,7 @@ and MCP replies include `"partial": true`.
 | Epic | Title 120 characters, description 2,000 |
 | Milestone | Title 60 characters, description 500 |
 | Task | Title 140 characters, description 4,000 |
+| Checklist | 50 items per task; an item is one line of 140 characters |
 | Pool item | Title 140 characters, description 2,000 |
 | Block reason | 500 characters; unblock note 500 |
 | Comment or reply | 2,000 characters |

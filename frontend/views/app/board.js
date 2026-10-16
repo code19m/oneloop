@@ -3,9 +3,11 @@
    saves that roll back when the server refuses. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { patchInPlace, placeRows } from '../../src/app/rows.js';
 import {
   NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters,
 } from '../../src/data/board-filters.js';
+import { savedDoneOrder } from '../../src/data/done-order.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import { MULTI, multiHtml } from './controls.js';
 import { drag, dropIndicator, makeDropIndicator, setDragImage } from './drag.js';
@@ -18,7 +20,6 @@ import {
   projectMembers, recovery, report, runtime, state, taskById, tasks, trackById, tracks, userById, userHandle,
 } from './model.js';
 import { openMenu } from './overlays.js';
-import { patchInPlace, placeRows } from './rows.js';
 import { announce } from './toasts.js';
 
 const COLS = [
@@ -29,6 +30,8 @@ const COLS = [
 ];
 /** Whether the loaded Done column lists the most recently completed task first. */
 const doneNewest = () => D.boardPageInfo?.projectId === state.projectId && D.boardPageInfo?.filters?.doneOrder === 'completed';
+/** Whether this browser chose Newest first, which the toggle shows before the column it asks for loads. */
+const newestChosen = () => savedDoneOrder() === 'completed';
 
 function taskBits(t) {
   if (t.state === 'done') return { right: stIcon('done'), cls: 'done' };
@@ -87,16 +90,17 @@ export function renderBoard({column=null,excludeIds=null}={}) {
       return `<div role="listitem" class="card ${b.cls}${t.block ? ' blocked' : ''}" data-task="${esc(t.id)}" ${canBoard() ? `data-reorderable="true" ${UIAction.on('dragstart', 'taskDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')}` : ''} ${UIAction('openTask', t.id)}>
         <div class="id-row"><span>${esc(t.id)}</span><span class="card-end">${t.block ? `<span class="blocked-badge" data-tip-tap data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}">${I.blocked}Blocked</span>` : ''}${b.right}${canBoard() ? `<button type="button" class="card-move" aria-label="Move ${esc(t.id)}" ${UIAction('taskMoveMenu', UIAction.event, t.id)}>${I.kebab}</button>` : ''}</span></div>
         <button type="button" class="title card-title-button" aria-describedby="card-context-${esc(t.id)}"${t.block ? ` data-tip="${esc(t.block.reason)} — ${esc(userById(t.block.by)?.name || t.block.by)} · ${esc(formatInstant(t.block.at))}" data-tip-keyboard` : ''}>${esc(t.title)}</button>
-        <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
+        <span class="sr-only" id="card-context-${esc(t.id)}">${esc([t.id,c.name,e?.title,t.checklistTotal ? `Checklist ${t.checklistDone} of ${t.checklistTotal} done` : '',t.deadline ? 'Due '+t.deadline : '',overdue(t) ? 'Overdue' : '',t.block ? 'Blocked: '+t.block.reason+' — '+(userById(t.block.by)?.name||t.block.by)+' · '+formatInstant(t.block.at) : '',av.length ? 'Assigned to '+av.map(id=>userById(id).name).join(', ') : 'Unassigned'].filter(Boolean).join(' · '))}</span>
         <div class="epic" data-tip="${esc(e ? e.title : '')}" data-tip-overflow>${esc(e ? e.title : '')}</div>
         <div class="card-foot">
           <span class="mono card-created"${t.created ? ` data-tip="Created ${esc(formatInstant(t.created))}"` : ''}>${t.created ? humanInstant(t.created) : ''}</span>
+          ${t.checklistTotal ? `<span class="mono card-checklist${t.checklistDone === t.checklistTotal ? ' complete' : ''}" data-tip="${esc('Checklist: ' + t.checklistDone + ' of ' + t.checklistTotal + ' done')}">${I.check}${t.checklistDone}/${t.checklistTotal}</span>` : ''}
           ${t.deadline ? `<span class="mono dl${overdue(t) ? ' late' : ''}" data-tip="Deadline ${esc(t.deadline)}">${I.clock}${humanShort(d(t.deadline))}${overdue(t) ? ' · Overdue' : ''}</span>` : ''}
           <span class="avs">${avs}</span>
         </div></div>`;
     }).join('');
     return `<section class="col" aria-labelledby="col-${c.key}" data-col="${esc(c.key)}" ${canBoard() ? `${UIAction.on('dragover', 'colOver', UIAction.event)} ${UIAction.on('dragleave', 'colLeave', UIAction.event)} ${UIAction.on('drop', 'dropTask', UIAction.event, c.key)}` : ''}>
-      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn quiet done-order" aria-pressed="${doneNewest()}" ${UIAction('toggleDoneOrder')}>Newest first</button>` : ''}</div>
+      <div class="col-head"><div class="row1">${stIcon(c.key)}<h2 id="col-${esc(c.key)}">${c.name}</h2><span class="mono subtle">${serverPage?.total ?? list.length}</span>${c.key === 'done' ? `<button type="button" class="btn icon done-order" aria-pressed="${newestChosen()}" aria-label="Newest first" data-tip="Newest first" ${UIAction('toggleDoneOrder', UIAction.element)}>${I.sortDescending}</button>` : ''}</div>
       </div>
       <div class="col-cards" role="list" aria-labelledby="col-${c.key}">${cards || '<div class="empty-note" role="listitem">No tasks</div>'}${serverPage?.nextCursor ? `<div role="listitem" class="board-load-more"><button class="btn quiet" ${UIAction('loadMoreBoard', c.key)}>Load more</button></div>` : ''}</div></section>`;
   }).join('');
@@ -123,7 +127,7 @@ export function boardSnapshot() {
     state.projectId, canBoard(), instanceTimeZone(), instanceDateKey(instanceNow()),
     boardFiltered(boardFilters()),
     state.boardLimits, D.boardPageInfo,
-    boardTasks().map(t=>[t.id,t.state,t.title,t.epicId,t.created,t.deadline,t.assignees,t.block]),
+    boardTasks().map(t=>[t.id,t.state,t.title,t.epicId,t.created,t.deadline,t.assignees,t.block,t.checklistDone,t.checklistTotal]),
     D.epics.map(e=>[e.id,e.title]), D.users.map(u=>[u.id,u.name,u.avatar]),
   ]);
 }
@@ -319,12 +323,6 @@ export function boardTopbarHtml() {
 /** The cards a Board column shows, in order. */
 const shownColumn = (col) => boardTasks().filter((item) => item.state === col).slice(0, state.boardLimits[col] || 50);
 
-/** Whether a column shows its last card: the server has no more, and every loaded card is drawn. */
-function columnEndShown(col, except) {
-  const page = D.boardPageInfo?.projectId === state.projectId ? D.boardPageInfo.pages?.[col] : null;
-  return !page?.nextCursor && boardTasks().filter((item) => item.state === col && item !== except).length <= (state.boardLimits[col] || 50);
-}
-
 // Without a target card, a card follows the last card its column shows, or
 // goes to the top with `atTop`.
 function taskMovePlan(t, col, beforeId = null, atTop = false) {
@@ -358,8 +356,7 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   if (newest) { if (t.state === 'done') return null; beforeId = null; atTop = true; }
   const plan = taskMovePlan(t, col, beforeId, atTop); if (!plan) return null;
   const shownBefore = shownColumn(col).filter((item) => item !== t);
-  const origin = moveOrigin(t), { projectId } = origin, previousState = t.state;
-  const previousOrders = new Map(tasks().map((item)=>[item,item.order]));
+  const origin = moveOrigin(t), { projectId } = origin, previousState = t.state, previousOrder = t.order;
   const pageInfoReference=D.boardPageInfo;
   const previousPageInfo = D.boardPageInfo ? JSON.parse(JSON.stringify(D.boardPageInfo)) : null;
   const countsReference=D.projectTaskCounts?.[projectId]||null;
@@ -372,7 +369,10 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   D.tasks.splice(Math.max(0, at), 0, t);
   t.state = col;
   if (newest) t.completedAt = Date.now();
-  for (const status of new Set([previousState,col])) tasks().filter((item)=>item.state===status).forEach((item,index)=>{item.order=index;});
+  // Only the moved card takes a new position, between its new neighbours, as
+  // on the server. The other cards keep the positions the server gave them,
+  // so sorting the column again, as a live change does, keeps this order.
+  t.order = next && previous ? (previous.order + next.order) / 2 : next ? next.order - 1 : previous ? previous.order + 1 : 0;
   // The column keeps showing every card it showed, and shows the moved card too.
   const column = boardTasks().filter((item) => item.state === col);
   state.boardLimits[col] = Math.max(state.boardLimits[col] || 50, ...[t, ...shownBefore].map((item) => column.indexOf(item) + 1));
@@ -386,13 +386,12 @@ function applyTaskMove(t, col, beforeId = null, atTop = false) {
   if(previousState!==col&&pages){if(pages[previousState])pages[previousState].total=Math.max(0,pages[previousState].total-1);if(pages[col])pages[col].total+=1;}
   const counts=D.projectTaskCounts?.[projectId];
   if(previousState!==col&&counts){counts[previousState]=Math.max(0,(counts[previousState]||0)-1);counts[col]=(counts[col]||0)+1;counts.open=counts.planning+counts.progress+counts.review;}
-  const optimisticOrders=new Map([...previousOrders.keys()].map((item)=>[item,item.order]));
   const optimisticEpics=new Map([...affectedEpics].map(([id])=>{const item=epicById(id);return[id,{item,state:item?.state,done:item?.done}];}));
   return {
-    ...origin, previousState, optimisticState:col, previousOrders, optimisticOrders,
+    ...origin, previousState, optimisticState:col, previousOrder, optimisticOrder:t.order,
     pageInfoReference,previousPageInfo,optimisticPageInfo:D.boardPageInfo?JSON.parse(JSON.stringify(D.boardPageInfo)):null,
     countsReference,previousCounts,optimisticCounts:countsReference?{...countsReference}:null,affectedEpics,optimisticEpics,
-    payload:{ taskId:t.internalId||t.id, status:col, ...(newest ? {} : plan.placement), optimistic:true },
+    payload:{ taskId:t.internalId||t.id, status:col, ...plan.placement, optimistic:true },
   };
 }
 
@@ -409,11 +408,11 @@ function restoreTaskPosition(change) {
   return true;
 }
 
-/** Undo a column move: the task's place and status, the column orders and the counts it changed. */
+/** Undo a column move: the task's place, status and position, and the counts it changed. */
 function rollbackTaskMove(change) {
   if (change.task.state!==change.optimisticState || !restoreTaskPosition(change)) return false;
   change.task.state=change.previousState;
-  for(const [item,order] of change.previousOrders)if(D.tasks.includes(item)&&item.order===change.optimisticOrders.get(item))item.order=order;
+  if(change.task.order===change.optimisticOrder)change.task.order=change.previousOrder;
   if(change.previousPageInfo&&D.boardPageInfo===change.pageInfoReference&&JSON.stringify(D.boardPageInfo)===JSON.stringify(change.optimisticPageInfo))D.boardPageInfo=change.previousPageInfo;
   if(change.previousCounts&&D.projectTaskCounts?.[change.projectId]===change.countsReference&&JSON.stringify(change.countsReference)===JSON.stringify(change.optimisticCounts))D.projectTaskCounts[change.projectId]=change.previousCounts;
   for(const [id,value] of change.affectedEpics){const item=epicById(id),optimistic=change.optimisticEpics.get(id);if(item===value.item&&item===optimistic?.item&&item.state===optimistic.state&&item.done===optimistic.done)Object.assign(item,{state:value.state,done:value.done});}
@@ -443,8 +442,8 @@ function setTaskState(t, col) {
   if (pendingMove) return false;
   if (t.state === col) return;
   if (t.block && col === 'done') { App.openModal('completeBlocked', t.id); return false; }
-  // A column that does not show its end takes the card at the top, where it stays in view.
-  const change=applyTaskMove(t,col,null,!columnEndShown(col,t));if(!change)return false;submitTaskMove(change);
+  // A move without a place goes to the top of the column, as on the server.
+  const change=applyTaskMove(t,col,null,true);if(!change)return false;submitTaskMove(change);
 }
 
 function focusMovedTask(id) {
@@ -571,7 +570,7 @@ Object.assign(App, {
   // The header's search and filter menus show the arrays that the reset replaced.
   // Draw it once the cards arrive: before, the Board has none and would say No tasks yet.
   clearBoardFilters(){cancelBoardSearch();resetBoardFilters();App.replaceAddress();runtime().filterBoard(App.context().board).then(result=>{if(!result?.stale)App.refresh();},report);},
-  toggleDoneOrder(){runtime().setDoneOrder(doneNewest()?'manual':'completed').catch(report);},
+  toggleDoneOrder(button){const newest=!newestChosen();button?.setAttribute('aria-pressed',String(newest));runtime().setDoneOrder(newest?'completed':'manual').catch(report);},
   loadMoreBoard(col){runtime().loadMoreBoard(col).catch(report);},
   taskMoveMenu(event,id){
     event.stopPropagation(); // The card around the button would open the task.

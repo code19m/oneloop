@@ -1,13 +1,17 @@
-// @ts-nocheck: the views are untyped, and tsc reaches them through boot.js.
-/* Redrawing a list in place: rows that stay keep their elements, so focus,
-   a pressed button and loaded images survive. */
+// @ts-check
 
-import { UIMotion } from '../../src/app/motion.js';
+/**
+ * Redrawing a list in place: rows that stay keep their elements, so focus,
+ * a pressed button and loaded images survive.
+ */
+
+import { UIMotion } from './motion.js';
 
 /**
  * Make `current` look like `next` and return it. Its elements and their
  * listeners stay, so a row keeps focus and images while its text changes.
  * Inline `on…` attributes are never copied.
+ * @param {Element} current @param {Element} next
  */
 export function patchInPlace(current, next) {
   for (const attribute of [...current.attributes])
@@ -19,7 +23,7 @@ export function patchInPlace(current, next) {
     const old = current.childNodes[index];
     if (!old) { current.append(child); return; }
     if (old.nodeType !== child.nodeType || old.nodeName !== child.nodeName) { old.replaceWith(child); return; }
-    if (child.nodeType === Node.ELEMENT_NODE) patchInPlace(old, child);
+    if (child.nodeType === Node.ELEMENT_NODE) patchInPlace(/** @type {Element} */ (old), /** @type {Element} */ (child));
     else if (old.nodeValue !== child.nodeValue) old.nodeValue = child.nodeValue;
   });
   while (current.childNodes.length > children.length) current.lastChild.remove();
@@ -30,6 +34,7 @@ export function patchInPlace(current, next) {
  * Make `rows` the children of `list`, in order, and remove the rest. Only rows
  * whose place changed move: browsers cancel a click whose pressed element
  * left the document, even briefly.
+ * @param {Element} list @param {Node[]} rows
  */
 export function placeRows(list, rows) {
   let cursor = list.firstChild;
@@ -45,6 +50,8 @@ export function placeRows(list, rows) {
  * layer `height` tall over the list. `gone` pairs each row with its old
  * rectangle, and `listRect` is where the list was; rows outside `viewport`
  * get no copy.
+ * @param {Element} list @param {[Element, DOMRect|undefined][]} gone
+ * @param {{listRect:DOMRect,viewport?:DOMRect|null,height:number,className?:string}} options
  */
 export function fadeOutRows(list, gone, { listRect, viewport, height, className }) {
   if (UIMotion.reduced()) return;

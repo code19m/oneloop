@@ -28,20 +28,22 @@ browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
   (comments and the Inbox), `account.js` (Profile, Users and Settings),
   `storage.js`, `dialogs.js`, `overlays.js` (popovers, menus, dialogs and
   focus return), `controls.js` (selects, date fields, input cleaning),
-  `forms.js`, `toasts.js`, `drag.js` and `rows.js` (redrawing a list in place,
-  so focus and a pressed button survive). They share `model.js` (view state and data
-  lookups) and `format.js` (text, dates and icons), and animate with the one
-  motion engine, `UIMotion` from `src/app/motion.js`. A module reaches the render
-  pipeline through `App`, such as `App.refresh()`, and never imports
-  `views/app.js`. The views are untyped. tsc reaches them through boot.js,
-  so each starts with `// @ts-nocheck`.
+  `forms.js`, `toasts.js` and `drag.js`. They share `model.js` (view state
+  and data lookups) and `format.js` (text, dates and icons), animate with the
+  one motion engine, `UIMotion` from `src/app/motion.js`, and redraw a list in
+  place with `src/app/rows.js`, so focus and a pressed button survive. A
+  module reaches the render pipeline through `App`, such as `App.refresh()`,
+  and never imports `views/app.js`. Views may import from `src/`, but not the
+  other way round: only boot.js loads `views/app.js`. The views are untyped.
+  tsc reaches them through boot.js, so each starts with `// @ts-nocheck`.
 - **Actions.** The view bridge, `src/app/view-bridge.js`, adds the
   server-backed `App` methods, such as `saveTask`, and wraps a few of the
   views' own, such as `nav`. To change an action that saves, start from its
-  feature's module in `src/app/bridge/`: `tasks.js`, `roadmap.js`, `pool.js`,
-  `projects.js`, `account.js` or `route.js` (page changes). They share
-  `commands.js`, which runs a command and resolves its conflicts, and
-  `saves.js`, which saves one record at a time and keeps a task field's draft.
+  feature's module in `src/app/bridge/`: `tasks.js`, `checklist.js`,
+  `roadmap.js`, `pool.js`, `projects.js`, `account.js` or `route.js` (page
+  changes). They share `commands.js`, which runs a command and resolves its
+  conflicts, and `saves.js`, which saves one record at a time and keeps a task
+  field's draft.
   `views/app/collaboration.js` and `views/app/attachments.js` add the comment
   and attachment actions.
 - **Event handlers.** Markup has no inline event handlers. An element names the

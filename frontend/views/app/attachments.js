@@ -4,6 +4,7 @@
 
 import { errorMessage, retryableFailure } from '../../src/app/action-feedback.js';
 import { UIMotion } from '../../src/app/motion.js';
+import { sortable } from '../../src/app/sortable.js';
 import {
   byteSize as size, canPreview, closePreview, displayText, fileExtension as extension, fileIcons as icons, forgetPreview,
   previewFile, shownPreview,
@@ -192,46 +193,13 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   refreshAttachments(taskId);
   focusGrip(fileId);return true;
 }
-let sorting=null;
-function stopSorting(){
-  if(!sorting)return;const current=sorting;sorting=null;cancelAnimationFrame(current.frame);current.row.classList.remove('is-sorting');current.ghost?.remove();current.marker?.remove();document.body.classList.remove('attachment-sorting');
-  try{current.handle.releasePointerCapture(current.pointerId);}catch{}
-}
-function locateSortTarget(){
-  const s=sorting;if(!s?.active)return;
-  const zone=s.row.closest('.task-attachments'),bounds=zone?.getBoundingClientRect();
-  if(!bounds||!s.row.isConnected){stopSorting();return;}
-  s.ghost.style.left=Math.min(innerWidth-210,Math.max(8,s.x+12))+'px';s.ghost.style.top=Math.max(8,Math.min(innerHeight-48,s.y+12))+'px';
-  s.target=null;s.marker.hidden=true;
-  if(s.x<bounds.left||s.x>bounds.right||s.y<bounds.top||s.y>bounds.bottom)return;
-  const candidates=[...zone.querySelectorAll('[data-attachment-id]')].filter(row=>row!==s.row);
-  const target=candidates.find(row=>s.y<row.getBoundingClientRect().bottom)||candidates.at(-1);if(!target)return;
-  const r=target.getBoundingClientRect();s.target=target.dataset.attachmentId;s.after=s.y>r.top+r.height/2;
-  s.marker.hidden=false;Object.assign(s.marker.style,{left:r.left+'px',top:(s.after?r.bottom+4:r.top-4)+'px',width:r.width+'px'});
-}
-function scrollSort(){
-  const s=sorting;if(!s?.active)return;if(!s.row.isConnected){stopSorting();return;}
-  const panel=s.row.closest('.task-page'),r=panel?.getBoundingClientRect();
-  if(r&&s.x>=r.left&&s.x<=r.right){const amount=s.y<r.top+56?-10:s.y>r.bottom-56?10:0;if(amount)panel.scrollTop+=amount;}
-  locateSortTarget();if(sorting)s.frame=requestAnimationFrame(scrollSort);
-}
-document.addEventListener('pointerdown',event=>{
-  const handle=event.target.closest?.('#app .task-attachments [data-reorder-file]');if(!handle||event.button!==0||handle.closest('[inert]')||document.querySelector('.file-overlay,.confirmation-layer,.modal,.peek')||!canEdit(handle.dataset.reorderTask))return;
-  stopSorting();sorting={handle,row:handle.closest('[data-attachment-id]'),taskId:handle.dataset.reorderTask,fileId:handle.dataset.reorderFile,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,x:event.clientX,y:event.clientY};
-  handle.focus({preventScroll:true});try{handle.setPointerCapture(event.pointerId);}catch{}
+// A file moves by its grip, with the pointer or the arrow keys.
+sortable({
+  grip:'#app .task-attachments [data-reorder-file]',row:'[data-attachment-id]',list:'.task-attachments',scroll:'.task-page',
+  label:row=>row.querySelector('.attachment-title').textContent,
+  ready:handle=>canEdit(handle.dataset.reorderTask),
+  move:(handle,target,after)=>reorderAttachment(handle.dataset.reorderTask,handle.dataset.reorderFile,target.dataset.attachmentId,after),
 });
-document.addEventListener('pointermove',event=>{
-  const s=sorting;if(!s||event.pointerId!==s.pointerId)return;s.x=event.clientX;s.y=event.clientY;
-  if(!s.active&&Math.hypot(s.x-s.startX,s.y-s.startY)<6)return;
-  event.preventDefault();if(!s.active){s.active=true;s.row.classList.add('is-sorting');document.body.classList.add('attachment-sorting');s.ghost=document.createElement('div');s.ghost.className='attachment-drag-label';s.ghost.textContent=s.row.querySelector('.attachment-title').textContent;s.ghost.setAttribute('aria-hidden','true');s.marker=document.createElement('div');s.marker.className='attachment-insert-marker';s.marker.setAttribute('aria-hidden','true');document.body.append(s.ghost,s.marker);scrollSort();}locateSortTarget();
-},{passive:false});
-document.addEventListener('pointerup',event=>{const s=sorting;if(!s||event.pointerId!==s.pointerId)return;locateSortTarget();stopSorting();if(s.active&&s.target)reorderAttachment(s.taskId,s.fileId,s.target,s.after);});
-document.addEventListener('pointercancel',stopSorting);window.addEventListener('blur',stopSorting);window.addEventListener('hashchange',stopSorting);
-document.addEventListener('keydown',event=>{
-  if(event.key==='Escape'&&sorting){event.preventDefault();event.stopImmediatePropagation();stopSorting();return;}
-  const handle=event.target.closest?.('#app .task-attachments [data-reorder-file]');if(!handle||handle.closest('[inert]')||document.querySelector('.file-overlay,.confirmation-layer,.modal,.peek')||!canEdit(handle.dataset.reorderTask)||!['ArrowUp','ArrowDown','Home','End'].includes(event.key))return;
-  event.preventDefault();const task=taskById(handle.dataset.reorderTask),files=(task?.attachments||[]).filter(f=>f.state!=='removed'),index=files.findIndex(f=>f.id===handle.dataset.reorderFile),next=event.key==='Home'?0:event.key==='End'?files.length-1:index+(event.key==='ArrowDown'?1:-1),target=files[next];if(target)reorderAttachment(task.id,handle.dataset.reorderFile,target.id,next>index);
-},true);
 const fileDrag=event=>Array.from(event.dataTransfer?.types||[]).includes('Files')||!!event.dataTransfer?.files?.length;
 function setDropHighlight(activeZone){
   document.querySelectorAll('.task-attachments.is-file-dragover').forEach(zone=>{

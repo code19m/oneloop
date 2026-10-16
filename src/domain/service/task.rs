@@ -1,5 +1,6 @@
 //! Creating, editing, moving, deleting and restoring tasks.
-use super::ordering::{task_append_position, task_insert_position};
+use super::checklist::{checklist_titles, insert_item};
+use super::ordering::task_insert_position;
 use super::validation::optional_date;
 use super::*;
 
@@ -16,6 +17,7 @@ pub(super) fn create_task(
     let description = text::optional(&input.description, "description", TASK_DESCRIPTION_MAX)?;
     let deadline = optional_date(input.deadline, "deadline")?;
     let assignees = validate_assignees(tx, &input.project_id, input.assignee_ids)?;
+    let checklist = checklist_titles(&input.checklist)?;
     let (number, prefix): (i64, String) = tx
         .query_row(
             "SELECT s.next_task_number,p.task_prefix FROM project_sequences s JOIN projects p ON \
@@ -33,8 +35,9 @@ pub(super) fn create_task(
         params![input.project_id, number],
     )?;
     let key = format!("{prefix}-{number:03}");
-    let position = task_append_position(tx, &input.project_id, "planning")?;
     let id = Uuid::now_v7().to_string();
+    // A new task starts at the top of Planning, where every Board shows it.
+    let position = task_insert_position(tx, &input.project_id, "planning", &id, 0)?;
     tx.execute(
         INSERT_TASK_SQL,
         params![
@@ -52,6 +55,9 @@ pub(super) fn create_task(
         ],
     )?;
     set_assignees(tx, &id, &actor.user_id, &[], &assignees, now)?;
+    for (position, title) in checklist.iter().enumerate() {
+        insert_item(tx, &id, position as i64, title, now)?;
+    }
     let entity = task_entity(tx, &id)?;
     let event = record_activity_tx(
         tx,
@@ -91,10 +97,11 @@ pub(super) fn create_task(
 pub(super) fn update_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskUpdate,
+    mut input: TaskUpdate,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
@@ -275,10 +282,11 @@ pub(super) fn update_task(
 pub(super) fn move_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: TaskMove,
+    mut input: TaskMove,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.task_id = resolve_task_id(tx, &input.task_id)?;
     let before = task_row(tx, &input.task_id)?;
     require_project(tx, actor, &before.project_id, Need::Board, false)?;
     check_revision(expected, before.revision)?;
@@ -291,7 +299,8 @@ pub(super) fn move_task(
         )?;
         if blocked {
             return Err(AppError::PreconditionFailed(
-                "resolve the block while completing this task".into(),
+                "the task is blocked; task.unblock-and-complete resolves the block and completes it"
+                    .into(),
             ));
         }
     }
@@ -307,7 +316,8 @@ pub(super) fn move_task(
             "provide one of position, beforeTaskId or afterTaskId when reordering a column",
         ));
     }
-    let requested = if let Some(anchor) = input
+    // The task's index in the destination column, which the activity records.
+    let position = if let Some(anchor) = input
         .before_task_id
         .as_deref()
         .or(input.after_task_id.as_deref())
@@ -317,44 +327,39 @@ pub(super) fn move_task(
         } else {
             "afterTaskId"
         };
+        let not_in_column =
+            || AppError::validation(field, "anchor is not in the destination column");
+        // An anchor that names no task is not in the column either.
+        let anchor = match resolve_task_id(tx, anchor) {
+            Err(AppError::NotFound { .. }) => return Err(not_in_column()),
+            anchor => anchor?,
+        };
         let anchor_position: i64 = tx.query_row(
             "SELECT position FROM tasks WHERE id=?1 AND project_id=?2 AND status=?3 AND deleted_at IS NULL AND id<>?4",
             params![anchor, before.project_id, status, input.task_id], |r| r.get(0)).optional()?
-            .ok_or_else(|| AppError::validation(field, "anchor is not in the destination column"))?;
+            .ok_or_else(not_in_column)?;
         let index: i64 = tx.query_row(
             "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL AND id<>?3 AND position<?4",
             params![before.project_id, status, input.task_id, anchor_position], |r| r.get(0))?;
-        Some(index + i64::from(input.after_task_id.is_some()))
+        index + i64::from(input.after_task_id.is_some())
     } else {
+        // Without a place, a task goes to the top of its new column, where
+        // every Board shows it.
         input
             .position
             .map(i64::try_from)
             .transpose()
             .map_err(|_| AppError::validation("position", "is outside the status column"))?
+            .unwrap_or(0)
     };
-    if status == before.status && requested == Some(old_index) {
+    if status == before.status && position == old_index {
         return Err(AppError::validation(
             "position",
             "task is already at that position",
         ));
     }
-    // The task's index in the destination column, which the activity records.
-    let (position, stored_position) = match requested {
-        Some(index) => (
-            index,
-            task_insert_position(tx, &before.project_id, status, &input.task_id, index)?,
-        ),
-        // An append comes from another column, so the count reads only an
-        // index, and the end of the column is one lookup.
-        None => (
-            tx.query_row(
-                "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND deleted_at IS NULL",
-                params![before.project_id, status],
-                |r| r.get(0),
-            )?,
-            task_append_position(tx, &before.project_id, status)?,
-        ),
-    };
+    let stored_position =
+        task_insert_position(tx, &before.project_id, status, &input.task_id, position)?;
     tx.execute(
         MOVE_TASK_SQL,
         params![
@@ -419,10 +424,11 @@ pub(super) fn move_task(
 pub(super) fn delete_task(
     tx: &Transaction<'_>,
     actor: &Actor,
-    input: EntityId,
+    mut input: EntityId,
     expected: i64,
     now: i64,
 ) -> AppResult<Mutation> {
+    input.id = resolve_task_id(tx, &input.id)?;
     let before = task_row(tx, &input.id)?;
     require_project(tx, actor, &before.project_id, Need::Board, true)?;
     check_revision(expected, before.revision)?;
@@ -495,14 +501,21 @@ pub(super) fn restore_task(
             "the task's epic was deleted, so the task can't be restored".into(),
         ));
     }
-    // The task returns to its place unless another card took that position.
+    // The task returns to its position. When another card took it, as a top
+    // insert takes a deleted top card's, the task goes back to the same place
+    // among the cards around it: below as many cards as were above it.
     let taken: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND status=?2 AND position=?3 AND deleted_at IS NULL)",
         params![before.project_id, before.status, before.position],
         |row| row.get(0),
     )?;
     let position = if taken {
-        task_append_position(tx, &before.project_id, &before.status)?
+        let index: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project_id=?1 AND status=?2 AND position<?3 AND deleted_at IS NULL",
+            params![before.project_id, before.status, before.position],
+            |row| row.get(0),
+        )?;
+        task_insert_position(tx, &before.project_id, &before.status, &input.id, index)?
     } else {
         before.position
     };

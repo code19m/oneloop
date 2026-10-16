@@ -63,6 +63,10 @@ crate::command::operations! {
         UpdateBlockReason = "task.block.update" => Existing,
         UnblockTask = "task.unblock" => Existing,
         UnblockAndCompleteTask = "task.unblock-and-complete" => Existing,
+        AddChecklistItem = "task.checklist.add" => Create,
+        UpdateChecklistItem = "task.checklist.update" => Existing,
+        MoveChecklistItem = "task.checklist.move" => Existing,
+        DeleteChecklistItem = "task.checklist.delete" => Existing,
         CreatePoolItem = "pool.create" => Create,
         UpdatePoolItem = "pool.update" => Existing,
         DeletePoolItem = "pool.delete" => Existing,
@@ -114,13 +118,17 @@ impl DomainOperation {
             | Self::UpdateBlockReason
             | Self::UnblockTask
             | Self::UnblockAndCompleteTask
+            | Self::AddChecklistItem
+            | Self::UpdateChecklistItem
+            | Self::MoveChecklistItem
             | Self::CreatePoolItem
             | Self::UpdatePoolItem
             | Self::PromotePoolItem => project(Need::Board, false),
             // Restoring is the Undo of a deletion, so it needs what deleting needs.
-            Self::DeleteTask | Self::RestoreTask | Self::DeletePoolItem => {
-                project(Need::Board, true)
-            }
+            Self::DeleteTask
+            | Self::RestoreTask
+            | Self::DeleteChecklistItem
+            | Self::DeletePoolItem => project(Need::Board, true),
         }
     }
 
@@ -137,6 +145,7 @@ impl DomainOperation {
             | Self::DeleteEpic
             | Self::DeleteMilestone
             | Self::DeleteTask
+            | Self::DeleteChecklistItem
             | Self::DeletePoolItem => McpRoute::Tool(McpTool::Destructive),
             Self::CreateTrack
             | Self::UpdateTrack
@@ -154,6 +163,9 @@ impl DomainOperation {
             | Self::UpdateBlockReason
             | Self::UnblockTask
             | Self::UnblockAndCompleteTask
+            | Self::AddChecklistItem
+            | Self::UpdateChecklistItem
+            | Self::MoveChecklistItem
             | Self::CreatePoolItem
             | Self::UpdatePoolItem
             | Self::PromotePoolItem => McpRoute::Tool(McpTool::Work),
@@ -341,11 +353,15 @@ pub struct TaskCreate {
     pub deadline: Option<String>,
     #[serde(default)]
     pub assignee_ids: Vec<String>,
+    /// Checklist item titles, in order: at most 50, each one line of at most 140 characters.
+    #[serde(default)]
+    pub checklist: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskUpdate {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     pub epic_id: Option<String>,
@@ -363,15 +379,20 @@ pub struct TaskUpdate {
     pub assignee_ids: Option<Vec<String>>,
 }
 
+/// Moves a task to `status`, at the place that one of `position`, `beforeTaskId` and `afterTaskId` gives. Without a place, the task goes to the top of the column; a move within the task's own column needs one.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskMove {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     pub status: TaskStatus,
+    /// The task's index in the column, counted from 0 at the top, without the task itself.
     #[serde(default)]
     pub position: Option<usize>,
+    /// The ID or key of a task in the column; the task goes just above it.
     #[serde(default)]
     pub before_task_id: Option<String>,
+    /// The ID or key of a task in the column; the task goes just below it.
     #[serde(default)]
     pub after_task_id: Option<String>,
 }
@@ -379,6 +400,7 @@ pub struct TaskMove {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskBlock {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     pub reason: String,
     #[serde(default)]
@@ -397,9 +419,48 @@ pub struct BlockReasonUpdate {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskUnblock {
+    /// Task ID or key, such as `WEB-042`.
     pub task_id: String,
     #[serde(default)]
     pub resolution: Option<String>,
+}
+
+/// Adds an item at the end of a task's checklist.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecklistItemAdd {
+    /// Task ID or key, such as `WEB-042`.
+    pub task_id: String,
+    /// One line of at most 140 characters.
+    pub title: String,
+}
+
+/// Changes a checklist item's title, whether it is done, or both.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecklistItemUpdate {
+    pub item_id: String,
+    /// One line of at most 140 characters.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub done: Option<bool>,
+}
+
+/// Moves a checklist item to the place that one of `position`, `beforeItemId` and `afterItemId` gives.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecklistItemMove {
+    pub item_id: String,
+    /// The item's index in the checklist, counted from 0 at the top, without the item itself.
+    #[serde(default)]
+    pub position: Option<usize>,
+    /// The ID of another item of the checklist; the item goes just above it.
+    #[serde(default)]
+    pub before_item_id: Option<String>,
+    /// The ID of another item of the checklist; the item goes just below it.
+    #[serde(default)]
+    pub after_item_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]

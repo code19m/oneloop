@@ -28,6 +28,26 @@ test('live Board moves keep loaded cards in position and ID order across columns
  assert.equal(t.D.boardPageInfo.pages.planning.nextCursor,'planning-next');assert.equal(t.D.boardPageInfo.pages.progress.nextCursor,'progress-next');
 });
 
+test('a Done order chosen in another tab leaves this tab\'s Board taking live changes', async () => {
+  const t = bootApp({ route: 'board' }), projectId = t.A.context().projectId;
+  t.D.tasks.splice(0); t.D.projectTaskCounts = {};
+  // The page's own read controller, which reads the order from this window's storage.
+  const { createReadController } = t.module('src/data/read-controller.js');
+  const task = (id, position) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title: id, status: 'planning', position, revision: 1, assigneeIds: [] });
+  const empty = { items: [], total: 0, nextCursor: null };
+  let changed;
+  const reads = createReadController({ data: t.D, onBoard: () => t.A.refreshBoard(), api: {
+    boardView: async () => ({ planning: { items: [task('a', 1024)], total: 1, nextCursor: null }, inProgress: empty, inReview: empty, done: empty, counts: { planning: 1, inProgress: 0, inReview: 0, done: 0, blocked: 0 } }),
+    task: async () => changed, counts: async () => ({ planning: 2, inProgress: 0, inReview: 0, done: 0, blocked: 0 }),
+  } });
+  await reads.board(projectId);
+  // Another tab of this browser turns Newest first on, as its toggle saves it.
+  t.w.localStorage.setItem('oneloop.doneOrder', 'completed');
+  changed = task('b', 0);
+  await reads.patchBoard(projectId, {}, [{ entityId: 'b' }]);
+  assert.deepEqual([...t.d.querySelectorAll('[data-col="planning"] .card')].map(card => card.dataset.task), ['BIR-b', 'BIR-a']);
+});
+
 test('Board search renders matching titles and keys with surrounding whitespace',()=>{
  const t=bootApp({route:'board'}),task=t.D.tasks.find(item=>item.id==='BIR-079');
  for(const query of [task.title,task.id])for(const padded of [query,` ${query}`,`${query} `,` \t${query} \n`]){
@@ -281,6 +301,19 @@ test('compact deadlines show the year when it differs and expose the complete da
  assert(t.d.querySelector('[data-task="BIR-079"] .dl').textContent.includes(String(year+1)));
 });
 
+test('a card counts its checklist after the created date, green once every item is done', () => {
+ const t=bootApp({route:'board',prepare:D=>{Object.assign(D.tasks.find(task=>task.id==='BIR-079'),{checklistDone:2,checklistTotal:5});}});
+ const task=t.D.tasks.find(item=>item.id==='BIR-079'),card=()=>t.d.querySelector('[data-task="BIR-079"]'),count=()=>card().querySelector('.card-checklist');
+ assert.equal(count().previousElementSibling,card().querySelector('.card-created'));
+ assert.equal(count().textContent,'2/5');assert(count().querySelector('svg'));assert(!count().classList.contains('complete'));
+ assert.equal(count().dataset.tip,'Checklist: 2 of 5 done');
+ assert.match(t.d.getElementById(card().querySelector('.title').getAttribute('aria-describedby')).textContent,/Checklist 2 of 5 done/);
+ task.checklistDone=5;t.A.refreshBoard();
+ assert.equal(count().textContent,'5/5');assert(count().classList.contains('complete'));
+ Object.assign(task,{checklistDone:0,checklistTotal:0});t.A.refreshBoard();
+ assert.equal(count(),null);
+});
+
 test('multi-select filters keep keyboard position through toggles, name the choice and return focus on Escape', () => {
  const t=bootApp({route:'board'}),trigger=t.d.querySelector('[data-action="popMulti"][data-args*=\'"fTrack"\']');
  assert.match(trigger.textContent,/All tracks/);
@@ -344,15 +377,16 @@ test('a Board move paints at once, sends one optimistic command and skips a no-o
   assert.notEqual(original,task.state);
 });
 
-test('a newest-first Done takes a finished card on top, keeps the manual order and offers no reordering', async () => {
+test('a newest-first Done takes a finished card on top and offers no reordering', async () => {
   const t=heldBoard(),projectId=t.A.context().projectId;
+  t.module('src/data/done-order.js').saveDoneOrder('completed');
   t.D.boardPageInfo={projectId,filters:{doneOrder:'completed'},pages:{}};t.A.refreshBoard();
   const done=()=>[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task);
   assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'true');
   const before=done(),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   dropCard(t,task.id,'done',before.at(-1));
   assert.deepEqual(done(),[task.id,...before]);
-  assert.deepEqual(t.calls.map(([action,payload])=>[action,Object.keys(payload).sort()]),[['moveTask',['optimistic','status','taskId']]],'the server keeps the manual order');
+  assert.deepEqual(t.calls.map(([action,payload])=>[action,payload.position,payload.beforeTaskId]),[['moveTask',0,undefined]],'the card goes to the top of the manual order too');
   t.requests[0].resolve({});await tick();
   const card=[...t.d.querySelectorAll('[data-col="done"] .card')][1];
   t.A.taskMoveMenu({currentTarget:card.querySelector('.card-move'),stopPropagation(){}},card.dataset.task);
@@ -368,13 +402,18 @@ test('a newest-first Done takes a finished card on top, keeps the manual order a
 
 test('the manual Done order keeps the drop position and reordering', () => {
   const t=heldBoard();
-  const toggle=t.d.querySelector('[data-col="done"] .done-order');
-  assert.equal(toggle.getAttribute('aria-pressed'),'false');
+  assert.equal(t.d.querySelector('[data-col="done"] .done-order').getAttribute('aria-pressed'),'false');
   const done=[...t.d.querySelectorAll('[data-col="done"] .card')].map(card=>card.dataset.task),task=t.D.tasks.find((item)=>item.state==='planning'&&!item.block);
   dropCard(t,task.id,'done',done.at(-1));
   assert.equal(t.calls[0][1].beforeTaskId,t.D.tasks.find((item)=>item.id===done.at(-1)).internalId);
-  t.A.toggleDoneOrder();
+});
+
+test('the Newest first toggle has its name as a tooltip and shows a new choice before the Board reads it', () => {
+  const t=heldBoard(),toggle=t.d.querySelector('[data-col="done"] .done-order');
+  assert.equal(toggle.getAttribute('aria-label'),'Newest first');assert.equal(toggle.dataset.tip,'Newest first');
+  t.A.toggleDoneOrder(toggle);
   assert.equal(JSON.stringify(t.calls.at(-1)),JSON.stringify(['setDoneOrder','completed']));
+  assert.equal(toggle.getAttribute('aria-pressed'),'true','the read is still on its way');
 });
 
 test('a rejected Board move rolls back its card', async () => {
@@ -435,25 +474,40 @@ function longDone(count, more) {
 }
 const chooseMenuItem = (t, label) => { const button = [...t.d.querySelectorAll('#overlay-root > .menu button')].find(item => item.textContent.trim() === label); t.A.menuAction(JSON.parse(button.dataset.args)[0]); };
 
-test('Move to a column that does not show its end puts the card at its top, in view and focused', () => {
-  const t = longDone(60, true), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
-  assert.equal(shown.length, 50);
-  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]]);
-  assert.deepEqual(t.doneCards(), [task.id, ...shown], 'every card Done showed stays, below the moved card');
-  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
+test('Move to puts the card at the top of its new column, in view and focused', () => {
+  // A long column that doesn't show its end, and one whose 50 cards fill the first page exactly.
+  for (const [count, more] of [[60, true], [50, false]]) {
+    const t = longDone(count, more), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), shown = t.doneCards();
+    assert.equal(shown.length, 50);
+    const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
+    t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
+    assert.deepEqual(t.calls.map(([action, payload]) => [action, payload.status, payload.position, payload.afterTaskId]), [['moveTask', 'done', 0, undefined]], `${count} cards`);
+    assert.deepEqual(t.doneCards(), [task.id, ...shown], `${count} cards: every card Done showed stays, below the moved card`);
+    assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id); assert(t.d.activeElement.classList.contains('card-move'));
+  }
 });
 
-test('Move to a column that shows its end puts the card last and draws it', () => {
-  // 50 cards fill the first page exactly, so the column shows its end at the boundary.
-  const count = 50;
-  const t = longDone(count, false), task = t.D.tasks.find(item => item.state === 'planning' && !item.block), last = t.doneCards().at(-1);
-  const move = t.d.querySelector(`[data-task="${task.id}"] .card-move`); move.focus();
-  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, task.id); chooseMenuItem(t, 'Move to Done');
-  assert.equal(t.calls[0][1].afterTaskId, t.D.tasks.find(item => item.id === last).internalId, `${count} cards`);
-  assert.equal(t.doneCards().at(-1), task.id, `${count} cards`); assert.equal(t.doneCards().length, count + 1);
-  assert.equal(t.d.activeElement.closest('.card')?.dataset.task, task.id, `${count} cards`);
+test('a card moved to the top of a column stays first when a live change sorts the column again', async () => {
+  const t = bootApp({ route: 'board' }), projectId = t.A.context().projectId;
+  t.D.tasks.splice(0); t.D.projectTaskCounts = {};
+  const task = (id, position, status, title = id) => ({ id, taskKey: `BIR-${id}`, projectId, epicId: t.D.epics[0].id, title, status, position, revision: 1, assigneeIds: [] });
+  const empty = { items: [], total: 0, nextCursor: null }, counts = { planning: 1, inProgress: 2, inReview: 0, done: 0, blocked: 0 };
+  let changed;
+  // The column's first card sits above 1024, as after older cards moved on.
+  const reads = createReadController({ data: t.D, onBoard: () => t.A.refreshBoard(), api: {
+    boardView: async () => ({ planning: { items: [task('a', 1024, 'planning')], total: 1, nextCursor: null }, inProgress: { items: [task('b', 4096, 'in_progress'), task('c', 5120, 'in_progress')], total: 2, nextCursor: null }, inReview: empty, done: empty, counts }),
+    task: async () => changed, counts: async () => counts,
+  } });
+  await reads.board(projectId);
+  const cards = () => [...t.d.querySelectorAll('[data-col="progress"] .card')].map(card => card.dataset.task);
+  const move = t.d.querySelector('[data-task="BIR-a"] .card-move'); move.focus();
+  t.A.taskMoveMenu({ currentTarget: move, stopPropagation() {} }, 'BIR-a'); chooseMenuItem(t, 'Move to In Progress');
+  assert.deepEqual(cards(), ['BIR-a', 'BIR-b', 'BIR-c']);
+  // The server puts the card a gap above the first one.
+  t.commands[0].resolve({ entities: [{ entityType: 'task', ...task('a', 3072, 'in_progress'), revision: 2 }], events: [] }); await settle();
+  changed = { ...task('c', 5120, 'in_progress', 'Renamed elsewhere'), revision: 2 };
+  await reads.patchBoard(projectId, {}, [{ entityId: 'c' }]);
+  assert.deepEqual(cards(), ['BIR-a', 'BIR-b', 'BIR-c']);
 });
 
 test('a card dropped below a long column follows its last shown card and stays drawn', () => {
