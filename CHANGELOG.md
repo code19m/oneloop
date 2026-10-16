@@ -12,6 +12,8 @@ All notable changes to oneloop are recorded here. The format follows
   downloads about 60% less and the app opens faster on slow networks. A
   reverse proxy no longer needs to compress them, and the nginx example no
   longer does.
+- The app asks for all of its start-up scripts at once, instead of one level
+  of imports at a time, so it opens faster on slow networks.
 
 ## [0.1.0-rc.5] - 2026-10-16
 
