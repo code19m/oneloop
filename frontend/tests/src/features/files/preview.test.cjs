@@ -56,18 +56,18 @@ test('PDF previews load PDF.js and its assets from the app\'s files, also on a p
   assert.equal(state.renders, 1); assert.equal(state.textReads, 0); assert(!d.querySelector('.pdf-text-version'));
 });
 
-test('the PDF byte cache keeps the newest files within its limit and forgets them all when the session changes', async () => {
-  // A file counts twice, its bytes and their Blob, so the third 12 MiB file pushes the first out of 64 MiB.
+test('the PDF byte cache keeps the most recently shown files within its limit and forgets them all when the session changes', async () => {
+  // A file counts twice, its bytes and their Blob, so two 12 MiB files fit in 64 MiB and a third pushes one out.
   const { d, D, runtime, state, open } = await pdfPreview('http://localhost/', { count: 3, size: 12 * 1024 * 1024 });
   const view = async index => { const fades = state.fades; open(index); await waitFor(() => state.fades > fades, 'the first page is painted'); d.querySelector('[data-file-close]').click(); };
   for (const index of [0, 1, 2]) await view(index);
-  await view(2);
-  assert.deepEqual(state.downloads, ['/content/pdf-0', '/content/pdf-1', '/content/pdf-2'], 'a cached file shows without a download');
-  await view(0);
-  assert.equal(state.downloads.at(3), '/content/pdf-0', 'the least recently shown file left the cache');
+  await view(2); await view(1);
+  assert.deepEqual(state.downloads, ['/content/pdf-0', '/content/pdf-1', '/content/pdf-2'], 'two cached files show without a download');
+  await view(0); await view(1);
+  assert.deepEqual(state.downloads.slice(3), ['/content/pdf-0'], 'the least recently shown file, not the oldest download, left the cache');
   D.session = { ...D.session, id: 'next-session' }; runtime.publish({ type: 'auth' });
-  await view(2);
-  assert.equal(state.downloads.at(4), '/content/pdf-2', 'another session downloads the file again');
+  await view(1);
+  assert.equal(state.downloads.at(4), '/content/pdf-1', 'another session downloads the file again');
 });
 
 test('PDF previews redraw only on width changes, zoom and paging, and stop when closed', async t => {
