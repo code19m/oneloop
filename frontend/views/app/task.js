@@ -118,8 +118,9 @@ const descriptionHeadingHtml = (t, canEdit) => `<div class="description-heading"
  * Show the open task's description in place as it is now: its editor with
  * the text that waits to be saved, or its rendered text, with Edit and its
  * Not saved note. The editor being typed in keeps what the person is typing.
- * The editor opens at once; anything else waits for a press on the page to
- * end, so what lies below doesn't move under the pointer.
+ * The editor opens at once. Anything else waits for a press on the page to
+ * end, so what lies below doesn't move under the pointer, and for focus to
+ * leave the description, so a reader keeps their place.
  */
 function paintDescription(t) {
   const section = document.querySelector('.task-page .task-description');
@@ -129,7 +130,7 @@ function paintDescription(t) {
   const wanted = input && input === document.activeElement || showsDescriptionEditor(t, canEdit) ? 'editor' : desc ? 'reader' : 'empty';
   if (wanted === 'editor' && shown === 'editor') { if (input !== document.activeElement && input.value !== desc) { input.value = desc; sizeDescription(); } }
   else if (wanted !== shown || wanted === 'reader' && body.querySelector('[data-markdown]').getAttribute('data-markdown') !== desc) {
-    if (wanted !== 'editor' && App.afterPress(repaintDescription)) return;
+    if (wanted !== 'editor' && (App.afterPress(repaintDescription) || body.contains(document.activeElement))) { placeEditButton(t); return; }
     const before = body.getBoundingClientRect().height;
     setHTML(body, descriptionBodyHtml(t, canEdit));
     section.querySelector('.description-toggle')?.setAttribute('aria-controls', descriptionBodyId(t, canEdit));
@@ -144,8 +145,10 @@ document.addEventListener('focusin', (event) => {
   descriptionOpen = { taskId: t.id, userId: me()?.id }; placeEditButton(t);
 });
 document.addEventListener('focusout', (event) => {
-  const t = event.target.id === 'task-description' && state.view === 'task' ? taskById(state.taskId) : null;
+  const preview = state.view === 'task' ? event.target.closest?.('.task-page .description-preview') : null, t = preview ? taskById(state.taskId) : null;
   if (!t || App.isRendering() || document.activeElement === event.target) return;
+  // Focus left the rendered text, such as one of its links: show what changed meanwhile.
+  if (event.target.id !== 'task-description') { if (!preview.contains(event.relatedTarget)) queueMicrotask(repaintDescription); return; }
   descriptionOpen = null;
   // An editor that stays, such as one whose text waits for its save, stays as it is.
   if (showsDescriptionEditor(t, canBoard())) placeEditButton(t); else paintDescription(t);

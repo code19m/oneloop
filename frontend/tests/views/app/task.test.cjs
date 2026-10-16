@@ -166,6 +166,15 @@ test('a press below the description keeps the editor in place until the press en
   }
 });
 
+test('Escape while a press is still down gives focus to Edit, though the editor waits for the press to end', () => {
+  const t = describedTask('One line'), below = t.d.querySelector('.task-activity h2');
+  t.A.editDescription('BIR-079');
+  below.dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+  t.d.getElementById('task-description').dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(t.d.activeElement, t.d.querySelector('.description-edit'));
+  assert(t.d.getElementById('task-description'), 'the editor keeps its place while the button is down');
+});
+
 test('a description keeps its editor while a conflict question or a Not saved draft holds its text', async () => {
   const t = conflictPage({ desc: 'Their description' }), editor = () => t.d.getElementById('task-description');
   t.task.desc = 'Saved description'; t.A.refresh();
@@ -316,13 +325,14 @@ test('a saved status shows in the header, the Status icon and Block task while S
  */
 function changedElsewhere(options = {}) {
   let latest = null, reload;
-  const t = bootApp({ route: 'task/BIR-079', actions: true, ...options, api: { task: async () => latest }, reloadBootstrap: scope => reload(scope) });
+  const none = async () => ({ items: [], nextCursor: null });
+  const t = bootApp({ route: 'task/BIR-079', actions: true, ...options, api: { task: async () => latest, comments: none, activity: none, attachments: none }, reloadBootstrap: scope => reload(scope) });
   const { replaceTaskDetail } = t.module('src/data/projection-store.js');
   const bootstrap = { idle: async () => {}, load: async () => { if (latest) replaceTaskDetail(t.D, latest); return { stale: false }; } };
   reload = t.module('src/app/projection-reload.js').createProjectionReload({ data: t.D, bootstrap, reads: t.reads, getApp: () => t.A, getBridge: () => null, getRecovery: () => t.w.Recovery, location: t.w.location });
   return { ...t, change(entityTypes, fields) {
     latest = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: t.D.tasks.find(item => item.id === 'BIR-079').desc ?? '', status: 'planning', position: 1, createdAt: 1, updatedAt: 2, assigneeIds: [], activeBlock: null, revision: 2, ...fields };
-    for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: 2 });
+    for (const entityType of entityTypes) t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType, entityId: entityType === 'epic' ? 'e2' : 'bir-079', entityRevision: latest.revision });
   } };
 }
 const hintsOfAChange = [['task'], ['epic', 'task']];
@@ -340,13 +350,21 @@ test('a status changed elsewhere shows at once in the header and Status, while t
   }
 });
 
-test('a description changed elsewhere shows at once, also while focus is on the task page', async () => {
+test('a description changed elsewhere shows at once while focus is elsewhere on the page, and once focus leaves its text', async () => {
   for (const hints of hintsOfAChange) {
     const t = changedElsewhere({ prepare: D => { D.tasks.find(item => item.id === 'BIR-079').desc = 'The first text'; } });
-    const edit = t.d.querySelector('.description-edit'); edit.focus();
-    t.change(hints, { description: 'Written by an agent' });
-    await waitFor(() => t.d.getElementById('task-description-content').textContent.trim() === 'Written by an agent', `the description shows the new text (hints: ${hints})`);
+    const edit = t.d.querySelector('.description-edit'), reader = () => t.d.getElementById('task-description-content');
+    edit.focus();
+    t.change(hints, { description: 'Written by an agent, see BIR-064.' });
+    await waitFor(() => reader().textContent.trim() === 'Written by an agent, see BIR-064.', `the description shows the new text (hints: ${hints})`);
     assert.equal(t.d.activeElement, edit);
+    // Someone on a link in the text keeps their place until focus leaves the text.
+    const link = reader().querySelector('a.task-key-link'); link.focus();
+    t.change(hints, { description: 'Changed again', status: 'in_progress', revision: 3 });
+    await waitFor(() => t.d.querySelector('.task-status-chip').textContent === 'In Progress', 'the change arrived');
+    assert.equal(t.d.activeElement, link, `the link keeps focus (hints: ${hints})`); assert.match(reader().textContent, /Written by an agent/);
+    edit.focus();
+    await waitFor(() => reader().textContent.trim() === 'Changed again', 'the new text shows once focus leaves the text');
   }
 });
 
