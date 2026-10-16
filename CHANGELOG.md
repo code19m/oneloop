@@ -6,12 +6,44 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-rc.6] - 2026-10-17
+
+The sixth release candidate. It adds task checklists, shows descriptions as
+formatted Markdown, keeps the project and the Board's filters in the address,
+and puts moved and new tasks at the top of their column. It also makes the web
+app faster on slow networks and fixes many bugs. Read the upgrade notes before
+you upgrade; if you upgrade from 0.1.0-rc.4, read those of 0.1.0-rc.5 too.
+
 ### Upgrade notes
 
 - Stop oneloop, install the new version, and run
   `oneloop db migrate --backup-dir <directory>`. It saves a backup first, then
-  upgrades the database to schema 8. Older versions refuse a schema 8
-  database. To go back to one, restore the backup that `db migrate` made.
+  upgrades the database from schema 6, which 0.1.0-rc.4 and 0.1.0-rc.5 use,
+  to schema 8. Older versions refuse a schema 8 database. To go back to one,
+  restore the backup that `db migrate` made.
+- If you upgrade from 0.1.0-rc.4, also follow the upgrade notes of
+  0.1.0-rc.5: Knowledge folders have size limits now, and some MCP errors and
+  `read_pool` cursors changed.
+- Browser tabs that are open during the upgrade still run the old version.
+  They show **oneloop was updated**, but reload by themselves only where
+  **Reload after updates** was on, so ask people to reload them. From this
+  version on, every tab reloads by itself at a safe moment, and the setting is
+  gone from the account menu.
+- The addresses of the **Board**, the **Roadmap**, **Knowledge** and
+  **Settings** now name the project, and the Board's address holds its
+  filters. Older bookmarks and links still work: they open the project you
+  last switched to in that browser, or else your first project. Links to a
+  task don't change.
+- In MCP, `task.move` without `position`, `beforeTaskId` or `afterTaskId` now
+  puts the task at the top of its new column, and new tasks, also from
+  `pool.promote`, start at the top of Planning. Before, most went to the
+  bottom. Pass a place to put a task anywhere else. A task's `position` in
+  reads can now be below zero; use it only to order a column.
+- In MCP, `read_activity` with a task that doesn't exist now fails with
+  `not_found`. Before, it returned an empty page.
+- AI assistants that are already connected don't need to connect again. The
+  new checklist operations need **Create and manage tasks and Pool items**, and
+  `task.checklist.delete` also needs delete access, as `task.delete` does.
 
 ### Added
 
@@ -168,7 +200,7 @@ All notable changes to oneloop are recorded here. The format follows
 - After you follow a link into another project, such as a **Knowledge** link,
   its **Board** shows the project's cards. Before, it said "No tasks yet",
   because the first project's tracks and epics stayed loaded.
-- The account menu shows only the version, such as `v0.1.0-rc.5`. Before, it
+- The account menu shows only the version, such as `v0.1.0-rc.6`. Before, it
   also showed the commit the build came from, which made the menu scroll
   sideways in release images. `/healthz` and `oneloop --version` still give
   the commit.
@@ -198,6 +230,13 @@ All notable changes to oneloop are recorded here. The format follows
   **Board** tabs keep showing live changes, in the order they show, and use
   the new choice when they load again. Before, they stopped showing changes
   until they read the Board again.
+
+### Distribution
+
+- Docker: `ghcr.io/code19m/oneloop:0.1.0-rc.6`, for linux/amd64 and
+  linux/arm64
+- From source:
+  `cargo install --git https://github.com/code19m/oneloop --tag v0.1.0-rc.6 --locked`
 
 ## [0.1.0-rc.5] - 2026-10-16
 
@@ -770,7 +809,8 @@ report what you find.
 - Browser testing covers current Chromium, Firefox and WebKit. Phones and
   tablets have had less testing than desktop browsers.
 
-[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.5...HEAD
+[Unreleased]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.6...HEAD
+[0.1.0-rc.6]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.5...v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.4...v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.2...v0.1.0-rc.4
 [0.1.0-rc.2]: https://github.com/code19m/oneloop/compare/v0.1.0-rc.1...v0.1.0-rc.2
