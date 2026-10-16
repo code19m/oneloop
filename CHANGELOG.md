@@ -35,6 +35,9 @@ All notable changes to oneloop are recorded here. The format follows
   a task draws its page two times instead of three, and a change from
   another tab to the open task reads its comments and activity once instead
   of twice.
+- A Board search, a Board filter or a project switch that takes more than a
+  moment now dims the page until the result arrives. Before, a slow search
+  looked as if nothing happened.
 
 ### Fixed
 

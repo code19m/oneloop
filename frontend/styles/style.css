@@ -225,7 +225,9 @@ a { color: var(--accent); text-decoration: none; }
 .topbar .right { flex-shrink: 0; margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 
-.content { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.content { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; transition: opacity var(--motion-normal) var(--ease-out); }
+/* A slow search or project switch: what shows is about to change. */
+.content[aria-busy="true"] { opacity: .7; }
 
 /* ---------- controls ---------- */
 .btn {

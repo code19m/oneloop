@@ -36,6 +36,16 @@ export function installRoute(ctx, account) {
     askToDiscard(()=>app.followAddress(link.getAttribute('href')));
   },true);
 
+  // A read that takes more than a moment marks the page busy, after the same
+  // delay as a slow page load's skeleton. Reads can overlap.
+  let busyReads=0;
+  /** @template T @param {Promise<T>} read @returns {Promise<T>} */
+  async function whileBusy(read){
+    busyReads++;const timer=setTimeout(()=>document.querySelector('.content')?.setAttribute('aria-busy','true'),120);
+    try{return await read;}
+    finally{clearTimeout(timer);if(!--busyReads)document.querySelector('.content')?.removeAttribute('aria-busy');}
+  }
+
   /** A `background` (live) load reads passively, so it never keeps an idle session open. */
   async function loadCurrentRoute({reuseBootstrap=false,refresh=false,background=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
@@ -82,7 +92,7 @@ export function installRoute(ctx, account) {
     /** @param {string} order `completed` lists the newest Done task first; anything else keeps the manual order. */
     async setDoneOrder(order){saveDoneOrder(order==='completed'?'completed':'manual');return reads.board(context().projectId,context().board);},
     /** @param {{search?:string,blocked?:boolean,trackIds?:string[],epicIds?:string[],assigneeIds?:string[]}} filters */
-    filterBoard(filters){return reads.board(context().projectId,filters,{skipUnchanged:true});},
+    filterBoard(filters){return whileBusy(reads.board(context().projectId,filters,{skipUnchanged:true}));},
     /** @param {string} status */
     async loadMoreBoard(status){const result=await reads.moreBoard(status);if(!result.stale)app.acceptMoreBoard(status);return result;},
     /** Switch to another project, once typed text may be left. @param {string} projectId */
@@ -90,7 +100,7 @@ export function installRoute(ctx, account) {
       if(!await mayLeavePage())return {stale:true};
       const generation=++projectGeneration,scope=sessionScope();
       routeGeneration++;
-      const loaded=await reloadBootstrap({projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'});
+      const loaded=await whileBusy(reloadBootstrap({projectId,taskId:undefined,view:context().view==='roadmap'?'roadmap':['board','task'].includes(context().view)?'board':'metadata'}));
       if(loaded?.stale||generation!==projectGeneration||scope!==sessionScope())return {stale:true};
       app.selectProject(projectId);
       return loadCurrentRoute({reuseBootstrap:true});
