@@ -31,6 +31,13 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     onSessionChange(null);
   }
 
+  /**
+   * End the session on purpose: whoever signs in here next starts from their
+   * own project, as the tab forgets what its address named. A session that
+   * ends by itself keeps the address for its person.
+   */
+  function signOut(){pendingCredentials=null;clearPrivateData();getApp()?.clearAddress();refresh();}
+
   async function complete(auth,token) {
     if(!current(token))return false;
     pendingCompletion=auth;
@@ -118,7 +125,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     retryButton.addEventListener('click',async()=>{retryButton.disabled=true;otherButton.disabled=true;try{await retry();}catch(error){reportError(error,section);}if(section.isConnected){retryButton.disabled=false;otherButton.disabled=false;}});
     otherButton.addEventListener('click',async()=>{
       retryButton.disabled=true;otherButton.disabled=true;
-      try{await api.logout();pendingCredentials=null;clearPrivateData();refresh();}
+      try{await api.logout();signOut();}
       catch(error){retryButton.disabled=false;otherButton.disabled=false;reportError(error,section);}
     });
     section.append(heading,copy,retryButton,otherButton);form.hidden=true;card.querySelector('.session-limit-list')?.remove();card.append(section);retryButton.focus();return true;
@@ -179,9 +186,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     async logout() {
       const token=begin();
       await api.logout();
-      if(!current(token))return;
-      pendingCredentials=null;clearPrivateData();
-      refresh();
+      if(current(token))signOut();
     },
     setTemporaryPassword,
     changePassword,

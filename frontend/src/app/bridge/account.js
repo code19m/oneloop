@@ -24,8 +24,7 @@ export function installAccount(ctx) {
     const fields=formValues(event), form=event.target;
     return fire(auth.login({username:text(fields.get('username'),32).toLowerCase(),password:String(fields.get('password')||'')},form));
   };
-  // Signing out on purpose leaves the next person who signs in here no trace of this person's project or filters.
-  app.logout = () => app.confirm({title:'Sign out?',text:app.signOutText(),action:'Sign out',confirm:()=>fire(auth.logout().then(()=>{if(!data.session)app.clearAddress();}).catch(report))});
+  app.logout = () => app.confirm({title:'Sign out?',text:app.signOutText(),action:'Sign out',confirm:()=>fire(auth.logout().catch(report))});
   app.setPassword = (event) => { event.preventDefault();if(!recovery.ensureOnline())return false; return fire(auth.setTemporaryPassword(event.target).catch(error=>report(error,{form:event.target}))); };
   app.changePassword = (event) => { event.preventDefault();if(!recovery.ensureOnline())return false; return fire(auth.changePassword(event.target).then((/** @type {boolean|undefined} */ ok)=>{if(ok)app.toast('Password changed. Other sessions and app access revoked');}).catch(error=>report(error,{form:event.target}))); };
   app.updMe = (value) => {

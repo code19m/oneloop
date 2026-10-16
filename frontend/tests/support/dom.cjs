@@ -209,8 +209,8 @@ function wire(dom, { api: answers = {}, reads: readAnswers = {}, reloadBootstrap
     ...Object.fromEntries(Object.entries(repaint).map(([name, paint]) => [name, async (...args) => { readCalls.push([name, ...args]); paint(...args); return { stale: false }; }])),
     ...readAnswers,
   };
-  // The tests end sessions themselves, so expiry leaves the projection alone. Signing out ends the session.
-  const data = w.DATA, auth = { withRecentAuth: run => run(), expire() {}, async logout() { data.session = null; w.App.refresh(); } };
+  // The tests end sessions themselves, so expiry leaves the projection alone.
+  const data = w.DATA, auth = { withRecentAuth: run => run(), expire() {} };
   let runtime;
   const gateway = createCommandGateway({
     api, data,

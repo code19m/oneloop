@@ -103,6 +103,22 @@ test('a completed login retries workspace loading without creating another sessi
   assert.equal(refreshes,1);assert.equal(sessionChanges,1);assert.equal(data.session.id,'s1');
 });
 
+test('Sign out, and Use another account after a failed load, clear the tab\'s address; a session that ends by itself keeps it',async(t)=>{
+  const {card,form}=authForm(page(t)),data=authData();
+  let cleared=0;
+  const auth=createAuthController({
+    api:{login:async()=>({sessionId:'s1',authenticatedAt:1,user:{id:'u1',username:'owner',displayName:'Owner',isAdmin:true},mustChangePassword:false}),logout:async()=>{}},
+    data,refresh:()=>{},getApp:()=>({clearAddress(){cleared++;}}),loadBootstrap:async()=>{throw new Error('offline');},reportError:()=>{},
+  });
+  await auth.login({username:'owner',password:'secret'},form);
+  button(card,'Use another account').click();await settle();
+  assert.equal(cleared,1,'Use another account');assert.equal(data.session,null);
+  data.session={id:'s2',userId:'u1'};auth.expire();
+  assert.equal(cleared,1,'a session that ends by itself keeps the address');
+  data.session={id:'s3',userId:'u1'};await auth.logout();
+  assert.equal(cleared,2,'Sign out');
+});
+
 test('temporary-password completion retries only bootstrap after the password changed',async(t)=>{
   const {card,form}=authForm(page(t),{cur:'temporary',pw:'new password',pw2:'new password'}),data=authData({id:'old',userId:'u1',authenticatedAt:0,temporary:true});
   data.users.push({id:'u1',username:'owner',name:'Owner',mustChange:true});
