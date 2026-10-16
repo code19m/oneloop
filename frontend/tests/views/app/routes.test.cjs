@@ -1,7 +1,7 @@
 // views/app.js: addresses, the projects they name, and history.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle } = require('../../support/dom.cjs');
 
 test('an address from before projects had one gets the project on screen in place', () => {
   for (const [route, address] of [['', '#/roadmap/p1'], ['board', '#/board/p1'], ['roadmap', '#/roadmap/p1'], ['settings', '#/settings/p1'], ['knowledge', '#/knowledge/p1/tree']]) {
@@ -24,4 +24,15 @@ test('a project switch is a history entry that keeps the page, and is remembered
   t.A.selectProject('p2');
   assert.equal(t.w.location.hash, '#/roadmap/p2'); assert.equal(t.w.history.length, 2);
   assert.deepEqual(JSON.parse(t.w.localStorage.getItem('oneloop.project')), { userId: 'taylorwu', projectId: 'p2' });
+});
+
+test('signing out on purpose leaves an address without a project or filters, so the next person starts from their own', async () => {
+  const t = bootApp({ route: 'board/p1?search=reader&track=t1' });
+  t.A.logout();
+  t.d.querySelector('[data-confirm-accept]').click();
+  await settle();
+  assert.equal(t.w.location.hash, '#/board'); assert.equal(t.w.history.length, 1, 'in place');
+  // The next sign-in asks for no project of the person before, and the Board's search is empty.
+  assert.equal(JSON.stringify(t.module('src/app/projection-reload.js').routeScope(t.w.location.hash, t.A)), JSON.stringify({ view: 'board' }));
+  assert.equal(t.A.context().board.search, ''); assert.equal(t.A.context().board.trackIds.length, 0);
 });

@@ -15,7 +15,7 @@
  * calls; the view bridge adds the server-backed ones.
  * @typedef {{
  *   context:()=>LegacyContext, refresh:()=>void, toast:(message:string,kind?:string,options?:{action?:{label:string,run:()=>void}})=>void,
- *   acceptMoreBoard:ViewMethod, acceptMoreUsers:ViewMethod, askToDiscard:ViewMethod,
+ *   acceptMoreBoard:ViewMethod, acceptMoreUsers:ViewMethod, askToDiscard:ViewMethod, clearAddress:ViewMethod,
  *   clearTaskSaving:ViewMethod, closeOverlays:ViewMethod, commentDraft:ViewMethod, confirm:ViewMethod, fieldError:ViewMethod,
  *   followAddress:ViewMethod, isRendering:ViewMethod, keepKnownFilters:ViewMethod, nav:ViewMethod, noteTaskSaved:ViewMethod, noteTaskSaving:ViewMethod,
  *   offerUndo:ViewMethod, openModal:ViewMethod, openPeek:ViewMethod, openTask:ViewMethod, prepareBlock:ViewMethod,

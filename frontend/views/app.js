@@ -332,6 +332,18 @@ Object.assign(App, {
   context() { return { view:state.view, taskId:state.taskId, projectId:state.projectId, poolTab:state.poolTab, peek:state.peek, board:{trackIds:[...state.boardTracks],epicIds:[...state.boardEpics],assigneeIds:[...state.boardAssignees],search:state.boardQ,blocked:state.boardBlocked}, modal:state.modal ? { ...state.modal } : null, movePending:state.view==='board'?boardMovePending():state.view==='roadmap'?roadmapMovePending():false }; },
   updateDocumentTitle,
   replaceAddress,
+  /**
+   * Forget the project, page and Board filters the tab showed, with its
+   * address, as its person signed out on purpose: the next person to sign in
+   * here starts from their own project. A session that ends by itself keeps
+   * them, for the same person to come back to.
+   */
+  clearAddress() {
+    const {page}=readAddress(location.hash);
+    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;resetBoardFilters();
+    // A task names its project too, so its address gives way to the Board's.
+    try{history.replaceState(history.state,'',`#/${['roadmap','settings','knowledge','inbox','profile','users','storage'].includes(page)?page:'board'}`);}catch{}
+  },
   /** Read the address again once someone signs in, since their projects decide what it shows. */
   resolveRoute,
   refreshCounts() {

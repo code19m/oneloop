@@ -62,8 +62,9 @@ All notable changes to oneloop are recorded here. The format follows
   and filters, switching projects is a step in the browser's history, and
   **Back** leaves the Board instead of undoing filters. An address without a
   project, such as an older bookmark, opens the project you last switched to in
-  this browser. Before, a refresh opened the first project by name and lost
-  the filters.
+  this browser. Signing out clears the project and filters from the tab's
+  address, so the next person to sign in there starts from their own. Before, a
+  refresh opened the first project by name and lost the filters.
 - Every open tab now reloads by itself after an upgrade, when nothing you typed
   would be lost, nothing such as a dialog, a menu or an **Undo** offer is open,
   and the tab is hidden or unused for five minutes. **Reload after updates** is
