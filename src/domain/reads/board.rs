@@ -357,7 +357,7 @@ pub(super) fn task_views(
     let encoded =
         serde_json::to_string(ids).map_err(|error| AppError::internal(error.to_string()))?;
     let mut statement=connection.prepare_cached("SELECT id,project_id,epic_id,task_number,task_key,title,CASE WHEN ?2 THEN description \
-                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order FROM tasks WHERE id \
+                     ELSE NULL END,status,position,deadline,created_at,updated_at,revision,completed_at,completion_order,checklist_version FROM tasks WHERE id \
                      IN (SELECT value FROM json_each(?1)) AND deleted_at IS NULL")?;
     let mut tasks = statement
         .query_map(params![encoded, details], |r| {
@@ -388,6 +388,7 @@ pub(super) fn task_views(
                 active_block: None,
                 checklist_done: 0,
                 checklist_total: 0,
+                checklist_version: r.get(15)?,
                 checklist: None,
             })
         })?

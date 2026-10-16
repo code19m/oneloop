@@ -9,7 +9,7 @@ const item = (id, title, done = false, revision = 1) => ({ id, taskId: 'bir-079'
 /** The page of a task whose checklist is Plan (done), Build and Ship, with toasts recorded. */
 function checklistPage(options = {}) {
   const t = bootApp({ route: 'task/BIR-079', ...options, prepare(D, w) {
-    Object.assign(D.tasks.find(task => task.id === 'BIR-079'), { checklist: [item('c1', 'Plan', true), item('c2', 'Build'), item('c3', 'Ship')], checklistDone: 1, checklistTotal: 3 });
+    Object.assign(D.tasks.find(task => task.id === 'BIR-079'), { checklist: [item('c1', 'Plan', true), item('c2', 'Build'), item('c3', 'Ship')], checklistDone: 1, checklistTotal: 3, checklistVersion: 0 });
     options.prepare?.(D, w);
   } });
   const notices = [];
@@ -17,6 +17,8 @@ function checklistPage(options = {}) {
   const row = id => t.d.querySelector(`[data-checklist-item="${id}"]`);
   return {
     ...t, notices, row,
+    // The server's checklist version, which each saved change raises.
+    server: { version: 0 },
     task: t.D.tasks.find(task => task.id === 'BIR-079'),
     titles: () => [...t.d.querySelectorAll('.checklist-item')].map(entry => entry.querySelector('textarea')?.value ?? entry.querySelector('.checklist-title').textContent),
     count: () => t.d.querySelector('.checklist-count')?.textContent,
@@ -25,12 +27,22 @@ function checklistPage(options = {}) {
   };
 }
 
-/** What the server answers a checklist command with: the item, and the task with its whole checklist. */
+/** The task as the server sends it, with `checklist` and the checklist `version`. */
+const taskView = (checklist, version) => ({
+  id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: 1, assigneeIds: [], activeBlock: null, revision: 1,
+  checklist: checklist.map((entry, position) => ({ id: entry.id, taskId: 'bir-079', position, title: entry.title, done: entry.done, revision: entry.revision })),
+  checklistDone: checklist.filter(entry => entry.done).length, checklistTotal: checklist.length, checklistVersion: version,
+});
+
+/** What the server answers a checklist command with: the item, and the task with its whole checklist at the next version. */
 function accept(t, changed, checklist) {
-  const wire = checklist.map((entry, position) => ({ id: entry.id, taskId: 'bir-079', position, title: entry.title, done: entry.done, revision: entry.revision }));
-  t.commands.at(-1).resolve({ entities: [{ entityType: 'checklistItem', ...changed }, { entityType: 'task', id: 'bir-079', revision: t.task.revision, checklist: wire, checklistDone: checklist.filter(entry => entry.done).length, checklistTotal: checklist.length }], events: [] });
+  t.server.version += 1;
+  t.commands.at(-1).resolve({ entities: [{ entityType: 'checklistItem', ...changed }, { entityType: 'task', ...taskView(checklist, t.server.version), revision: t.task.revision }], events: [] });
   return settle();
 }
+
+/** Send a live hint about the task, as another tab's change does. */
+const hint = t => t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: null });
 
 const refuse = (t, code = 'internal') => { t.commands.at(-1).reject(new t.w.TestApiError('The change could not be saved.', { status: 500, code })); return settle(); };
 
@@ -135,14 +147,53 @@ test('arrow keys on a grip move its item, keep focus on the grip and say where i
 });
 
 test('a change from elsewhere redraws the checklist in place and keeps the title being typed', async () => {
-  const view = { id: 'bir-079', taskKey: 'BIR-079', projectId: 'p1', epicId: 'e2', title: 'Flexible reading schedule', description: '', status: 'planning', position: 1, createdAt: 1, updatedAt: 1, assigneeIds: [], activeBlock: null, revision: 1, checklistDone: 1, checklistTotal: 2,
-    checklist: [{ id: 'c2', taskId: 'bir-079', position: 0, title: 'Build', done: true, revision: 2 }, { id: 'c3', taskId: 'bir-079', position: 1, title: 'Ship', done: false, revision: 1 }] };
+  const view = taskView([item('c2', 'Build', true, 2), item('c3', 'Ship')], 2);
   const t = checklistPage({ api: { task: async () => view } });
   const typing = t.row('c3').querySelector('textarea');
   typing.focus(); typing.value = 'Ship v2';
-  t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: null });
+  hint(t);
   await waitFor(() => t.titles().length === 2, 'the live read redraws the checklist'); await settle();
   assert.deepEqual(t.titles(), ['Build', 'Ship v2']); assert(t.row('c2').querySelector('[data-checklist-done]').checked);
   assert.equal(t.row('c3').querySelector('textarea'), typing); assert.equal(t.d.activeElement, typing);
   assert.equal(t.count(), '1/2');
+});
+
+test('a read that left before a tick never draws the old checklist again', async () => {
+  let reads = 0;
+  // Every read of the task answers as the server had it before the tick.
+  const before = taskView([item('c1', 'Plan', true), item('c2', 'Build'), item('c3', 'Ship')], 0);
+  const t = checklistPage({ api: {
+    task: async () => { reads += 1; return before; },
+    comments: async () => ({ items: [], nextCursor: null }), activity: async () => ({ items: [], nextCursor: null }), attachments: async () => ({ items: [] }),
+  } });
+  const lands = async count => { hint(t); await waitFor(() => reads === count, 'the live read lands'); await settle(); };
+  const ticked = () => t.row('c2').classList.contains('done') && t.row('c2').querySelector('[data-checklist-done]').checked;
+  t.row('c2').querySelector('[data-checklist-done]').click();
+  await lands(1);
+  assert(ticked(), 'while the tick is on its way'); assert.equal(t.count(), '2/3');
+  await accept(t, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build', done: true, revision: 2 }, [item('c1', 'Plan', true), item('c2', 'Build', true, 2), item('c3', 'Ship')]);
+  await lands(2);
+  assert(ticked(), 'after the tick is saved'); assert.equal(t.count(), '2/3');
+});
+
+test('quick moves save each one, from the order the page shows, in the order they were made', async () => {
+  const t = checklistPage({ prepare: D => { const task = D.tasks.find(entry => entry.id === 'BIR-079'); task.checklist.push(item('c4', 'Tell')); task.checklistTotal = 4; } });
+  const grip = id => t.row(id).querySelector('[data-checklist-grip]');
+  const moved = (revision, ...ids) => ids.map(id => ({ c1: item('c1', 'Plan', true, revision), c2: item('c2', 'Build'), c3: item('c3', 'Ship'), c4: item('c4', 'Tell') })[id]);
+  grip('c1').focus();
+  t.key(grip('c1'), 'ArrowDown'); t.key(grip('c1'), 'ArrowDown');
+  // The first move's answer comes back before the third press.
+  await accept(t, { id: 'c1', taskId: 'bir-079', position: 1, title: 'Plan', done: true, revision: 2 }, moved(2, 'c2', 'c1', 'c3', 'c4'));
+  assert.deepEqual(t.titles(), ['Build', 'Ship', 'Plan', 'Tell'], 'the answer to the first move keeps the second');
+  t.key(grip('c1'), 'ArrowDown');
+  await accept(t, { id: 'c1', taskId: 'bir-079', position: 2, title: 'Plan', done: true, revision: 3 }, moved(3, 'c2', 'c3', 'c1', 'c4'));
+  await accept(t, { id: 'c1', taskId: 'bir-079', position: 3, title: 'Plan', done: true, revision: 4 }, moved(4, 'c2', 'c3', 'c4', 'c1'));
+  assert.deepEqual(t.sent(), [['c2', 1], ['c3', 2], ['c4', 3]].map(([after, revision]) => ['task.checklist.move', { itemId: 'c1', afterItemId: after }, revision]));
+  assert.deepEqual(t.titles(), ['Build', 'Ship', 'Tell', 'Plan']);
+  // A move of another item waits for the answer to the one before it.
+  t.key(grip('c2'), 'ArrowDown'); t.key(grip('c4'), 'ArrowUp');
+  assert.deepEqual(t.titles(), ['Ship', 'Tell', 'Build', 'Plan']);
+  assert.equal(t.commands.length, 4);
+  await accept(t, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build', done: false, revision: 2 }, [item('c3', 'Ship'), item('c2', 'Build', false, 2), item('c4', 'Tell'), item('c1', 'Plan', true, 4)]);
+  assert.deepEqual(t.sent().slice(3), [['task.checklist.move', { itemId: 'c2', afterItemId: 'c3' }, 1], ['task.checklist.move', { itemId: 'c4', beforeItemId: 'c2' }, 1]]);
 });

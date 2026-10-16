@@ -217,7 +217,8 @@ schema describes the payload of each operation.
   in `search_tasks` and `read_epic` has `checklistDone` and `checklistTotal`.
   `task.create` takes the items' titles in `checklist`, so a task and its
   steps take one call. An item has its own revision: change it with the
-  item's `expectedRevision`, which leaves the task's revision as it is.
+  item's `expectedRevision`, which leaves the task's revision as it is. A
+  task's `checklistVersion` goes up with every change to its checklist.
 - **Mentions.** A mention names the member by ID and marks its place in the
   text. A name alone doesn't notify anyone. `@everyone` has a
   [rate limit](reference.md#limits) in each project.

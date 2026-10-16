@@ -8,7 +8,7 @@
 
 /** @param {import('../view-bridge.js').BridgeContext} ctx */
 export function installChecklist(ctx) {
-  const { app, task, execute, skipped, sessionScope, drafts, draftKey, pruneDrafts, unsavedDraft } = ctx;
+  const { app, reads, task, execute, skipped, sessionScope, drafts, draftKey, pruneDrafts, unsavedDraft } = ctx;
 
   /** The item `itemId` of task `taskId`'s checklist. @param {string} taskId @param {string} itemId */
   const itemOf = (taskId, itemId) => task(taskId)?.checklist?.find((/** @type {{id:string}} */ item) => item.id === itemId);
@@ -32,19 +32,46 @@ export function installChecklist(ctx) {
   }
 
   /**
-   * Show task `taskId`'s checklist as `next` at once, and as before when the
-   * server refuses the change `send` makes.
+   * Show task `taskId`'s checklist as `next` at once. It counts as the next
+   * checklist version, so a read that left before the change can't draw the
+   * old list again. When the server refuses the change, the list shows as
+   * before if nothing changed it since; when the server finds nothing to
+   * change, it stays. Either way the version goes back, and a read of the
+   * task brings the checklist as the server has it.
    * @param {string} taskId @param {any[]} next @param {()=>Promise<any>} send
    */
   async function showing(taskId, next, send) {
     const item = task(taskId), before = item.checklist;
-    item.checklist = next; app.refreshTaskChecklist(taskId);
-    try { return await send(); }
-    catch (error) {
+    item.checklist = next; item.checklistVersion += 1; app.refreshTaskChecklist(taskId);
+    const undo = (/** @type {boolean} */ refused) => {
       const current = task(taskId);
-      if (current?.checklist === next) { current.checklist = before; app.refreshTaskChecklist(taskId); }
-      throw error;
-    }
+      if (!current) return;
+      current.checklistVersion -= 1;
+      if (refused && current.checklist === next) current.checklist = before;
+      app.refreshTaskChecklist(taskId);
+      reads.task(current.internalId).catch(() => {});
+    };
+    try {
+      const result = await send();
+      if (result?.skipped) undo(false);
+      return result;
+    } catch (error) { undo(true); throw error; }
+  }
+
+  /** Each task's last move or removal, which the next one waits for. */
+  const lastChange = new Map();
+  /**
+   * Send `send` once task `taskId`'s earlier moves and removals have their
+   * answers, so the server applies them in the order they were made, each
+   * to the order it was made in.
+   * @param {string} taskId @param {()=>Promise<any>} send
+   */
+  function inOrder(taskId, send) {
+    const key = task(taskId).internalId, previous = lastChange.get(key), sent = previous ? previous.then(send) : send();
+    const settled = sent.then(() => {}, () => {});
+    lastChange.set(key, settled);
+    settled.then(() => { if (lastChange.get(key) === settled) lastChange.delete(key); });
+    return sent;
   }
 
   /**
@@ -103,13 +130,13 @@ export function installChecklist(ctx) {
       const anchor = after ? placement.afterItemId : placement.beforeItemId;
       const next = [...rest]; next.splice(rest.findIndex((/** @type {any} */ entry) => entry.id === anchor) + Number(after), 0, item);
       if (next.every((entry, index) => entry === list[index])) return Promise.resolve(skipped());
-      return showing(taskId, next, () => change(taskId, 'task.checklist.move', { itemId, ...placement }, item));
+      return showing(taskId, next, () => inOrder(taskId, () => change(taskId, 'task.checklist.move', { itemId, ...placement }, item)));
     },
     /** Remove an item, at once and without Undo. @param {string} taskId @param {string} itemId */
     deleteChecklistItem(taskId, itemId) {
       const item = itemOf(taskId, itemId), list = task(taskId)?.checklist;
       if (!item) return Promise.resolve(skipped());
-      return showing(taskId, list.filter((/** @type {any} */ entry) => entry !== item), () => change(taskId, 'task.checklist.delete', { id: itemId }, item));
+      return showing(taskId, list.filter((/** @type {any} */ entry) => entry !== item), () => inOrder(taskId, () => change(taskId, 'task.checklist.delete', { id: itemId }, item)));
     },
   };
 }

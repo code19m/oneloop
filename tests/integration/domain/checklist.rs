@@ -112,10 +112,11 @@ async fn a_checklist_item_has_its_own_revision_apart_from_the_task() {
     assert_eq!(
         (
             &ticked.entities[1]["checklistDone"],
-            &ticked.entities[1]["checklistTotal"]
+            &ticked.entities[1]["checklistTotal"],
+            &ticked.entities[1]["checklistVersion"]
         ),
-        (&json!(1), &json!(1)),
-        "the result carries the task's new counts"
+        (&json!(1), &json!(1), &json!(1)),
+        "the result carries the task's new counts and checklist version"
     );
     let stale = change(
         &f,
@@ -125,11 +126,16 @@ async fn a_checklist_item_has_its_own_revision_apart_from_the_task() {
     )
     .await;
     assert!(matches!(stale, Err(AppError::RevisionConflict { .. })));
-    // The tick left the task as it was, so an edit read before it still saves.
+    // The tick left the task as it was, so an edit read before it still saves;
+    // only the checklist version tells that the checklist changed.
     let after = f.service.task(&f.member, task.clone()).await.unwrap();
     assert_eq!(
-        (after.revision, after.updated_at),
-        (before.revision, before.updated_at)
+        (after.revision, after.updated_at, after.checklist_version),
+        (
+            before.revision,
+            before.updated_at,
+            before.checklist_version + 1
+        )
     );
     change(
         &f,

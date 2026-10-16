@@ -110,7 +110,7 @@ fn record_change(
 }
 
 /// What a checklist command returns: the item, unless it was deleted, and
-/// the task with its new counts.
+/// the task with its new counts and its next checklist version.
 fn changed(
     tx: &Transaction<'_>,
     item: Value,
@@ -118,6 +118,8 @@ fn changed(
     event: ActivityEvent,
     item_id: &str,
 ) -> AppResult<Mutation> {
+    tx.prepare_cached("UPDATE tasks SET checklist_version=checklist_version+1 WHERE id=?1")?
+        .execute([task_id])?;
     Ok(Mutation {
         entities: vec![item, task_entity(tx, task_id)?],
         events: vec![event],

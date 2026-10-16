@@ -134,6 +134,9 @@ pub struct TaskView {
     pub checklist_done: i64,
     #[serde(default)]
     pub checklist_total: i64,
+    /// Goes up with each change to the checklist, which leaves `revision` as it is.
+    #[serde(default)]
+    pub checklist_version: i64,
     /// The checklist items in order, on detail reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checklist: Option<Vec<ChecklistItemView>>,
