@@ -22,7 +22,8 @@ export function createBootstrapController({ api, data, onReady = (_projection) =
       controller = new AbortController();
       const work = (async () => {
         try {
-          const projection = await api.bootstrap({ ...scope, signal: controller.signal });
+          // A read that started earlier, as the first one after sign-in does.
+          const projection = await (scope.response ?? api.bootstrap({ ...scope, signal: controller.signal }));
           if (current !== generation) return { stale: true };
           const person = projection?.session?.userId ?? projection?.session?.id;
           if (!data.session || (person && person !== data.session.userId)) {

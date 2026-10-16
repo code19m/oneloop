@@ -57,7 +57,7 @@ const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),
 // A read repaints only the view that shows what it loaded.
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
-const signInLoad = createSignInLoad({bootstrap,getApp:()=>app});
+const signInLoad = createSignInLoad({bootstrap,api,getApp:()=>app});
 const routeScope = () => scopeOfRoute(location.hash, app);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 
@@ -69,7 +69,7 @@ const auth = createAuthController({
   getApp: () => app,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
   onSessionChange:(session)=>{
-    if(!session)signInLoad.sessionEnded();
+    signInLoad.sessionChanged(session);
     runtimeHooks?.publish({type:'auth',session});
     recovery?.sessionChanged(session);
     if(session&&!session.temporary&&pendingAuthorization){const target=pendingAuthorization;pendingAuthorization=null;location.replace(target);return;}
@@ -103,6 +103,7 @@ runtimeHooks.subscribe(change=>{
 
 try {
   void buildMonitor.check();
+  signInLoad.prefetch();
   await auth.initialize();
   ({ App: app } = await import('../../views/app.js'));
   recovery.start();

@@ -14,6 +14,8 @@ All notable changes to oneloop are recorded here. The format follows
   longer does.
 - The app asks for all of its start-up scripts at once, instead of one level
   of imports at a time, so it opens faster on slow networks.
+- The app reads your workspace while it checks your session, instead of
+  after, so every visit opens one round trip sooner.
 
 ### Fixed
 

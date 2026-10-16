@@ -129,20 +129,47 @@ test('an unavailable destination is reported to the caller instead of the page w
 /** A sign-in on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
 function signInPage(context,answer=async()=>({stale:false})){
   const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};
-  const signIn=createSignInLoad({bootstrap,getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
+  const signIn=createSignInLoad({bootstrap,api:{},getApp:()=>context&&{context:()=>context},location:{get hash(){return context?.hash??'#/board';}}});
   return {signIn,loads};
 }
 
+/** A first visit to the Board with the real bootstrap controller; `answer` answers each bootstrap read. */
+function firstVisit(answer){
+  const data=createLegacyData(),reads=[];
+  const api={bootstrap:async scope=>{reads.push(scope);return answer(reads.length);}};
+  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,getApp:()=>null,location:{hash:'#/board'}});
+  return {data,reads,signIn};
+}
+
+test('the first load after the session check uses the read that started with it',async()=>{
+  const t=firstVisit(()=>projection('p1',{view:'board'}));
+  t.signIn.prefetch();
+  t.data.session={id:'s1',userId:'u1'};
+  assert.equal((await t.signIn.load()).stale,false);
+  assert.deepEqual(t.reads,[{view:'board'}]);
+  assert.equal(t.data.bootstrapView,'board');
+});
+
+test('a session change drops the read that started with the session check',async()=>{
+  // Someone who must change their password: the server refuses the first read.
+  const t=firstVisit(count=>{if(count===1)throw new ApiError('Change your password first',{status:412,code:'precondition_failed'});return projection('p1',{view:'board'});});
+  t.signIn.prefetch();
+  t.data.session={id:'s1',userId:'u1',temporary:true};t.signIn.sessionChanged(t.data.session);
+  t.data.session={id:'s1',userId:'u1'};
+  assert.equal((await t.signIn.load()).stale,false);
+  assert.equal(t.reads.length,2);
+});
+
 test('signing in again loads the project the tab showed when the session ended',async()=>{
   const {signIn,loads}=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'});
-  signIn.sessionEnded();
+  signIn.sessionChanged(null);
   await signIn.load();
   assert.deepEqual(loads,[{projectId:'p2',view:'board'}],'the Board loads the project its switcher shows');
 });
 
 test('a first sign-in loads the default project',async()=>{
   const {signIn,loads}=signInPage(null);
-  signIn.sessionEnded();
+  signIn.sessionChanged(null);
   await signIn.load();
   assert.deepEqual(loads,[{view:'board'}]);
 });
@@ -150,10 +177,10 @@ test('a first sign-in loads the default project',async()=>{
 test('a project the account can no longer open loads the default project, and a task only metadata',async()=>{
   const gone=new ApiError('project not found',{status:404,code:'not_found'});
   const board=signInPage({view:'board',projectId:'p2',board:{},hash:'#/board'},async scope=>{if(scope.projectId)throw gone;return {stale:false};});
-  board.signIn.sessionEnded();await board.signIn.load();
+  board.signIn.sessionChanged(null);await board.signIn.load();
   assert.deepEqual(board.loads,[{projectId:'p2',view:'board'},{view:'board'}]);
   const task=signInPage({view:'task',projectId:'p2',taskId:'TWO-1',hash:'#/task/TWO-1'},async scope=>{if(scope.taskId)throw gone;return {stale:false};});
-  task.signIn.sessionEnded();await task.signIn.load();
+  task.signIn.sessionChanged(null);await task.signIn.load();
   assert.deepEqual(task.loads,[{projectId:'p2',taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });
 

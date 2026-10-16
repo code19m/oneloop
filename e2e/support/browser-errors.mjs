@@ -13,8 +13,8 @@ export const test = base.extend({
       page.on('console', message => {
         if (!observing || message.type() !== 'error') return;
         const entry = `${message.text()} ${message.location().url}`;
-        // The signed-out identity probe is part of normal startup.
-        if (/(?:401|Unauthorized)/i.test(entry) && /\/api\/auth\/me\b/.test(entry)) return;
+        // A signed-out start reads the identity and the workspace, and both refuse.
+        if (/(?:401|Unauthorized)/i.test(entry) && /\/api\/(?:auth\/me|bootstrap)\b/.test(entry)) return;
         if (allowedConsoleErrors.some(pattern => pattern.test(entry))) return;
         errors.push(entry);
       });
