@@ -49,7 +49,9 @@ export function installRoute(ctx, account) {
   /** A `background` (live) load reads passively, so it never keeps an idle session open. */
   async function loadCurrentRoute({reuseBootstrap=false,refresh=false,background=false}={}){
     const generation=++routeGeneration,current={...context()},expectedSession=sessionScope();
-    if(!data.session)return;
+    // A temporary password shows only the form that changes it, and no project
+    // is loaded yet, so there is no page to load.
+    if(!data.session||data.session.temporary)return;
     const routeHash=location.hash;
     const stillCurrent=()=>generation===routeGeneration&&expectedSession===sessionScope()&&routeHash===location.hash;
     if(!['users','settings'].includes(current.view))account.leaveUsers();

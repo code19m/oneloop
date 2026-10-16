@@ -57,6 +57,22 @@ test('a task hash is read before the shell decides it is missing, and drawn agai
   }
 });
 
+test('a session with a temporary password loads no page, as it has no project until the password changes',async()=>{
+  for(const [hash,page] of [['#/board',{view:'board'}],['#/task/ONE-1',{view:'notfound',taskId:'ONE-1'}]]){
+    location.hash=hash;
+    const context={projectId:null,board:{},...page},boards=[];
+    const state=fixture(context,{reads:{async board(projectId){boards.push(projectId);return {stale:false};}}});
+    state.data.session.temporary=true;
+    await state.bridge.loadCurrentRoute({reuseBootstrap:true});
+    assert.deepEqual([...boards,...state.calls],[],hash);
+  }
+  // Once the password changes, the route loads the Board of the project the workspace opened.
+  location.hash='#/board';
+  const boards=[],state=fixture({view:'board',projectId:'p1',board:{}},{reads:{async board(projectId){boards.push(projectId);return {stale:false};}}});
+  await state.bridge.loadCurrentRoute({reuseBootstrap:true});
+  assert.deepEqual(boards,['p1']);
+});
+
 test('a live refresh of Profile, Users and Settings reads passively, and a visit does not',async()=>{
   for(const view of ['profile','users','settings']){
     const reads=[];
