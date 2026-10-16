@@ -1,6 +1,6 @@
 //! A stored file's bytes for a response, read from SQLite one chunk at a time
 //! as the client takes them. A client that reads slowly or stops reading holds
-//! about one chunk of memory, not the whole file.
+//! one chunk of memory, not the whole file.
 
 use std::{
     future::Future,
@@ -13,10 +13,13 @@ use tokio_stream::Stream;
 
 use crate::{AppError, AppResult, Db};
 
-/// Bytes per database read, as attachments send them. Each read walks the
-/// stored value from its start, so larger chunks would cost fewer walks, but
-/// every stalled download holds a chunk in memory.
+/// Bytes of the first database reads, as attachments send them.
 const CHUNK_BYTES: u64 = 64 * 1024;
+/// Each read walks the stored value from its start, so chunks grow to a
+/// quarter of what was sent: a large file then costs linear time. A stalled
+/// download holds one chunk, and a large one only after it took four times
+/// as much.
+const MAX_CHUNK_BYTES: u64 = 1024 * 1024;
 
 /// The first `len()` bytes of one stored version of a Knowledge file.
 pub struct FileBody {
@@ -90,7 +93,9 @@ impl Stream for Chunks {
             if this.offset >= this.body.length {
                 return Poll::Ready(None);
             }
-            let size = CHUNK_BYTES.min(this.body.length - this.offset);
+            let size = (this.offset / 4)
+                .clamp(CHUNK_BYTES, MAX_CHUNK_BYTES)
+                .min(this.body.length - this.offset);
             this.pending = Some(Box::pin(read_chunk(
                 this.body.db.clone(),
                 this.body.rowid,

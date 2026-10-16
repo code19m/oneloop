@@ -24,10 +24,11 @@ use crate::{
     clock::unix_now,
     collaboration::{ActivityInput, record_system_activity_tx},
     disk::DiskReservation,
+    files::PreviewKind,
 };
 
 use super::{
-    git::{Credentials, Failure, Snapshot, SnapshotOptions, SyncError},
+    git::{Credentials, Failure, Snapshot, SnapshotFile, SnapshotOptions, SyncError},
     secrets::Purpose,
     service::{Inner, KnowledgeService, source_activity},
     source::{GitUrl, Transport},
@@ -53,9 +54,29 @@ struct Due {
 
 enum Fetched {
     Unchanged,
-    /// The branch moved. The download keeps its disk space until the files
-    /// are stored.
-    Changed(Snapshot, DiskReservation),
+    /// The branch moved, with what was detected of each file in the order of
+    /// the snapshot's files. The download keeps its disk space until the
+    /// files are stored.
+    Changed(Snapshot, Vec<Detected>, DiskReservation),
+}
+
+/// A file's checksum and type. Working them out needs no writer, so it
+/// happens before the store, which then only compares them.
+struct Detected {
+    checksum: String,
+    media_type: String,
+    kind: Option<&'static str>,
+}
+
+impl Detected {
+    fn of(file: &SnapshotFile) -> Self {
+        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
+        Self {
+            checksum: hex::encode(Sha256::digest(&file.content)),
+            media_type,
+            kind: kind.map(PreviewKind::as_str),
+        }
+    }
 }
 
 /// Marks a project as syncing until its sync ends, is cancelled or is stopped
@@ -324,7 +345,13 @@ impl KnowledgeService {
                 reservation.clone(),
             )
             .await?;
-        Ok(Fetched::Changed(snapshot, reservation))
+        let (snapshot, detected) = tokio::task::spawn_blocking(move || {
+            let detected = snapshot.files.iter().map(Detected::of).collect();
+            (snapshot, detected)
+        })
+        .await
+        .map_err(|error| SyncError::new(Failure::Failed, error.to_string()))?;
+        Ok(Fetched::Changed(snapshot, detected, reservation))
     }
 
     fn credentials(
@@ -414,7 +441,7 @@ impl KnowledgeService {
     ) -> AppResult<()> {
         // New files use their reserved space until the transaction has ended.
         let _reservation = match &result {
-            Ok(Fetched::Changed(_, reservation)) => Some(reservation.clone()),
+            Ok(Fetched::Changed(_, _, reservation)) => Some(reservation.clone()),
             _ => None,
         };
         self.inner
@@ -452,8 +479,8 @@ impl KnowledgeService {
                         }
                         ("knowledge.synced", json!({}))
                     }
-                    Ok(Fetched::Changed(snapshot, _)) => {
-                        let changed = store_files(tx, &project_id, &snapshot)?;
+                    Ok(Fetched::Changed(snapshot, detected, _)) => {
+                        let changed = store_files(tx, &project_id, &snapshot, &detected)?;
                         tx.execute(
                             &format!(
                                 "UPDATE knowledge_sources SET state='ready',checked_at=?2,error_code=NULL,
@@ -505,56 +532,65 @@ impl KnowledgeService {
     }
 }
 
-/// Replace the stored files with the snapshot's, rewriting only files whose
-/// content changed. An unchanged file keeps its date. Returns whether any
-/// stored file changed.
+/// Replace the stored files with the snapshot's, writing only files whose
+/// content or detected type changed. An unchanged file keeps its date.
+/// Returns whether any stored file changed.
 fn store_files(
     tx: &rusqlite::Transaction<'_>,
     project_id: &str,
     snapshot: &Snapshot,
+    detected: &[Detected],
 ) -> AppResult<bool> {
     let mut changed = false;
-    let stored: HashMap<String, String> = {
-        let mut statement =
-            tx.prepare("SELECT path,checksum FROM knowledge_files WHERE project_id=?1")?;
+    let stored: HashMap<String, (String, String, Option<String>)> = {
+        let mut statement = tx.prepare(
+            "SELECT path,checksum,media_type,preview_kind FROM knowledge_files WHERE project_id=?1",
+        )?;
         statement
-            .query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([project_id], |row| {
+                Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
+            })?
             .collect::<Result<_, _>>()?
     };
     let mut kept = HashSet::with_capacity(snapshot.files.len());
-    for file in &snapshot.files {
+    for (file, new) in snapshot.files.iter().zip(detected) {
         kept.insert(file.path.as_str());
-        let checksum = hex::encode(Sha256::digest(&file.content));
-        let (media_type, kind) = crate::files::classify_bytes(&file.path, &file.content);
-        if stored.get(&file.path) == Some(&checksum) {
-            changed |= tx.execute(
-                "UPDATE knowledge_files SET media_type=?3,preview_kind=?4
-                 WHERE project_id=?1 AND path=?2 AND (media_type<>?3 OR preview_kind IS NOT ?4)",
-                params![
+        match stored.get(&file.path) {
+            Some((checksum, media_type, kind)) if *checksum == new.checksum => {
+                // Older versions may have detected another type.
+                if *media_type != new.media_type || kind.as_deref() != new.kind {
+                    tx.prepare_cached(
+                        "UPDATE knowledge_files SET media_type=?3,preview_kind=?4
+                         WHERE project_id=?1 AND path=?2",
+                    )?
+                    .execute(params![
+                        project_id,
+                        file.path,
+                        new.media_type,
+                        new.kind
+                    ])?;
+                    changed = true;
+                }
+            }
+            _ => {
+                tx.prepare_cached(
+                    "INSERT OR REPLACE INTO knowledge_files
+                     (project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                )?
+                .execute(params![
                     project_id,
                     file.path,
-                    media_type,
-                    kind.map(|kind| kind.as_str())
-                ],
-            )? > 0;
-            continue;
+                    file.content.len() as i64,
+                    new.media_type,
+                    new.kind,
+                    new.checksum,
+                    file.changed_at.unwrap_or(snapshot.committed_at),
+                    file.content,
+                ])?;
+                changed = true;
+            }
         }
-        changed = true;
-        tx.execute(
-            "INSERT OR REPLACE INTO knowledge_files
-             (project_id,path,size,media_type,preview_kind,checksum,updated_at,content)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![
-                project_id,
-                file.path,
-                file.content.len() as i64,
-                media_type,
-                kind.map(|kind| kind.as_str()),
-                checksum,
-                file.changed_at.unwrap_or(snapshot.committed_at),
-                file.content,
-            ],
-        )?;
     }
     for path in stored.keys().filter(|path| !kept.contains(path.as_str())) {
         tx.execute(
@@ -575,10 +611,7 @@ mod tests {
         command::Command,
         knowledge::{
             KnowledgeOperation,
-            git::{
-                SnapshotFile,
-                tests::{commit_all, git},
-            },
+            git::tests::{commit_all, git},
         },
     };
     use serde_json::Value;
@@ -623,17 +656,20 @@ mod tests {
     }
 
     fn snapshot(service: &KnowledgeService) -> Fetched {
+        let file = SnapshotFile {
+            path: "README.md".to_owned(),
+            changed_at: None,
+            content: b"# Old folder".to_vec(),
+        };
+        let detected = vec![Detected::of(&file)];
         Fetched::Changed(
             Snapshot {
                 commit: "a".repeat(40),
                 committed_at: 100,
-                files: vec![SnapshotFile {
-                    path: "README.md".to_owned(),
-                    changed_at: None,
-                    content: b"# Old folder".to_vec(),
-                }],
+                files: vec![file],
                 skipped: 0,
             },
+            detected,
             service.inner.disk.reserve(0).unwrap(),
         )
     }

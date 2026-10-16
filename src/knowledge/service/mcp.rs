@@ -1,15 +1,18 @@
 //! Knowledge reads for MCP clients: a folder overview and one file's text,
 //! within the response limits.
 
+use rusqlite::{OptionalExtension, params};
+
 use super::{
     FileMode, KnowledgeFile, KnowledgeOverview, KnowledgeService, OverviewFile, QUEUE_WAIT,
-    ReadmeText, TextFile, catalog::INDEXED_FILE_BYTES, requested_path,
+    ReadmeText, TextFile, authorize_read, catalog::INDEXED_FILE_BYTES, preview_kind,
+    requested_path,
 };
 use crate::{
     AppError, AppResult,
     auth::Actor,
     files::PreviewKind,
-    knowledge::{markdown, source},
+    knowledge::{FileBody, markdown, source},
 };
 
 const OVERVIEW_FILES_MAX: usize = 200;
@@ -117,25 +120,42 @@ impl KnowledgeService {
     ) -> AppResult<TextFile> {
         actor.require_ready()?;
         let path = requested_path(path)?;
-        let view = self.view(actor, project_id).await?;
-        let file = view
-            .files
-            .into_iter()
-            .find(|file| file.path == path)
-            .ok_or(AppError::NotFound { resource: "file" })?;
-        let mut result = TextFile {
-            path: file.path.clone(),
-            kind: file.kind,
-            size: file.size,
-            updated_at: file.updated_at,
-            title: None,
-            headings: Vec::new(),
-            section: None,
-            content: None,
-            truncated: false,
-            note: None,
-        };
-        if !file.kind.is_some_and(PreviewKind::has_source) {
+        let (actor_tx, project_id) = (actor.clone(), project_id.to_owned());
+        let db = self.inner.db.clone();
+        let (mut result, body) = self
+            .inner
+            .db
+            .snapshot(move |connection| {
+                authorize_read(connection, &actor_tx, &project_id)?;
+                connection
+                    .query_row(
+                        "SELECT size,preview_kind,media_type,updated_at,checksum,rowid
+                         FROM knowledge_files WHERE project_id=?1 AND path=?2",
+                        params![project_id, path],
+                        |row| {
+                            let size: i64 = row.get(0)?;
+                            let kind: Option<String> = row.get(1)?;
+                            let file = TextFile {
+                                path: path.clone(),
+                                kind: preview_kind(kind.as_deref(), &row.get::<_, String>(2)?),
+                                size,
+                                updated_at: row.get(3)?,
+                                title: None,
+                                headings: Vec::new(),
+                                section: None,
+                                content: None,
+                                truncated: false,
+                                note: None,
+                            };
+                            let body = FileBody::new(db, row.get(5)?, row.get(4)?, size as u64);
+                            Ok((file, body))
+                        },
+                    )
+                    .optional()?
+                    .ok_or(AppError::NotFound { resource: "file" })
+            })
+            .await?;
+        if !result.kind.is_some_and(PreviewKind::has_source) {
             if section.is_some() {
                 return Err(AppError::validation(
                     "section",
@@ -145,7 +165,7 @@ impl KnowledgeService {
             result.note = Some("This file is not text. Open it in oneloop to view or download it.");
             return Ok(result);
         }
-        let markdown_file = file.kind == Some(PreviewKind::Markdown);
+        let markdown_file = result.kind == Some(PreviewKind::Markdown);
         if section.is_some() && !markdown_file {
             return Err(AppError::validation(
                 "section",
@@ -166,7 +186,7 @@ impl KnowledgeService {
         } else {
             text_bytes(FILE_TEXT_CHARS_MAX)
         };
-        let (text, longer) = self.text(actor, project_id, &file.path, limit).await?;
+        let (text, longer) = text_start(body, limit).await?;
         turn.run(move || {
             let mut content = text.as_str();
             if markdown_file {
@@ -211,23 +231,28 @@ impl KnowledgeService {
         let read = self
             .file(actor, project_id, path, FileMode::Download, None)
             .await?;
-        let Some(body) = read.body else {
-            return Ok((String::new(), false));
-        };
-        let longer = body.len() > limit;
-        let mut bytes = body.read_start(limit).await?;
-        // A character that the limit splits is left out; other bytes that
-        // aren't UTF-8 become U+FFFD. Valid text is not copied.
-        if longer
-            && let Err(error) = std::str::from_utf8(&bytes)
-            && error.error_len().is_none()
-        {
-            bytes.truncate(error.valid_up_to());
+        match read.body {
+            Some(body) => text_start(body, limit).await,
+            None => Ok((String::new(), false)),
         }
-        let text = String::from_utf8(bytes)
-            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
-        Ok((text, longer))
     }
+}
+
+/// The first `limit` bytes of `body` as text, and whether the file is longer.
+async fn text_start(body: FileBody, limit: u64) -> AppResult<(String, bool)> {
+    let longer = body.len() > limit;
+    let mut bytes = body.read_start(limit).await?;
+    // A character that the limit splits is left out; other bytes that
+    // aren't UTF-8 become U+FFFD. Valid text is not copied.
+    if longer
+        && let Err(error) = std::str::from_utf8(&bytes)
+        && error.error_len().is_none()
+    {
+        bytes.truncate(error.valid_up_to());
+    }
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    Ok((text, longer))
 }
 
 /// At most `limit` characters, cut at a line break when one is near.
