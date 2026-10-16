@@ -193,10 +193,10 @@ async fn asset_response(
             .to_string()
     };
     // Fonts and images are compressed already.
-    let gzip = if file.data.len() > 1024
+    let compress = file.data.len() > 1024
         && (mime.starts_with("text/") || mime == "image/svg+xml")
-        && accepts_gzip(request)
-    {
+        && accepts_gzip(request);
+    let gzip = if compress && !unchanged {
         gzip_body(digest, &file.data).await
     } else {
         None
@@ -222,7 +222,7 @@ async fn asset_response(
         headers.insert(header::CONTENT_TYPE, value);
     }
     // The gzip body is another representation, so its tag is weak.
-    let etag = if encoded { format!("W/{etag}") } else { etag };
+    let etag = if compress { format!("W/{etag}") } else { etag };
     if let Ok(value) = HeaderValue::from_str(&etag) {
         headers.insert(header::ETAG, value);
     }
@@ -271,8 +271,8 @@ fn accepts_gzip(request: &HeaderMap) -> bool {
                 .next()
                 .is_some_and(|name| name.eq_ignore_ascii_case("gzip"))
                 && !parts.any(|part| {
-                    part.strip_prefix("q=")
-                        .is_some_and(|q| q.parse::<f32>().is_ok_and(|q| q == 0.0))
+                    part.get(..2).is_some_and(|q| q.eq_ignore_ascii_case("q="))
+                        && part[2..].parse::<f32>().is_ok_and(|q| q == 0.0)
                 })
         })
 }

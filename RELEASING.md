@@ -79,7 +79,8 @@ if one step fails, look at what already went out before you retry. Retry with
 **Re-run failed jobs** within a day of the build, while the run still has the
 image digests; it reuses the images that were built. If `main`'s CI failed on a
 flaky test, re-run its failed jobs first, then the release's; the release
-waits for the new attempt. Tags must never move, so fix forward with a new version when needed.
+waits for the new attempt. Tags must never move, so fix forward with a new
+version when needed.
 
 ## Dependencies
 

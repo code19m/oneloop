@@ -1065,7 +1065,7 @@ async fn assets_are_gzipped_only_for_clients_that_accept_gzip() {
     let response = fetch(&[]).await.unwrap();
     assert!(response.headers().get("content-encoding").is_none());
     let raw = body_bytes(response).await;
-    let response = fetch(&[("accept-encoding", "gzip;q=0, identity")])
+    let response = fetch(&[("accept-encoding", "GZIP;Q=0, identity")])
         .await
         .unwrap();
     assert!(response.headers().get("content-encoding").is_none());
@@ -1094,6 +1094,7 @@ async fn assets_are_gzipped_only_for_clients_that_accept_gzip() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert!(response.headers().get("content-encoding").is_none());
 }
 
 #[tokio::test]
