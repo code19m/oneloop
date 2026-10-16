@@ -175,6 +175,18 @@ test('Escape while a press is still down gives focus to Edit, though the editor 
   assert(t.d.getElementById('task-description'), 'the editor keeps its place while the button is down');
 });
 
+test('a context menu or a native drag ends a press that sends no pointerup, so the description shows its text', async () => {
+  for (const type of ['contextmenu', 'dragend']) {
+    const t = describedTask('One line'), below = t.d.querySelector('.task-activity h2');
+    t.A.editDescription('BIR-079');
+    below.dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+    t.d.getElementById('task-description').blur();
+    assert(t.d.getElementById('task-description'), 'the editor waits while the button is down');
+    below.dispatchEvent(new t.w.Event(type, { bubbles: true, cancelable: true }));
+    await waitFor(() => !t.d.getElementById('task-description'), `the description shows its text after ${type}`);
+  }
+});
+
 test('a description keeps its editor while a conflict question or a Not saved draft holds its text', async () => {
   const t = conflictPage({ desc: 'Their description' }), editor = () => t.d.getElementById('task-description');
   t.task.desc = 'Saved description'; t.A.refresh();
