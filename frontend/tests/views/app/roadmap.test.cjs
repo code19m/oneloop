@@ -271,8 +271,8 @@ test('arrow keys, Home and End on a track\'s grip move the track, keep focus on 
   assert.deepEqual(t.calls.map(([, move]) => [move.trackId, move.position]), [['t1', 1], ['t1', 4], ['t1', 3], ['t1', 0]], 'the first track goes no higher');
 });
 
-test('a track move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
-  const t = withRuntime('roadmap', ['moveTrack']);
+test('a track move redraws the Roadmap in place at once, sends one optimistic command and skips a no-op repeat', async () => {
+  const t = withRuntime('roadmap', ['moveTrack']), main = t.d.getElementById('main'), header = t.d.querySelector('.topbar');
   // The 1000 px wide Roadmap shows five 100 px lanes from 100 px down, scrolled 500 px into their 3000 px.
   t.w.Element.prototype.getBoundingClientRect = function () {
     const lanes = [...this.ownerDocument.querySelectorAll('.lane[data-track]')], index = lanes.indexOf(this);
@@ -286,6 +286,7 @@ test('a track move paints at once, sends one optimistic command and skips a no-o
   assert.deepEqual([line.hidden, line.style.left, line.style.width], [false, '0px', '1000px'], 'the line shows across the Roadmap, not past it');
   pointer('pointerup', t.d, 500, 380);
   assert.deepEqual(laneOrder(t.d), ['t2', 't3', 't1', 't4', 't5']);
+  assert.equal(t.d.getElementById('main'), main); assert.equal(t.d.querySelector('.topbar'), header, 'only the Roadmap is drawn again');
   // The move comes from the page's window, so it compares as JSON.
   assert.equal(JSON.stringify(t.calls), JSON.stringify([['moveTrack', { trackId: 't1', position: 2, optimistic: true }]]));
   assert.ok(t.A.context().movePending);
@@ -296,10 +297,16 @@ test('a track move paints at once, sends one optimistic command and skips a no-o
   assert.equal(t.calls.length, 1);
 });
 
-test('a track moved with the keyboard scrolls into view below the date axis', async () => {
+test('a track moved with the keyboard comes into view below the date axis, then slides there from where it showed', async () => {
   // Lay out 160 px lanes under a 90 px sticky axis in a 400 px tall Roadmap.
   const AXIS = 90, LANE = 160, VIEW = { top: 100, bottom: 500 };
-  const t = withRuntime('roadmap', ['moveTrack']);
+  const t = withRuntime('roadmap', ['moveTrack'], { media: () => false });
+  /** Where each lane's slide starts, by its track. */
+  const slides = new Map();
+  t.w.Element.prototype.animate = function (frames) {
+    if (this.matches('.lane')) slides.set(this.dataset.track, frames[0].transform);
+    return { finished: Promise.resolve(), cancel() {} };
+  };
   const box = (top, height) => ({ x: 0, left: 0, right: 300, width: 300, y: top, top, bottom: top + height, height });
   t.w.Element.prototype.getBoundingClientRect = function () {
     if (this.id === 'rmScroll') return box(VIEW.top, VIEW.bottom - VIEW.top);
@@ -315,6 +322,8 @@ test('a track moved with the keyboard scrolls into view below the date axis', as
   };
   pressGrip(t, 't1', 'End');
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved to the bottom');
+  // It showed 190 px down and shows 340 px down, so it slides 150 px instead of jumping in from below.
+  assert.equal(slides.get('t1'), 'translate(0px, -150px)');
   await saved(t);
   pressGrip(t, 't1', 'Home');
   assert.deepEqual(laneOrder(t.d)[0], 't1');

@@ -156,11 +156,11 @@ test('renders keep an unchanged sidebar, so a click that spans one still lands',
   assert(t.d.querySelector('.sidebar .nav-item[title="Board"]').classList.contains('on'));
 });
 
-test('Roadmap refreshes keep focus on the focused epic or milestone', () => {
-  const t=boot('roadmap');
-  for(const selector of ['[data-epic]','[data-milestone]']){
-    const item=t.d.querySelector(selector);assert(item,selector);item.focus();const key=selector==='[data-epic]'?'epic':'milestone',id=item.dataset[key];
-    t.A.refreshRoadmap();assert.equal(t.d.activeElement.dataset[key],id);
+test('Roadmap refreshes keep focus on the focused epic, milestone, grip or track menu button', () => {
+  const t=boot('roadmap'),epic=t.d.querySelector('[data-epic]').dataset.epic,milestone=t.d.querySelector('[data-milestone]').dataset.milestone;
+  for(const selector of [`[data-epic="${epic}"]`,`[data-milestone="${milestone}"]`,'.lane[data-track="t2"] .grip','.lane[data-track="t2"] .kebab']){
+    t.d.querySelector(selector).focus();t.A.refreshRoadmap();
+    assert(t.d.activeElement.matches(selector),selector);
   }
 });
 

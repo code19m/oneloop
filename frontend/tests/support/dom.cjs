@@ -295,10 +295,11 @@ function bootApp({
 /**
  * Boot `route` with the runtime functions `held` replaced: each records its
  * call in `calls` and stays pending in `requests` until the test settles it.
+ * `options` go to bootApp.
  */
-function withRuntime(route, held) {
+function withRuntime(route, held, options = {}) {
   const calls = [], reports = [], requests = [];
-  const t = bootApp({ route });
+  const t = bootApp({ route, ...options });
   const hold = name => (...args) => { calls.push([name, ...args]); const request = deferred(); requests.push(request); return request.promise; };
   t.w.OneloopRuntime = { ...t.w.OneloopRuntime, ...Object.fromEntries(held.map(name => [name, hold(name)])), report(error) { reports.push(error); } };
   return { ...t, calls, reports, requests };

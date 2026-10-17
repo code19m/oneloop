@@ -189,6 +189,7 @@ test('track keyboard moves and pointer Board/track drags save and cancel', async
   await expect(page.locator('.sort-marker')).toBeVisible();
   await page.mouse.up();
   await expect.poll(order).toEqual([track.id, second.id, third.id]);
+  await expect(grip).toBeFocused();
   await settled();
   const server = await (await instance.api.get(`/api/projects/${project.id}/roadmap`)).json();
   expect(server.tracks.map(t => t.id)).toEqual([track.id, second.id, third.id]);

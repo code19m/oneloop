@@ -293,10 +293,9 @@ function revealLane(lane) {
 }
 
 function focusMovedTrack(id) {
-  const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id), list = tracks();
+  const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id);
   revealLane(lane);
   lane?.querySelector('.grip')?.focus({preventScroll:true});
-  announce(`${trackById(id)?.name || 'Track'} moved to position ${list.findIndex(track=>track.id===id)+1} of ${list.length}`);
 }
 
 /** Show track `id` at `position` at once, then save the move. */
@@ -306,18 +305,16 @@ function moveTrack(id, position) {
   if (index < 0) return;
   const to = Math.max(0, Math.min(list.length-1, position));
   if (to === index) return;
-  const before = UIMotion.positions('.lane');
   const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
   const moved = list.splice(index, 1)[0];
   list.splice(to, 0, moved);
   list.forEach((t, i) => { t.order = i; });
-  App.refresh();
-  focusMovedTrack(id);
-  UIMotion.layout(before, '.lane');
+  App.refreshRoadmap(id);
+  announce(`${moved.name} moved to position ${to+1} of ${list.length}`);
   const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
   runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
     const sameSession=session===sessionKey(D);
-    if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=UIMotion.positions('.lane');App.refresh();UIMotion.layout(rollbackBefore,'.lane');}}
+    if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId)App.refreshRoadmap();}
     report(error);
   }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
 }
@@ -840,20 +837,26 @@ Object.assign(App, {
     rows.replaceWith(next);peek.scrollTop=peekScroll;next.scrollTop=rowsScroll;
     if (focus && !peek.inert && !document.querySelector('.confirmation-layer,.file-overlay')) restoreOpener(focus);
   },
-  refreshRoadmap() {
+  /**
+   * Draw the Roadmap again in place: its scroll and the focused control stay,
+   * and lanes slide to their new places. A track moved here, `moved`, first
+   * comes into view with focus on its grip, so its lane slides from where it
+   * showed instead of jumping.
+   */
+  refreshRoadmap(moved) {
     refreshEpicSummary();
     if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
     if(!content||!scroll){App.refresh();return;}
     roadmapGestureCleanup();
     const before=UIMotion.positions('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
-    const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
+    const focus=content.contains(document.activeElement)?rememberOpener(document.activeElement):null;
     setHTML(content,renderRoadmap());mountRoadmap();
     // The header counts what the timeline now shows.
     const stats=document.querySelector('.topbar .roadmap-structure-stats'),counted=roadmapStatsHtml();
     if(stats&&stats.outerHTML!==counted){const template=document.createElement('template');setHTML(template,counted);stats.replaceWith(template.content);}
     const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
-    if(focusId){const equivalent=[...content.querySelectorAll(`[data-${focusType}]`)].find(el=>el.dataset[focusType]===focusId);(equivalent||document.querySelector('.topbar button'))?.focus({preventScroll:true});}
+    if(moved)focusMovedTrack(moved);else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
     if(before)UIMotion.layout(before,'.lane');
     App.refreshCounts();
