@@ -492,7 +492,7 @@ export function installCollaborationController({ transport, recovery, eventSourc
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
         const next=currentSession();
         if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();deletedHere.clear();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
-        if(change?.type==='command')for(const entity of change.result?.entities??[])if(entity?.deleted&&Number.isSafeInteger(entity.revision))deletedHere.set(entity.id,entity.revision);
+        if(change?.type==='command')for(const entity of change.result?.entities??[])if(entity?.deleted&&entity.id&&Number.isSafeInteger(entity.revision))deletedHere.set(entity.id,entity.revision);
         if(change?.type==='bootstrap'){
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
           // A new projection reads the open page's comments and activity again.
