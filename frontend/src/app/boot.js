@@ -100,7 +100,6 @@ installTooltips(document);
 installSaveShortcut(document,recovery);
 installDisclosures(document);
 installPreviews(document,runtimeHooks);
-installChecklistControls(document);
 
 runtimeHooks.subscribe(change=>{
   const boardChanged=change.type==='sse'&&change.kind!=='inbox.changed'&&!['comment','attachment','knowledge_source'].includes(change.entityType)
@@ -117,6 +116,7 @@ try {
   recovery.start();
   bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load(routeScope(scope))});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
+  installChecklistControls(document,bridge);
   app.refresh();
   routeLoader=async(options={})=>{try{await bridge.loadCurrentRoute(options);}catch(error){if(!recovery.handleRouteError(error))reportError(error);}};
   window.addEventListener('hashchange',routeLoader);
