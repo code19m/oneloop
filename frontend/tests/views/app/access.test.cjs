@@ -386,6 +386,38 @@ test('a sign-out in the tab forgets a Pool item that could not be added', async 
  assert.equal(t.d.getElementById('poolAdd').value, '');
 });
 
+/** Send a Pool item that is still on its way when the Pool closes. */
+function sendPoolItem(t) {
+ t.A.openModal('pool');
+ const input = t.d.getElementById('poolAdd'); input.value = 'An idea on its way';
+ t.A.poolKey({ key: 'Enter', target: input, preventDefault() {} });
+ t.A.closeOverlays();
+ return t.commands.find(command => command.operation === 'pool.create');
+}
+
+test('a Pool item on its way when the session ends by itself waits for its person', async () => {
+ const t = bootApp({ route: 'board' });
+ const sent = sendPoolItem(t);
+ const session = endSession(t);
+ assert.equal(t.d.querySelector('.auth-notice').textContent, 'Your session ended. Sign in again to keep what you typed.');
+ // The item meets the end of the session.
+ sent.reject(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); await settle();
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openModal('pool'); await settle();
+ assert.equal(t.d.getElementById('poolAdd').value, 'An idea on its way');
+});
+
+test('a Pool item on its way when its person signs out in its tab is not kept for their next sign-in', async () => {
+ const t = bootApp({ route: 'board' });
+ const sent = sendPoolItem(t);
+ const session = signOutHere(t);
+ sent.reject(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); await settle();
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openModal('pool'); await settle();
+ assert.equal(t.d.getElementById('poolAdd').value, '');
+});
+
 test('a sign-out in another tab keeps the person\'s drafts, checklist titles, unsent comments and Pool items for their next sign-in here', async () => {
  const t = bootApp({ route: 'task/BIR-079', prepare: withChecklist });
  await leaveTaskUnsaved(t);

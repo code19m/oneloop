@@ -38,6 +38,9 @@ All notable changes to oneloop are recorded here. The format follows
   again there. Your other open tabs keep what you typed in them for your next
   sign-in there, as when a session ends by itself: it comes back when you open
   its page again. Only text in an open dialog goes with the dialog.
+- A Pool item still on its way when your session ended by itself was lost. It
+  now comes back in the Pool's field after you sign in again, as a comment
+  does.
 - **Confirm your identity** now closes when the session ends while it asks,
   as when you sign out in another tab, so the sign-in page can be used at
   once instead of after **Cancel**.
