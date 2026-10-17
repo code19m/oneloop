@@ -72,11 +72,14 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     // A note that a tab left when it closed during its sign-out goes first:
     // storing the same value again would reach no other tab.
     if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS};store(SIGNING_OUT,null);store(SIGNING_OUT,userId);}
+    const done=()=>{if(userId){signingOut=null;store(SIGNING_OUT,null);}};
     try{await logoutHere();}
-    finally{if(userId){signingOut=null;store(SIGNING_OUT,null);}}
+    catch(error){done();throw error;}
     if(here())signOut();
-    // Nothing stays stored.
+    // The other tabs hear of the sign-out before its note goes, so none can
+    // meet the ended session in between. Nothing stays stored.
     if(userId){store(SIGNED_OUT,userId);store(SIGNED_OUT,null);}
+    done();
   }
 
   /**

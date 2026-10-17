@@ -201,6 +201,15 @@ test('a sign-out note that a closed tab left still reaches the other tabs at the
   answer.resolve();await leaving;await settle();
 });
 
+test('the other tabs hear of a sign-out before its note goes, so none meets the ended session in between',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1');
+  // A request of the other tab meets the ended session just as the note goes, as the app's response observer does.
+  there.addEventListener('storage',(event)=>{if(event.key==='oneloop.signingOut'&&event.newValue===null&&other.data.session)other.auth.expire();});
+  await signingOut.auth.logout();await settle();
+  assert.deepEqual(other.changes,['signed out']);
+});
+
 test('a sign-out that doesn\'t reach the server, or whose tab went away, leaves a session that ends later to end by itself',async(t)=>{
   page(t);
   const [here,there]=browser(2),offline=deferred(),other=await tabOf(there,'u1'),failing=await tabOf(here,'u1',{api:{logout:()=>offline.promise}});
