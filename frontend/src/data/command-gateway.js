@@ -60,6 +60,8 @@ export function createCommandGateway({ api, data, getScope = () => '', onChange 
     isPending: (interactionKey) => inFlight.has(scopedKey(String(getScope() ?? ''),interactionKey)),
     /** Whether any command is still on its way to the server. */
     hasPending: () => inFlight.size > 0,
+    /** Settles once no command is on its way to the server, also those sent meanwhile. */
+    async idle() { while (inFlight.size) await Promise.allSettled([...inFlight.values()].map((entry) => entry.promise)); },
     discard: (interactionKey) => uncertain.delete(scopedKey(String(getScope() ?? ''),interactionKey)),
     invalidate() { uncertain.clear(); },
   });

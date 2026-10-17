@@ -60,7 +60,7 @@ const bootstrap = createBootstrapController({ api, data, onReady: (projection) =
 const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),onChange: (result) => runtimeHooks?.publish({ type:'command', result }),onPending:(key,pending)=>recovery?.interactionPending(key,pending) });
 // A read repaints only the view that shows what it loaded. A task read
 // shows on its page as a change from elsewhere does, in place.
-const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refreshTask(task.id);},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
+const reads = createReadController({api,data,writes:gateway,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refreshTask(task.id);},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
 const signInLoad = createSignInLoad({bootstrap,api,data,getApp:()=>app});
 const routeScope = (scope) => scopeOfRoute(location.hash, app, scope);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {createCommandGateway} from '../../../src/data/command-gateway.js';
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData} from '../../../src/data/projection-store.js';
 import {saveDoneOrder} from '../../../src/data/done-order.js';
@@ -324,4 +325,33 @@ test('a live Board patch for filters the Board no longer shows does not bring th
   views[1].resolve(boardView([task('two','planning')]));await filtered;
   assert.equal((await patch).stale,true);
   assert.equal(views.length,2,'no read of the old filters');assert.deepEqual(data.tasks.map(item=>item.internalId),['two']);
+});
+
+test('a live Board read never undoes a move the tab makes while it runs, whichever answer lands first',async()=>{
+  for(const first of ['move','read']){
+    const requests=held(),api={boardView:requests.api('boardView'),command:requests.api('command')};
+    const data=createLegacyData();data.session={id:'s1',userId:'u1'};
+    const gateway=createCommandGateway({api,data}),reads=createReadController({api,data,writes:gateway});
+    const card=(id,position,revision=1)=>({...task(id,'planning'),position,revision});
+    const order=()=>data.tasks.map(item=>item.internalId),boardViews=()=>requests.calls.filter(call=>call.name==='boardView');
+    const shown=reads.board('p1');boardViews()[0].resolve(boardView([card('a',1),card('b',2),card('c',3),card('d',4)]));await shown;
+    // A hint that the column was re-spaced reads the Board again, and the
+    // person moves d to the top while that read runs. The move shows at once,
+    // as the Board shows its own moves.
+    const live=reads.board('p1',{},{background:true});await settle();
+    const d=data.tasks.find(item=>item.internalId==='d');
+    data.tasks.splice(data.tasks.indexOf(d),1);data.tasks.unshift(d);d.order=data.tasks[1].order-1;
+    const moved=gateway.execute('task.move',{taskId:'d',status:'planning',position:0},{expectedRevision:1});await settle();
+    const command=requests.calls.find(call=>call.name==='command'),saved={entities:[{entityType:'task',...card('d',0,2)}],events:[]};
+    // The read answers from before the move, in the column's new spacing.
+    const before=boardView([card('a',1024),card('b',2048),card('c',3072),card('d',4096)]);
+    if(first==='move'){command.resolve(saved);await moved;boardViews()[1].resolve(before);}
+    else{boardViews()[1].resolve(before);await settle();assert.deepEqual(order(),['d','a','b','c'],'the move stays while it is saved');command.resolve(saved);await moved;}
+    await settle();
+    assert.equal(boardViews().length,3,`${first}: it reads again once the move is saved`);
+    boardViews()[2].resolve(boardView([card('d',0,2),card('a',1024),card('b',2048),card('c',3072)]));
+    assert.equal((await live).stale,false);
+    assert.deepEqual(order(),['d','a','b','c'],first);
+    assert.deepEqual(data.tasks.map(item=>item.order),[0,1024,2048,3072],first);
+  }
 });

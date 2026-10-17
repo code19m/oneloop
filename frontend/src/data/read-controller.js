@@ -26,9 +26,10 @@ function boardFilters(filters={}){
  * thing, the older caller gets the newer result instead of nothing. Reads of
  * different slots never cancel each other. A background (live) read never
  * replaces a read someone is waiting for: it waits for that read first, and it
- * is dropped when a full refresh landed while it ran.
+ * is dropped when a full refresh landed while it ran. `writes` tells whether
+ * any of this tab's changes is still on its way to the server.
  */
-export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
+export function createReadController({api,data,writes={hasPending:()=>false,idle:async()=>{}},onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
   let epoch=0;
   let boardState=null,boardDirty=false,pageController=new AbortController();
   /** @type {Promise<any>|null} */ let boardPageRead=null;
@@ -39,6 +40,18 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   const poolStates=new Map();
   const current=(/** @type {Token} */ token)=>slots.get(token.slot)===token&&token.epoch===epoch&&!(token.background&&token.projection!==(data.projectionGeneration??0));
   const ignored=(/** @type {Token} */ token,error)=>!current(token)||error?.code==='aborted';
+  /** The project's cards as this tab shows them: their order, revisions, positions and columns. */
+  const shownCards=(projectId)=>JSON.stringify(data.tasks.filter(task=>task.projectId===projectId).map(task=>[task.internalId,task.revision,task.order,task.state]));
+  /**
+   * Call as a read starts. The function it returns says whether this tab has
+   * changed the project's cards since, or had a change on its way to the
+   * server: the read's answer may not show that change yet.
+   * @param {string} projectId
+   */
+  function ownChanges(projectId){
+    const before=shownCards(projectId),pending=writes.hasPending();
+    return ()=>pending||writes.hasPending()||shownCards(projectId)!==before;
+  }
 
   /**
    * Run `work` as the newest read of `slot`. A stale outcome resolves to the
@@ -100,24 +113,30 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
       onBoard(boardState);return {stale:false,state:boardState,unchanged:true};
     }
     return read('board',target,!!options.background,async token=>{
-      const started=stamp();
       try{
-        const response=await api.boardView(projectId,common,{signal:token.signal,background:options.background});
-        if(!current(token))return {stale:true};
-        const columns=byStatus(response),pages=STATUSES.map(status=>columns[status]);
-        const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
-        // A real reconcile rebuilds only the previously loaded depth, using the
-        // server's bounded pages. Ordinary task hints use patchBoard instead.
-        // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
-        await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:toWireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
-        if(!current(token))return {stale:true};
-        replaceBoardTasks(data,projectId,pages.flatMap((page)=>page.items));
-        const pageMap=Object.fromEntries(STATUSES.map((status,index)=>[status,{nextCursor:pages[index].nextCursor,total:Number(pages[index].total??0)}]));
-        // Cards read before a newer projection are not reused as current.
-        remember({projectId,filters:common,pages:pageMap,depths},started);
-        setBoardPageInfo(data,projectId,common,pageMap);
-        setProjectTaskCounts(data,projectId,byStatus(response.counts));
-        onBoard(boardState);return {stale:false,state:boardState};
+        for(;;){
+          const started=stamp(),changed=ownChanges(projectId);
+          const response=await api.boardView(projectId,common,{signal:token.signal,background:options.background});
+          if(!current(token))return {stale:true};
+          const columns=byStatus(response),pages=STATUSES.map(status=>columns[status]);
+          const depths=loaded()?{...boardState.depths}:Object.fromEntries(STATUSES.map(status=>[status,1]));
+          // A real reconcile rebuilds only the previously loaded depth, using the
+          // server's bounded pages. Ordinary task hints use patchBoard instead.
+          // A write during this read makes its deeper cursors stale; the column then keeps the pages it has.
+          await Promise.all(pages.map(async(page,index)=>{let depth=1;while(depth<(depths[STATUSES[index]]??1)&&page.nextCursor){let next;try{next=await api.board(projectId,{...common,status:toWireStatus(STATUSES[index]),cursor:page.nextCursor},{signal:token.signal,background:options.background});}catch(error){if(error?.code!=='cursor_stale')throw error;break;}page.items.push(...next.items);page.nextCursor=next.nextCursor;depth++;}depths[STATUSES[index]]=depth;}));
+          if(!current(token))return {stale:true};
+          // A live read that ran while this tab moved, added or changed a card
+          // may answer from before that change, and would undo it. It reads
+          // again once every change is saved.
+          if(options.background&&changed()){await writes.idle();if(!current(token))return {stale:true};continue;}
+          replaceBoardTasks(data,projectId,pages.flatMap((page)=>page.items));
+          const pageMap=Object.fromEntries(STATUSES.map((status,index)=>[status,{nextCursor:pages[index].nextCursor,total:Number(pages[index].total??0)}]));
+          // Cards read before a newer projection are not reused as current.
+          remember({projectId,filters:common,pages:pageMap,depths},started);
+          setBoardPageInfo(data,projectId,common,pageMap);
+          setProjectTaskCounts(data,projectId,byStatus(response.counts));
+          onBoard(boardState);return {stale:false,state:boardState};
+        }
       }catch(error){if(ignored(token,error))return {stale:true};boardLost(token);onError(error);throw error;}
     },boardLost);
   }
