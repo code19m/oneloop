@@ -39,7 +39,8 @@ All notable changes to oneloop are recorded here. The format follows
   scroll past today, as on a phone. Milestone lines and today's line no longer
   leave small marks on the column of track names either.
 - A change made elsewhere, such as in another tab, no longer takes focus off a
-  track's grip or **⋮** button on the **Roadmap**.
+  track's grip or **⋮** button on the **Roadmap**. Esc in a track's menu now
+  returns focus to its **⋮** button after such a change too.
 - A change made elsewhere while you drag a track no longer drops the drag. The
   **Roadmap** shows the change when you let go.
 - A key on a track's grip while the last track move is still saving now says

@@ -167,6 +167,8 @@ export function dismissMenu(restoreFocus=true){
   if (trigger) lastMenuTrigger = trigger;
   state.menu=null;document.querySelector('#overlay-root > .menu-scrim')?.remove();document.querySelector('#overlay-root > .menu')?.remove();
   if(trigger?.isConnected){trigger.setAttribute('aria-expanded','false');if(restoreFocus)trigger.focus({preventScroll:true});}
+  // A redraw while the menu was open, as after a change made elsewhere, replaced its button.
+  else if(trigger&&restoreFocus)restoreOpener(rememberOpener(trigger));
 }
 
 // Full SPA renders replace the opener as well as the dialog. Remember its
