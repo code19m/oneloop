@@ -1,7 +1,7 @@
 // views/app.js: the Roadmap, its milestones, zoom and track moves.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, transfer, tick } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, tick, waitFor } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'roadmap', { readOnly = false, prepare } = {}) => bootApp({ route, prepare: (D, w) => {
@@ -234,40 +234,90 @@ test('extreme calendar spans keep Roadmap cells bounded at every zoom and record
  assert(t.d.querySelector('[data-milestone]'));
 });
 
-test('a track move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
-  const t=withRuntime('roadmap', ['moveTrack', 'dateChanged']),ordered=()=>t.D.tracks.filter((item)=>item.projectId===t.D.projects[0].id).sort((left,right)=>left.order-right.order),before=ordered(),moved=before[0],target=before[1];
-  Object.assign(t.module('views/app/drag.js').drag,{item:{kind:'track',id:moved.id},laneBefore:false});
-  t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);
-  assert.equal(ordered()[1],moved);assert.equal(t.calls.length,1);assert.equal(t.calls[0][0],'moveTrack');assert.equal(t.calls[0][1].optimistic,true);assert.ok(t.A.context().movePending);
-  t.requests[0].resolve({});await tick();assert.equal(t.A.context().movePending,false);
+/** The tracks in the order the Roadmap shows them. */
+const laneOrder = d => [...d.querySelectorAll('.lane[data-track]')].map(lane => lane.dataset.track);
+const gripOf = (d, id) => d.querySelector(`.lane[data-track="${id}"] .grip`);
+/** Press `key` on track `id`'s grip, as a keyboard user does once it has focus. */
+function pressGrip(t, id, key) {
+  const grip = gripOf(t.d, id);
+  grip.focus(); grip.dispatchEvent(new t.w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+}
+/** Answer the track move that waits, and let it finish. */
+const saved = async t => { t.requests.at(-1).resolve({}); await tick(); };
 
-  const calls=t.calls.length;Object.assign(t.module('views/app/drag.js').drag,{item:{kind:'track',id:moved.id},laneBefore:false});
-  t.A.trackDrop({preventDefault(){},dataTransfer:transfer('text/track',moved.id)},target.id);
-  assert.equal(t.calls.length,calls);
+test('a track\'s menu offers only Rename track and Delete track, and viewers get neither the menu nor the grip', () => {
+  const t = bootApp({ route: 'roadmap', actions: true });
+  t.d.querySelector('.lane[data-track="t3"] .kebab').click();
+  assert.deepEqual([...t.d.querySelectorAll('#overlay-root > .menu button')].map(button => button.textContent.trim()), ['Rename track', 'Delete track']);
+  const viewer = boot('roadmap', { readOnly: true });
+  assert.equal(viewer.d.querySelectorAll('.lane[data-track]').length, 5);
+  assert.equal(viewer.d.querySelector('.lane .grip, .lane .kebab'), null);
 });
 
-test('a track moved with the keyboard scrolls into view below the date axis', () => {
+test('arrow keys, Home and End on a track\'s grip move the track, keep focus on its grip and say where it went', async () => {
+  const t = withRuntime('roadmap', ['moveTrack']);
+  pressGrip(t, 't1', 'ArrowDown');
+  assert.deepEqual(laneOrder(t.d), ['t2', 't1', 't3', 't4', 't5']);
+  assert.equal(t.d.activeElement, gripOf(t.d, 't1'));
+  await waitFor(() => t.d.querySelector('[data-announce="polite"]').textContent === 'Backend & API moved to position 2 of 5', 'the move is announced');
+  await saved(t);
+  pressGrip(t, 't1', 'End'); await saved(t);
+  assert.deepEqual(laneOrder(t.d), ['t2', 't3', 't4', 't5', 't1']);
+  pressGrip(t, 't1', 'ArrowUp'); await saved(t);
+  pressGrip(t, 't1', 'Home'); await saved(t);
+  assert.deepEqual(laneOrder(t.d), ['t1', 't2', 't3', 't4', 't5']);
+  assert.equal(t.d.activeElement, gripOf(t.d, 't1'));
+  pressGrip(t, 't1', 'ArrowUp');
+  assert.deepEqual(t.calls.map(([, move]) => [move.trackId, move.position]), [['t1', 1], ['t1', 4], ['t1', 3], ['t1', 0]], 'the first track goes no higher');
+});
+
+test('a track move paints at once, sends one optimistic command and skips a no-op repeat', async () => {
+  const t = withRuntime('roadmap', ['moveTrack']);
+  // The 1000 px wide Roadmap shows five 100 px lanes from 100 px down, scrolled 500 px into their 3000 px.
+  t.w.Element.prototype.getBoundingClientRect = function () {
+    const lanes = [...this.ownerDocument.querySelectorAll('.lane[data-track]')], index = lanes.indexOf(this);
+    const [left, top, right, bottom] = this.id === 'rmScroll' ? [0, 0, 1000, 800] : index >= 0 ? [-500, 100 + index * 100, 2500, 200 + index * 100] : [0, 0, 0, 0];
+    return { left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top };
+  };
+  const pointer = (type, target, x, y) => { const event = new t.w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
+  // Backend & API goes below the lower half of Mobile experience, the third lane.
+  pointer('pointerdown', gripOf(t.d, 't1'), 20, 150); pointer('pointermove', t.d, 500, 380);
+  const line = t.d.querySelector('.sort-marker');
+  assert.deepEqual([line.hidden, line.style.left, line.style.width], [false, '0px', '1000px'], 'the line shows across the Roadmap, not past it');
+  pointer('pointerup', t.d, 500, 380);
+  assert.deepEqual(laneOrder(t.d), ['t2', 't3', 't1', 't4', 't5']);
+  // The move comes from the page's window, so it compares as JSON.
+  assert.equal(JSON.stringify(t.calls), JSON.stringify([['moveTrack', { trackId: 't1', position: 2, optimistic: true }]]));
+  assert.ok(t.A.context().movePending);
+  await saved(t);
+  assert.equal(t.A.context().movePending, false);
+  // Dropped below Mobile experience again, it stays where it is.
+  pointer('pointerdown', gripOf(t.d, 't1'), 20, 350); pointer('pointermove', t.d, 500, 280); pointer('pointerup', t.d, 500, 280);
+  assert.equal(t.calls.length, 1);
+});
+
+test('a track moved with the keyboard scrolls into view below the date axis', async () => {
   // Lay out 160 px lanes under a 90 px sticky axis in a 400 px tall Roadmap.
   const AXIS = 90, LANE = 160, VIEW = { top: 100, bottom: 500 };
-  const t = boot('roadmap', { prepare: (_D, w) => {
-    const box = (top, height) => ({ x: 0, left: 0, right: 300, width: 300, y: top, top, bottom: top + height, height });
-    w.Element.prototype.getBoundingClientRect = function () {
-      if (this.id === 'rmScroll') return box(VIEW.top, VIEW.bottom - VIEW.top);
-      const lane = this.closest?.('.lane[data-track]');
-      if (!lane) return box(0, 0);
-      const index = [...this.ownerDocument.querySelectorAll('.lane[data-track]')].indexOf(lane);
-      return box(VIEW.top + AXIS + index * LANE - this.ownerDocument.getElementById('rmScroll').scrollTop, LANE);
-    };
-    Object.defineProperty(w.HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.classList.contains('rm-axis') ? AXIS : 0; } });
-  } });
+  const t = withRuntime('roadmap', ['moveTrack']);
+  const box = (top, height) => ({ x: 0, left: 0, right: 300, width: 300, y: top, top, bottom: top + height, height });
+  t.w.Element.prototype.getBoundingClientRect = function () {
+    if (this.id === 'rmScroll') return box(VIEW.top, VIEW.bottom - VIEW.top);
+    const lane = this.closest?.('.lane[data-track]');
+    if (!lane) return box(0, 0);
+    const index = [...this.ownerDocument.querySelectorAll('.lane[data-track]')].indexOf(lane);
+    return box(VIEW.top + AXIS + index * LANE - this.ownerDocument.getElementById('rmScroll').scrollTop, LANE);
+  };
+  Object.defineProperty(t.w.HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return this.classList.contains('rm-axis') ? AXIS : 0; } });
   const view = () => {
     const grip = t.d.activeElement, head = grip.closest('.lane-head').getBoundingClientRect();
     return { grip: grip.classList.contains('grip'), below: head.top >= VIEW.top + AXIS, above: head.bottom <= VIEW.bottom };
   };
-  const first = t.d.querySelector('.lane[data-track]').dataset.track, last = t.D.tracks.filter(track => track.projectId === t.A.context().projectId).length - 1;
-  t.A.moveTrack(first, last);
+  pressGrip(t, 't1', 'End');
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved to the bottom');
-  t.A.moveTrack(first, 0);
+  await saved(t);
+  pressGrip(t, 't1', 'Home');
+  assert.deepEqual(laneOrder(t.d)[0], 't1');
   assert.deepEqual(view(), { grip: true, below: true, above: true }, 'moved back to the top');
 });
 

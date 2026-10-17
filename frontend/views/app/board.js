@@ -504,13 +504,13 @@ Object.assign(App, {
     ev.dataTransfer.effectAllowed = 'move';
     const card = ev.currentTarget;
     const r = card.getBoundingClientRect();
-    drag.item = { kind: 'task', id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
+    drag.item = { id, offsetX: ev.clientX - r.left, offsetY: ev.clientY - r.top };
     setDragImage(ev, card);
     document.body.classList.add('is-dragging');
     requestAnimationFrame(() => { if (drag.item?.id === id) card.classList.add('dragging'); });
   },
   colOver(ev) {
-    if (!canBoard() || drag.item?.kind !== 'task') return;
+    if (!canBoard() || !drag.item) return;
     if (!ev.dataTransfer.types.includes('text/task')) return;
     ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
     const colEl = ev.currentTarget;
@@ -534,7 +534,7 @@ Object.assign(App, {
     colEl.classList.add('drop');
     drag.column = colEl.dataset.col;
     drag.before = beforeId;
-    const marker = makeDropIndicator(false);
+    const marker = makeDropIndicator();
     if (next) list.insertBefore(marker, next); else list.appendChild(marker);
     UIMotion.layout(before, '.card[data-task]', drag.item.id);
   },
@@ -551,7 +551,7 @@ Object.assign(App, {
     if(recovery.blockDrag()){ev.preventDefault();App.dragEnd();return;}
     if (!App.require('manage_board')) return;
     if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/task') || drag.item?.kind !== 'task') return;
+    if (!ev.dataTransfer.types.includes('text/task') || !drag.item) return;
     ev.preventDefault();
     const id = ev.dataTransfer.getData('text/task');
     const beforeId = drag.before;

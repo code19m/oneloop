@@ -394,8 +394,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .kebab { cursor: pointer; }
 .lane-body { position: relative; flex: 1; }
 @media (hover:hover) and (pointer:fine) {
-  .lane:not(.dragging):hover { background:rgb(var(--tone-rgb) / 0.025);border-bottom-color:rgb(var(--tone-rgb) / 0.2); }
-  .lane:not(.dragging):hover .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
+  .lane:not(.is-sorting):hover { background:rgb(var(--tone-rgb) / 0.025);border-bottom-color:rgb(var(--tone-rgb) / 0.2); }
+  .lane:not(.is-sorting):hover .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
   .lane:hover .head-ctl .grip, .lane:hover .head-ctl .kebab { opacity:0.8; }
 }
 .lane:focus-within { background:rgb(var(--tone-rgb) / 0.025); }
@@ -531,11 +531,8 @@ div.ms-label {cursor:default}
 .pool-row:hover .act { opacity: 0.8; }
 .col.drop { border-color: color-mix(in srgb, var(--accent) 40.0%, transparent); background: color-mix(in srgb, var(--accent) 5.0%, transparent); }
 .card.dragging { opacity: 0.22; }
-.lane.dragging { opacity: 0.3; }
 .drop-ind { height: 14px; position: relative; margin: 0; pointer-events: none; flex-shrink: 0; }
 .drop-ind::after { content: ''; position: absolute; inset: 5px 0; border-radius: 3px; background: var(--accent); }
-.drop-ind.track-ind { height: 3px; background: var(--accent); transition: top 160ms var(--ease-out); }
-.drop-ind.track-ind::after { display: none; }
 .card, .lane { transition: opacity 140ms var(--ease-out), background 140ms var(--ease-out), border-color 140ms var(--ease-out); }
 .col { transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out); }
 .card[data-reorderable="true"] { cursor: grab; }

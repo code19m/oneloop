@@ -13,6 +13,10 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Changed
 
+- A track's **⋮** menu on the **Roadmap** now offers only **Rename track** and
+  **Delete track**. To move a track, drag its grip, or focus the grip and use
+  the arrow keys, Home and End. A dragged track now shows its name and a line
+  where it will land, as a checklist item or a file does.
 - A Board address with filters, as after a refresh or from a bookmark, now
   loads with one request instead of two, so its cards show sooner.
 - A change to a task's checklist no longer makes every open page of the task

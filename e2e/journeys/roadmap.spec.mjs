@@ -152,7 +152,7 @@ test('a teammate renaming a task updates the open epic drawer', async ({ page, i
   await expect(rows).toContainText('Renamed by a teammate');
 });
 
-test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
+test('track keyboard moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project, track, task } = instance.projects[0];
   const [second] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' })).entities;
@@ -165,8 +165,7 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   await expect(grip).toBeFocused();
   await expect.poll(order).toEqual([second.id, track.id, third.id]);
   await settled();
-  await page.getByRole('button', { name: `Manage ${track.name} track`, exact: true }).click();
-  await page.getByRole('button', { name: 'Move to bottom', exact: true }).click();
+  await grip.press('End');
   await expect.poll(order).toEqual([second.id, third.id, track.id]);
   await expect(grip).toBeFocused();
   await settled();
@@ -174,7 +173,7 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
   await page.mouse.down();
   await page.mouse.move(target.x + 100, target.y + 4, { steps: 8 });
-  await expect(page.locator('#dropInd')).toBeVisible();
+  await expect(page.locator('.sort-marker')).toBeVisible();
   await page.mouse.up();
   await expect.poll(order).toEqual([track.id, second.id, third.id]);
   await settled();

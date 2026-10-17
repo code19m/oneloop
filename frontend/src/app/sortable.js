@@ -53,7 +53,9 @@ function locate() {
   const candidates = [...zone.querySelectorAll(s.list.row)].filter(row => row !== s.row);
   const target = candidates.find(row => s.y < row.getBoundingClientRect().bottom) || candidates.at(-1); if (!target) return;
   const r = target.getBoundingClientRect(); s.target = target; s.after = s.y > r.top + r.height / 2;
-  s.marker.hidden = false; Object.assign(s.marker.style, { left: r.left + 'px', top: (s.after ? r.bottom + 4 : r.top - 4) + 'px', width: r.width + 'px' });
+  // A row wider than its list, such as a Roadmap lane, gets a line only as wide as the list.
+  const left = Math.max(r.left, bounds.left), right = Math.min(r.right, bounds.right);
+  s.marker.hidden = false; Object.assign(s.marker.style, { left: left + 'px', top: (s.after ? r.bottom + 4 : r.top - 4) + 'px', width: right - left + 'px' });
 }
 
 function scroll() {

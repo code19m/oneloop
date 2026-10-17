@@ -3,11 +3,11 @@
    drawer, and moving tracks. */
 
 import { UIMotion } from '../../src/app/motion.js';
+import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
 } from './format.js';
-import { drag, makeDropIndicator, setDragImage } from './drag.js';
 import { descriptionReadHtml } from './forms.js';
 import {
   App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded, report, runtime,
@@ -234,11 +234,11 @@ export function renderRoadmap() {
       ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
       : 'no epics yet';
     const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-    lanes += `<div class="lane" data-track="${esc(t.id)}" ${canRoadmap() ? `${UIAction.on('dragover', 'laneOver', UIAction.event)} ${UIAction.on('drop', 'trackDrop', UIAction.event, t.id)}` : ''} style="height:${lane.height}px">
+    lanes += `<div class="lane" data-track="${esc(t.id)}" style="height:${lane.height}px">
       <div class="rail-cell lane-head" style="width:${RAIL}px">
         <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
         ${canRoadmap() ? `<div class="head-ctl">
-          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" ${UIAction.on('keydown', 'trackReorderKey', UIAction.event, t.id)} data-reorderable="true" ${UIAction.on('dragstart', 'trackDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')} title="Drag to reorder or use arrow keys">${I.grip}</button>
+          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move">${I.grip}</button>
           <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
         </div>` : ''}
       </div>
@@ -290,11 +290,46 @@ function revealLane(lane) {
 }
 
 function focusMovedTrack(id) {
-  const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id);
+  const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id), list = tracks();
   revealLane(lane);
   lane?.querySelector('.grip')?.focus({preventScroll:true});
-  announce(`${trackById(id)?.name || 'Track'} moved to position ${tracks().findIndex(track=>track.id===id)+1}`);
+  announce(`${trackById(id)?.name || 'Track'} moved to position ${list.findIndex(track=>track.id===id)+1} of ${list.length}`);
 }
+
+/** Show track `id` at `position` at once, then save the move. */
+function moveTrack(id, position) {
+  if (!App.require('manage_roadmap') || pendingMove) return;
+  const list = tracks(), index = list.findIndex(track=>track.id===id);
+  if (index < 0) return;
+  const to = Math.max(0, Math.min(list.length-1, position));
+  if (to === index) return;
+  const before = UIMotion.positions('.lane');
+  const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
+  const moved = list.splice(index, 1)[0];
+  list.splice(to, 0, moved);
+  list.forEach((t, i) => { t.order = i; });
+  App.refresh();
+  focusMovedTrack(id);
+  UIMotion.layout(before, '.lane');
+  const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
+  runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
+    const sameSession=session===sessionKey(D);
+    if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=UIMotion.positions('.lane');App.refresh();UIMotion.layout(rollbackBefore,'.lane');}}
+    report(error);
+  }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
+}
+
+// A track moves by its grip, with the pointer or the arrow keys, Home and End.
+sortable({
+  grip: '#app .lane[data-track] .grip', row: '.lane[data-track]', list: '.rm-scroll', scroll: '.rm-scroll',
+  label: (row) => trackById(row.dataset.track)?.name ?? '',
+  ready: () => canRoadmap(),
+  move: (grip, target, after) => {
+    const id = grip.closest('.lane').dataset.track;
+    const index = tracks().filter((track) => track.id !== id).findIndex((track) => track.id === target.dataset.track);
+    if (index >= 0) moveTrack(id, index + (after ? 1 : 0));
+  },
+});
 
 // ---------- epic drawer ----------
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
@@ -844,79 +879,11 @@ Object.assign(App, {
   trackMenu(ev, id) {
     ev.stopPropagation();
     if (!App.require('manage_roadmap')) return;
-    const list = tracks(), index = list.findIndex(track=>track.id===id);
-    const moves = [];
-    if (index > 0) moves.push({label:'Move up',fn:()=>App.moveTrack(id,index-1)}, {label:'Move to top',fn:()=>App.moveTrack(id,0)});
-    if (index < list.length-1) moves.push({label:'Move down',fn:()=>App.moveTrack(id,index+1)}, {label:'Move to bottom',fn:()=>App.moveTrack(id,list.length-1)});
+    // The grip moves a track; the menu only renames and deletes it.
     openMenu([
-      ...moves, ...(moves.length ? [{sep:true}] : []),
       { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; App.refreshOverlays(); } },
       { sep: true },
       { label: 'Delete track', danger: true, fn: () => App.deleteTrack(id) },
     ], 0, 0, {trigger:ev.currentTarget, trackId:id});
-  },
-
-  trackDragStart(ev, id) {
-    if (!App.require('manage_roadmap')) { ev.preventDefault(); return; }
-    if (pendingMove) { ev.preventDefault(); return; }
-    App.dragEnd(false);
-    ev.dataTransfer.setData('text/track', id);
-    ev.dataTransfer.effectAllowed = 'move';
-    const lane = ev.target.closest('.lane');
-    drag.item = { kind: 'track', id };
-    setDragImage(ev, lane.querySelector('.lane-head'), true);
-    document.body.classList.add('is-dragging');
-    requestAnimationFrame(() => { if (drag.item?.id === id) lane.classList.add('dragging'); });
-  },
-  laneOver(ev) {
-    if (!canRoadmap() || drag.item?.kind !== 'track') return;
-    if (!ev.dataTransfer.types.includes('text/track')) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
-    const lane = ev.currentTarget;
-    const r = lane.getBoundingClientRect();
-    drag.laneBefore = ev.clientY < r.top + r.height / 2;
-    const ind = makeDropIndicator(true);
-    ind.style.top = (lane.offsetTop + (drag.laneBefore ? -2 : lane.offsetHeight - 1)) + 'px';
-    lane.parentNode.appendChild(ind);
-  },
-  trackDrop(ev, targetId) {
-    if (!App.require('manage_roadmap')) return;
-    if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/track') || drag.item?.kind !== 'track') return;
-    ev.preventDefault();
-    const id = ev.dataTransfer.getData('text/track');
-    const beforeTarget = drag.laneBefore;
-    App.dragEnd(false);
-    if (!id || id === targetId) return;
-    const list = tracks().filter(track=>track.id!==id);
-    const index = list.findIndex(track=>track.id===targetId);
-    if (index < 0) return;
-    App.moveTrack(id, index + (beforeTarget ? 0 : 1));
-  },
-  trackReorderKey(event, id) {
-    const delta = {ArrowUp:-1,ArrowDown:1}[event.key];
-    if (!delta || event.isComposing) return;
-    event.preventDefault(); App.moveTrack(id, tracks().findIndex(track=>track.id===id) + delta);
-  },
-  moveTrack(id, position) {
-    if (!App.require('manage_roadmap') || pendingMove) return;
-    const list = tracks(), index = list.findIndex(track=>track.id===id);
-    if (index < 0) return;
-    const to = Math.max(0, Math.min(list.length-1, position));
-    if (to === index) return;
-    const before = UIMotion.positions('.lane');
-    const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
-    const moved = list.splice(index, 1)[0];
-    list.splice(to, 0, moved);
-    list.forEach((t, i) => { t.order = i; });
-    App.refresh();
-    focusMovedTrack(id);
-    UIMotion.layout(before, '.lane');
-    const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
-    runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
-      const sameSession=session===sessionKey(D);
-      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=UIMotion.positions('.lane');App.refresh();UIMotion.layout(rollbackBefore,'.lane');}}
-      report(error);
-    }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
   },
 });

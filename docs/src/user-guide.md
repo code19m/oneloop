@@ -41,7 +41,8 @@ track. It is the first page you see after you sign in.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
-  drag the grip next to a track's name, or use the arrow keys on it.
+  drag the grip next to a track's name, or focus the grip and use the arrow
+  keys, Home and End. A track's **⋮** menu renames or deletes it.
 - You can delete a track only when it has no epics, and an epic only when it has
   no tasks.
 
