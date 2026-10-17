@@ -121,6 +121,35 @@ test.describe('with Reduce motion', () => {
   });
 });
 
+test('a track\'s name keeps clear of its grip and ⋮, takes two lines at most, and shows in full in its tip', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
+  for (const name of ['Internationalization', 'Customer support tools', long, 'Billing', 'Data', 'Mobile']) await command(instance.api, 'track.create', { projectId: project.id, name });
+  await openApp(page, instance, 'roadmap');
+  const names = await page.locator('.lane').evaluateAll(lanes => lanes.map(lane => {
+    const name = lane.querySelector('.name'), box = name.getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
+    text.selectNodeContents(name);
+    const shown = [...text.getClientRects()].filter(line => line.bottom <= box.bottom + 1);
+    return { name: name.textContent, lines: new Set(shown.map(line => Math.round(line.top))).size, covered: shown.some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom) };
+  }));
+  expect(names.length).toBe(7);
+  expect(names.filter(name => name.covered || name.lines > 2)).toEqual([]);
+  const tip = page.locator('#app-tip'), lane = name => page.locator('.lane').filter({ has: page.getByRole('heading', { name, exact: true }) });
+  await lane(long).locator('.name').hover();
+  await expect(tip).toHaveText(long);
+  await page.mouse.move(1, 1);
+  await expect(tip).toHaveCount(0);
+  // Keyboard focus reaches the grip from the ⋮ beside it.
+  await lane(long).getByRole('button', { name: `Manage ${long} track` }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(lane(long).getByRole('button', { name: `Reorder ${long}` })).toBeFocused();
+  await expect(tip).toHaveText(long);
+  await lane('Billing').getByRole('button', { name: 'Manage Billing track' }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(lane('Billing').getByRole('button', { name: 'Reorder Billing' })).toBeFocused();
+  await expect(tip, 'a name that fits needs no tip').toHaveCount(0);
+});
+
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 375, height: 812 } });
 

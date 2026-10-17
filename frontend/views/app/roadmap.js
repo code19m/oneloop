@@ -231,12 +231,14 @@ export function renderRoadmap() {
       ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
       : 'no epics yet';
     const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
+    // A name cut off after two lines shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
+    const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
     lanes += `<div class="lane" data-track="${esc(t.id)}" style="min-height:${lane.height}px">
       <div class="rail-cell lane-head" style="width:${RAIL}px">
-        <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
+        <h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
         ${canRoadmap() ? `<div class="head-ctl">
-          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move">${I.grip}</button>
-          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
+          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
+          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
         </div>` : ''}
       </div>
       <div class="lane-body">${bars}</div>

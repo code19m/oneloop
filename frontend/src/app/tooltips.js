@@ -9,7 +9,9 @@ import { placeNear } from './layers.js';
  * keyboard focus and on a tap; Escape, a press elsewhere and resizing hide it,
  * and the pointer can move onto it. Scrolling hides it too, unless its
  * element has focus: then the tip moves with it. With `data-tip-overflow`, it
- * shows only while the element's text is cut off or hidden. A tap shows a tip
+ * shows only while the element's text is cut off or hidden; with an element's
+ * id as its value, while that element's text is, as for a control beside a
+ * name that may be cut off. A tap shows a tip
  * unless the element is a control, or sits inside one, so tapping a card still
  * opens it; a tip marked `data-tip-tap`, such as a Blocked badge, takes the
  * tap instead. A tip marked `data-tip-keyboard` shows on keyboard focus only,
@@ -60,8 +62,9 @@ export function installTooltips(doc = document, { delay = 300, hideDelay = 120 }
 
   function show(/** @type {HTMLElement} */ element) {
     win.clearTimeout(showTimer); win.clearTimeout(hideTimer);
-    const text = element.dataset.tip ?? '';
-    if (!text || !element.isConnected || element.hasAttribute('data-tip-overflow') && !cutOff(element)) { hide(); return; }
+    const text = element.dataset.tip ?? '', overflow = element.getAttribute('data-tip-overflow');
+    const watched = overflow ? doc.getElementById(overflow) : element;
+    if (!text || !element.isConnected || overflow !== null && !(watched && cutOff(watched))) { hide(); return; }
     if (anchor !== element) hide();
     if (!tip) { tip = doc.createElement('div'); tip.id = 'app-tip'; tip.className = 'app-tip'; tip.setAttribute('role', 'tooltip'); }
     tip.textContent = text;

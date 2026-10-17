@@ -393,6 +393,13 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .lane:hover { content-visibility: visible; }
 .lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
 .lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
+/* A name takes two lines at most, then ends with an ellipsis; its tip shows
+   all of it. It keeps clear of the grip and ⋮: they take 53 px, or 65 px with
+   touch targets, from 6 px inside the rail's edge, which is 47 px or 59 px
+   past the name's own 16 px, with a 4 px gap. */
+.lane-head .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.lane-head:has(.head-ctl) .name { padding-right: 47px; }
+@media (pointer: coarse) { .lane-head:has(.head-ctl) .name { padding-right: 59px; } }
 .lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
 .head-ctl { position: absolute; top: 13px; right: 6px; display: flex; align-items: center; gap: 1px; }
 .grip, .kebab { opacity: 0.45; padding: 3px 4px; border-radius: 5px; transition: opacity 0.12s, background 0.12s; }
@@ -709,6 +716,7 @@ div.ms-label {cursor:default}
   /* The rail is narrow here: the grip and ⋮ get their own row above the
      name, instead of covering the end of a long name in a short lane. */
   .head-ctl { position: static; order: -1; align-self: flex-end; margin: -6px -6px -6px 0; }
+  .lane-head:has(.head-ctl) .name { padding-right: 0; }
 }
 /* touch-primary devices (phones, wall boards): no hover exists, so nothing may depend on it */
 @media (hover: none) {
