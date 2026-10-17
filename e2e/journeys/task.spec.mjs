@@ -369,10 +369,18 @@ test('feed updates reuse unchanged comments and animate only connected document 
   // The first live comment arrives after the event stream's opening
   // reconciliation, which may legitimately reload the feed.
   await liveComment(0);
-  const row = await page.locator('.comment-conversation').last().elementHandle();
+  // Only a row that changed is drawn again. Its time label changes by
+  // itself, from "just now" to "1m ago" 30 s after its comment, which a slow
+  // run reaches; the row drawn then is the one to watch.
+  const key = await page.locator('.comment-conversation').last().getAttribute('data-feed-key');
+  const watched = page.locator(`.comment-conversation[data-feed-key="${key}"]`), label = el => el.querySelector('time').textContent;
+  let row = await watched.elementHandle();
   for (let i = 1; i < 20; i++) {
+    const before = await row.evaluate(label);
     await liveComment(i);
-    expect(await row.evaluate(el => el.isConnected)).toBe(true);
+    if (await row.evaluate(el => el.isConnected)) continue;
+    row = await watched.elementHandle();
+    expect(await row.evaluate(label), 'a row is drawn again only for a new time label').not.toBe(before);
   }
   expect(await page.evaluate(() => window.invalidAnimations)).toBe(0);
   if (browserName !== 'chromium') return;
