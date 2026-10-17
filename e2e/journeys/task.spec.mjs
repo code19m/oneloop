@@ -57,6 +57,8 @@ test('a click in a long description opens the editor with its caret in view, nea
   await openApp(page, instance);
   await page.getByRole('button', { name: 'Show more' }).click();
   const reader = page.locator('#task-description-content'), editor = page.locator('#task-description');
+  // The reader grows to its full height first; a click while it grows lands on another line.
+  await reader.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   await reader.getByText('Line 55 of the plan.').click({ position: { x: 1, y: 8 } });
   await expect(editor).toBeFocused();
   // Line 55 of 60 shows near the end of the editor's text.
