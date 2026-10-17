@@ -176,6 +176,21 @@ test('a hint that a column was re-spaced reads the Board again, and the cards ta
   assert.deepEqual(order(),['a','c','b']);
 });
 
+test('a checklist hint gives its Board card the new counts with one task read',async()=>{
+  const t=page({view:'board',projectId:'p1',board:{},hash:'#/board/p1'});
+  const empty={items:[],nextCursor:null,total:0};
+  const read=t.reads.board('p1');await t.called(1);
+  t.next('boardView').resolve({planning:{items:[view('t1')],nextCursor:null,total:1},inProgress:empty,inReview:empty,done:empty,counts:{planning:1}});await read;
+  const live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'checklist',entityId:'t1',taskId:'t1',entityRevision:1}]});
+  await t.called(2);await settle();
+  // A checklist change moves no card, so the column counts stay as they are.
+  assert.deepEqual(t.calls.slice(1).map(call=>call.name),['task']);
+  t.next('task').resolve({...view('t1'),checklistDone:1,checklistTotal:2,checklistVersion:1});
+  assert.equal((await live).stale,false);
+  const card=t.data.tasks.find(task=>task.internalId==='t1');
+  assert.deepEqual([card.checklistDone,card.checklistTotal],[1,2]);
+});
+
 /** A sign-in of `person` on a page that shows `context`; the bootstrap records each load and answers with `answer`. */
 function signInPage(context,answer=async()=>({stale:false}),person='u1'){
   const loads=[],bootstrap={load:async scope=>{loads.push(scope);return answer(scope);}};

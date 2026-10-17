@@ -10,6 +10,9 @@ import {actionErrorFeedback,retryableFailure} from '../../app/action-feedback.js
 import {mentionFromWire,mentionsToWire} from '../../data/wire.js';
 
 const chronological = (left, right) => left.ts - right.ts || String(left.id ?? '').localeCompare(String(right.id ?? ''));
+// What a live read of an open task reads: the whole projection, the task, or
+// its comments and activity.
+const READ_ALL = 1, READ_TASK = 2, READ_FEED = 4;
 
 /** @param {any} comment */
 function mapComment(comment) {
@@ -335,6 +338,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
 
   function entityRevision(entityType,entityId){
     if(!entityType||!entityId)return null;
+    // A task's checklist has its own version, which each change to it raises.
+    if(entityType==='checklist'){const version=currentTask(entityId)?.checklistVersion;return Number.isSafeInteger(version)?version:null;}
     const collections={project:data.projects,track:data.tracks,epic:data.epics,milestone:data.milestones,task:data.tasks,pool_item:data.pool};
     const collection=collections[entityType];if(!collection)return null;
     const item=collection.find((entry)=>entry.id===entityId||entry.internalId===entityId);
@@ -393,20 +398,23 @@ export function installCollaborationController({ transport, recovery, eventSourc
     if(context.view==='task'){
       const task=currentTask(context.taskId);if(!task)return;
       if(!metadataChange&&hint.taskId&&hint.taskId!==task.internalId)return;
+      // The task carries its checklist, so a version the page has needs nothing.
+      if(hint.entityType==='checklist'&&hintIsCovered(hint))return;
       const session=currentSession(),route=routeKey;
       if(hint.entityType==='comment'&&hint.entityId)changedComments.add(hint.entityId);
+      // What to read: the whole projection, the task, its comments and activity.
       const full=kind==='reconcile'||metadataChange;
-      const canonical=!hint.entityType||!['comment','attachment'].includes(hint.entityType);
-      scheduleLiveRead(`task:${session}:${task.internalId}`,full?1:canonical?2:4,async flags=>{
+      const parts=full?READ_ALL:hint.entityType==='checklist'?READ_TASK:['comment','attachment'].includes(hint.entityType)?READ_FEED:READ_TASK|READ_FEED;
+      scheduleLiveRead(`task:${session}:${task.internalId}`,parts,async flags=>{
         if(session!==currentSession()||route!==routeKey)return;
-        if(flags&1){const loaded=await transport.reload({projectId:context.projectId,background:true});if(loaded?.stale)return;}
+        if(flags&READ_ALL){const loaded=await transport.reload({projectId:context.projectId,background:true});if(loaded?.stale)return;}
         if(session!==currentSession()||route!==routeKey)return;
         const current=currentTask(context.taskId);
         if(!current)return;
-        const next=flags&2&&!(flags&1)?await readCanonicalTask(current):current;
-        if(next&&session===currentSession()&&route===routeKey){
+        const next=flags&READ_TASK&&!(flags&READ_ALL)?await readCanonicalTask(current):current;
+        if(next&&flags&(READ_ALL|READ_FEED)&&session===currentSession()&&route===routeKey){
           const targets=[...changedComments];changedComments.clear();
-          await readTask(next,{background:true,targetCommentIds:targets,reconcile:!!(flags&1)});
+          await readTask(next,{background:true,targetCommentIds:targets,reconcile:!!(flags&READ_ALL)});
         }
       });
       return;
@@ -415,6 +423,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
     if(kind==='activity.changed'){
       // Knowledge syncs refresh only the Knowledge page, which follows them itself.
       if(['comment','attachment','knowledge_source'].includes(hint.entityType))return;
+      // Besides its task's page, a checklist shows only as a Board card's counts.
+      if(hint.entityType==='checklist'&&context.view!=='board')return;
       const accessChange=['project','membership'].includes(hint.entityType);
       if(['inbox','profile','users','storage','settings'].includes(context.view)&&!accessChange)return;
     }

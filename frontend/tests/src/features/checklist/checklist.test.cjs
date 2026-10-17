@@ -41,8 +41,8 @@ function accept(t, changed, checklist) {
   return settle();
 }
 
-/** Send a live hint about the task, as another tab's change does. */
-const hint = t => t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: null });
+/** Send the live hint of a change to the task's checklist, at checklist `version`, as another tab's change does. */
+const hint = (t, version) => t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'checklist', entityId: 'bir-079', entityRevision: version });
 
 const refuse = (t, code = 'internal') => { t.commands.at(-1).reject(new t.w.TestApiError('The change could not be saved.', { status: 500, code })); return settle(); };
 
@@ -120,7 +120,7 @@ test('Cmd/Ctrl+S saves a title in place, and the next save still meets a change 
   assert.equal(t.d.activeElement, title); assert.equal(title.selectionStart, 3);
   assert.equal(t.w.Recovery.hasUnsavedInput({ leaving: false }), false, 'the shortcut counts as saved');
   await accept(t, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build it', done: false, revision: 2 }, [item('c1', 'Plan', true), item('c2', 'Build it', false, 2), item('c3', 'Ship')]);
-  hint(t); await waitFor(() => reads === 1, 'the live read lands'); await settle();
+  hint(t, 2); await waitFor(() => reads === 1, 'the live read lands'); await settle();
   title.value = 'Build it now'; t.key(title, 'Enter');
   assert.equal(t.commands.at(-1).expectedRevision, 2, 'built on the revision the shortcut saved, so the rename comes up');
 });
@@ -129,7 +129,7 @@ test('a change from elsewhere waits for a press on the checklist to end', async 
   const view = taskView([item('c3', 'Ship'), item('c1', 'Plan', true), item('c2', 'Build')], 1);
   const t = checklistPage({ api: { task: async () => view } });
   t.row('c2').querySelector('[data-checklist-remove]').dispatchEvent(new t.w.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
-  hint(t);
+  hint(t, 1);
   await waitFor(() => t.task !== t.D.tasks.find(entry => entry.id === 'BIR-079'), 'the live read lands'); await settle();
   assert.deepEqual(t.titles(), ['Plan', 'Build', 'Ship'], 'rows stay under the pointer');
   t.w.dispatchEvent(new t.w.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }));
@@ -204,7 +204,7 @@ test('a change from elsewhere redraws the checklist in place and keeps the title
   const t = checklistPage({ api: { task: async () => view } });
   const typing = t.row('c3').querySelector('textarea');
   typing.focus(); typing.value = 'Ship v2';
-  hint(t);
+  hint(t, 2);
   await waitFor(() => t.titles().length === 2, 'the live read redraws the checklist'); await settle();
   assert.deepEqual(t.titles(), ['Build', 'Ship v2']); assert(t.row('c2').querySelector('[data-checklist-done]').checked);
   assert.equal(t.row('c3').querySelector('textarea'), typing); assert.equal(t.d.activeElement, typing);
@@ -219,7 +219,8 @@ test('a read that left before a tick never draws the old checklist again', async
     task: async () => { reads += 1; return before; },
     comments: async () => ({ items: [], nextCursor: null }), activity: async () => ({ items: [], nextCursor: null }), attachments: async () => ({ items: [] }),
   } });
-  const lands = async count => { hint(t); await waitFor(() => reads === count, 'the live read lands'); await settle(); };
+  // Someone else changes another field of the task, so the page reads it.
+  const lands = async count => { t.events.at(-1).emit('hint', { kind: 'activity.changed', projectId: 'p1', taskId: 'bir-079', entityType: 'task', entityId: 'bir-079', entityRevision: count + 1 }); await waitFor(() => reads === count, 'the live read lands'); await settle(); };
   const ticked = () => t.row('c2').classList.contains('done') && t.row('c2').querySelector('[data-checklist-done]').checked;
   t.row('c2').querySelector('[data-checklist-done]').click();
   await lands(1);
@@ -249,4 +250,27 @@ test('quick moves save each one, from the order the page shows, in the order the
   assert.equal(t.commands.length, 4);
   await accept(t, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build', done: false, revision: 2 }, [item('c3', 'Ship'), item('c2', 'Build', false, 2), item('c4', 'Tell'), item('c1', 'Plan', true, 4)]);
   assert.deepEqual(t.sent().slice(3), [['task.checklist.move', { itemId: 'c2', afterItemId: 'c3' }, 1], ['task.checklist.move', { itemId: 'c4', beforeItemId: 'c2' }, 1]]);
+});
+
+test('a checklist change reads only the task on the pages that show it, and nothing in the tab that made it', async t => {
+  const tasks = [];
+  const elsewhere = taskView([item('c1', 'Plan', true), item('c2', 'Build', true, 2), item('c3', 'Ship', true, 2)], 2);
+  const page = checklistPage({ api: { task: async id => { tasks.push(id); return elsewhere; } } });
+  // The page's first reads land; any later read of its comments, activity or files waits here.
+  for (const [method, value] of [['comments', { items: [], nextCursor: null }], ['activity', { items: [], nextCursor: null }], ['attachments', { items: [] }]]) page.answer(method, value);
+  await settle();
+  const opened = page.calls.length;
+  const reads = () => [...tasks.map(() => 'task'), ...page.calls.slice(opened).filter(call => call.method !== 'command').map(call => call.method)];
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const live = async version => { hint(page, version); for (let step = 0; step < 4; step++) { t.mock.timers.tick(100); await settle(); } };
+  // This tab ticks Build: the command's answer brings the version that its own hint names.
+  page.row('c2').querySelector('[data-checklist-done]').click();
+  await accept(page, { id: 'c2', taskId: 'bir-079', position: 1, title: 'Build', done: true, revision: 2 }, [item('c1', 'Plan', true), item('c2', 'Build', true, 2), item('c3', 'Ship')]);
+  await live(1);
+  assert.deepEqual(reads(), [], 'the tab that made the change reads nothing');
+  // Another tab ticks Ship.
+  await live(2);
+  assert.deepEqual(reads(), ['task']);
+  assert.equal(page.count(), '3/3');
+  t.mock.timers.reset();
 });

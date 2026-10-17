@@ -10,6 +10,9 @@ All notable changes to oneloop are recorded here. The format follows
 
 - A Board address with filters, as after a refresh or from a bookmark, now
   loads with one request instead of two, so its cards show sooner.
+- A change to a task's checklist no longer makes every open page of the task
+  load its comments, activity and files again: they load only the task, and
+  the tab that made the change loads nothing.
 
 ### Fixed
 

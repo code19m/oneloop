@@ -134,13 +134,15 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
     if(boardState.projectId!==projectId||JSON.stringify(boardState.filters)!==JSON.stringify(common))return {stale:true};
     if(boardState.stamp!==stamp())return board(projectId,filters,{background:true});
     const ids=[...new Set(hints.map(hint=>hint.taskId??hint.entityId).filter(Boolean))];
+    // A checklist change moves no card, so the counts and totals stay.
+    const moved=hints.some(hint=>hint.entityType!=='checklist');
     return read('board',target,true,async token=>{
       try{
         const filtered=boardFiltered(common);
         const [tasks,counts,head]=await Promise.all([
           Promise.all(ids.map(async id=>{try{return {id,view:await api.task(id,{signal:token.signal,background:true})};}catch(error){if(error?.status===404)return {id,view:null};throw error;}})),
-          api.counts(projectId,{signal:token.signal,background:true}),
-          filtered?api.boardView(projectId,common,{signal:token.signal,background:true}):null,
+          moved?api.counts(projectId,{signal:token.signal,background:true}):null,
+          moved&&filtered?api.boardView(projectId,common,{signal:token.signal,background:true}):null,
         ]);
         if(!current(token)||boardState?.projectId!==projectId)return {stale:true};
         for(const {id,view} of tasks){
@@ -154,13 +156,15 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
           if(matches&&page&&(!page.nextCursor||edge&&compareTaskOrder({order:view.position,internalId:view.id,state:status,completedAt:secondsToMilliseconds(view.completedAt)??null,completionOrder:view.completionOrder??null},edge,common.doneOrder)<=0))appendBoardTasks(data,[view]);
           else if(old)data.tasks.splice(data.tasks.indexOf(old),1);
         }
-        const mapped=byStatus(counts);
-        setProjectTaskCounts(data,projectId,mapped);
-        // Filtered totals require the authoritative bounded Board response. Keep
-        // the loaded window and cursors; this read does not replace its cards.
-        if(head){
-          const columns=byStatus(head);for(const status of STATUSES)boardState.pages[status].total=columns[status].total;
-        }else for(const status of STATUSES)boardState.pages[status].total=mapped[status];
+        if(counts){
+          const mapped=byStatus(counts);
+          setProjectTaskCounts(data,projectId,mapped);
+          // Filtered totals require the authoritative bounded Board response. Keep
+          // the loaded window and cursors; this read does not replace its cards.
+          if(head){
+            const columns=byStatus(head);for(const status of STATUSES)boardState.pages[status].total=columns[status].total;
+          }else for(const status of STATUSES)boardState.pages[status].total=mapped[status];
+        }
         boardState.ids=new Set(data.tasks.filter(task=>task.projectId===projectId).map(task=>task.internalId));
         setBoardPageInfo(data,projectId,common,boardState.pages);onBoard(boardState);return {stale:false};
       }catch(error){if(ignored(token,error))return {stale:true};boardLost(token);onError(error);throw error;}

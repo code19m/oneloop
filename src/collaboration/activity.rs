@@ -220,7 +220,7 @@ fn project_activity_tx(tx: &Transaction<'_>, context: &ProjectionContext<'_, '_>
     }
     // Checklist items are notes for the work, so the feeds stay quiet about
     // them, as about positions.
-    if input.entity_type == "task" && input.field_key == Some("checklist") {
+    if input.entity_type == "checklist" {
         return insert_projection(
             tx,
             context,
