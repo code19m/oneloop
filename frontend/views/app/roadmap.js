@@ -822,6 +822,9 @@ document.addEventListener('pointerdown', (e) => {
   if (EPIC_TIP.el && !EPIC_TIP.el.contains(e.target) && !EPIC_TIP.anchor?.contains(e.target)) hideEpicTip();
 });
 
+/** The Roadmap as it is now, drawn once when a press that delayed it ends. */
+const refreshShownRoadmap = () => App.refreshRoadmap();
+
 Object.assign(App, {
   refreshEpic() {
     if (!state.peek) return;
@@ -844,6 +847,9 @@ Object.assign(App, {
    * showed instead of jumping.
    */
   refreshRoadmap(moved) {
+    // A change from elsewhere waits for a press on the page to end, as on a
+    // held grip: lanes drawn again under the pointer would drop the drag.
+    if(!moved&&App.afterPress(refreshShownRoadmap))return;
     refreshEpicSummary();
     if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');

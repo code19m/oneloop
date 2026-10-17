@@ -244,6 +244,20 @@ function pressGrip(t, id, key) {
 }
 /** Answer the track move that waits, and let it finish. */
 const saved = async t => { t.requests.at(-1).resolve({}); await tick(); };
+/** Lay out five 100 px lanes from 100 px down in a 1000 px wide Roadmap, scrolled 500 px into their 3000 px. */
+function laneGeometry(t) {
+  t.w.Element.prototype.getBoundingClientRect = function () {
+    const lanes = [...this.ownerDocument.querySelectorAll('.lane[data-track]')], index = lanes.indexOf(this);
+    const [left, top, right, bottom] = this.id === 'rmScroll' ? [0, 0, 1000, 800] : index >= 0 ? [-500, 100 + index * 100, 2500, 200 + index * 100] : [0, 0, 0, 0];
+    return { left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top };
+  };
+}
+/** Send `type` from the first pointer, or from pointer `id`, at `x` and `y`. */
+function pointer(t, type, target, x, y, id = 1) {
+  const event = new t.w.Event(type, { bubbles: true, cancelable: true });
+  for (const [key, value] of Object.entries({ button: 0, pointerId: id, clientX: x, clientY: y })) Object.defineProperty(event, key, { value });
+  target.dispatchEvent(event);
+}
 
 test('a track\'s menu offers only Rename track and Delete track, and viewers get neither the menu nor the grip', () => {
   const t = bootApp({ route: 'roadmap', actions: true });
@@ -273,18 +287,12 @@ test('arrow keys, Home and End on a track\'s grip move the track, keep focus on 
 
 test('a track move redraws the Roadmap in place at once, sends one optimistic command and skips a no-op repeat', async () => {
   const t = withRuntime('roadmap', ['moveTrack']), main = t.d.getElementById('main'), header = t.d.querySelector('.topbar');
-  // The 1000 px wide Roadmap shows five 100 px lanes from 100 px down, scrolled 500 px into their 3000 px.
-  t.w.Element.prototype.getBoundingClientRect = function () {
-    const lanes = [...this.ownerDocument.querySelectorAll('.lane[data-track]')], index = lanes.indexOf(this);
-    const [left, top, right, bottom] = this.id === 'rmScroll' ? [0, 0, 1000, 800] : index >= 0 ? [-500, 100 + index * 100, 2500, 200 + index * 100] : [0, 0, 0, 0];
-    return { left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top };
-  };
-  const pointer = (type, target, x, y) => { const event = new t.w.Event(type, { bubbles: true, cancelable: true }); for (const [key, value] of Object.entries({ button: 0, pointerId: 1, clientX: x, clientY: y })) Object.defineProperty(event, key, { value }); target.dispatchEvent(event); };
+  laneGeometry(t);
   // Backend & API goes below the lower half of Mobile experience, the third lane.
-  pointer('pointerdown', gripOf(t.d, 't1'), 20, 150); pointer('pointermove', t.d, 500, 380);
+  pointer(t, 'pointerdown', gripOf(t.d, 't1'), 20, 150); pointer(t, 'pointermove', t.d, 500, 380);
   const line = t.d.querySelector('.sort-marker');
   assert.deepEqual([line.hidden, line.style.left, line.style.width], [false, '0px', '1000px'], 'the line shows across the Roadmap, not past it');
-  pointer('pointerup', t.d, 500, 380);
+  pointer(t, 'pointerup', t.d, 500, 380);
   assert.deepEqual(laneOrder(t.d), ['t2', 't3', 't1', 't4', 't5']);
   assert.equal(t.d.getElementById('main'), main); assert.equal(t.d.querySelector('.topbar'), header, 'only the Roadmap is drawn again');
   // The move comes from the page's window, so it compares as JSON.
@@ -293,8 +301,27 @@ test('a track move redraws the Roadmap in place at once, sends one optimistic co
   await saved(t);
   assert.equal(t.A.context().movePending, false);
   // Dropped below Mobile experience again, it stays where it is.
-  pointer('pointerdown', gripOf(t.d, 't1'), 20, 350); pointer('pointermove', t.d, 500, 280); pointer('pointerup', t.d, 500, 280);
+  pointer(t, 'pointerdown', gripOf(t.d, 't1'), 20, 350); pointer(t, 'pointermove', t.d, 500, 280); pointer(t, 'pointerup', t.d, 500, 280);
   assert.equal(t.calls.length, 1);
+});
+
+test('a change made elsewhere while a grip is held shows once the press ends, so a drag goes on', async () => {
+  const t = withRuntime('roadmap', ['moveTrack']), renamed = () => t.d.querySelector('.lane[data-track="t5"] .name').textContent;
+  laneGeometry(t);
+  // A teammate renames a track while Backend & API's grip is held.
+  pointer(t, 'pointerdown', gripOf(t.d, 't1'), 20, 150);
+  t.D.tracks.find(track => track.id === 't5').name = 'Renamed elsewhere';
+  t.A.refreshRoadmap();
+  assert.equal(renamed(), 'Community tools', 'the held lanes stay');
+  pointer(t, 'pointermove', t.d, 500, 380); pointer(t, 'pointerup', t.d, 500, 380);
+  assert.deepEqual(laneOrder(t.d), ['t2', 't3', 't1', 't4', 't5']); assert.equal(t.calls.length, 1);
+  await saved(t);
+  // A press that ends without a move shows the change too.
+  t.D.tracks.find(track => track.id === 't5').name = 'Renamed again';
+  pointer(t, 'pointerdown', gripOf(t.d, 't2'), 20, 150); t.A.refreshRoadmap();
+  assert.equal(renamed(), 'Renamed elsewhere');
+  pointer(t, 'pointerup', t.d, 20, 150); await tick();
+  assert.equal(renamed(), 'Renamed again');
 });
 
 test('a track moved with the keyboard comes into view below the date axis, then slides there from where it showed', async () => {
