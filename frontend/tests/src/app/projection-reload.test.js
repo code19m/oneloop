@@ -5,6 +5,7 @@ import {createBootstrapController} from '../../../src/data/bootstrap-controller.
 import {createReadController} from '../../../src/data/read-controller.js';
 import {createLegacyData,hydrateLegacyData,mergeEpicTaskPage,reconcileCommandResult} from '../../../src/data/projection-store.js';
 import {ApiError} from '../../../src/data/api-client.js';
+import {normalizeBoardFilters} from '../../../src/data/board-filters.js';
 import {settle,useGlobals,waitFor} from '../../support/helpers.cjs';
 
 const projection=(projectId,extra={})=>({timeZone:projectId,session:{userId:'u1',isAdmin:true},users:[{id:'u1',name:'Owner',isAdmin:true,isActive:true}],
@@ -119,7 +120,9 @@ test('the address decides what the bootstrap loads, and the project on screen fi
   const onScreen={context:()=>({projectId:'p1'})};
   assert.deepEqual(routeScope('#/task/ONE-1',onScreen),{taskId:'ONE-1',view:'task'});
   assert.deepEqual(routeScope('#/board/p2',onScreen),{projectId:'p2',view:'board'});
-  assert.deepEqual(routeScope('#/board/p2?search=x',onScreen),{projectId:'p2',view:'metadata'},'a filtered Board reads its cards afterwards');
+  const filters=normalizeBoardFilters({search:'x',assigneeIds:['u1']});
+  assert.deepEqual(routeScope('#/board/p2?search=x&assignee=u1',onScreen),{projectId:'p2',view:'board',filters},'a filtered Board comes with its cards');
+  for(const scope of [{projectId:'p1'},{projectId:'p2',view:'board'}])assert.deepEqual(routeScope('#/board/p2?search=x',onScreen,scope),{view:'board',...scope},'a load that names another project or page leaves the filters out');
   assert.deepEqual(routeScope('#/roadmap/p2',onScreen),{projectId:'p2',view:'roadmap'});
   assert.deepEqual(routeScope('#/knowledge/p2/tree/guides',onScreen),{projectId:'p2',view:'metadata'});
   assert.deepEqual(routeScope('#/inbox',onScreen),{projectId:'p1',view:'metadata'});
@@ -180,12 +183,12 @@ function signInPage(context,answer=async()=>({stale:false}),person='u1'){
   return {signIn,loads};
 }
 
-/** A first visit to the Board with the real bootstrap controller; `answer` answers each bootstrap read. */
-function firstVisit(answer){
+/** A first visit to the Board, or to `hash`, with the real bootstrap controller; `answer` answers each bootstrap read. */
+function firstVisit(answer,hash='#/board'){
   const data=createLegacyData(),reads=[];
   const api={bootstrap:async scope=>{reads.push(scope);return answer(reads.length);}};
-  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,data,getApp:()=>null,location:{hash:'#/board'}});
-  return {data,reads,signIn};
+  const signIn=createSignInLoad({bootstrap:createBootstrapController({api,data}),api,data,getApp:()=>null,location:{hash}});
+  return {data,api,reads,signIn};
 }
 
 test('the first load after the session check uses the read that started with it',async()=>{
@@ -195,6 +198,20 @@ test('the first load after the session check uses the read that started with it'
   assert.equal((await t.signIn.load()).stale,false);
   assert.deepEqual(t.reads,[{view:'board'}]);
   assert.equal(t.data.bootstrapView,'board');
+});
+
+test('a filtered Board address loads with one bootstrap, whose cards the Board takes for its filters',async()=>{
+  const filters=normalizeBoardFilters({search:'x',blocked:true}),empty={nextCursor:null,total:0};
+  // The server names the filter its Board pages were read for.
+  const boardFilter={search:'x',trackIds:[],epicIds:[],assigneeIds:[],noAssignee:false,blocked:true,doneOrder:'manual'};
+  const t=firstVisit(()=>projection('p1',{view:'board',boardFilter,boardPages:{planning:{nextCursor:null,total:1},inProgress:empty,inReview:empty,done:empty},tasks:[view('t1')]}),'#/board/p1?search=x&blocked=1');
+  t.signIn.prefetch();
+  t.data.session={id:'s1',userId:'u1'};
+  await t.signIn.load();
+  assert.deepEqual(t.reads.map(scope=>[scope.projectId,scope.view,scope.filters]),[['p1','board',filters]]);
+  // A Board read would fail here: this API has none.
+  assert.equal(createReadController({api:t.api,data:t.data}).adoptBoard('p1',{search:'x',blocked:true}),true);
+  assert.deepEqual(t.data.tasks.map(task=>task.internalId),['t1']);
 });
 
 test('a session change drops the read that started with the session check',async()=>{

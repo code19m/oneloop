@@ -2,23 +2,29 @@
 
 import { ApiError } from '../data/api-client.js';
 import { leaveAdminPage, leaveUnavailableProject } from '../features/recovery/controller.js';
-import { boardFiltered } from '../data/board-filters.js';
+import { boardFiltered, normalizeBoardFilters } from '../data/board-filters.js';
 import { toWireScope } from '../data/wire.js';
 import { lastSwitch, pageOf, readAddress, rememberSwitch } from './address.js';
 
+/** @typedef {{projectId?:string,taskId?:string|null,view?:string,filters?:ReturnType<typeof normalizeBoardFilters>}&Record<string,any>} BootstrapScope */
+
 /**
- * What the bootstrap loads for an address: a task page's task; or the project
- * the address names, else the one on screen, with the Board's first pages, the
- * Roadmap or metadata only. A filtered Board reads its cards afterwards, so it
- * never shows the unfiltered ones first.
- * @param {string} hash @param {any} app
+ * What the bootstrap loads for an address, with `scope` over it: a task
+ * page's task; or the project the address names, else the one on screen,
+ * with the Board's first pages for the address's filters, the Roadmap or
+ * metadata only. The filters belong to the address's page, so a load that
+ * names another project or page, as a project switch does, leaves them out.
+ * @param {string} hash @param {any} app @param {Record<string,any>} [scope]
+ * @returns {BootstrapScope}
  */
-export function routeScope(hash, app) {
+export function routeScope(hash, app, scope = {}) {
   const {page,projectId,taskId,filters}=readAddress(hash);
-  if(page==='task')return {taskId,view:'task'};
+  if(page==='task')return {taskId,view:'task',...scope};
   const project=projectId??app?.context().projectId;
-  const view=page==='board'&&!boardFiltered(filters)?'board':page==='roadmap'?'roadmap':'metadata';
-  return project?{projectId:project,view}:{view};
+  const view=page==='board'?'board':page==='roadmap'?'roadmap':'metadata';
+  const shown=project?{projectId:project,view}:{view},next={...shown,...scope};
+  const samePage=scope.view===undefined&&next.projectId===shown.projectId;
+  return samePage&&view==='board'&&boardFiltered(filters)?{...next,filters:normalizeBoardFilters(filters)}:next;
 }
 
 /**
@@ -114,7 +120,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load({...routeScope(location.hash,app),...scope}); }
+      try { loaded=await bootstrap.load(routeScope(location.hash,app,scope)); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;
@@ -136,7 +142,7 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
       if(current.modal?.type==='pool'||current.modal?.poolId)windows.push(reads.pool(current.projectId,toWireScope(current.poolTab),false,undefined,readOptions));
       if(current.peek&&data.epics.some((item)=>item.id===current.peek))windows.push(reads.epic(current.peek,readOptions));
       if(current.view==='board'&&data.projects.some((item)=>item.id===current.projectId)){
-        // A Board bootstrap carries the first page of each column.
+        // A Board bootstrap carries the first page of each column for its filters.
         if(!reads.adoptBoard(current.projectId,current.board))windows.push(reads.board(current.projectId,current.board,readOptions));
       }
       else if(current.view==='roadmap')app.refreshRoadmap();

@@ -62,7 +62,7 @@ const gateway = createCommandGateway({ api, data, getScope:()=>sessionKey(data),
 const reads = createReadController({api,data,onBoard:()=>app?.context?.().view==='board'?app.refreshBoard():app?.refreshCounts(),onRoadmap:()=>app?.refreshRoadmap(),onPool:()=>app?.refreshPool(),onTask:(task)=>{const context=app?.context?.();if(context?.view==='task'&&context.taskId===task.id)app.refresh();},onEpic:()=>app?.refreshEpic(),onCounts:()=>app?.refreshCounts(),onError:()=>{}});
 const reloadProjection = createProjectionReload({data,bootstrap,reads,getApp:()=>app,getBridge:()=>bridge,getRecovery:()=>recovery});
 const signInLoad = createSignInLoad({bootstrap,api,data,getApp:()=>app});
-const routeScope = () => scopeOfRoute(location.hash, app);
+const routeScope = (scope) => scopeOfRoute(location.hash, app, scope);
 runtimeHooks = createRuntimeHooks({ api, gateway, data, reload: reloadProjection });
 
 const auth = createAuthController({
@@ -114,7 +114,7 @@ try {
   await auth.initialize();
   ({ App: app } = await import('../../views/app.js'));
   recovery.start();
-  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load({...routeScope(),...scope})});
+  bridge = installViewBridge({app,data,gateway,auth,api,reads,recovery,reloadBootstrap:(scope={})=>bootstrap.load(routeScope(scope))});
   globalThis.OneloopRuntime = Object.freeze({ ...bridge, transport:runtimeHooks, now:api.serverNow });
   app.refresh();
   routeLoader=async(options={})=>{try{await bridge.loadCurrentRoute(options);}catch(error){if(!recovery.handleRouteError(error))reportError(error);}};

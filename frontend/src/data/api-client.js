@@ -246,11 +246,13 @@ export function createApiClient({
     serverNow,
     request,
     command: (command, { signal } = /** @type {SignalOptions} */ ({})) => request('/api/commands', { method: 'POST', body: command, signal }),
-    bootstrap: ({ projectId, taskId, view, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,signal?:AbortSignal,background?:boolean}} */ ({})) => {
+    bootstrap: ({ projectId, taskId, view, filters = {}, signal, background } = /** @type {{projectId?:string,taskId?:string,view?:string,filters?:Record<string,unknown>,signal?:AbortSignal,background?:boolean}} */ ({})) => {
       const query = new URLSearchParams();
       if (projectId) query.set('projectId', projectId);
       if (taskId) query.set('taskId', taskId);
       if (view) query.set('view', view);
+      // A Board's first pages come for its filters, as a Board read's do.
+      for (const [key, value] of new URLSearchParams(boardQuery(filters))) query.set(key, value);
       // Board pages come in the order this browser chose for Done.
       if (view === 'board' && savedDoneOrder() === 'completed') query.set('doneOrder', 'completed');
       return request('/api/bootstrap' + (query.size ? '?' + query.toString() : ''), { signal, background });

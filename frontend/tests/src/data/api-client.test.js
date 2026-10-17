@@ -60,10 +60,13 @@ test('a Board bootstrap asks for Done in the order this browser chose', async (t
   saveDoneOrder('completed', undefined); t.after(() => saveDoneOrder('manual', undefined));
   await api.bootstrap({ projectId: 'p1', view: 'board' });
   await api.bootstrap({ projectId: 'p1', view: 'roadmap' });
+  // A filtered Board's pages come for its filters, named as a Board read names them.
+  await api.bootstrap({ projectId: 'p1', view: 'board', filters: { search: 'x', trackIds: ['t1', 't2'], blocked: true } });
   assert.deepEqual(requested, [
     '/api/bootstrap?projectId=p1&view=board',
     '/api/bootstrap?projectId=p1&view=board&doneOrder=completed',
     '/api/bootstrap?projectId=p1&view=roadmap',
+    '/api/bootstrap?projectId=p1&view=board&search=x&trackIds=t1%2Ct2&blocked=true&doneOrder=completed',
   ]);
 });
 

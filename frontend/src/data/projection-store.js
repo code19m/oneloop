@@ -325,7 +325,9 @@ export function hydrateLegacyData(data, bootstrap, auth = null) {
   if(projectId&&bootstrap.boardCounts)setProjectTaskCounts(data,projectId,byStatus(bootstrap.boardCounts));
   if(projectId&&Object.keys(bootstrap.boardPages??{}).length){
     const pages=Object.fromEntries(Object.entries(bootstrap.boardPages).map(([status,page])=>[toLegacyStatus(status),page]));
-    setBoardPageInfo(data,projectId,bootstrap.doneOrder==='completed'?{doneOrder:'completed'}:{},pages);
+    // The pages are a Board read's for the filter and Done order they name.
+    const {doneOrder,...filter}=bootstrap.boardFilter??{};
+    setBoardPageInfo(data,projectId,{...filter,...(doneOrder==='completed'?{doneOrder}:{})},pages);
   }
   if(projectId&&bootstrap.poolCounts)for(const scope of ['personal','team']){
     const page=setPoolPageInfo(data,projectId,scope,{total:bootstrap.poolCounts[scope]??0});page.loaded=false;

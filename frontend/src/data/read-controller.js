@@ -6,7 +6,7 @@ import {
 } from './projection-store.js';
 import {byStatus, toLegacyScope, toLegacyStatus, toWireStatus} from './wire.js';
 import {mapActivity} from './activity-mapper.js';
-import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters} from './board-filters.js';
+import {NO_ASSIGNEE, boardFiltered, matchesBoardFilters, normalizeBoardFilters, sameBoardFilters} from './board-filters.js';
 import {savedDoneOrder} from './done-order.js';
 import {secondsToMilliseconds} from './time.js';
 
@@ -79,13 +79,14 @@ export function createReadController({api,data,onBoard=(_state)=>{},onRoadmap=(_
   const boardLost=(/** @type {Token} */ token)=>{if(token.background)boardDirty=true;};
 
   function adoptBoard(projectId,filters={}){
-    if(data.bootstrapView!=='board'||data.boardPageInfo?.projectId!==projectId)return false;
-    if(boardFiltered(filters))return false;
+    const common=boardFilters(filters),loaded=data.boardPageInfo;
+    if(data.bootstrapView!=='board'||loaded?.projectId!==projectId)return false;
+    // The bootstrap's pages are a Board read's for the filters they name.
+    if(!sameBoardFilters(loaded.filters,common)||loaded.filters?.doneOrder!==common.doneOrder)return false;
     // A column that shows more than its first page reads those pages again.
     if(boardState?.projectId===projectId&&Object.values(boardState.depths).some(depth=>depth>1))return false;
-    if(data.boardPageInfo.filters?.doneOrder!==boardFilters(filters).doneOrder)return false;
-    supersedeBoard(boardTarget(projectId,boardFilters(filters)));
-    remember({projectId,filters:boardFilters(filters),pages:data.boardPageInfo.pages});
+    supersedeBoard(boardTarget(projectId,common));
+    remember({projectId,filters:common,pages:loaded.pages});
     onBoard(boardState);return true;
   }
 

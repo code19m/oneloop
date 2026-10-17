@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A Board address with filters, as after a refresh or from a bookmark, now
+  loads with one request instead of two, so its cards show sooner.
+
 ### Fixed
 
 - **Sign out** now signs out your other open tabs in the browser at once.
