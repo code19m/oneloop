@@ -195,6 +195,11 @@ test('track keyboard moves and pointer Board/track drags save and cancel', async
   await page.mouse.down();
   await page.mouse.move(target.x + 100, target.y + 4, { steps: 8 });
   await expect(page.locator('.sort-marker')).toBeVisible();
+  // The held lane dims its name, but its rail cell stays solid, so no line shows through it.
+  const shown = locator => locator.evaluate(element => { let opacity = 1; for (let el = element; el; el = el.parentElement) opacity *= Number(getComputedStyle(el).opacity); return opacity; });
+  const held = page.locator(`.lane[data-track="${track.id}"]`);
+  await expect.poll(() => shown(held.locator('.lane-head'))).toBe(1);
+  await expect.poll(() => shown(held.locator('.name'))).toBe(0.4);
   await page.mouse.up();
   await expect.poll(order).toEqual([track.id, second.id, third.id]);
   await expect(grip).toBeFocused();

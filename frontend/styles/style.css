@@ -1387,6 +1387,10 @@ div.ms-label {cursor:default}
 .attachment-grip:hover,.attachment-grip:focus-visible,.checklist-grip:hover,.checklist-grip:focus-visible { background:var(--fill-hover);color:var(--ink); }
 /* A row that moves by its grip: see src/app/sortable.js. */
 .is-sorting { opacity:.4; }
+/* A held lane dims its name and epics, but its rail cell stays solid, so the
+   lines under the rail don't show through its name. */
+.lane.is-sorting { opacity:1; }
+.lane.is-sorting .lane-head > *, .lane.is-sorting .lane-body { opacity:.4; }
 .list-sorting,.list-sorting * { cursor:grabbing!important;user-select:none!important; }
 .sort-label { position:fixed;z-index:130;pointer-events:none;max-width:200px;padding:10px 14px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow-modal);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .sort-marker { position:fixed;height:2px;border-radius:2px;background:var(--ink-muted);z-index:129;pointer-events:none; }

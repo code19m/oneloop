@@ -43,6 +43,8 @@ All notable changes to oneloop are recorded here. The format follows
   returns focus to its **⋮** button after such a change too.
 - A change made elsewhere while you drag a track no longer drops the drag. The
   **Roadmap** shows the change when you let go.
+- While you drag a track, milestone lines and today's line no longer show
+  through its name.
 - A key on a track's grip while the last track move is still saving now says
   so, instead of doing nothing.
 - The grip next to a track's name now shows keyboard focus at full strength.
