@@ -33,7 +33,8 @@ import {
   syncSidebar,
 } from './app/overlays.js';
 import {
-  mountRoadmap, renderPeek, renderRoadmap, roadmapHeight, roadmapMovePending, roadmapTopbarHtml,
+  mountRoadmap, renderPeek, renderRoadmap, resetRoadmapScale, roadmapAddressScale, roadmapHeight, roadmapMovePending,
+  roadmapTopbarHtml, showRoadmapScale,
 } from './app/roadmap.js';
 import { storageHtml } from './app/storage.js';
 import { clearStaleTaskSave, mountTaskPage, renderTask, taskTopbarHtml } from './app/task.js';
@@ -335,14 +336,14 @@ Object.assign(App, {
   updateDocumentTitle,
   replaceAddress,
   /**
-   * Forget the project, page, Board filters and dialogs the tab showed, with
-   * its address, as its person signed out on purpose: the next person to sign
-   * in here starts from their own project. A session that ends by itself keeps
-   * them, for the same person to come back to.
+   * Forget the project, page, Board filters, Roadmap scale and dialogs the tab
+   * showed, with its address, as its person signed out on purpose: the next
+   * person to sign in here starts from their own project. A session that ends
+   * by itself keeps them, for the same person to come back to.
    */
   clearAddress() {
     const {page}=readAddress(location.hash);
-    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;state.modal=null;state.peek=null;state.menu=null;resetBoardFilters();
+    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;state.modal=null;state.peek=null;state.menu=null;resetBoardFilters();resetRoadmapScale();
     // A task names its project too, so it gives way to the Board, as does an address that can't be read.
     state.view=['task','notfound'].includes(page)?'board':page;
     replaceAddress();
@@ -488,16 +489,19 @@ function resolveRoute() {
     if(!showProject(place.projectId??defaultProject()))return;
     state.view=place.page;
     if(place.page==='board')showBoardFilters(place.filters);
+    if(place.page==='roadmap')showRoadmapScale(place.scale);
   }else{state.view=place.page;return;}
-  // An older address, such as `#/board`, gets the project in place.
-  if(!place.projectId)replaceAddress();
+  // An older address, such as `#/board`, gets the project in place, and a
+  // Roadmap's names the scale that shows, or none at Months.
+  if(!place.projectId||place.page==='roadmap')replaceAddress();
 }
-/** The address of a page of the project on screen; the Board's carries its filters. Other pages keep theirs. */
+/** The address of a page of the project on screen; the Board's carries its filters, the Roadmap's its scale. Other pages keep theirs. */
 function addressOf(view){
   if(!['board','roadmap','settings','knowledge'].includes(view))return ['inbox','profile','users','storage'].includes(view)?`#/${view}`:location.hash;
   if(!state.projectId)return `#/${view}`;
   // Knowledge builds its own addresses, which go on to a folder or a file.
-  return view==='knowledge'?routeHash(state.projectId):projectAddress(view,state.projectId,view==='board'?boardFilters():null);
+  if(view==='knowledge')return routeHash(state.projectId);
+  return projectAddress(view,state.projectId,view==='board'?{filters:boardFilters()}:view==='roadmap'?{scale:roadmapAddressScale()}:{});
 }
 /** Show the page's address in place, as after a filter change, with no new history entry. */
 function replaceAddress(){

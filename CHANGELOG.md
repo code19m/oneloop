@@ -17,6 +17,12 @@ All notable changes to oneloop are recorded here. The format follows
   **Delete track**. To move a track, drag its grip, or focus the grip and use
   the arrow keys, Home and End. A dragged track now shows its name and a line
   where it will land, as a checklist item or a file does.
+- The **Roadmap** now keeps its scale, as the Board keeps its filters: the
+  scale is part of the address, so a refresh, a bookmark or a link opens the
+  Roadmap at **Weeks**, **Months** or **Quarters** as it was, and so do Back
+  and Forward. After a free zoom, the address keeps the nearest scale.
+  Changing the scale adds no step to the browser's history, and signing out
+  drops it.
 - A Board address with filters, as after a refresh or from a bookmark, now
   loads with one request instead of two, so its cards show sooner.
 - A change to a task's checklist no longer makes every open page of the task

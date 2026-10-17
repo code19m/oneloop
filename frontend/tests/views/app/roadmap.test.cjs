@@ -1,7 +1,7 @@
 // views/app.js: the Roadmap, its milestones, zoom and track moves.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp, withRuntime, tick, waitFor } = require('../../support/dom.cjs');
+const { bootApp, withRuntime, settle, tick, waitFor } = require('../../support/dom.cjs');
 
 /** Boot the views; `prepare(D, w)` edits the projection before they load. */
 const boot = (route = 'roadmap', { readOnly = false, prepare } = {}) => bootApp({ route, prepare: (D, w) => {
@@ -448,6 +448,55 @@ test('a scale change eases over a few frames, and a wheel zoom takes over where 
   frame(1120); frame(1400);
   assert(Math.abs(perDay() / (second / 1.15) - 1) < 0.02, 'the wheel zooms out from where the scale change was');
   assert.deepEqual(scales(r.d), pressed(null));
+});
+
+/** Go to another address with `move`, such as a link or Back, and wait until the page shows it. */
+async function go(t, move) {
+  const changed = new Promise(resolve => t.w.addEventListener('hashchange', resolve, { once: true }));
+  move(); await changed; await settle();
+}
+
+test('a Roadmap address opens at the scale it names, Back shows each entry\'s scale, and a scale it lacks gives way to Months in place', async () => {
+  const t = bootApp({ route: 'roadmap/p1?scale=weeks' });
+  assert.deepEqual(scales(t.d), pressed('Weeks'));
+  await go(t, () => { t.w.location.hash = '#/roadmap/p1?scale=quarters'; });
+  assert.deepEqual(scales(t.d), pressed('Quarters'));
+  await go(t, () => t.w.history.back());
+  assert.equal(t.w.location.hash, '#/roadmap/p1?scale=weeks'); assert.deepEqual(scales(t.d), pressed('Weeks'));
+  for (const scale of ['days', 'months']) {
+    const other = bootApp({ route: `roadmap/p1?scale=${scale}` });
+    assert.deepEqual(scales(other.d), pressed('Months'), scale);
+    assert.equal(other.w.location.hash, '#/roadmap/p1', scale); assert.equal(other.w.history.length, 1, 'in place');
+  }
+});
+
+test('a scale change rewrites the Roadmap address in place, and after a free zoom it names the nearest scale, which Back keeps', async t => {
+  const r = wide();
+  r.A.setRoadmapScale('quarters');
+  assert.equal(r.w.location.hash, '#/roadmap/p1?scale=quarters');
+  r.A.setRoadmapScale('weeks');
+  assert.equal(r.w.location.hash, '#/roadmap/p1?scale=weeks'); assert.equal(r.w.history.length, 1);
+  /** Zoom out by `notches` wheel notches, of 15% each. */
+  const zoomOut = notches => { t.mock.timers.enable({ apis: ['setTimeout'] }); for (let i = 0; i < notches; i++) zoomWheel(r.w, r.d.getElementById('rmScroll'), { deltaY: 100 }); t.mock.timers.tick(150); t.mock.timers.reset(); };
+  // 26 px a day is nearest Weeks.
+  zoomOut(1);
+  assert.deepEqual(scales(r.d), pressed(null)); assert.equal(r.w.location.hash, '#/roadmap/p1?scale=weeks');
+  const width = r.barWidth('e6');
+  await go(r, () => r.A.nav('board')); await go(r, () => r.w.history.back());
+  assert.equal(r.barWidth('e6'), width, 'Back keeps the free zoom');
+  // 15 px a day is nearest Months, which the address leaves out.
+  zoomOut(4);
+  assert.equal(r.w.location.hash, '#/roadmap/p1');
+});
+
+test('a sign-out on purpose forgets the Roadmap\'s scale, so the next person\'s Roadmap opens at Months', () => {
+  const t = bootApp({ route: 'roadmap/p1' });
+  t.A.setRoadmapScale('weeks');
+  t.A.nav('board');
+  t.A.clearAddress();
+  // The next person signs in on the Board, then opens the Roadmap.
+  t.A.resolveRoute(); t.A.nav('roadmap');
+  assert.equal(t.w.location.hash, '#/roadmap/p1'); assert.deepEqual(scales(t.d), pressed('Months'));
 });
 
 test('the epic drawer names every status as the Roadmap does, and an ongoing epic shows both facts', () => {

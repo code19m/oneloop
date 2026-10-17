@@ -2,14 +2,14 @@
 
 /**
  * The app's addresses. A project page names its project after the page, as in
- * `#/board/<projectId>`, and the Board adds the filters that are on as a query,
- * so a refresh, a bookmark or a link shows the same view.
+ * `#/board/<projectId>`. The Board adds the filters that are on as a query, and
+ * the Roadmap its scale, so a refresh, a bookmark or a link shows the same view.
  */
 
 import { NO_ASSIGNEE } from '../data/board-filters.js';
 
 /** @typedef {Required<import('../data/board-filters.js').BoardFilters>} BoardFilters */
-/** @typedef {{page:string,projectId:string|null,taskId:string|null,filters:BoardFilters|null}} Address */
+/** @typedef {{page:string,projectId:string|null,taskId:string|null,filters:BoardFilters|null,scale:string|null}} Address */
 
 /** Pages that show one project. Knowledge's address goes on after the project. */
 const PROJECT_PAGES = new Set(['board', 'roadmap', 'settings', 'knowledge']);
@@ -38,15 +38,16 @@ function filtersIn(query) {
 
 /**
  * What an address shows: its page; the project of a project page, or null
- * when an older address such as `#/board` names none; a task page's task; and
- * the Board's filters. An address that can't be read shows `notfound`.
+ * when an older address such as `#/board` names none; a task page's task; the
+ * Board's filters; and the scale a Roadmap address names, which the Roadmap
+ * checks. An address that can't be read shows `notfound`.
  * @param {string} hash
  * @returns {Address}
  */
 export function readAddress(hash) {
   const route = String(hash ?? '').replace(/^#\/?/, '');
   /** @type {Address} */
-  const notFound = { page: 'notfound', projectId: null, taskId: null, filters: null };
+  const notFound = { page: 'notfound', projectId: null, taskId: null, filters: null, scale: null };
   if (route.startsWith('task/')) {
     const taskId = decode(route.slice(5));
     return taskId === null ? notFound : { ...notFound, page: 'task', taskId };
@@ -57,17 +58,25 @@ export function readAddress(hash) {
   if (!PROJECT_PAGES.has(page) || page !== 'knowledge' && rest.length) return notFound;
   const projectId = project ? decode(project) : null;
   if (project && projectId === null) return notFound;
-  return { page, projectId, taskId: null, filters: page === 'board' ? filtersIn(at < 0 ? '' : route.slice(at + 1)) : null };
+  const query = at < 0 ? '' : route.slice(at + 1);
+  return {
+    page, projectId, taskId: null,
+    filters: page === 'board' ? filtersIn(query) : null,
+    scale: page === 'roadmap' ? new URLSearchParams(query).get('scale') : null,
+  };
 }
 
 /**
  * The address of a project's Board, Roadmap or Settings. The Board's adds the
- * filters that are on, each list as comma-separated IDs in a fixed order.
+ * filters that are on, each list as comma-separated IDs in a fixed order, and
+ * the Roadmap's a scale, which the Roadmap leaves out at the one it opens at.
  * Knowledge builds its own (`routeHash`).
- * @param {'board'|'roadmap'|'settings'} page @param {string} projectId @param {import('../data/board-filters.js').BoardFilters|null} [filters]
+ * @param {'board'|'roadmap'|'settings'} page @param {string} projectId
+ * @param {{filters?:import('../data/board-filters.js').BoardFilters|null,scale?:string|null}} [shown] what the page shows
  */
-export function projectAddress(page, projectId, filters = null) {
+export function projectAddress(page, projectId, { filters = null, scale = null } = {}) {
   const address = `#/${page}/${encodeURIComponent(projectId)}`;
+  if (page === 'roadmap') return scale ? `${address}?scale=${encodeURIComponent(scale)}` : address;
   if (page !== 'board' || !filters) return address;
   const query = [];
   if (filters.search) query.push(`search=${encodeURIComponent(filters.search)}`);
@@ -80,7 +89,8 @@ export function projectAddress(page, projectId, filters = null) {
 
 /**
  * The address without its query: it changes when someone goes to another
- * page, but not when they filter the Board or open a Knowledge section.
+ * page, but not when they filter the Board, change the Roadmap's scale or open
+ * a Knowledge section.
  * @param {string} hash
  */
 export const pageOf = (hash) => hash.split('?')[0];

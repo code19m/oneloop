@@ -33,6 +33,9 @@ const ROADMAP_SCALES = [
   { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
   { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
 ];
+const OPENING_SCALE = ROADMAP_SCALES.find((scale) => scale.key === 'months');
+/** The scale nearest a zoom, in proportion, as each wheel notch zooms by a factor. */
+const nearestScale = (ppd) => ROADMAP_SCALES.reduce((near, scale) => (Math.abs(Math.log(scale.ppd / ppd)) < Math.abs(Math.log(near.ppd / ppd)) ? scale : near));
 /** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
 const WEEK_AXIS_PPD = 18;
 const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
@@ -522,7 +525,9 @@ function roadmapScaleHtml() {
   return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${esc(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${esc(scale.shortcut)}" ${UIAction('setRoadmapScale', scale.key)}>${scale.label}</button>`).join('')}</div>`;
 }
 
+/** Show the zoom's scale as pressed in the header, and the scale nearest it in the address. */
 function syncRoadmapScale() {
+  App.replaceAddress();
   const current = roadmapScale()?.key ?? null;
   if (current === pressedScale) return;
   pressedScale = current;
@@ -531,6 +536,26 @@ function syncRoadmapScale() {
     button.setAttribute('aria-pressed', String(on)); button.classList.toggle('on', on);
   });
 }
+
+/** The scale the Roadmap's address names: the one nearest its zoom, or none at Months. */
+export function roadmapAddressScale() {
+  const scale = nearestScale(state.pxPerDay);
+  return scale === OPENING_SCALE ? null : scale.key;
+}
+
+/**
+ * Show the scale an address names, or Months when it names none or one the
+ * Roadmap doesn't have. Another scale starts at today, since a scroll position
+ * belongs to its zoom; a free zoom nearest the named scale stays, as after Back.
+ */
+export function showRoadmapScale(key) {
+  const scale = ROADMAP_SCALES.find((item) => item.key === key) ?? OPENING_SCALE;
+  if (nearestScale(state.pxPerDay) === scale) return;
+  state.pxPerDay = scale.ppd; state.rmScrollLeft = null;
+}
+
+/** Open the Roadmap at Months again, as for the next person to sign in here. */
+export function resetRoadmapScale() { state.pxPerDay = OPENING_SCALE.ppd; }
 
 /** The selected epic's bar while it shows in the view, or null. */
 function selectedEpicBar(view) {
