@@ -95,10 +95,10 @@ test('a wheel notch zooms 15%, touchpad pinch deltas follow the fingers, and zoo
 
 test('zooming re-packs rows and lane heights exactly as a fresh render does', t => {
   const { w, d, A } = bootApp({ route: 'roadmap' });
-  const { sc } = timeline(d), lane = d.querySelector('.lane[data-track="t3"]'), height = lane.style.height;
+  const { sc } = timeline(d), lane = d.querySelector('.lane[data-track="t3"]'), height = lane.style.minHeight;
   const geometry = () => ({
     bars: [...d.querySelectorAll('#rmScroll [data-epic]')].map(el => [el.dataset.epic, el.style.left, el.style.top, el.style.width]),
-    lanes: [...d.querySelectorAll('#rmScroll .lane')].map(el => el.style.height),
+    lanes: [...d.querySelectorAll('#rmScroll .lane')].map(el => el.style.minHeight),
     marks: [...d.querySelectorAll('#rmScroll :is(.ms-line, .ms-label, .today-line, .today-pill)')].map(el => [el.className, el.style.left, el.style.top]),
     axis: d.querySelector('#rmScroll .rm-axis').style.height, canvas: d.querySelector('#rmScroll .rm-canvas').style.width,
   });
@@ -107,7 +107,7 @@ test('zooming re-packs rows and lane heights exactly as a fresh render does', t 
   t.mock.timers.tick(150);
   t.mock.timers.reset();
   assert.equal(d.querySelector('.lane[data-track="t3"]'), lane, 'the zoom kept the lane');
-  assert.notEqual(lane.style.height, height, 'Mobile experience needs a second row at the minimum zoom');
+  assert.notEqual(lane.style.minHeight, height, 'Mobile experience needs a second row at the minimum zoom');
   const zoomed = geometry();
   A.refreshRoadmap();
   assert.deepEqual(geometry(), zoomed);

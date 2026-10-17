@@ -54,6 +54,9 @@ All notable changes to oneloop are recorded here. The format follows
   reload now leaves the new page alone.
 - On a touch screen, a second finger now stops dragging a checklist item or a
   file, as it does for a track.
+- On a phone, a track's grip and **⋮** now sit above its name, so they no
+  longer cover the end of a long name in a short lane. A lane grows when its
+  name and note need the room.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,

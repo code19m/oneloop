@@ -380,8 +380,10 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 
 /* Lanes far outside the view skip style, layout and paint, so a zoom step
    costs what is near the view. That makes a lane a stacking context, so it
-   sits above the milestone and today lines (z-index 1), as its bars did. */
-.lane { position: relative; z-index: 2; display: flex; border-bottom-color: rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+   sits above the milestone and today lines (z-index 1), as its bars did. A
+   lane is as tall as its epics need, or more when its rail cell needs it;
+   skipped, it keeps the height it last had, so nothing moves on a scroll. */
+.lane { position: relative; z-index: 2; display: flex; border-bottom-color: rgb(var(--tone-rgb) / 0.12); content-visibility: auto; contain-intrinsic-height: auto 0px; }
 /* Each cell of a row draws the row's line in the row's color. The rail cell
    draws it on its solid background, so the lines under the rail can't show
    through it. */
@@ -704,6 +706,9 @@ div.ms-label {cursor:default}
   .auth-card { width: calc(100vw - 32px); max-width: 360px; }
   .lane-head { padding: 12px 10px; }
   .lane-head .name { font-size: var(--text-label); }
+  /* The rail is narrow here: the grip and ⋮ get their own row above the
+     name, instead of covering the end of a long name in a short lane. */
+  .head-ctl { position: static; order: -1; align-self: flex-end; margin: -6px -6px -6px 0; }
 }
 /* touch-primary devices (phones, wall boards): no hover exists, so nothing may depend on it */
 @media (hover: none) {

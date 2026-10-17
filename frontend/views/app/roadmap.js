@@ -238,7 +238,7 @@ export function renderRoadmap() {
       ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
       : 'no epics yet';
     const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-    lanes += `<div class="lane" data-track="${esc(t.id)}" style="height:${lane.height}px">
+    lanes += `<div class="lane" data-track="${esc(t.id)}" style="min-height:${lane.height}px">
       <div class="rail-cell lane-head" style="width:${RAIL}px">
         <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
         ${canRoadmap() ? `<div class="head-ctl">
@@ -479,7 +479,7 @@ function applyRoadmapLayout(view, next) {
   next.lanes.forEach((lane, i) => {
     const before = prev.lanes[i], bound = view.lanes[i];
     if (!bound?.lane) return;
-    if (lane.height !== before.height) bound.lane.style.height = `${lane.height}px`;
+    if (lane.height !== before.height) bound.lane.style.minHeight = `${lane.height}px`;
     bound.bars.forEach((bar, j) => { if (lane.pad !== before.pad || lane.rows[j] !== before.rows[j]) bar.el.style.top = barTop(lane, lane.rows[j], barHeight); });
   });
   view.layout = next;

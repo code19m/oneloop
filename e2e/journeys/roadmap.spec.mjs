@@ -141,6 +141,22 @@ test.describe('on a phone', () => {
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });
 
+  test('a short lane\'s name stays clear of its grip and ⋮, and its rail cell fits in the lane', async ({ page, instance }) => {
+    const { project } = instance.projects[0];
+    // Seven tracks make every lane as short as a lane gets.
+    for (const name of ['Platform and infrastructure', 'Customer support tools', 'Growth experiments', 'Internationalization', 'Billing', 'Data']) await command(instance.api, 'track.create', { projectId: project.id, name });
+    await openApp(page, instance, 'roadmap');
+    const lanes = await page.locator('.lane').evaluateAll(all => all.map(lane => {
+      const head = lane.querySelector('.lane-head').getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
+      text.selectNodeContents(lane.querySelector('.name'));
+      const covered = [...text.getClientRects()].some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom);
+      const fits = [...lane.querySelector('.lane-head').children].every(child => { const box = child.getBoundingClientRect(); return box.top >= head.top && box.bottom <= head.bottom; });
+      return { name: lane.querySelector('.name').textContent, covered, fits };
+    }));
+    expect(lanes.length).toBe(7);
+    expect(lanes.filter(lane => lane.covered || !lane.fits)).toEqual([]);
+  });
+
   test('marks scrolled under the rail stay behind it, also on its row lines', async ({ page, instance }) => {
     // The lanes hold still instead of sliding when the Roadmap's read draws them again.
     await page.emulateMedia({ reducedMotion: 'reduce' });
