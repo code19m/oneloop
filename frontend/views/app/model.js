@@ -17,6 +17,14 @@ export const instanceNow = () => runtime()?.now?.() ?? Date.now();
 
 /** The Board's first page of each column, which a read from the server also starts at. */
 export const firstBoardPages = () => ({ planning: 50, progress: 50, review: 50, done: 50 });
+/** Fixed scales of the Roadmap's timeline, in pixels per day. */
+export const ROADMAP_SCALES = [
+  { key: 'weeks', label: 'Weeks', ppd: 30, shortcut: 'W' },
+  { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
+  { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
+];
+/** Months, the scale a Roadmap opens at. */
+export const OPENING_SCALE = ROADMAP_SCALES.find((scale) => scale.key === 'months');
 
 export const state = {
   sideOpen: false,
@@ -27,7 +35,7 @@ export const state = {
   // Where each Pool tab's list was scrolled, from when the Pool opened.
   poolScroll: {},
   projectId: null,
-  pxPerDay: 8.5,
+  pxPerDay: OPENING_SCALE.ppd,
   rmScrollLeft: null, rmScrollTop: 0,
   boardTracks: [], boardEpics: [], boardAssignees: [], boardQ: '', boardBlocked:false,
   peek: null, modal: null, menu: null,

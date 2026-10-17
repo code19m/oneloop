@@ -11,8 +11,8 @@ import {
 } from './format.js';
 import { descriptionReadHtml } from './forms.js';
 import {
-  App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded, report, runtime,
-  state, taskById, tasks, trackById, tracks, userById,
+  App, D, OPENING_SCALE, ROADMAP_SCALES, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded,
+  report, runtime, state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
   EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, openMenu, peekOpened, pendingConfirmation,
@@ -28,13 +28,6 @@ import { announce } from './toasts.js';
 let RAIL = 208;
 const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
 const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
-/** Fixed scales of the timeline, in pixels per day. Months is the zoom a Roadmap opens at. */
-const ROADMAP_SCALES = [
-  { key: 'weeks', label: 'Weeks', ppd: 30, shortcut: 'W' },
-  { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
-  { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
-];
-const OPENING_SCALE = ROADMAP_SCALES.find((scale) => scale.key === 'months');
 /** The scale nearest a zoom, in proportion, as each wheel notch zooms by a factor. */
 const nearestScale = (ppd) => ROADMAP_SCALES.reduce((near, scale) => (Math.abs(Math.log(scale.ppd / ppd)) < Math.abs(Math.log(near.ppd / ppd)) ? scale : near));
 /** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
