@@ -24,7 +24,7 @@ import {
 import { mountDescription, sizeDescription, sizeDescriptionEditors } from './app/forms.js';
 import {
   App, D, blockedCount, canBoard, canReadProject, canReadTask, counts, epicById, hasPermission, instanceNow,
-  isAdmin, knowledge, me, poolTotal, project, recovery, report, runtime, state, taskById, trackById,
+  isAdmin, knowledge, me, poolTotal, project, projectLoaded, recovery, report, runtime, state, taskById, trackById,
   visibleProjects,
 } from './app/model.js';
 import {
@@ -260,7 +260,7 @@ function renderContent() {
   const error = recovery.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
   // An address can name a project whose tracks, epics and people the route
   // loader still loads; the Board waits for its cards in the same way.
-  const loadingProject = ['roadmap','settings'].includes(state.view) && D.bootstrapProjectId !== state.projectId;
+  const loadingProject = ['roadmap','settings'].includes(state.view) && !projectLoaded();
   const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? recovery.errorHtml(error) : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : loadingProject ? recovery.errorHtml('loading') : state.view === 'knowledge' ? knowledge.render(state.projectId) : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`

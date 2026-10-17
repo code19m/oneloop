@@ -17,6 +17,9 @@ All notable changes to oneloop are recorded here. The format follows
 - Choosing another project on **Page not found** or **Access denied** now opens
   that project's page of the same kind, such as its **Knowledge**, or else its
   **Board**.
+- While another project's **Roadmap** loads, its header and the sidebar's
+  **Board** count show no numbers instead of 0. The header's counts of tracks,
+  epics and milestones now also follow changes made elsewhere.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

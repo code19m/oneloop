@@ -10,7 +10,7 @@ import {
 import { drag, makeDropIndicator, setDragImage } from './drag.js';
 import { descriptionReadHtml } from './forms.js';
 import {
-  App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, report, runtime,
+  App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded, report, runtime,
   state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
@@ -381,11 +381,16 @@ function refreshEpicSummary() {
 }
 
 // ---------- page header ----------
-const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span><strong>${value}</strong></span>`;
+const roadmapStat = (label,value) => `<span class="roadmap-stat"><span>${label}</span>${value === null ? '<span class="skeleton" aria-hidden="true"></span>' : `<strong>${value}</strong>`}</span>`;
+/** The Roadmap's counts, with no numbers while the project's tracks, epics and milestones load. */
+function roadmapStatsHtml() {
+  const loaded = projectLoaded(), count = (list) => loaded ? list.length : null;
+  return `<span class="roadmap-structure-stats"${loaded ? '' : ' aria-busy="true"'}>${roadmapStat('Tracks',count(tracks()))}${roadmapStat('Epics',count(epics()))}${roadmapStat('Milestones',count(milestones()))}</span>`;
+}
 
 /** The Roadmap's page header: its counts, scale, Today and add buttons. */
 export function roadmapTopbarHtml() {
-  return `<h1 class="roadmap-title">Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary"><span class="roadmap-structure-stats">${roadmapStat('Tracks',tracks().length)}${roadmapStat('Epics',epics().length)}${roadmapStat('Milestones',milestones().length)}</span></div>
+  return `<h1 class="roadmap-title">Roadmap</h1><div class="roadmap-meta" role="group" aria-label="Roadmap summary">${roadmapStatsHtml()}</div>
   <div class="right">
     ${roadmapScaleHtml()}
     <button class="btn quiet" ${UIAction('goToday')}>Today</button>
@@ -784,6 +789,9 @@ Object.assign(App, {
     const before=UIMotion.positions('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
     const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
     setHTML(content,renderRoadmap());mountRoadmap();
+    // The header counts what the timeline now shows.
+    const stats=document.querySelector('.topbar .roadmap-structure-stats'),counted=roadmapStatsHtml();
+    if(stats&&stats.outerHTML!==counted){const template=document.createElement('template');setHTML(template,counted);stats.replaceWith(template.content);}
     const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
     if(focusId){const equivalent=[...content.querySelectorAll(`[data-${focusType}]`)].find(el=>el.dataset[focusType]===focusId);(equivalent||document.querySelector('.topbar button'))?.focus({preventScroll:true});}
     App.updateDocumentTitle();

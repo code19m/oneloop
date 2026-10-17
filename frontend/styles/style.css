@@ -885,6 +885,7 @@ div.ms-label {cursor:default}
 .roadmap-structure-stats { display:inline-flex;align-items:center;gap:16px; }
 .roadmap-stat { display:inline-flex;align-items:baseline;gap:6px; }
 .roadmap-stat strong { color:var(--ink);font-size:var(--text-label);font-weight:500;font-variant-numeric:tabular-nums; }
+.roadmap-stat .skeleton { display:inline-block;width:16px;height:12px;border-radius:var(--radius-xs); }
 @media (max-width:900px) {
   .roadmap-meta { display:none; }
 }
