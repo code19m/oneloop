@@ -138,8 +138,9 @@ window.addEventListener('blur',()=>finishPointerDrag(false));
 document.addEventListener('click',event=>{if(event.detail>0 && suppressDragClick){suppressDragClick=false;event.preventDefault();event.stopImmediatePropagation();}},true);
 
 // Native HTML dragging would steal the pointer stream, so the pointer code
-// above calls the drag handlers with events of its own.
-document.addEventListener('dragstart',event=>{if(event.target.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);
+// above calls the drag handlers with events of its own. A drag of selected
+// text starts from its text node in some browsers, such as Firefox.
+document.addEventListener('dragstart',event=>{const source=event.target instanceof Element?event.target:event.target.parentElement;if(source?.closest('.card,.grip')){event.preventDefault();event.stopImmediatePropagation();}},true);
 
 Object.assign(App, {
   dragEnd(animate = true) {
