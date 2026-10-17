@@ -380,6 +380,7 @@ test('a Pool item turned into a task reads the Board and the Pool once, and the 
   assert.deepEqual(acting.reads.calls, [['pool', 'p1', 'team']], 'the Pool that shows again reads its page');
   assert(acting.d.querySelector('.pool-view:not([hidden])'));
   assert.deepEqual(other.reloads.map(scope => scope.background), [true], 'another tab reads once');
+  t.mock.timers.reset();
 });
 
 /** Drop task `id` into `column`, above card `before` or at the end, as a finished drag does. */
