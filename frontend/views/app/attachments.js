@@ -85,7 +85,8 @@ export function mountAttachments(id,opened=false){
   const host=document.querySelector('.upload-list');if(!host)return;
   const zone=host.closest('.task-attachments');if(zone)zone.dataset.uploadTask=id;
   const current=jobs.filter(job=>job.taskId===id);
-  host.querySelectorAll('[data-upload-id]').forEach(el=>{if(!current.some(j=>j.id===el.dataset.uploadId))el.remove();});
+  // An upload that goes, such as by Dismiss, gives its focus to the drop area, as a file does.
+  host.querySelectorAll('[data-upload-id]').forEach(el=>{if(current.some(j=>j.id===el.dataset.uploadId))return;const focused=el.contains(document.activeElement);el.remove();if(focused)zone?.querySelector('.attachment-dropzone')?.focus({preventScroll:true});});
   for(const job of current){let row=host.querySelector(`[data-upload-id="${esc(job.id)}"]`);if(!row){row=document.createElement('div');row.className='upload-row';row.dataset.uploadId=job.id;setHTML(row,'<div class="upload-copy"><span class="upload-name"></span><span class="upload-state"></span><progress max="100"></progress></div><button type="button" class="btn quiet" data-upload-action="cancel">Cancel</button><button type="button" class="btn quiet" data-upload-action="retry">Retry</button><button type="button" class="btn quiet" data-upload-action="remove">Dismiss</button>');host.append(row);UIMotion.enter(row);}
     row.querySelector('.upload-name').textContent=displayText(job.file.name);const status=row.querySelector('.upload-state');status.textContent=job.error||(job.state==='uploading'?`Uploading ${job.progress}%`:job.state==='cancelled'?'Upload cancelled':'Uploaded');status.setAttribute('role',job.state==='error'?'alert':'status');
     const progress=row.querySelector('progress');progress.value=job.progress;progress.hidden=job.state!=='uploading';progress.setAttribute('aria-label',displayText(job.file.name)+' upload');
@@ -253,13 +254,13 @@ function focusedControl(section){
 /**
  * Give focus back to the same kind of control in the same row of `section`.
  * When its file is gone, the file in its place, else the one before, takes
- * it, and without files the drop area.
+ * it; when that leaves no row, as when an upload ends, the drop area.
  */
 function refocusControl(section,focused){
   if(!focused)return;
   const rows=fileRows(section),uploads=[...section.querySelectorAll('[data-upload-id]')];
   const row=focused.fileId?rows.find(item=>item.dataset.attachmentId===focused.fileId)??rows[focused.index]??rows.at(-1):focused.uploadId?uploads.find(item=>item.dataset.uploadId===focused.uploadId):section;
-  (row?.querySelector(focused.control)??(focused.fileId?section.querySelector('.attachment-dropzone'):null))?.focus({preventScroll:true});
+  (row?.querySelector(focused.control)??section.querySelector('.attachment-dropzone'))?.focus({preventScroll:true});
 }
 /**
  * Draw the attachments section of the open task again, and its activity, which

@@ -487,3 +487,22 @@ test('focus stays on a file\'s control when the server answers a move, and goes 
   await waitFor(() => !t.d.querySelector('[data-attachment-id="world"]'), 'the file is deleted');
   assert.equal(t.d.activeElement, t.d.querySelector('[data-attachment-id="hello"] .file-remove'));
 });
+
+test('when an upload ends or is dismissed, focus on its controls goes to the drop area', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  const send = async () => {
+    t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+    await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment' && !call.settled), 'the upload was sent');
+  };
+  await send();
+  t.d.querySelector('[data-upload-action="cancel"]').focus();
+  t.answer('uploadAttachment', serverFile('f1', 'notes.txt', 'text'));
+  await waitFor(() => !t.d.querySelector('.upload-row'), 'the upload ends');
+  assert.equal(t.d.activeElement, t.d.querySelector('.attachment-dropzone'), 'Cancel of an upload that ended');
+  await send();
+  t.calls.filter(call => call.method === 'uploadAttachment').at(-1).reject(new ApiError('The server is busy', { status: 503, code: 'unavailable' }));
+  await waitFor(() => !t.d.querySelector('[data-upload-action="remove"]').hidden, 'the failed upload offers Dismiss');
+  t.d.querySelector('[data-upload-action="remove"]').focus(); t.d.querySelector('[data-upload-action="remove"]').click();
+  assert.equal(t.d.querySelector('.upload-row'), null);
+  assert.equal(t.d.activeElement, t.d.querySelector('.attachment-dropzone'), 'Dismiss');
+});
