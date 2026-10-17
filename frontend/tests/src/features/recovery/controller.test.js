@@ -349,7 +349,8 @@ test('idle Board and Roadmap access probes only read counts',async()=>{
 /**
  * A page that learns about an update, with storage, visibility and a clock
  * the test controls. `stores` is the tab's storage, which a reload keeps; a
- * reload is counted, since jsdom can't run one. The page checks the server's
+ * reload is counted, since jsdom can't run one, and first asks the page's
+ * beforeunload listeners, as a browser does. The page checks the server's
  * version the way the app does, with the build monitor; `server` is the
  * version the server answers with. `html` is what the page shows.
  */
@@ -358,7 +359,7 @@ function updatable({hidden=false,stores={session:new Map()},html=''}={}){
   const storage=map=>({getItem:key=>map.get(key)??null,setItem:(key,value)=>{map.set(key,String(value));},removeItem:key=>{map.delete(key);}});
   const {window,document,createRecoveryController}=page(html);
   Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visibility});
-  const windowObject={sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;}},requestAnimationFrame:callback=>callback(),addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);},removeEventListener(){}};
+  const windowObject={sessionStorage:storage(stores.session),location:{hash:'',reload:()=>{reloads++;for(const listener of listeners.beforeunload??[])listener({preventDefault(){},returnValue:undefined});}},requestAnimationFrame:callback=>callback(),addEventListener:(type,listener)=>{(listeners[type]??=[]).push(listener);},removeEventListener(){}};
   const app=appFor(()=>({view:'board',projectId:'p1'}));
   let server=oldVersion;
   const monitor=createBuildMonitor({fetchBuild:async()=>{checks++;return server;},onInitial(){},onUpdate:value=>controller.buildChanged(value)});
@@ -457,11 +458,30 @@ test('only a reload the tab made by itself makes the next page say oneloop was u
 });
 
 test('a page that the browser\'s prompt kept after Reload now still reloads by itself later',()=>{
-  const page=updatable();page.controller.buildChanged(newVersion);page.controller.activateNotice();
+  const page=updatable();let typed=true;page.controller.trackUnsaved(()=>typed);
+  page.controller.buildChanged(newVersion);page.controller.activateNotice();
   assert.equal(page.reloads,1,'Reload now asks the browser to reload');
-  // The browser asked to leave the page, and the person stayed: no pagehide.
-  page.show(false);
+  // Typed text made the browser ask to leave the page, and the person stayed: no pagehide. Then the text was saved.
+  typed=false;page.show(false);
   assert.equal(page.reloads,2,'the tab reloads by itself once it hides');
+});
+
+test('Reload now reloads once, also when the tab hides before the new page arrives',async()=>{
+  const page=updatable();page.controller.buildChanged(newVersion);page.controller.activateNotice();
+  // On a slow network the person switches to another tab while the new page loads.
+  page.show(false);await page.advance(60_000);
+  assert.equal(page.reloads,1);
+  page.leave();
+  assert.deepEqual(updatable({stores:page.stores}).toasts,[],'the new page doesn\'t say oneloop was updated');
+});
+
+test('a tab whose reload stopped before the new page came still reloads by itself later',async()=>{
+  const page=updatable();page.controller.buildChanged(newVersion);page.controller.activateNotice();
+  // The person stopped the load, and the page stayed; then the tab hides.
+  page.show(false);await page.advance(4*60_000+30_000);
+  assert.equal(page.reloads,1,'it waits for the page that was on its way');
+  await page.advance(30_000);
+  assert.equal(page.reloads,2,'as long as an idle tab waits');
 });
 
 test('a page back from the browser\'s back-forward cache reloads by itself again',()=>{

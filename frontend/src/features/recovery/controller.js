@@ -242,6 +242,8 @@ export function createRecoveryController({
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
   // A page that is leaving (pagehide), by Reload now or the browser, hides on its way out: no moment to reload by itself.
   let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now(),leaving=false;
+  // When the browser began to load the next page here, as for Reload now, with nothing to ask first.
+  let departedAt=-Infinity;
 
   function entityKey(entity){
     if(!entity)return null;
@@ -308,7 +310,7 @@ export function createRecoveryController({
   }
 
   function warnBeforeUnload(event){
-    if(!hasUnsavedInput())return;
+    if(!hasUnsavedInput()){departedAt=now();return;}
     // The browser shows its own prompt; returnValue is for older browsers.
     event.preventDefault();event.returnValue=true;
   }
@@ -346,7 +348,9 @@ export function createRecoveryController({
    * person has not used it for five minutes. Until then it checks again every
    * 30 seconds, when the tab hides and when a save settles. A tab reloads by
    * itself once per page load and once per version, so servers that disagree
-   * about the version can't make it loop.
+   * about the version can't make it loop. A page on its way, as after Reload
+   * now on a slow network, comes once: the tab waits for it as long as an
+   * idle tab waits, and if its load stopped, reloads by itself after that.
    */
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
@@ -354,7 +358,8 @@ export function createRecoveryController({
     const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
     if(reloadedFor().includes(version))return;
     const away=documentObject.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
-    if(!away||hasUnsavedInput()||documentObject.querySelector(IN_PROGRESS)){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
+    const arriving=now()-departedAt<IDLE_BEFORE_RELOAD_MS;
+    if(arriving||!away||hasUnsavedInput()||documentObject.querySelector(IN_PROGRESS)){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
     autoReloaded=true;
     try{
       storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));
@@ -733,7 +738,7 @@ export function createRecoveryController({
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility and the connection. */
-    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
     /**
      * Someone signed in, or the session ended. A person who signed out on
      * purpose (`signedOut`) gets nothing kept for their next sign-in, and the

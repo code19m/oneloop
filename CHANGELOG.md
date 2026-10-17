@@ -20,6 +20,9 @@ All notable changes to oneloop are recorded here. The format follows
 - While another project's **Roadmap** loads, its header and the sidebar's
   **Board** count show no numbers instead of 0. The header's counts of tracks,
   epics and milestones now also follow changes made elsewhere.
+- **Reload now** reloads the tab once. On a slow network, switching to another
+  tab before the new page arrived made the tab start a second reload, and the
+  new page then said **oneloop was updated**.
 
 ## [0.1.0-rc.6] - 2026-10-17
 
