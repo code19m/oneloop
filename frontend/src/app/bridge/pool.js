@@ -10,7 +10,7 @@ import { text } from './commands.js';
 export function installPool(ctx) {
   const { app, data, reads, recovery, poolItem, context, sessionScope, execute, fire, formValues } = ctx;
   // Pool items that could not be added, kept for their person until the
-  // capture field of their Pool is free, or until they sign out on purpose.
+  // capture field of their Pool is free, or until they sign out in this tab.
   /** @type {{userId:string,projectId:string,scope:string,title:string,description:string,key:string}[]} */
   const unsentCaptures = [];
   /** @type {{projectId:string,scope:string,title:string,description:string,key:string}|null} */

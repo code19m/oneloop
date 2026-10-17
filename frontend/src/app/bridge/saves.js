@@ -113,7 +113,7 @@ export function createSaves(ctx) {
   }
 
   // A draft lives in this tab only, so leaving oneloop before it saves loses
-  // it, and so does a sign-out on purpose, checklist titles included.
+  // it, and so does signing out in this tab, checklist titles included.
   recovery.trackUnsaved(()=>{pruneDrafts();return drafts.size>0;},()=>drafts.clear());
 
   async function execute(operation, payload, entity, message, options = {}) {

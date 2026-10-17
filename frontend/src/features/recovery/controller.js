@@ -222,9 +222,17 @@ export function createRecoveryController({
   documentObject = document,
 }) {
   let pageError=null,pageReference=null,expired=false;
-  // What the person was typing when their session ended, kept in memory for their next sign-in.
-  /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any}|null} */
+  // What the person was typing when their session ended, kept in memory for
+  // their next sign-in. `away`: the tab forgot its address since, so it
+  // waits until they open its page again.
+  /** @type {{userId:string,hash:string,editor:ReturnType<typeof captureOpenEditor>,comment:any,away?:boolean}|null} */
   let resume=null;
+  /**
+   * What stays of `kept` once the tab forgets its address: an editor in a
+   * dialog or panel goes, as they close with the address.
+   * @param {NonNullable<typeof resume>} kept
+   */
+  const keptAway=(kept)=>{const editor=kept.editor?.rootClass.some((name)=>name==='modal'||name==='peek')?null:kept.editor;return editor||kept.comment?{...kept,editor,away:true}:null;};
   let apiReachable=online(),liveReachable=true,liveOpen=false,reconnectAttempt=0,reconnectTimer=null,liveAttempt=0,liveTimer=null,reconcilePromise=null,accessTimer=null;
   let bound=false,disposed=false;
   let sessionGeneration=0,connectivityGeneration=0,reconnectGeneration=0;
@@ -573,21 +581,34 @@ export function createRecoveryController({
     sessionExpired();return false;
   }
 
-  function sessionExpired() {
-    if(expired||!data?.session)return false;
+  /**
+   * Keep what the open editor and the comment box hold for the person's next
+   * sign-in, as their session ends here, by itself or as they signed out in
+   * another tab. When nothing is typed, what was kept before stays.
+   */
+  function keepTyped() {
+    if(!data?.session)return;
     // The comment composer keeps its own draft, with its reply target and mentions.
     const editor=captureOpenEditor(documentObject,{changedOnly:true,skip:(element)=>element.id==='cmtIn'}),comment=getApp()?.commentDraft()??null;
-    resume=editor||comment?{userId:data.session.userId,hash:windowObject.location.hash,editor,comment}:null;
+    if(editor||comment)resume={userId:data.session.userId,hash:windowObject.location.hash,editor,comment};
+  }
+
+  function sessionExpired() {
+    if(expired||!data?.session)return false;
+    keepTyped();
     expired=true;sessionGeneration++;reconnectGeneration++;gateway.invalidate();getAuth()?.expire();return true;
   }
 
   /**
    * After the same person signs in again, put back what they typed once the
-   * page they left shows its editor. Another person, or another page, drops it.
+   * page they left shows its editor. Another person drops it, and so does
+   * another page, unless the tab forgot its address since: then it waits
+   * until they open that page again.
    */
   function resumeEditing() {
     const next=resume;if(!next||!data?.session||data.session.temporary)return false;
-    if(data.session.userId!==next.userId||pageOf(windowObject.location.hash)!==pageOf(next.hash)){resume=null;return false;}
+    if(data.session.userId!==next.userId){resume=null;return false;}
+    if(pageOf(windowObject.location.hash)!==pageOf(next.hash)){if(!next.away)resume=null;return false;}
     if(next.editor&&![...documentObject.querySelectorAll(EDITOR_ROOT)].some((candidate)=>next.editor.rootClass.every((name)=>candidate.classList.contains(name))))return false;
     resume=null;
     if(next.comment)getApp()?.restoreCommentDraft(next.comment);
@@ -698,7 +719,7 @@ export function createRecoveryController({
      * else kept for them, such as a draft or a comment that wasn't saved.
      */
     get keepsInput(){return !!resume||!data?.session&&[...unsavedChecks.keys()].some((check)=>check());},
-    resumeEditing,
+    resumeEditing,keepTyped,
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,
     captureEditor:()=>captureOpenEditor(documentObject),
@@ -749,12 +770,14 @@ export function createRecoveryController({
     start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
     /**
      * Someone signed in, or the session ended. A person who signed out on
-     * purpose (`signedOut`) gets nothing kept for their next sign-in, neither
-     * what an editor held nor what a tracked source keeps, such as drafts, and
-     * the sign-in page doesn't say their session ended.
-     * @param {any} session @param {{signedOut?:boolean}} [change]
+     * purpose (`signedOut`) isn't told that their session ended. The tab
+     * where they did (`here`), whose Sign out warned them, keeps nothing for
+     * their next sign-in, neither what an editor held nor what a tracked
+     * source keeps, such as drafts. Their other tabs keep it, as when a
+     * session ends by itself, though they forget their address.
+     * @param {any} session @param {{signedOut?:boolean,here?:boolean}} [change]
      */
-    sessionChanged(session,{signedOut=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){resume=null;expired=false;for(const forget of unsavedChecks.values())forget?.();}}},
+    sessionChanged(session,{signedOut=false,here=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){expired=false;if(here){resume=null;for(const forget of unsavedChecks.values())forget?.();}else if(resume)resume=keptAway(resume);}}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);

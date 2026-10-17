@@ -256,7 +256,7 @@ let resumedComment=null;
 // A new comment or reply on its way `leaves` the box.
 const sendingComments=new Map();
 // New comments and replies that weren't saved, kept for their writer until
-// the box on their task page is empty, or until they sign out on purpose.
+// the box on their task page is empty, or until they sign out in this tab.
 // Each keeps its interaction, so sending it again after an unknown result
 // can't add it twice.
 const unsentComments=[];
@@ -279,7 +279,7 @@ function emptyComposer(task){
  * waits, with its interaction, until the box on its page is empty.
  */
 function returnUnsent(pending,error){
- // Its writer signed out on purpose while it was on its way, so it goes too.
+ // Its writer signed out in this tab while it was on its way, so it goes too.
  if(!sendingComments.delete(pending.interactionId))return;
  const task=taskById(pending.taskId),host=document.querySelector('[data-comment-task]');
  if(task&&me()?.id===pending.userId&&mountedTaskId===task.id&&canComment(task)&&host?.dataset.commentTask===task.id){

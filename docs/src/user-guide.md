@@ -303,9 +303,11 @@ Sessions end by themselves after a while; see
 
 If your session ends while you type, sign in again in the same tab and your
 text comes back. The tab keeps it only in memory, and drops it when you sign
-out or someone else signs in there. Tabs of one browser share a session: when
-you sign out, your other open tabs sign out too, and when someone else signs
-in, your open tabs show that your session ended instead of their work.
+out there or someone else signs in there. Tabs of one browser share a session:
+when you sign out, your other open tabs sign out too, but keep what you typed
+in them, except in a dialog. It comes back when you sign in again there and
+open its page. When someone else signs in, your open tabs show that your
+session ended instead of their work.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

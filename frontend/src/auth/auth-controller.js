@@ -24,7 +24,7 @@ const SIGNING_OUT = 'oneloop.signingOut';
 /** How long a sign-out can be on its way: as long as the API client waits for an answer. */
 const SIGN_OUT_WAIT_MS = 30_000;
 
-export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, onSessionChange = (_session, _change = {}) => {}, windowObject = globalThis.window }) {
+export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, keepTyped = () => {}, onSessionChange = (_session, _change = {}) => {}, windowObject = globalThis.window }) {
   let pendingCredentials = null;
   let pendingCompletion = null;
   // The person whose session ended by itself here, until someone signs in. A
@@ -38,26 +38,33 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   const person=()=>data.session?.userId??endedFor;
   /** Closes the Confirm your identity prompt that is open, as its session ended. */
   let closePrompt=null;
-  /** The sign-out on purpose that is on its way, here or in another tab: whose, and until when it can still end their session. */
-  let signingOut=/** @type {{userId:string,until:number}|null} */(null);
+  /** The sign-out on purpose that is on its way: whose, until when it can still end their session, and whether it started here. */
+  let signingOut=/** @type {{userId:string,until:number,here:boolean}|null} */(null);
   /** Store `value` under `key` in local storage, or remove it; the browser's other tabs hear it as a storage event. */
   const store=(/** @type {string} */ key,/** @type {string|null} */ value)=>{try{if(value===null)windowObject.localStorage.removeItem(key);else windowObject.localStorage.setItem(key,value);}catch{}};
 
-  /** `signedOut`: on purpose, so nothing is kept for the person's next sign-in. */
-  function clearPrivateData(signedOut=false){
+  /**
+   * End the session here. `signedOut`: its person signed out on purpose, and
+   * `here` in this tab, so nothing is kept for their next sign-in.
+   * @param {{signedOut?:boolean,here?:boolean}} [change]
+   */
+  function clearPrivateData(change={}){
     closePrompt?.();
     pendingCompletion=null;
     for(const key of ['users','projects','tracks','epics','milestones','tasks','pool','notifications','browserSessions','appGrants'])data[key]?.splice?.(0);
     data.session=null;data.inboxUnreadCount=0;data.boardPageInfo=null;data.projectTaskCounts={};data.poolPageInfo={};data.epicPageInfo={};data.adminUsers={ids:[],nextCursor:null,loaded:false};
-    onSessionChange(null,{signedOut});
+    onSessionChange(null,change);
   }
 
   /**
    * End the session on purpose: whoever signs in here next starts from their
    * own project, as the tab forgets what its address named. A session that
-   * ends by itself keeps the address for its person.
+   * ends by itself keeps the address for its person. `here`: its person
+   * signed out in this tab, after Sign out warned them that typed text would
+   * be lost. A tab where they didn't keeps what they typed for their next
+   * sign-in, as when a session ends by itself.
    */
-  function signOut(){endedFor=null;pendingCredentials=null;clearPrivateData(true);getApp()?.clearAddress();refresh();}
+  function signOut(here=true){endedFor=null;pendingCredentials=null;clearPrivateData({signedOut:true,here});getApp()?.clearAddress();refresh();}
 
   /**
    * End the session of `userId`, this tab's person, on the server as they
@@ -71,7 +78,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   async function signOutEverywhere(userId,here){
     // A note that a tab left when it closed during its sign-out goes first:
     // storing the same value again would reach no other tab.
-    if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS};store(SIGNING_OUT,null);store(SIGNING_OUT,userId);}
+    if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS,here:true};store(SIGNING_OUT,null);store(SIGNING_OUT,userId);}
     const done=()=>{if(userId){signingOut=null;store(SIGNING_OUT,null);}};
     try{await logoutHere();}
     catch(error){done();throw error;}
@@ -93,14 +100,14 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   }
 
   /**
-   * Another tab signed out this tab's person on purpose, so this tab does the
-   * same, as its own Sign out would; or it started to, so the end of the
-   * session counts as on purpose here too.
+   * Another tab signed out this tab's person on purpose, so this tab signs
+   * out too, keeping what they typed here; or it started to, so the end of
+   * the session counts as on purpose here too.
    */
   function signedOutElsewhere(/** @type {StorageEvent} */ event){
-    if(event.key===SIGNING_OUT){signingOut=event.newValue?{userId:event.newValue,until:Date.now()+SIGN_OUT_WAIT_MS}:null;return;}
+    if(event.key===SIGNING_OUT){signingOut=event.newValue?{userId:event.newValue,until:Date.now()+SIGN_OUT_WAIT_MS,here:false}:null;return;}
     if(event.key!==SIGNED_OUT||!event.newValue||event.newValue!==person())return;
-    begin();signOut();
+    keepTyped();begin();signOut(false);
   }
 
   async function complete(auth,token) {
@@ -248,7 +255,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
       begin();
       // A sign-out on purpose of this person is on its way, which is why the
       // session ended: the tab signs out as on purpose.
-      if(signingOut&&signingOut.userId===person()&&Date.now()<signingOut.until){signOut();return;}
+      if(signingOut&&signingOut.userId===person()&&Date.now()<signingOut.until){signOut(signingOut.here);return;}
       endedFor=person();
       pendingCredentials=null;
       clearPrivateData();
