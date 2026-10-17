@@ -19,6 +19,10 @@ function validateNewPassword(password) {
 
 /** Set in local storage when someone signs out on purpose; it names them, for the browser's other tabs. */
 const SIGNED_OUT = 'oneloop.signedOut';
+/** Set in local storage while someone's sign-out on purpose is on its way to the server; it names them. */
+const SIGNING_OUT = 'oneloop.signingOut';
+/** How long a sign-out can be on its way: as long as the API client waits for an answer. */
+const SIGN_OUT_WAIT_MS = 30_000;
 
 export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, onSessionChange = (_session, _change = {}) => {}, windowObject = globalThis.window }) {
   let pendingCredentials = null;
@@ -34,6 +38,10 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   const person=()=>data.session?.userId??endedFor;
   /** Closes the Confirm your identity prompt that is open, as its session ended. */
   let closePrompt=null;
+  /** The sign-out on purpose that is on its way, here or in another tab: whose, and until when it can still end their session. */
+  let signingOut=/** @type {{userId:string,until:number}|null} */(null);
+  /** Store `value` under `key` in local storage, or remove it; the browser's other tabs hear it as a storage event. */
+  const store=(/** @type {string} */ key,/** @type {string|null} */ value)=>{try{if(value===null)windowObject.localStorage.removeItem(key);else windowObject.localStorage.setItem(key,value);}catch{}};
 
   /** `signedOut`: on purpose, so nothing is kept for the person's next sign-in. */
   function clearPrivateData(signedOut=false){
@@ -51,11 +59,22 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
    */
   function signOut(){endedFor=null;pendingCredentials=null;clearPrivateData(true);getApp()?.clearAddress();refresh();}
 
-  /** Sign out `userId` on purpose here, and in the browser's other tabs that show them. */
-  function signOutEverywhere(userId){
-    signOut();
-    // The other tabs hear the change as a storage event; nothing stays stored.
-    if(userId)try{windowObject.localStorage.setItem(SIGNED_OUT,userId);windowObject.localStorage.removeItem(SIGNED_OUT);}catch{}
+  /**
+   * End the session of `userId`, this tab's person, on the server as they
+   * asked, and sign them out on purpose here when `here()` says so, and in
+   * the browser's other tabs that show them. Those tabs hear first that the
+   * sign-out is on its way, so one whose session ends meanwhile goes straight
+   * to the sign-in page, as on purpose. A sign-out that doesn't reach the
+   * server signs nothing out.
+   * @param {string|null} userId @param {()=>boolean} here
+   */
+  async function signOutEverywhere(userId,here){
+    if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS};store(SIGNING_OUT,userId);}
+    try{await logoutHere();}
+    finally{if(userId){signingOut=null;store(SIGNING_OUT,null);}}
+    if(here())signOut();
+    // Nothing stays stored.
+    if(userId){store(SIGNED_OUT,userId);store(SIGNED_OUT,null);}
   }
 
   /**
@@ -68,8 +87,13 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     catch(error){if(!(error instanceof ApiError&&error.status===401))throw error;}
   }
 
-  /** Another tab signed out this tab's person on purpose, so this tab does the same, as its own Sign out would. */
+  /**
+   * Another tab signed out this tab's person on purpose, so this tab does the
+   * same, as its own Sign out would; or it started to, so the end of the
+   * session counts as on purpose here too.
+   */
   function signedOutElsewhere(/** @type {StorageEvent} */ event){
+    if(event.key===SIGNING_OUT){signingOut=event.newValue?{userId:event.newValue,until:Date.now()+SIGN_OUT_WAIT_MS}:null;return;}
     if(event.key!==SIGNED_OUT||!event.newValue||event.newValue!==person())return;
     begin();signOut();
   }
@@ -161,8 +185,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     retryButton.addEventListener('click',async()=>{retryButton.disabled=true;otherButton.disabled=true;try{await retry();}catch(error){reportError(error,section);}if(section.isConnected){retryButton.disabled=false;otherButton.disabled=false;}});
     otherButton.addEventListener('click',async()=>{
       retryButton.disabled=true;otherButton.disabled=true;
-      const signedIn=person();
-      try{await logoutHere();signOutEverywhere(signedIn);}
+      try{await signOutEverywhere(person(),()=>true);}
       catch(error){retryButton.disabled=false;otherButton.disabled=false;reportError(error,section);}
     });
     section.append(heading,copy,retryButton,otherButton);form.hidden=true;card.querySelector('.session-limit-list')?.remove();card.append(section);retryButton.focus();return true;
@@ -218,6 +241,9 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     login,
     expire() {
       begin();
+      // A sign-out on purpose of this person is on its way, which is why the
+      // session ended: the tab signs out as on purpose.
+      if(signingOut&&signingOut.userId===person()&&Date.now()<signingOut.until){signOut();return;}
       endedFor=person();
       pendingCredentials=null;
       clearPrivateData();
@@ -225,8 +251,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     },
     async logout() {
       const signedIn=person(),token=begin();
-      await logoutHere();
-      if(current(token)||!data.session&&endedFor===signedIn)signOutEverywhere(signedIn);
+      await signOutEverywhere(signedIn,()=>current(token)||!data.session&&endedFor===signedIn);
     },
     setTemporaryPassword,
     changePassword,

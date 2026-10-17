@@ -177,6 +177,34 @@ test('a sign-out on purpose wins over a request that met the end of its session 
   for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);}
 });
 
+test('a tab whose session ends while its person signs out in another tab goes straight to the sign-in page',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),answer=deferred(),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1',{api:{logout:()=>answer.promise}});
+  const leaving=signingOut.auth.logout();await settle();
+  // The server ended the session, and a read in the other tab met that before the sign-out's answer came.
+  other.auth.expire();
+  assert.equal(other.signedOut,true,'it says nothing about a session that ended by itself');assert.equal(other.cleared,1);
+  answer.resolve();await leaving;await settle();
+  assert.equal(other.cleared,1,'it signs out once');
+});
+
+test('a sign-out that doesn\'t reach the server, or whose tab went away, leaves a session that ends later to end by itself',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),offline=deferred(),other=await tabOf(there,'u1'),failing=await tabOf(here,'u1',{api:{logout:()=>offline.promise}});
+  const failed=assert.rejects(failing.auth.logout(),(error)=>error.code==='network_error');await settle();
+  offline.reject(new ApiError('Unable to reach oneloop',{code:'network_error'}));await failed;await settle();
+  assert.equal(other.data.session?.userId,'u1','the other tab stays signed in');
+  other.auth.expire();
+  assert.equal(other.signedOut,false,'its session ends by itself');assert.equal(other.cleared,0,'and keeps its address');
+  // A tab that started a sign-out and went away before it ended.
+  t.mock.timers.enable({apis:['Date']});
+  const [, left]=browser(2),stale=await tabOf(left,'u1');
+  left.dispatchEvent(new left.StorageEvent('storage',{key:'oneloop.signingOut',newValue:'u1'}));
+  t.mock.timers.tick(31_000);
+  stale.auth.expire();
+  assert.equal(stale.signedOut,false,'a sign-out can be on its way for only as long as the server can take to answer');
+});
+
 test('a Confirm your identity prompt closes when its session ends, by itself or by a sign-out in another tab, and its action stops quietly',async(t)=>{
   const document=page(t);
   for(const end of ['by itself','by a sign-out in another tab']){
