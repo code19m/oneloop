@@ -243,6 +243,32 @@ test('a checklist grows, ticks and moves by keyboard, and follows a change made 
   await expect(page.locator(`[data-task="${task.taskKey}"] .card-checklist`)).toHaveText('2/2');
 });
 
+test('a refused checklist tick goes back in place, and the description being typed keeps its text and focus', async ({ page, instance, allowedConsoleErrors }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.checklist.add', { taskId: task.id, title: 'Build' });
+  await openApp(page, instance);
+  const box = page.getByLabel('Done: Build'), description = page.locator('#task-description');
+  // The server refuses the tick once the person types in the description again.
+  allowedConsoleErrors.push(/400 .*\/api\/commands$/);
+  let refuse;
+  const typed = new Promise(resolve => { refuse = resolve; });
+  await page.route('**/api/commands', async route => {
+    await typed;
+    await route.fulfill({ status: 400, json: { error: { code: 'validation_failed', message: 'The tick was refused.', details: { field: 'done' } } } });
+  });
+  await box.check();
+  await description.click();
+  await page.keyboard.type('Typed meanwhile');
+  const editor = await description.elementHandle();
+  const read = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tasks/${task.id}`);
+  refuse();
+  await read;
+  await expect(box).not.toBeChecked();
+  await expect(page.locator('.checklist-count')).toHaveText('0/1');
+  // The read that puts the checklist right draws nothing else of the page again.
+  expect(await editor.evaluate(element => [element.isConnected, element === document.activeElement, element.value])).toEqual([true, true, 'Typed meanwhile']);
+});
+
 test('live metadata, delayed reads and completed saves preserve task typing and pickers', async ({ page, instance }) => {
   await openApp(page, instance);
   const description = page.locator('#task-description'), title = page.locator('.tp-title');

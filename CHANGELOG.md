@@ -65,6 +65,9 @@ All notable changes to oneloop are recorded here. The format follows
   an epic, a track or a milestone, your tab loaded the page's data a second
   time when it heard of its own change. It now loads only what the change
   needs; other open tabs still load it once.
+- When the server refused a checklist change, or found nothing to change, the
+  task's page was drawn again at once, even while you typed elsewhere on it.
+  The checklist is now put right in place, and what you type stays.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

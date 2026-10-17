@@ -339,12 +339,12 @@ Object.assign(App, {
     page.querySelector('.task-overdue')?.toggleAttribute('hidden', !late);
   },
   /**
-   * Show the open task as it is saved now, after a change from elsewhere,
-   * such as a teammate, another tab or an MCP agent: its header, Status,
-   * title, description and checklist at once, in place, and the rest of the
-   * page once focus leaves it. The field being typed in keeps what the person
-   * is typing. The checklist waits for a press on the page to end: a row that
-   * moves under the pointer would lose its click.
+   * Show the open task as it is saved now, after a read of it or a change
+   * from elsewhere, such as a teammate, another tab or an MCP agent: its
+   * header, Status, title, description and checklist at once, in place, and
+   * the rest of the page once focus leaves it. The field being typed in keeps
+   * what the person is typing. The checklist waits for a press on the page to
+   * end: a row that moves under the pointer would lose its click.
    */
   refreshTask(id) {
     App.refreshTaskHeader(); App.refreshTaskDrafts(id);
