@@ -6,6 +6,7 @@
 import { UIMotion } from '../../src/app/motion.js';
 import { fadeOutRows, placeRows } from '../../src/app/rows.js';
 import { mentionFromWire, mentionsToWire as wireMentions } from '../../src/data/wire.js';
+import { reloadAttachments } from './attachments.js';
 import { multiHtml } from './controls.js';
 import { UIAction, ago, avatarHtml, esc, formatInstant, instanceDateKey, previousDate, setHTML } from './format.js';
 import {
@@ -413,5 +414,6 @@ controller=collaborationController.bind(App,{
  commentDeleted(taskId,commentId){const task=taskById(taskId);if(!task)return;refreshComments(task);const comment=task.comments?.find(c=>c.id===commentId);if(comment)App.offerUndo('Comment deleted',again=>controller.restoreComment({task,comment,again}));else App.toast('Comment deleted');},
  commentRestored(taskId){const task=taskById(taskId);if(task){refreshComments(task);App.toast('Comment restored');}},
  canonicalTask(taskId){App.refreshTask(taskId);},
+ taskFiles:reloadAttachments,
  target(value){pendingTarget=value;if(value?.rootId)expanded.add(value.rootId);},
 });

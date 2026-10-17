@@ -76,6 +76,8 @@ function loadAttachments(taskId,force=false,background=false){
   });
   loading.set(taskId,request);
 }
+/** Read the files of task `id` again, as they changed elsewhere; the open task page shows them. */
+export function reloadAttachments(id){loadAttachments(id,true,true);}
 /**
  * Load the attachments of task `id` each time its page opens (`opened`), and
  * when the task lost its list, and show its uploads, after its page draws.
@@ -281,16 +283,16 @@ function refreshAttachments(id){
 }
 function refreshShownAttachments(){const context=App.context();if(context.view==='task')refreshAttachments(context.taskId);}
 
-// Another person signing in, a new projection and live updates change what
-// the attachments show. The first page that shows them starts following.
+// Another person signing in and a new projection change what the attachments
+// show; live changes to them come through `reloadAttachments`. The first page
+// that shows them starts following.
 let following=false;
 function followChanges(){
   if(following)return;following=true;
   let accountScope=D.session?.id;
   runtime().transport.subscribe(change=>{
     if(change?.type==='auth'&&accountScope!==D.session?.id){clearAccount();accountScope=D.session?.id;}
-    if(change?.type==='bootstrap'){loaded=new WeakSet();return;}
-    if(change?.type==='sse'&&change.taskId&&(!change.entityType||['attachment','task'].includes(change.entityType))){const changedTask=taskById(change.taskId);if(changedTask)loadAttachments(changedTask.id,true,true);}
+    if(change?.type==='bootstrap')loaded=new WeakSet();
   });
 }
 function clearAccount(){jobs.splice(0).forEach(job=>{job.cancelled=true;job.reader?.abort();});loaded=new WeakSet();loading.clear();refreshPending.clear();retentionPending.clear();reorderPending.clear();attachmentsRead=new Set();}

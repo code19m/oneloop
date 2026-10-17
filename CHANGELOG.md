@@ -18,6 +18,10 @@ All notable changes to oneloop are recorded here. The format follows
 - A change to a task's checklist no longer makes every open page of the task
   load its comments, activity and files again: they load only the task, and
   the tab that made the change loads nothing.
+- Other changes to a task now also load only what they can change on its
+  open page. A new title, status or other field loads the task and its
+  activity, but not its comments and files. A comment loads the comments,
+  and a change to the files loads the files.
 
 ### Fixed
 
