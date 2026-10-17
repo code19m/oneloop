@@ -69,7 +69,9 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
    * @param {string|null} userId @param {()=>boolean} here
    */
   async function signOutEverywhere(userId,here){
-    if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS};store(SIGNING_OUT,userId);}
+    // A note that a tab left when it closed during its sign-out goes first:
+    // storing the same value again would reach no other tab.
+    if(userId){signingOut={userId,until:Date.now()+SIGN_OUT_WAIT_MS};store(SIGNING_OUT,null);store(SIGNING_OUT,userId);}
     try{await logoutHere();}
     finally{if(userId){signingOut=null;store(SIGNING_OUT,null);}}
     if(here())signOut();
