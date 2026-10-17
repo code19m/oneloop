@@ -27,6 +27,8 @@
 :root[data-theme=dark] .markdown-alert-note { --md-alert-color:#4493f8; }:root[data-theme=dark] .markdown-alert-tip { --md-alert-color:#3fb950; }:root[data-theme=dark] .markdown-alert-important { --md-alert-color:#ab7df8; }:root[data-theme=dark] .markdown-alert-warning { --md-alert-color:#d29922; }:root[data-theme=dark] .markdown-alert-caution { --md-alert-color:#f85149; }
 .markdown-body .footnotes { margin-top:32px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-muted); }
 .markdown-body .footnotes li:focus { outline:2px solid var(--focus-ring);outline-offset:4px; }
+/* An in-document link brings its target, such as a heading or a footnote, a little below the top. */
+:where(.markdown-body [id]) { scroll-margin-top:16px; }
 
 /* Uploaded markup stays inside its reading surface. */
 .markdown-body{contain:layout paint;isolation:isolate}

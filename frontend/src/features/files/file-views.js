@@ -437,10 +437,10 @@ function renderMarkdown(view,text,context){
   // and columns start from. A direction the file sets stays.
   fragment.querySelectorAll('p,h1,h2,h3,h4,h5,h6,summary,ul,ol,dl,table').forEach(el=>{if(!el.hasAttribute('dir')&&!el.parentElement?.closest('ul,ol,dl,table'))el.setAttribute('dir','auto');});
   const article=document.createElement('article');article.className='markdown-body';article.append(fragment);
-  // In-document links, such as footnotes and their back links, bring their
-  // target into view: in the box that shows the article, and in the page
-  // around it.
-  article.addEventListener('click',event=>{const href=/** @type {Element} */ (event.target).closest('a')?.getAttribute('href');if(!href?.startsWith('#md-'))return;event.preventDefault();const target=/** @type {HTMLElement|undefined} */ ([...article.querySelectorAll('[id]')].find(el=>el.id===href.slice(1)));if(!target)return;target.scrollIntoView({block:'nearest',behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});});
+  // In-document links, such as a table of contents, footnotes and their back
+  // links, bring their target to the top, as a page's anchors do: in the box
+  // that shows the article, and in the page around it.
+  article.addEventListener('click',event=>{const href=/** @type {Element} */ (event.target).closest('a')?.getAttribute('href');if(!href?.startsWith('#md-'))return;event.preventDefault();const target=/** @type {HTMLElement|undefined} */ ([...article.querySelectorAll('[id]')].find(el=>el.id===href.slice(1)));if(!target)return;target.scrollIntoView({block:'start',behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});});
   view.replaceChildren(article);view.scrollTop=scroll;
   article.querySelectorAll('[data-md-math]').forEach((/** @type {HTMLElement} */ el)=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!vendor.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{vendor.katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
   renderDiagrams(article);
