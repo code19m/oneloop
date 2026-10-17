@@ -49,6 +49,8 @@ test('bootstrap uses encoded identifiers, supports empty responses, and rejects 
   const api = createApiClient({ fetchImpl: async (url) => { requested = url; return new Response(null, { status: 204 }); } });
   assert.equal(await api.bootstrap({ projectId: 'my project', taskId: 'BIR-001' }), null);
   assert.equal(requested, '/api/bootstrap?projectId=my+project&taskId=BIR-001');
+  await api.bootstrap({ view: 'metadata', lastSwitch: { userId: 'u1', projectId: 'my project' } });
+  assert.equal(requested, '/api/bootstrap?view=metadata&switchedTo=my+project&switchedBy=u1');
   const invalid = createApiClient({ fetchImpl: async () => new Response('bad', { status: 200 }) });
   await assert.rejects(invalid.command(prepareCommand('task.update', {})), error => error.code === 'invalid_response' && error.uncertain);
 });

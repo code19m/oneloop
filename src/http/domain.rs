@@ -76,6 +76,8 @@ struct BootstrapParams {
     project_id: Option<String>,
     task_id: Option<String>,
     view: Option<String>,
+    switched_to: Option<String>,
+    switched_by: Option<String>,
     search: Option<String>,
     track_ids: Option<String>,
     epic_ids: Option<String>,
@@ -157,6 +159,8 @@ async fn bootstrap(
         project_id: query.project_id,
         task_id: query.task_id,
         view: query.view,
+        switched_to: query.switched_to,
+        switched_by: query.switched_by,
         filter,
     };
     state.domain.bootstrap(&actor, query).await.map(Json)

@@ -36,8 +36,15 @@ pub(super) fn bootstrap_snapshot(
             .optional()?,
         None => None,
     };
+    // Someone else's switch, or one to a project the person can no longer
+    // open, counts as none.
+    let switched = query.switched_to.filter(|id| {
+        query.switched_by.as_deref() == Some(actor.user_id.as_str())
+            && projects.iter().any(|project| &project.id == id)
+    });
     let selected = direct_project
         .or(query.project_id)
+        .or(switched)
         .or_else(|| projects.first().map(|project| project.id.clone()));
     if selected
         .as_ref()

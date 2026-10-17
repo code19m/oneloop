@@ -250,29 +250,29 @@ test('a project the account can no longer open loads the default project, and a 
   assert.deepEqual(task.loads,[{taskId:'TWO-1',view:'task'},{view:'metadata'}]);
 });
 
-test('a new tab opens the project its person switched to last, and never another person\'s',async t=>{
+test('a new tab sends this browser\'s last switch with its one read, and shows the answer to whoever signed in',async t=>{
   useGlobals(t,{localStorage:storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})})});
-  for(const person of ['u1','u2']){
-    // Each read answers with its own project, for the person signing in.
-    const visit=firstVisit(count=>projection(count===1?'p2':'p1',{session:{userId:person,isAdmin:true},users:[{id:person,name:person,isAdmin:true,isActive:true}]}));
+  // The server opens the switch for the person who made it, and the first project for anyone else.
+  for(const [person,project] of [['u1','p2'],['u2','p1']]){
+    const visit=firstVisit(()=>projection(project,{session:{userId:person,isAdmin:true},users:[{id:person,name:person,isAdmin:true,isActive:true}]}));
     visit.signIn.prefetch();
     visit.data.session={id:'s1',userId:person};
     await visit.signIn.load();
-    // Before the session is known, the read asks for the last switch; only its own person gets it.
-    assert.deepEqual(visit.reads.map(scope=>[scope.projectId??null,scope.view]),person==='u1'?[['p2','board']]:[['p2','board'],[null,'board']],person);
-    assert.equal(visit.data.timeZone,person==='u1'?'p2':'p1',`${person} sees the project of the read for them`);
+    assert.deepEqual(visit.reads,[{view:'board',lastSwitch:{userId:'u1',projectId:'p2'}}],person);
+    assert.equal(visit.data.timeZone,project,`${person} sees the project of the read for them`);
   }
 });
 
-test('a remembered project that is gone opens the default project and is forgotten, but only by its person',async t=>{
+test('a switch to a project its person can no longer open is forgotten, but only by its person',async t=>{
   const remembered=storage({'oneloop.project':JSON.stringify({userId:'u1',projectId:'p2'})});useGlobals(t,{localStorage:remembered});
   const gone=new ApiError('project not found',{status:404,code:'not_found'});
   const other=signInPage({view:'board',projectId:null,board:{},hash:'#/board/p2'},async scope=>{if(scope.projectId)throw gone;return {stale:false};},'u2');
   await other.signIn.load();
   assert.equal(remembered.values.has('oneloop.project'),true,'someone else who can\'t open it leaves the switch alone');
-  const {signIn,loads}=signInPage(null,async scope=>{if(scope.projectId)throw gone;return {stale:false};});
+  // The server opens the first project instead of the one it can't.
+  const {signIn,loads}=signInPage(null,async()=>({stale:false,projection:{selectedProjectId:'p1'}}));
   await signIn.load();
-  assert.deepEqual(loads,[{projectId:'p2',view:'board'},{view:'board'}]);
+  assert.deepEqual(loads,[{view:'board',lastSwitch:{userId:'u1',projectId:'p2'}}]);
   assert.equal(remembered.values.has('oneloop.project'),false);
 });
 

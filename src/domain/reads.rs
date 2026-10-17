@@ -37,6 +37,11 @@ pub struct BootstrapQuery {
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub view: Option<String>,
+    /// The project that this browser last switched to, and the person who
+    /// switched. It opens when nothing else names a project, but only for
+    /// that person and while they can open it.
+    pub switched_to: Option<String>,
+    pub switched_by: Option<String>,
     /// The filter and Done order of the Board pages, when the bootstrap has them.
     pub filter: TaskFilter,
 }

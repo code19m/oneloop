@@ -54,6 +54,10 @@ All notable changes to oneloop are recorded here. The format follows
   positions, but open Boards, the one that made the move too, kept the old
   ones and showed the task in the wrong place until the Board was read again.
   Every open Board now shows the column's new order at once.
+- A new tab in a browser where someone else switched projects last loaded
+  its data twice, and when you couldn't open their project, the browser
+  console showed an error. It now loads once and opens the project its
+  address names, or else the one you switched to last, or else your first.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

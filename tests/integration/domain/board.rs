@@ -817,7 +817,7 @@ async fn board_snapshot_batches_cards_and_omits_detail_text_without_changing_sea
                 project_id: Some("p1".into()),
                 task_id: None,
                 view: Some("board".into()),
-                filter: Default::default(),
+                ..Default::default()
             },
         )
         .await

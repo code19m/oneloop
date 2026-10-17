@@ -30,42 +30,44 @@ export function routeScope(hash, app, scope = {}) {
 /**
  * Load the projection as someone signs in, for the page the tab shows. An
  * address that names no project, with none on screen, opens the project of
- * the last switch in this browser, but only for the person who made it. A
- * task they can't open loads only metadata, and a project they can't open
- * loads the first project instead: an address that names it then shows Page
- * not found, and their own switch to it is forgotten.
+ * the last switch in this browser, which the server opens only for the
+ * person who made it and while they can open it; when it can't, their switch
+ * is forgotten. A task they can't open loads only metadata, and a project
+ * that the address names but they can't open loads the first project
+ * instead: the address then shows Page not found.
  * @param {{bootstrap:any,api:any,data:any,getApp:()=>any,location?:{hash:string}}} options
  */
 export function createSignInLoad({ bootstrap, api, data, getApp, location = globalThis.location }) {
   /** @type {{key:string,response:Promise<any>}|null} */ let early = null;
-  /** The scope of the page the tab shows, with the project of `last`, a switch, when the page names none. */
-  const scopeWith = (last) => {
-    const scope = routeScope(location.hash, getApp());
-    return last && !scope.projectId && !scope.taskId ? { ...scope, projectId: last.projectId } : scope;
+  /** The scope of the page the tab shows, with the last switch when the page names no project. */
+  const withSwitch = (/** @type {BootstrapScope} */ scope) => {
+    const last = lastSwitch();
+    return last && !scope.projectId && !scope.taskId ? { ...scope, lastSwitch: last } : scope;
   };
   return Object.freeze({
     /**
      * Start the first load's read while the page checks the session. Both
-     * answer for the same cookie, so neither waits for the other. The person
-     * isn't known yet, so it takes the last switch whoever made it; the load
-     * uses the read only if it still asks for the same scope, and a session
-     * change drops it.
+     * answer for the same cookie, so neither waits for the other, and the
+     * server answers for whoever signed in. The load uses the read if it
+     * still asks for the same page, and a session change drops it.
      */
     prefetch() {
-      const scope = scopeWith(lastSwitch());
-      early = { key: JSON.stringify(scope), response: api.bootstrap(scope) };
+      const scope = routeScope(location.hash, getApp());
+      early = { key: JSON.stringify(scope), response: api.bootstrap(withSwitch(scope)) };
       early.response.catch(() => {});
     },
     /** A session change drops the early read. */
     sessionChanged() { early = null; },
     async load() {
-      const person = data.session?.userId, last = lastSwitch();
-      // Someone else's switch never opens for this person.
-      const scope = scopeWith(last?.userId === person ? last : null);
-      const first = early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : scope;
+      const person = data.session?.userId, last = lastSwitch(), scope = routeScope(location.hash, getApp());
+      const first = early?.key === JSON.stringify(scope) ? { ...scope, response: early.response } : withSwitch(scope);
       early = null;
-      try { return await bootstrap.load(first); }
-      catch (error) {
+      try {
+        const loaded = await bootstrap.load(first), opened = loaded?.projection?.selectedProjectId;
+        // Another project opened than the one of this person's switch: they can no longer open it.
+        if (person && last?.userId === person && !scope.projectId && !scope.taskId && opened && opened !== last.projectId) rememberSwitch(person, null);
+        return loaded;
+      } catch (error) {
         if (!(error instanceof ApiError) || ![403, 404].includes(error.status)) throw error;
         if (scope.taskId) return bootstrap.load({ view: 'metadata' });
         if (!scope.projectId) throw error;
