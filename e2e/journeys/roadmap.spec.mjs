@@ -141,17 +141,23 @@ test.describe('on a phone', () => {
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });
 
-  test('a mark scrolled under the rail stays behind it', async ({ page, instance }) => {
+  test('marks scrolled under the rail stay behind it, also on its row lines', async ({ page, instance }) => {
+    // The lanes hold still instead of sliding when the Roadmap's read draws them again.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const { project } = instance.projects[0];
+    await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' });
     await openApp(page, instance, 'roadmap');
-    // Today's pill scrolls to the middle of the rail, where Track is.
+    // Today's pill and line scroll to the middle of the rail, where Track is.
     const covered = await page.evaluate(() => {
       const scroll = document.getElementById('rmScroll'), pill = document.querySelector('.today-pill'), rail = document.querySelector('.rm-axis .rail-cell');
       const middle = box => box.left + box.width / 2;
       scroll.scrollLeft += middle(pill.getBoundingClientRect()) - middle(rail.getBoundingClientRect());
-      const box = pill.getBoundingClientRect();
-      return rail.contains(document.elementFromPoint(middle(box), box.top + box.height / 2));
+      const box = pill.getBoundingClientRect(), x = middle(box);
+      // The axis's line and the line between the lanes are their rail cells' too. The last lane's meets the month row.
+      const lines = [...document.querySelectorAll('.rm-axis, .lane')].slice(0, -1).map(row => row.querySelector('.rail-cell').contains(document.elementFromPoint(x, row.getBoundingClientRect().bottom - 1)));
+      return [rail.contains(document.elementFromPoint(x, box.top + box.height / 2)), ...lines];
     });
-    expect(covered).toBe(true);
+    expect(covered).toEqual([true, true, true]);
   });
 });
 

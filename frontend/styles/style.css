@@ -359,7 +359,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
 .rm-canvas { position: relative; min-width: 100%; }
 .rm-empty { position: sticky; left: 0; width: 100%; padding: 60px 0; text-align: center; color: var(--ink-ghost); font-size: var(--text-body); }
-.rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
+.rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom-color: rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
 .rm-axis-labels { position: relative; flex: 1; }
 .rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
 .rm-month-grid { position:relative;flex:1; }
@@ -381,7 +381,11 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 /* Lanes far outside the view skip style, layout and paint, so a zoom step
    costs what is near the view. That makes a lane a stacking context, so it
    sits above the milestone and today lines (z-index 1), as its bars did. */
-.lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+.lane { position: relative; z-index: 2; display: flex; border-bottom-color: rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+/* Each cell of a row draws the row's line in the row's color. The rail cell
+   draws it on its solid background, so the lines under the rail can't show
+   through it. */
+.rm-axis > *, .lane > * { border-bottom: 1px solid; border-bottom-color: inherit; }
 /* Safari skips a lane's contents for a moment when focus leaves it, so a click
    on a button there landed on the lane. A lane under the pointer always renders. */
 .lane:hover { content-visibility: visible; }
@@ -468,6 +472,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 :root[data-theme=light] .ms-line::before {inset:0 -12px;background:#28282866;filter:blur(8px)}
 :root[data-theme=light] .ms-line::after {content:'';position:absolute;inset:0;border-radius:inherit;background:#282828;box-shadow:0 0 5px #28282873,0 0 12px #28282833;pointer-events:none}
 :root[data-theme=light] .ms-line.past::after {background:#bcbcbc;box-shadow:none}
+/* A milestone's line in the axis ends at the axis line, glow included, so none of it shows on the rail below. */
+.goal-connector {clip-path:inset(-40px -40px 0)}
 .ms-label {position:absolute;display:flex;align-items:center;z-index:2;cursor:pointer;font-family:var(--font-sans);text-align:left;white-space:nowrap;top:32px;transform:translateX(-50%);margin:0;padding:8px 12px;gap:10px;border-radius:12px;border:1px solid var(--goal-border);background:var(--goal-surface);box-shadow:var(--goal-shadow);height:54px;min-height:54px}
 .ms-label .ms-diamond {width:14px;height:14px;border:1px solid var(--goal-diamond-border);background:var(--goal-diamond);box-shadow:var(--goal-diamond-shadow);border-radius:3px}
 .ms-label .txt {font-size:14px;font-weight:650;color:var(--ink);display:flex;flex-direction:column;gap:2px;line-height:18px}

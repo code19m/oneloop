@@ -36,7 +36,8 @@ All notable changes to oneloop are recorded here. The format follows
 ### Fixed
 
 - On the **Roadmap**, today's date no longer shows over **+ Track** when you
-  scroll past today, as on a phone.
+  scroll past today, as on a phone. Milestone lines and today's line no longer
+  leave small marks on the column of track names either.
 - A change made elsewhere, such as in another tab, no longer takes focus off a
   track's grip or **⋮** button on the **Roadmap**.
 - A change made elsewhere while you drag a track no longer drops the drag. The
