@@ -418,9 +418,10 @@ test('a live change re-reads the task page in the background, so it does not cou
   });
   await command(instance.writer, 'task.update', { taskId: task.id, title: 'Renamed elsewhere' }, task.revision);
   await expect(page.locator('.tp-title')).toHaveValue('Renamed elsewhere');
-  // The live change reads the discussion again, once, although it replaced the task.
-  await expect.poll(() => reads.filter(read => read.path.endsWith('/comments')).length).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => reads.filter(read => read.path.endsWith('/attachments')).length).toBeGreaterThanOrEqual(1);
+  // The live change reads the task and its activity, which is all a new title can change.
+  await expect.poll(() => reads.filter(read => read.path.startsWith('/api/activity/')).length).toBeGreaterThanOrEqual(1);
+  expect(reads.filter(read => read.path.endsWith('/comments') || read.path.endsWith('/attachments'))).toEqual([]);
+  expect(reads.filter(read => read.path === `/api/tasks/${task.id}`)).not.toEqual([]);
   expect(reads.filter(read => !read.background)).toEqual([]);
 });
 
