@@ -24,6 +24,10 @@ All notable changes to oneloop are recorded here. The format follows
   tab before the new page arrived made the tab start a second reload, and the
   new page then said **oneloop was updated**.
 - Dragging selected text no longer causes an error in Firefox.
+- Focus stays on a file's name, **Download**, **Delete**, **Temporary** and its
+  other controls when the task's files are drawn again, such as after a move
+  or a change made elsewhere. When the file is deleted, focus goes to the same
+  control of the file in its place.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

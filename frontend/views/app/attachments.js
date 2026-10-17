@@ -181,8 +181,6 @@ function download(event,taskId,fileId){const file=taskById(taskId)?.attachments?
 function restoreAttachment(taskId,task,file,again){
   transport().restoreAttachment(file.id,{expectedRevision:file.revision+1,idempotencyKey:file.restoreKey ||= crypto.randomUUID()}).then(()=>{if(sameTask(taskId,task))loadAttachments(taskId,true);App.toast('Attachment restored');}).catch(error=>{if(sameTask(taskId,task))loadAttachments(taskId,true);const message=errorMessage(error,'Attachment could not be restored.');if(again&&retryableFailure(error))again(message);else App.toast(message,'error');});
 }
-/** Give focus to the grip of a file, so the arrow keys go on moving it. */
-const focusGrip=fileId=>[...document.querySelectorAll('[data-reorder-file]')].find(el=>el.dataset.reorderFile===fileId)?.focus({preventScroll:true});
 function reorderAttachment(taskId,fileId,targetId,after=false){
   const file=editableAttachment(taskId,fileId,true),task=taskById(taskId);if(!file||fileId===targetId)return false;if(reorderPending.has(fileId)){App.toast('This attachment is still being reordered.','info');return false;}
   const target=task.attachments.find(f=>f.id===targetId&&f.state!=='removed');if(!target)return false;
@@ -191,7 +189,7 @@ function reorderAttachment(taskId,fileId,targetId,after=false){
   setFiles(task,ordered);
   reorderPending.add(fileId);transport().reorderAttachment(task.internalId||taskId,{attachmentId:fileId,targetId,after,expectedRevision:file.revision,idempotencyKey:crypto.randomUUID()}).then(result=>{const current=sameTask(taskId,task);if(!current)return;setFiles(current,(result.items||[]).map(serverFile));refreshAttachments(taskId);App.toast('Attachment order updated');}).catch(error=>{const current=sameTask(taskId,task);if(current&&current.attachments===ordered){setFiles(current,before.map(id=>ordered.find(f=>f.id===id)).filter(Boolean));refreshAttachments(taskId);}if(error?.status===409||error?.uncertain)loadAttachments(taskId,true);App.toast(errorMessage(error,'Attachment order could not be updated.'),'error');}).finally(()=>reorderPending.delete(fileId));
   refreshAttachments(taskId);
-  focusGrip(fileId);return true;
+  return true;
 }
 // A file moves by its grip, with the pointer or the arrow keys.
 sortable({
@@ -241,22 +239,44 @@ export function attachmentsHtml(task,editable){
         ${editable ? `<input type="file" id="attIn" multiple hidden ${UIAction.on('change', 'attachFiles', task.id, UIAction.element)}>` : ''}
         ${renderAttachments(task,editable)}<div class="upload-list"></div></div>`;
 }
+// The kinds of control in the attachments section, by which focus finds its
+// control again after the section is drawn again.
+const SECTION_CONTROLS=['.attachment-grip','.attachment-thumbnail','.attachment-title','.retention-switch','.file-download','.file-remove','.attachment-dropzone','[data-upload-action="cancel"]','[data-upload-action="retry"]','[data-upload-action="remove"]'];
+const fileRows=section=>[...section.querySelectorAll('[data-attachment-id]')];
+/** The control that has focus in `section`: its kind, and its file's or upload's row. */
+function focusedControl(section){
+  const active=document.activeElement,control=section?.contains(active)?SECTION_CONTROLS.find(selector=>active.matches(selector)):null;
+  if(!control)return null;
+  const file=active.closest('[data-attachment-id]');
+  return {control,fileId:file?.dataset.attachmentId,index:file?fileRows(section).indexOf(file):-1,uploadId:active.closest('[data-upload-id]')?.dataset.uploadId};
+}
+/**
+ * Give focus back to the same kind of control in the same row of `section`.
+ * When its file is gone, the file in its place, else the one before, takes
+ * it, and without files the drop area.
+ */
+function refocusControl(section,focused){
+  if(!focused)return;
+  const rows=fileRows(section),uploads=[...section.querySelectorAll('[data-upload-id]')];
+  const row=focused.fileId?rows.find(item=>item.dataset.attachmentId===focused.fileId)??rows[focused.index]??rows.at(-1):focused.uploadId?uploads.find(item=>item.dataset.uploadId===focused.uploadId):section;
+  (row?.querySelector(focused.control)??(focused.fileId?section.querySelector('.attachment-dropzone'):null))?.focus({preventScroll:true});
+}
 /**
  * Draw the attachments section of the open task again, and its activity, which
  * lists attachment changes. While a press on the page is in progress, such as
  * on a file's name or Add files, it waits for the press to end: replacing the
- * section under the pointer would lose the click. A file's grip that has focus
- * keeps it, such as while the server confirms where the file moved.
+ * section under the pointer would lose the click. A control that has focus
+ * keeps it, such as a file's grip while the server confirms where it moved.
  */
 function refreshAttachments(id){
   const context=App.context();if(context.view!=='task'||context.taskId!==id||App.afterPress(refreshShownAttachments))return;
   const template=document.createElement('template');setHTML(template,attachmentsHtml(taskById(id),canEdit(id)));
   const oldAttachments=document.querySelector('.task-attachments'),before=oldAttachments?.getBoundingClientRect().height,rows=UIMotion.rows(oldAttachments,'[data-attachment-id]','data-attachment-id');
-  const moving=oldAttachments?.contains(document.activeElement)?document.activeElement.closest('[data-reorder-file]')?.dataset.reorderFile:null;
+  const focused=focusedControl(oldAttachments);
   oldAttachments?.replaceWith(template.content.querySelector('.task-attachments'));
   const nextAttachments=document.querySelector('.task-attachments');UIMotion.height(nextAttachments,before);UIMotion.reflow(nextAttachments,'[data-attachment-id]','data-attachment-id',rows);
   App.refreshTaskActivity(id);mountAttachments(id);
-  if(moving)focusGrip(moving);
+  refocusControl(nextAttachments,focused);
 }
 function refreshShownAttachments(){const context=App.context();if(context.view==='task')refreshAttachments(context.taskId);}
 
