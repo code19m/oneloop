@@ -42,8 +42,10 @@ const needsHighlight=text=>/(?<![`~])[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^<>]*\blang
 // GitHub's $`…`$, or $…$ on one line between two $ that no backslash escapes,
 // closed before a space, punctuation or the end of a run of text, as the math
 // extension reads it, also in quotes, lists and tables. Prices and shell
-// variables, such as "$5 and $10" or "$HOME", don't load KaTeX. One pass over
-// the lines, as marked splits them, so a long file stays quick.
+// variables, such as "$5 and $10" or "$HOME", don't load KaTeX. Each check is
+// a plain pass over the text or one of its lines, as marked splits them, so
+// the time grows with the length of the text, also when it is full of
+// escaped dollars.
 function needsMath(text){
   const pair=text.indexOf('$$');
   if(pair>=0&&text.indexOf('$$',pair+2)>=0)return true;
