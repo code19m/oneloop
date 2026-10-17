@@ -117,12 +117,17 @@ pub(super) fn update_project(
     let revision = expected + 1;
     tx.execute("UPDATE projects SET name=?1,task_prefix=?2,updated_at=?3,revision=?4 WHERE id=?5 AND revision=?6",
         params![name,prefix,now,revision,input.project_id,expected])?;
+    // Links to the older tasks' keys keep working in the tab that made the change.
+    let earlier = super::super::reads::earlier_prefixes(tx, &[(&input.project_id, &prefix)])?
+        .remove(&input.project_id)
+        .unwrap_or_default();
     let entity = json!({
     "entityType":"project",
     "id":input.project_id,
     "projectId":input.project_id,
     "name":name,
     "taskPrefix":prefix,
+    "earlierPrefixes":earlier,
     "revision":revision
     });
     let event = record_activity_tx(

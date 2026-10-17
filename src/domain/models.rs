@@ -28,6 +28,9 @@ pub struct ProjectView {
     pub id: String,
     pub name: String,
     pub task_prefix: String,
+    /// The prefixes the project had before `task_prefix`. Its older tasks
+    /// keep their keys with them, which still name the tasks.
+    pub earlier_prefixes: Vec<String>,
     pub revision: i64,
     pub manage_roadmap: bool,
     pub manage_board: bool,

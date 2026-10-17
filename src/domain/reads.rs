@@ -238,7 +238,53 @@ impl DomainService {
     }
 }
 
+/// The projects the actor may read, with what it may manage in each and the
+/// prefixes each had before.
 fn projects(connection: &rusqlite::Connection, actor: &Actor) -> AppResult<Vec<ProjectView>> {
+    let mut projects = readable_projects(connection, actor)?;
+    let mut earlier = earlier_prefixes(
+        connection,
+        &projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.task_prefix.as_str()))
+            .collect::<Vec<_>>(),
+    )?;
+    for project in &mut projects {
+        project.earlier_prefixes = earlier.remove(&project.id).unwrap_or_default();
+    }
+    Ok(projects)
+}
+
+/// The prefixes that each project, given by its ID and current prefix, had
+/// before, in one query for all of them.
+pub(in crate::domain) fn earlier_prefixes(
+    connection: &rusqlite::Connection,
+    projects: &[(&str, &str)],
+) -> AppResult<std::collections::HashMap<String, Vec<String>>> {
+    let current: std::collections::HashMap<&str, &str> = projects.iter().copied().collect();
+    let ids = serde_json::to_string(&current.keys().collect::<Vec<_>>())
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut statement = connection.prepare_cached(
+        "SELECT project_id,prefix FROM project_prefixes
+         WHERE project_id IN (SELECT value FROM json_each(?1)) ORDER BY prefix",
+    )?;
+    let mut earlier = std::collections::HashMap::<String, Vec<String>>::new();
+    for row in statement.query_map([ids], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (project, prefix) = row?;
+        if current.get(project.as_str()) != Some(&prefix.as_str()) {
+            earlier.entry(project).or_default().push(prefix);
+        }
+    }
+    Ok(earlier)
+}
+
+/// The projects the actor may read, and what it may manage in each.
+fn readable_projects(
+    connection: &rusqlite::Connection,
+    actor: &Actor,
+) -> AppResult<Vec<ProjectView>> {
     let sql = if actor.is_admin {
         "SELECT p.id,p.name,p.task_prefix,p.revision,1,1 FROM projects p WHERE p.deleted_at IS \
                      NULL ORDER BY lower(p.name),p.id"
@@ -289,6 +335,7 @@ fn project_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectView> {
         id: row.get(0)?,
         name: row.get(1)?,
         task_prefix: row.get(2)?,
+        earlier_prefixes: Vec::new(),
         revision: row.get(3)?,
         manage_roadmap: row.get(4)?,
         manage_board: row.get(5)?,

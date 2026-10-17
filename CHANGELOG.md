@@ -6,6 +6,11 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- In MCP, `list_projects` names the task prefixes that each project had
+  before, in `earlierPrefixes`. Older tasks keep their keys with them.
+
 ### Changed
 
 - A Board address with filters, as after a refresh or from a bookmark, now
@@ -72,6 +77,8 @@ All notable changes to oneloop are recorded here. The format follows
   a file of another task failed with `validation_failed`, but with
   `not_found` for an ID that names no file, so it told whether an ID exists.
   Both now fail with `not_found`.
+- After a project's task prefix changed, the keys of its older tasks, such as
+  `OLD-012`, stayed plain text in descriptions. They now link to their tasks.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

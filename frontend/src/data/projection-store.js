@@ -55,7 +55,7 @@ const millisecondsOrNull = (value) => secondsToMilliseconds(value) ?? null;
  * @type {Record<string,[string,string?,((value:any)=>any)?][]>}
  */
 const FIELDS = {
-  project: [['name'], ['taskPrefix', 'key'], ['taskPrefix']],
+  project: [['name'], ['taskPrefix', 'key'], ['taskPrefix'], ['earlierPrefixes', 'earlierPrefixes', (prefixes) => [...(prefixes ?? [])]]],
   track: [['projectId'], ['name'], ['description', 'desc', text], ['position', 'order']],
   epic: [
     ['projectId'], ['trackId'], ['title'], ['description', 'desc', text], ['startDate', 'start'], ['endDate', 'end', orNull], ['state'], ['position', 'order'],

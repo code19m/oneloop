@@ -19,9 +19,9 @@ const mountedReaders=new WeakSet();
 
 /** Show the Markdown of each description reader, `[data-markdown]`, which holds its text until the renderer is there. */
 function mountReaders(){
-  const prefixes=new Set(visibleProjects().map(project=>project.key)),scope=[...prefixes].sort().join(),kept=shownMarkdown;
+  const prefixes=new Set(visibleProjects().flatMap(project=>[project.key,...project.earlierPrefixes])),scope=[...prefixes].sort().join(),kept=shownMarkdown;
   // A line break in the text is a line break, as in descriptions written before they showed as Markdown.
-  // Task keys of the projects the person can see become links; others stay text.
+  // Task keys of the projects the person can see become links, with any prefix a project had; others stay text.
   const context={breaks:true,taskLink:key=>prefixes.has(key.slice(0,key.indexOf('-')))?'#/task/'+encodeURIComponent(key):null};
   shownMarkdown=new Map();
   for(const reader of document.querySelectorAll('.description-content[data-markdown]')){

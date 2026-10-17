@@ -585,3 +585,12 @@ test('Done in Status on a blocked task asks to unblock and complete it, as the B
   assert.equal(t.d.querySelector('#select-tpState .sel-label').textContent, 'Planning', 'Status still shows the saved status');
   assert.equal(t.d.activeElement, t.d.getElementById('select-tpState'), 'closing the dialog returns focus to Status');
 });
+
+test('task keys keep linking to their tasks after their project\'s prefix changes', () => {
+  const t = describedTask('See BIR-064, and the task after it.');
+  // An admin changes the prefix; the change's answer names the one before.
+  t.module('src/data/projection-store.js').reconcileCommandResult(t.D, { entities: [{ entityType: 'project', id: 'p1', projectId: 'p1', name: 'Birch Grove', taskPrefix: 'NEW', earlierPrefixes: ['BIR'], revision: 2 }] });
+  t.A.refresh();
+  const links = [...t.d.querySelectorAll('#task-description-content a')].map(link => [link.textContent, link.getAttribute('href')]);
+  assert.deepEqual(links, [['BIR-064', '#/task/BIR-064']]);
+});

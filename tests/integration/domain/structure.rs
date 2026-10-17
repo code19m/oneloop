@@ -810,6 +810,46 @@ async fn reserved_prefix_of_deleted_project_returns_conflict() {
 }
 
 #[tokio::test]
+async fn projects_come_with_the_prefixes_they_had_before() {
+    let f = fixture().await;
+    let rename = |prefix: &str, revision| {
+        let payload = json!({"projectId":"p1","taskPrefix":prefix});
+        command(
+            DomainOperation::UpdateProject,
+            payload,
+            prefix,
+            Some(revision),
+        )
+    };
+    let renamed = f.service.execute(&f.admin, rename("NEW", 1)).await.unwrap();
+    // The change's answer has them too, for the tab that made it.
+    assert_eq!(renamed.entities[0]["earlierPrefixes"], json!(["ONE"]));
+    f.service
+        .execute(&f.admin, rename("LAST", 2))
+        .await
+        .unwrap();
+    let prefixes = |projects: Vec<oneloop::domain::ProjectView>| {
+        projects
+            .into_iter()
+            .map(|project| (project.id, project.task_prefix, project.earlier_prefixes))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        prefixes(f.service.projects(&f.manager).await.unwrap()),
+        [
+            ("p1".into(), "LAST".into(), vec!["NEW".into(), "ONE".into()]),
+            ("p2".into(), "TWO".into(), vec![]),
+        ]
+    );
+    // The bootstrap lists the projects that a person can open, with theirs.
+    let bootstrap = f.service.bootstrap(&f.member, Default::default()).await;
+    assert_eq!(
+        prefixes(bootstrap.unwrap().projects),
+        [("p1".into(), "LAST".into(), vec!["NEW".into(), "ONE".into()])]
+    );
+}
+
+#[tokio::test]
 async fn structural_commands_enforce_permissions_revisions_replay_and_audit() {
     use DomainOperation::*;
     let cases = [
