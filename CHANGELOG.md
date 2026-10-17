@@ -41,6 +41,8 @@ All notable changes to oneloop are recorded here. The format follows
   track's grip or **⋮** button on the **Roadmap**.
 - A change made elsewhere while you drag a track no longer drops the drag. The
   **Roadmap** shows the change when you let go.
+- A key on a track's grip while the last track move is still saving now says
+  so, instead of doing nothing.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,

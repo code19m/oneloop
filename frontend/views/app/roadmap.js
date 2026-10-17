@@ -324,7 +324,12 @@ function moveTrack(id, position) {
 sortable({
   grip: '#app .lane[data-track] .grip', row: '.lane[data-track]', list: '.rm-scroll', scroll: '.rm-scroll',
   label: (row) => trackById(row.dataset.track)?.name ?? '',
-  ready: () => canRoadmap(),
+  // Tracks move one at a time: while the last move saves, a press on a grip says so.
+  ready: () => {
+    if (!canRoadmap()) return false;
+    if (pendingMove) App.toast('The last track move is still saving.', 'info');
+    return !pendingMove;
+  },
   move: (grip, target, after) => {
     const id = grip.closest('.lane').dataset.track;
     const index = tracks().filter((track) => track.id !== id).findIndex((track) => track.id === target.dataset.track);

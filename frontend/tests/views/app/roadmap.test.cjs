@@ -305,6 +305,24 @@ test('a track move redraws the Roadmap in place at once, sends one optimistic co
   assert.equal(t.calls.length, 1);
 });
 
+test('while a track move saves, a key press on another grip says why and moves nothing, and no drag starts', async () => {
+  const t = withRuntime('roadmap', ['moveTrack']);
+  laneGeometry(t);
+  pressGrip(t, 't1', 'ArrowDown');
+  const key = new t.w.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+  gripOf(t.d, 't3').focus(); gripOf(t.d, 't3').dispatchEvent(key);
+  assert(key.defaultPrevented, 'the key does not scroll the Roadmap instead');
+  assert.match(t.d.getElementById('toast-region').textContent, /The last track move is still saving/);
+  // Mobile experience, now third, is dragged above Web Apps.
+  pointer(t, 'pointerdown', gripOf(t.d, 't3'), 20, 350); pointer(t, 'pointermove', t.d, 500, 120);
+  assert.equal(t.d.querySelector('.sort-marker'), null, 'no line shows where it would land');
+  pointer(t, 'pointerup', t.d, 500, 120);
+  assert.equal(t.calls.length, 1);
+  await saved(t);
+  pressGrip(t, 't3', 'ArrowDown');
+  assert.equal(t.calls.length, 2, 'once the move saved, the grip moves its track again');
+});
+
 test('a change made elsewhere while a grip is held shows once the press ends, so a drag goes on', async () => {
   const t = withRuntime('roadmap', ['moveTrack']), renamed = () => t.d.querySelector('.lane[data-track="t5"] .name').textContent;
   laneGeometry(t);

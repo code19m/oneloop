@@ -13,7 +13,7 @@
  * @property {string} list What the list around the rows matches; a drop lands only inside it.
  * @property {string} scroll What scrolls while a row is held near its top or bottom.
  * @property {(row: Element) => string} label The name the row shows while it moves.
- * @property {(grip: HTMLElement) => boolean} [ready] Whether the grip's row may move now.
+ * @property {(grip: HTMLElement) => boolean} [ready] Whether the grip's row may move now. While it may not, a drag doesn't start and the grip's keys do nothing.
  * @property {(grip: HTMLElement, target: Element, after: boolean) => void} move Moves the grip's row just before or after `target`.
  */
 
@@ -25,14 +25,16 @@ const lists = [];
 /** @type {{list:SortableList,handle:HTMLElement,row:Element,pointerId:number,startX:number,startY:number,x:number,y:number,active?:boolean,ghost?:HTMLElement,marker?:HTMLElement,target?:Element|null,after?:boolean,frame?:number}|null} */
 let sorting = null;
 
-/** The list whose grip `target` is in, with that grip, when it may move now. @param {EventTarget|null} target */
+/** The list whose grip `target` is in, with that grip, unless a layer covers it. @param {EventTarget|null} target */
 function gripOf(target) {
   for (const list of lists) {
     const handle = /** @type {HTMLElement|null} */ (/** @type {Element} */ (target)?.closest?.(list.grip) ?? null);
-    if (handle && !handle.closest('[inert]') && !document.querySelector(COVERED) && (list.ready?.(handle) ?? true)) return { list, handle };
+    if (handle && !handle.closest('[inert]') && !document.querySelector(COVERED)) return { list, handle };
   }
   return null;
 }
+/** Whether a grip's row may move now. @param {{list:SortableList,handle:HTMLElement}} found */
+const ready = ({ list, handle }) => list.ready?.(handle) ?? true;
 
 function stop() {
   if (!sorting) return;
@@ -67,7 +69,7 @@ function scroll() {
 
 function listen() {
   document.addEventListener('pointerdown', event => {
-    const found = event.button === 0 ? gripOf(event.target) : null; if (!found) return;
+    const found = event.button === 0 ? gripOf(event.target) : null; if (!found || !ready(found)) return;
     const { list, handle } = found, row = handle.closest(list.row); if (!row) return;
     stop(); sorting = { list, handle, row, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };
     handle.focus({ preventScroll: true }); try { handle.setPointerCapture(event.pointerId); } catch { /* jsdom and old browsers. */ }
@@ -97,7 +99,9 @@ function listen() {
     if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const found = gripOf(event.target); if (!found) return;
     const { list, handle } = found, zone = handle.closest(list.list), row = handle.closest(list.row); if (!zone || !row) return;
+    // The key belongs to the grip even while its row may not move, so the page doesn't scroll instead.
     event.preventDefault();
+    if (!ready(found)) return;
     const rows = [...zone.querySelectorAll(list.row)], index = rows.indexOf(row);
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : index + (event.key === 'ArrowDown' ? 1 : -1), target = rows[next];
     if (target && target !== row) list.move(handle, target, next > index);
