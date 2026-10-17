@@ -33,6 +33,9 @@ All notable changes to oneloop are recorded here. The format follows
 - A click on a task's description now puts the cursor where you clicked, and
   a double-click selects the word you clicked, instead of the cursor going to
   the end.
+- A footnote link in a description now brings its footnote into view, and the
+  footnote's back link returns to the reference. Before, it scrolled only the
+  description's own box, so the footnote could stay out of view.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

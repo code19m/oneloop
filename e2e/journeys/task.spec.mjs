@@ -50,6 +50,20 @@ test('a description shows as Markdown, opens for editing where it is clicked, sa
   await expect(page.locator('.board')).toBeVisible();
 });
 
+test('a footnote link in a description brings its footnote into view, and its back link the reference', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.update', { taskId: task.id, description: 'See the note.[^1]\n\nOne.\n\nTwo.\n\nThree.\n\n[^1]: The note.' }, task.revision);
+  await page.setViewportSize({ width: 1280, height: 360 });
+  await openApp(page, instance);
+  const reader = page.locator('#task-description-content'), reference = reader.locator('[data-footnote-ref]'), note = reader.locator('.footnotes li');
+  await expect(reference).toBeInViewport();
+  await expect(note).not.toBeInViewport();
+  await reference.click();
+  await expect(note).toBeInViewport();
+  await note.locator('[data-footnote-backref]').click();
+  await expect(reference).toBeInViewport();
+});
+
 test('the task page keeps usable controls on a narrow phone viewport', async ({ page, instance }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page, instance);

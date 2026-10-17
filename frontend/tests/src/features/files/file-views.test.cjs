@@ -98,7 +98,7 @@ test('large Markdown previews are bounded in both modes', async () => {
 });
 
 test('math, alerts and footnotes render and footnote links move focus', async () => {
-  const { d, views } = boot();
+  const { w, d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const sample = fs.readFileSync(path.join(fixtures, 'math.md'), 'utf8');
   views.markdownView(extras, { name: 'extras.md' }, sample, false);
@@ -108,8 +108,9 @@ test('math, alerts and footnotes render and footnote links move focus', async ()
   const refs = [...extras.querySelectorAll('sup a')]; assert.equal(refs.length, 2);
   for (const ref of refs) assert(extras.querySelector(ref.getAttribute('href')));
   const back = extras.querySelector('.footnotes a'); assert(extras.querySelector(back.getAttribute('href')));
-  const scroller = extras.querySelector('.markdown-scroll'); let scrolled = false; scroller.scrollTo = () => scrolled = true;
-  refs[0].click(); assert(scrolled); assert.equal(d.activeElement.id, refs[0].getAttribute('href').slice(1));
+  // jsdom lays nothing out, so it has no scrollIntoView.
+  let shown = null; w.Element.prototype.scrollIntoView = function () { shown = this; };
+  refs[0].click(); assert.equal(shown?.id, refs[0].getAttribute('href').slice(1)); assert.equal(d.activeElement, shown);
   assert.equal(extras.querySelector('.html-source').textContent, sample);
   extras.querySelector('[data-view-source]').click(); assert.equal(extras.querySelector('.html-source').textContent, sample);
 });
@@ -147,13 +148,14 @@ test('a spoofed heading marker in uploaded HTML gives no server anchor', async (
 });
 
 test('in-page links reach headings in any script', async () => {
-  const { d, views } = boot();
+  const { w, d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   const link = host.querySelector('.markdown-body a');
   assert.equal(link.getAttribute('href'), '#md-оплата-и-сроки');
-  host.querySelector('.markdown-scroll').scrollTo = () => {};
+  // jsdom lays nothing out, so it has no scrollIntoView.
+  w.Element.prototype.scrollIntoView = () => {};
   link.click();
   assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
 });
