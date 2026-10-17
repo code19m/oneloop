@@ -355,3 +355,37 @@ test('a live Board read never undoes a move the tab makes while it runs, whichev
     assert.deepEqual(data.tasks.map(item=>item.order),[0,1024,2048,3072],first);
   }
 });
+
+test('a live Roadmap or Pool read never undoes a change the tab makes while it runs',async()=>{
+  const track=(id,position,revision=1)=>({id,projectId:'p1',name:id,position,revision});
+  const item=(id,revision=1)=>({id,projectId:'p1',scope:'personal',ownerUserId:'u1',title:id,description:'',createdAt:1,revision});
+  const roadmap=(tracks)=>({projectId:'p1',tracks,epics:[],milestones:[]});
+  const changes={
+    // The tab moves t2 above t1; the Roadmap shows that at once.
+    'a track moved':{api:'roadmap',open:(reads)=>reads.roadmap('p1'),live:(reads)=>reads.roadmap('p1',{background:true}),
+      before:roadmap([track('t1',1),track('t2',2)]),after:roadmap([track('t2',0,2),track('t1',1)]),
+      change:(data,gateway)=>{data.tracks.find(entry=>entry.id==='t2').order=0;return gateway.execute('track.reorder',{trackId:'t2',position:0},{expectedRevision:1});},
+      saved:{entityType:'track',...track('t2',0,2)},shown:(data)=>[...data.tracks].sort((left,right)=>left.order-right.order).map(entry=>entry.id),expected:['t2','t1']},
+    'a Pool item added':{api:'pool',open:(reads)=>reads.pool('p1','personal'),live:(reads)=>reads.pool('p1','personal',false,undefined,{background:true}),
+      before:{items:[item('i1')],nextCursor:null,total:1},after:{items:[item('i2'),item('i1')],nextCursor:null,total:2},
+      change:(_data,gateway)=>gateway.execute('pool.create',{projectId:'p1',scope:'personal',title:'i2'}),
+      saved:{entityType:'poolItem',...item('i2')},shown:(data)=>data.pool.map(entry=>entry.id).sort(),expected:['i1','i2']},
+  };
+  for(const [name,{api:read,open,live,before,after,change,saved,shown,expected}] of Object.entries(changes)){
+    const requests=held(),api={[read]:requests.api(read),command:requests.api('command')};
+    const data=createLegacyData();data.session={id:'s1',userId:'u1'};
+    const gateway=createCommandGateway({api,data}),reads=createReadController({api,data,writes:gateway});
+    const answers=()=>requests.calls.filter(call=>call.name===read);
+    const opened=open(reads);answers()[0].resolve(before);await opened;
+    const reading=live(reads);await settle();
+    const sent=change(data,gateway);await settle();
+    requests.calls.find(call=>call.name==='command').resolve({entities:[saved],events:[]});await sent;
+    // The live read answers from before the change.
+    answers()[1].resolve(before);await settle();
+    assert.deepEqual(shown(data),expected,`${name}: the tab's change stays`);
+    assert.equal(answers().length,3,`${name}: it reads again once the change is saved`);
+    answers()[2].resolve(after);
+    assert.equal((await reading).stale,false);
+    assert.deepEqual(shown(data),expected,name);
+  }
+});

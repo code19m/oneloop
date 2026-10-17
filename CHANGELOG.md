@@ -68,10 +68,11 @@ All notable changes to oneloop are recorded here. The format follows
   positions, but open Boards, the one that made the move too, kept the old
   ones and showed the task in the wrong place until the Board was read again.
   Every open Board now shows the column's new order at once.
-- When the Board, or the whole page, loaded a change made elsewhere while you
-  moved, added or deleted a card, it could show that card as it was before
-  your change, until the page was read again. It now loads the change again
-  once yours is saved.
+- When a page loaded a change made elsewhere while you moved, added or
+  deleted something on it, such as a card on the Board, a track on the
+  Roadmap or an item in the Pool, it could show that as it was before your
+  change, until the page was read again. It now loads the change again once
+  yours is saved.
 - A new tab in a browser where someone else switched projects last loaded
   its data twice, and when you couldn't open their project, the browser
   console showed an error. It now loads once and opens the project its

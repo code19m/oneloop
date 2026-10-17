@@ -27,8 +27,9 @@ function boardFilters(filters={}){
  * different slots never cancel each other. A background (live) read never
  * replaces a read someone is waiting for: it waits for that read first, and it
  * is dropped when a full refresh landed while it ran. `writes`, the tab's
- * command gateway, runs a live Board read again when it overlapped one of the
- * tab's own changes, which its answer could undo.
+ * command gateway, runs a live read that replaces a collection, as of the
+ * Board, the Roadmap or the Pool, again when it overlapped one of the tab's
+ * own changes, which its answer could undo.
  */
 export function createReadController({api,data,writes={readUnchanged:(/** @type {()=>Promise<any>} */ read,/** @type {()=>boolean} */ _current)=>read()},onBoard=(_state)=>{},onRoadmap=(_projection)=>{},onPool=(_page)=>{},onTask=(_task)=>{},onEpic=(_page)=>{},onCounts=(_counts)=>{},onError=(_error)=>{}}){
   let epoch=0;
@@ -223,7 +224,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
 
   async function roadmap(projectId,options={}){
     return read(`roadmap:${projectId}`,'',!!options.background,async token=>{
-      try{const projection=await api.roadmap(projectId,{signal:token.signal,background:options.background});if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
+      try{const projection=await answerOf(token,()=>api.roadmap(projectId,{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};replaceRoadmap(data,projection);onRoadmap(projection);return {stale:false};}
       catch(error){if(ignored(token,error))return {stale:true};onError(error);throw error;}
     });
   }
@@ -235,7 +236,7 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
       data.poolPageInfo[pageKey]={nextCursor:null,total:0,loaded:false,...data.poolPageInfo[pageKey],loading:true,error:false};
       onPool(data.poolPageInfo[pageKey]);
       try{
-        const page=await api.pool(projectId,{scope,cursor,limit:50},{signal:token.signal,background:options.background});if(!current(token))return {stale:true};
+        const page=await answerOf(token,()=>api.pool(projectId,{scope,cursor,limit:50},{signal:token.signal,background:options.background}));if(!current(token))return {stale:true};
         replacePoolPage(data,projectId,scope,page.items,append);setPoolPageInfo(data,projectId,scope,page);
         poolStates.set(key,{projectId,scope,nextCursor:page.nextCursor});onPool(page);return {stale:false,page};
       }catch(error){if(ignored(token,error))return {stale:true};data.poolPageInfo[pageKey]={...data.poolPageInfo[pageKey],loading:false,error:true};onPool(data.poolPageInfo[pageKey]);onError(error);throw error;}
