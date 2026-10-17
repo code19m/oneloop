@@ -462,9 +462,10 @@ pub(crate) fn resolve_task_id(connection: &rusqlite::Connection, value: &str) ->
         .ok_or(AppError::NotFound { resource: "task" })
 }
 
-/// A task by its ID or its key, as two lookups, so that each searches its
-/// unique index whatever the statistics say. As one lookup with OR, it read
-/// every task when the statistics were those of a small table.
+/// A task by its ID or its key, as two lookups that each search their own
+/// unique index whatever the statistics say. As one lookup with OR, SQLite
+/// read the tasks one by one until it met the one named, with any
+/// statistics, which was slow on large instances.
 const TASK_BY_ID_OR_KEY_SQL: &str = "SELECT id FROM tasks WHERE id=?1 AND deleted_at IS NULL
     UNION ALL SELECT id FROM tasks WHERE task_key=?1 COLLATE NOCASE AND deleted_at IS NULL";
 

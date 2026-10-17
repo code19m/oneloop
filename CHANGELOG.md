@@ -79,10 +79,10 @@ All notable changes to oneloop are recorded here. The format follows
   Both now fail with `not_found`.
 - After a project's task prefix changed, the keys of its older tasks, such as
   `OLD-012`, stayed plain text in descriptions. They now link to their tasks.
-- Every change to a task, such as a new title, a move or a deletion, could
-  read all of the instance's tasks to find the one it named, depending on
-  SQLite's statistics, which made these changes slow on large instances. It
-  now always finds the task through its index.
+- Opening or changing a task, its comments, its activity or its files read
+  the instance's tasks one by one until it found the task, which made these
+  requests slow on large instances. They now find the task through its
+  index.
 
 ## [0.1.0-rc.6] - 2026-10-17
 
