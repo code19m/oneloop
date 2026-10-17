@@ -179,6 +179,20 @@ test('an unresolved task uses its layout while loading and only shows a confirme
   await expect(page.locator('.loading-task')).toHaveCount(0);
 });
 
+test('a response the test holds is the answer the page gets when it is released', async ({ page, instance }) => {
+  const { task } = instance.projects[1];
+  await openApp(page, instance, 'board');
+  const held = await holdResponses(page, `**/api/tasks/${task.taskKey}`);
+  const answer = page.waitForResponse(response => response.url().endsWith(`/api/tasks/${task.taskKey}`));
+  try {
+    await page.evaluate(key => { location.hash = `#/task/${key}`; }, task.taskKey);
+    await held.started;
+    // The task changes after the server answered the held read.
+    await command(instance.api, 'task.update', { taskId: task.id, title: 'Changed after the answer' }, task.revision);
+  } finally { await held.release(); }
+  expect((await (await answer).json()).title).toBe(task.title);
+});
+
 test('a delayed task destination cannot reopen after the user returns to Board', async ({ page, instance }) => {
   await openApp(page, instance);
   const secondary = instance.projects[1];
