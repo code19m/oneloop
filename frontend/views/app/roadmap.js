@@ -30,7 +30,7 @@ const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GA
 const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
 /** The scale nearest a zoom, in proportion, as each wheel notch zooms by a factor. */
 const nearestScale = (ppd) => ROADMAP_SCALES.reduce((near, scale) => (Math.abs(Math.log(scale.ppd / ppd)) < Math.abs(Math.log(near.ppd / ppd)) ? scale : near));
-/** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
+/** From 18 px a day, a week is 126 px or more, so the axis shows weeks instead of months. */
 const WEEK_AXIS_PPD = 18;
 const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
 /** The epic last focused or opened on the Roadmap, which a scale change keeps in view. */
