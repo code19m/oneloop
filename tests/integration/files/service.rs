@@ -307,12 +307,22 @@ async fn an_upload_replaces_only_your_own_file_of_its_task_that_stays() {
     )
     .await;
     let leaving_id = leaving.id.clone();
+    // Another task of the project, and a task of another project that the
+    // manager also works in.
     fixture
         .db
         .run(move |connection| {
             connection.execute_batch(&format!(
                 "INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
                  VALUES ('other','p1','epic',2,'ONE-002','Other','planning',1,1,1);
+                 INSERT INTO projects(id,name,task_prefix,created_at,updated_at) VALUES ('p2','Away','TWO',1,1);
+                 INSERT INTO tracks(id,project_id,name,position,created_at,updated_at) VALUES ('track-2','p2','Track',0,1,1);
+                 INSERT INTO epics(id,project_id,track_id,title,start_date,position,created_at,updated_at)
+                     VALUES ('epic-2','p2','track-2','Epic','2026-01-01',0,1,1);
+                 INSERT INTO tasks(id,project_id,epic_id,task_number,task_key,title,status,position,created_at,updated_at)
+                     VALUES ('away','p2','epic-2',1,'TWO-001','Away','planning',0,1,1);
+                 INSERT INTO project_memberships(project_id,user_id,manage_board,created_at,updated_at)
+                     VALUES ('p2','manager',1,1,1);
                  UPDATE file_blobs SET state='deleting'
                  WHERE id=(SELECT blob_id FROM task_attachments WHERE id='{leaving_id}');"
             ))?;
@@ -320,38 +330,55 @@ async fn an_upload_replaces_only_your_own_file_of_its_task_that_stays() {
         })
         .await
         .unwrap();
-    let other_task = service
-        .begin_attachment_upload(
-            &fixture.manager,
-            "other",
-            NewAttachment {
-                name: "other.txt",
-                size: 1,
-                temporary: false,
-                idempotency_key: "other",
-                replaces: None,
-            },
-        )
-        .await
-        .unwrap();
-    let AttachmentUpload::Pending(mut other_task) = other_task else {
-        panic!("a new upload")
-    };
-    other_task.write_chunk(b"x").await.unwrap();
-    let elsewhere = other_task.finish().await.unwrap();
-
     let manager = &fixture.manager;
-    for (replaces, refusal) in [
-        (&theirs.id, "you uploaded"),
-        (&elsewhere.id, "the same task"),
-        (&leaving.id, "being removed"),
-    ] {
+    let mut files = Vec::new();
+    for task in ["other", "away"] {
+        let pending = service
+            .begin_attachment_upload(
+                manager,
+                task,
+                NewAttachment {
+                    name: "mine.txt",
+                    size: 1,
+                    temporary: false,
+                    idempotency_key: task,
+                    replaces: None,
+                },
+            )
+            .await
+            .unwrap();
+        let AttachmentUpload::Pending(mut pending) = pending else {
+            panic!("a new upload")
+        };
+        pending.write_chunk(b"x").await.unwrap();
+        files.push(pending.finish().await.unwrap().id);
+    }
+
+    for (replaces, refusal) in [(&theirs.id, "you uploaded"), (&leaving.id, "being removed")] {
         let error = begin_replacing(&service, manager, "task", "new.txt", replaces)
             .await
             .err()
             .unwrap();
         assert!(error.to_string().contains(refusal), "{refusal}: {error}");
     }
+    // A file of another task, in this project or another, is not found, as an
+    // ID that names no file is, so the answer never tells which IDs exist.
+    let mut answers = Vec::new();
+    for replaces in ["missing", &files[0], &files[1]] {
+        let error = begin_replacing(&service, manager, "task", replaces, replaces)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, AppError::NotFound { .. }),
+            "{replaces}: {error}"
+        );
+        answers.push(error.to_string());
+    }
+    assert!(
+        answers.iter().all(|answer| answer == &answers[0]),
+        "{answers:?}"
+    );
 }
 
 #[tokio::test]

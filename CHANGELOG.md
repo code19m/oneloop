@@ -68,6 +68,10 @@ All notable changes to oneloop are recorded here. The format follows
 - When the server refused a checklist change, or found nothing to change, the
   task's page was drawn again at once, even while you typed elsewhere on it.
   The checklist is now put right in place, and what you type stays.
+- In MCP, `create_attachment_upload` with a `replacesAttachmentId` that names
+  a file of another task failed with `validation_failed`, but with
+  `not_found` for an ID that names no file, so it told whether an ID exists.
+  Both now fail with `not_found`.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

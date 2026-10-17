@@ -762,12 +762,13 @@ fn replaced_attachment(
     task_id: &str,
     id: &str,
 ) -> AppResult<AttachmentView> {
+    // A file of any other task is not found, as an ID that names no file is,
+    // so the answer never tells whether an ID exists.
     let attachment = attachment_by_id(connection, id)?.attachment;
     if attachment.task_id != task_id {
-        return Err(AppError::validation(
-            "replacesAttachmentId",
-            "must name a file of the same task",
-        ));
+        return Err(AppError::NotFound {
+            resource: "attachment",
+        });
     }
     if attachment.uploaded_by != actor.user_id {
         return Err(AppError::validation(
