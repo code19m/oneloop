@@ -465,11 +465,17 @@ test('task counts still loading keep their placeholder through a scale change, a
   assert(r.d.querySelectorAll('.rm-month-grid .rm-week').length > 3, 'and its week axis');
 });
 
-test('a scale change eases over a few frames, and a wheel zoom takes over where it is', () => {
-  // Frames run when the test says, at the times it gives.
+/** Animation frames that run only when the test calls `frame` with their time. */
+function heldFrames() {
   const queue = new Map(); let next = 0;
-  const r = wide({ media: () => false, setup: w => { w.requestAnimationFrame = callback => { queue.set(++next, callback); return next; }; w.cancelAnimationFrame = id => queue.delete(id); } });
-  const frame = time => { const due = [...queue.values()]; queue.clear(); for (const callback of due) callback(time); };
+  return {
+    setup: w => { w.requestAnimationFrame = callback => { queue.set(++next, callback); return next; }; w.cancelAnimationFrame = id => queue.delete(id); },
+    frame: time => { const due = [...queue.values()]; queue.clear(); for (const callback of due) callback(time); },
+  };
+}
+
+test('a scale change eases over a few frames, and a wheel zoom takes over where it is', () => {
+  const { setup, frame } = heldFrames(), r = wide({ media: () => false, setup });
   // The 39-day epic's width tells the zoom in pixels per day.
   const perDay = () => r.barWidth('e6') / 39;
   r.A.setRoadmapScale('weeks');
@@ -523,6 +529,15 @@ test('a scale change rewrites the Roadmap address in place, and after a free zoo
   // 15 px a day is nearest Months, which the address leaves out.
   zoomOut(4);
   assert.equal(r.w.location.hash, '#/roadmap/p1');
+});
+
+test('a scale change still easing when Back leaves the Roadmap writes no address over Back\'s', () => {
+  const { setup, frame } = heldFrames(), r = wide({ media: () => false, setup });
+  r.A.setRoadmapScale('weeks');
+  // Back has moved the tab to the Board's entry, and its hashchange waits.
+  r.w.history.replaceState(r.w.history.state, '', '#/board/p1');
+  frame(1000); frame(1060);
+  assert.equal(r.w.location.hash, '#/board/p1');
 });
 
 test('a sign-out on purpose forgets the Roadmap\'s scale, so the next person\'s Roadmap opens at Months', () => {

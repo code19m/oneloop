@@ -2,6 +2,7 @@
 /* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
    drawer, and moving tracks. */
 
+import { pageOf, projectAddress } from '../../src/app/address.js';
 import { UIMotion } from '../../src/app/motion.js';
 import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
@@ -524,7 +525,8 @@ function roadmapScaleHtml() {
 
 /** Show the zoom's scale as pressed in the header, and the scale nearest it in the address. */
 function syncRoadmapScale() {
-  App.replaceAddress();
+  // A zoom step can run after Back or a link moved the tab to another page: that address stays.
+  if (pageOf(location.hash) === projectAddress('roadmap', state.projectId)) App.replaceAddress();
   const current = roadmapScale()?.key ?? null;
   if (current === pressedScale) return;
   pressedScale = current;
