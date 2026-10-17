@@ -385,7 +385,7 @@ test('a Pool item turned into a task reads the Board and the Pool once, and the 
 
 /** Drop task `id` into `column`, above card `before` or at the end, as a finished drag does. */
 function dropCard(t, id, column, before = null) {
-  Object.assign(t.module('views/app/drag.js').drag, { item: { kind: 'task', id, offsetX: 0, offsetY: 0 }, before });
+  Object.assign(t.module('views/app/drag.js').drag, { item: { id, offsetX: 0, offsetY: 0 }, before });
   t.A.dropTask({ preventDefault() {}, clientX: 0, clientY: 0, dataTransfer: transfer('text/task', id) }, column);
 }
 

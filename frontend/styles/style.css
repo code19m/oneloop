@@ -359,7 +359,7 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .rm-scroll { flex: 1; min-height: 0; overflow: auto; touch-action: pan-x pan-y; }  /* two fingers belong to the roadmap, not the browser */
 .rm-canvas { position: relative; min-width: 100%; }
 .rm-empty { position: sticky; left: 0; width: 100%; padding: 60px 0; text-align: center; color: var(--ink-ghost); font-size: var(--text-body); }
-.rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
+.rm-axis { position: sticky; top: 0; display: flex; height: 90px; border-bottom-color: rgb(var(--tone-rgb) / 0.12); z-index: 10; background: var(--surface-axis); }
 .rm-axis-labels { position: relative; flex: 1; }
 .rm-month-row { position:sticky;bottom:0;display:flex;z-index:11;background:var(--surface-canvas);border-top:1px solid rgb(var(--tone-rgb) / .12);border-bottom:1px solid rgb(var(--tone-rgb) / .12); }
 .rm-month-grid { position:relative;flex:1; }
@@ -374,17 +374,30 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .roadmap-scale button { white-space:nowrap; }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
-.rm-axis .rail-cell { z-index: 6; box-shadow: none; }
+/* Each row is a rail cell, then its part of the timeline. That part stacks its
+   own marks, such as the today pill, so none of them can rise above the rail. */
+.rm-axis-labels, .lane-body, .rm-month-grid { isolation: isolate; }
 
 /* Lanes far outside the view skip style, layout and paint, so a zoom step
    costs what is near the view. That makes a lane a stacking context, so it
    sits above the milestone and today lines (z-index 1), as its bars did. */
-.lane { position: relative; z-index: 2; display: flex; border-bottom: 1px solid rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+.lane { position: relative; z-index: 2; display: flex; border-bottom-color: rgb(var(--tone-rgb) / 0.12); content-visibility: auto; }
+/* Each cell of a row draws the row's line in the row's color. The rail cell
+   draws it on its solid background, so the lines under the rail can't show
+   through it. */
+.rm-axis > *, .lane > * { border-bottom: 1px solid; border-bottom-color: inherit; }
 /* Safari skips a lane's contents for a moment when focus leaves it, so a click
    on a button there landed on the lane. A lane under the pointer always renders. */
 .lane:hover { content-visibility: visible; }
 .lane-head { padding: 20px 16px; display: flex; flex-direction: column; gap: 6px; justify-content: center; transition:background 140ms var(--ease-out); }
 .lane-head .name { font-size: var(--text-ui); font-weight: 600; color: var(--ink); }
+/* A name takes two lines at most, then ends with an ellipsis; its tip shows
+   all of it. It keeps clear of the grip and ⋮: they take 53 px, or 65 px with
+   touch targets, from 6 px inside the rail's edge, which is 47 px or 59 px
+   past the name's own 16 px, with a 4 px gap. */
+.lane-head .name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.lane-head:has(.head-ctl) .name { padding-right: 47px; }
+@media (pointer: coarse) { .lane-head:has(.head-ctl) .name { padding-right: 59px; } }
 .lane-head .sub { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--ink-faint); }
 .head-ctl { position: absolute; top: 13px; right: 6px; display: flex; align-items: center; gap: 1px; }
 .grip, .kebab { opacity: 0.45; padding: 3px 4px; border-radius: 5px; transition: opacity 0.12s, background 0.12s; }
@@ -394,8 +407,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .kebab { cursor: pointer; }
 .lane-body { position: relative; flex: 1; }
 @media (hover:hover) and (pointer:fine) {
-  .lane:not(.dragging):hover { background:rgb(var(--tone-rgb) / 0.025);border-bottom-color:rgb(var(--tone-rgb) / 0.2); }
-  .lane:not(.dragging):hover .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
+  .lane:not(.is-sorting):hover { background:rgb(var(--tone-rgb) / 0.025);border-bottom-color:rgb(var(--tone-rgb) / 0.2); }
+  .lane:not(.is-sorting):hover .lane-head { background:color-mix(in srgb,var(--rail) 95%,var(--ink) 5%); }
   .lane:hover .head-ctl .grip, .lane:hover .head-ctl .kebab { opacity:0.8; }
 }
 .lane:focus-within { background:rgb(var(--tone-rgb) / 0.025); }
@@ -466,6 +479,8 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 :root[data-theme=light] .ms-line::before {inset:0 -12px;background:#28282866;filter:blur(8px)}
 :root[data-theme=light] .ms-line::after {content:'';position:absolute;inset:0;border-radius:inherit;background:#282828;box-shadow:0 0 5px #28282873,0 0 12px #28282833;pointer-events:none}
 :root[data-theme=light] .ms-line.past::after {background:#bcbcbc;box-shadow:none}
+/* A milestone's line in the axis ends at the axis line, glow included, so none of it shows on the rail below. */
+.goal-connector {clip-path:inset(-40px -40px 0)}
 .ms-label {position:absolute;display:flex;align-items:center;z-index:2;cursor:pointer;font-family:var(--font-sans);text-align:left;white-space:nowrap;top:32px;transform:translateX(-50%);margin:0;padding:8px 12px;gap:10px;border-radius:12px;border:1px solid var(--goal-border);background:var(--goal-surface);box-shadow:var(--goal-shadow);height:54px;min-height:54px}
 .ms-label .ms-diamond {width:14px;height:14px;border:1px solid var(--goal-diamond-border);background:var(--goal-diamond);box-shadow:var(--goal-diamond-shadow);border-radius:3px}
 .ms-label .txt {font-size:14px;font-weight:650;color:var(--ink);display:flex;flex-direction:column;gap:2px;line-height:18px}
@@ -531,11 +546,8 @@ div.ms-label {cursor:default}
 .pool-row:hover .act { opacity: 0.8; }
 .col.drop { border-color: color-mix(in srgb, var(--accent) 40.0%, transparent); background: color-mix(in srgb, var(--accent) 5.0%, transparent); }
 .card.dragging { opacity: 0.22; }
-.lane.dragging { opacity: 0.3; }
 .drop-ind { height: 14px; position: relative; margin: 0; pointer-events: none; flex-shrink: 0; }
 .drop-ind::after { content: ''; position: absolute; inset: 5px 0; border-radius: 3px; background: var(--accent); }
-.drop-ind.track-ind { height: 3px; background: var(--accent); transition: top 160ms var(--ease-out); }
-.drop-ind.track-ind::after { display: none; }
 .card, .lane { transition: opacity 140ms var(--ease-out), background 140ms var(--ease-out), border-color 140ms var(--ease-out); }
 .col { transition: background 140ms var(--ease-out), border-color 140ms var(--ease-out); }
 .card[data-reorderable="true"] { cursor: grab; }
@@ -699,6 +711,10 @@ div.ms-label {cursor:default}
   .auth-card { width: calc(100vw - 32px); max-width: 360px; }
   .lane-head { padding: 12px 10px; }
   .lane-head .name { font-size: var(--text-label); }
+  /* The rail is narrow here: the grip and ⋮ get their own row above the
+     name, instead of covering the end of a long name in a short lane. */
+  .head-ctl { position: static; order: -1; align-self: flex-end; margin: -6px -6px -6px 0; }
+  .lane-head:has(.head-ctl) .name { padding-right: 0; }
 }
 /* touch-primary devices (phones, wall boards): no hover exists, so nothing may depend on it */
 @media (hover: none) {
@@ -1051,7 +1067,8 @@ div.ms-label {cursor:default}
 /* Shared control geometry and keyboard feedback, including compact actions. */
 .user-row.clickable:focus-visible { background:var(--fill-hover);outline-offset:-2px; }
 .row-x.icon-button,.kebab.icon-button,.pool-delete { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;padding:0;border-radius:6px; }
-.row-x:focus-visible,.kebab:focus-visible { opacity:1;background:var(--fill-hover); }
+/* A lane's grip and ⋮ show their focus at full strength, also on a hovered lane. */
+.row-x:focus-visible,.kebab:focus-visible,.lane .head-ctl :is(.grip,.kebab):focus-visible { opacity:1;background:var(--fill-hover); }
 .pool-promote { min-width:0;padding:4px 0;text-align:left;font:inherit;color:inherit;background:transparent;border:0;border-radius:4px;cursor:pointer; }
 .pool-row:focus-within { background:var(--fill-hover); }
 .peek-head { flex-shrink:0;max-height:40dvh;overflow-y:auto; }
@@ -1381,6 +1398,10 @@ div.ms-label {cursor:default}
 .attachment-grip:hover,.attachment-grip:focus-visible,.checklist-grip:hover,.checklist-grip:focus-visible { background:var(--fill-hover);color:var(--ink); }
 /* A row that moves by its grip: see src/app/sortable.js. */
 .is-sorting { opacity:.4; }
+/* A held lane dims its name and epics, but its rail cell stays solid, so the
+   lines under the rail don't show through its name. */
+.lane.is-sorting { opacity:1; }
+.lane.is-sorting .lane-head > *, .lane.is-sorting .lane-body { opacity:.4; }
 .list-sorting,.list-sorting * { cursor:grabbing!important;user-select:none!important; }
 .sort-label { position:fixed;z-index:130;pointer-events:none;max-width:200px;padding:10px 14px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-raised);box-shadow:var(--shadow-modal);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .sort-marker { position:fixed;height:2px;border-radius:2px;background:var(--ink-muted);z-index:129;pointer-events:none; }

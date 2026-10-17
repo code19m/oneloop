@@ -10,7 +10,9 @@ import { hydrateLegacyData } from './projection-store.js';
  * another tab can change. Only the person this tab shows gets their data in;
  * `onForeign` hears of anyone else, whose sign-in ended this tab's session.
  * `writes`, the tab's command gateway, runs a background load again when it
- * overlapped one of the tab's own changes, which its answer would undo.
+ * overlapped one of the tab's own changes, which its answer would undo. A
+ * scope's `isCurrent` says whether its page still wants the answer: one for a
+ * page the person has left, as for a task of another project, replaces nothing.
  */
 export function createBootstrapController({ api, data, writes = { readUnchanged: (/** @type {()=>Promise<any>} */ read, /** @type {()=>boolean} */ _current) => read() }, onReady = (_projection) => {}, onError = (_error) => {}, onForeign = (_userId) => {} }) {
   let generation = 0;
@@ -28,7 +30,7 @@ export function createBootstrapController({ api, data, writes = { readUnchanged:
           // A read that started earlier, as the first one after sign-in does,
           // or a live load, which a change this tab makes meanwhile repeats.
           const projection = await (scope.response ?? (scope.background ? writes.readUnchanged(ask, () => current === generation) : ask()));
-          if (current !== generation) return { stale: true };
+          if (current !== generation || scope.isCurrent?.() === false) return { stale: true };
           const person = projection?.session?.userId ?? projection?.session?.id;
           if (!data.session || (person && person !== data.session.userId)) {
             if (data.session) onForeign(person);

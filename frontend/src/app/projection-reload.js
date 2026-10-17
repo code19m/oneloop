@@ -101,6 +101,8 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
     }
     const generation=++projectionGeneration,requestedScope=projectionScope();
     const requestIsCurrent=()=>generation===projectionGeneration&&requestedScope===projectionScope();
+    // A bootstrap's answer still fits while its page shows; a newer bootstrap drops it by itself.
+    const stillShown=()=>requestedScope===projectionScope();
     const complete=(result)=>{
       if(requestIsCurrent()&&!result?.stale){recovery?.refreshSucceeded();app?.updateDocumentTitle();}
       return result;
@@ -123,11 +125,11 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load(routeScope(location.hash,app,scope)); }
+      try { loaded=await bootstrap.load({...routeScope(location.hash,app,scope),isCurrent:stillShown}); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;
-        loaded=await bootstrap.load({view:'board',background:!!scope.background});
+        loaded=await bootstrap.load({view:'board',background:!!scope.background,isCurrent:stillShown});
       }
       if(loaded?.stale||!app)return loaded;
       if(leaveUnavailableProject(data,app,previous,previousName)||leaveAdminPage(data,app,previous))return loaded;

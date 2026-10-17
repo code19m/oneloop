@@ -18,8 +18,8 @@ names the project, so a refresh, a bookmark or a link opens the same project.
 An address without a project, such as an older bookmark, opens the project you
 last switched to in this browser, or else your first project. A link to a
 project you can't open shows **Page not found**. When you sign out, the
-address drops the project and the Board's filters, so the next person who
-signs in there starts from their own project.
+address drops the project, the Board's filters and the Roadmap's scale, so the
+next person who signs in there starts from their own project.
 
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
@@ -38,10 +38,15 @@ track. It is the first page you see after you sign in.
   scroll, or pinch on a touchpad or touch screen. On a narrow screen, the scale
   buttons make room for the others; pinch or use the keys instead. **Today**
   takes you back to today.
+- The scale is part of the page's address, so a refresh keeps it and you can
+  share the Roadmap at that scale as a link. After a free zoom, the address
+  keeps the nearest scale. Changing the scale adds no step to the browser's
+  history.
 - Hover over an epic or a milestone to see its details. Click an epic to open
   its progress, tasks and activity, or to edit it. Click a milestone to edit it.
 - Add work with **+ Track**, **+ Epic** and **Milestone**. To reorder tracks,
-  drag the grip next to a track's name, or use the arrow keys on it.
+  drag the grip next to a track's name, or focus the grip and use the arrow
+  keys, Home and End. A track's **⋮** menu renames or deletes it.
 - You can delete a track only when it has no epics, and an epic only when it has
   no tasks.
 

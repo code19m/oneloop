@@ -46,6 +46,28 @@ test('a live refresh lets the task someone is opening load, then refreshes it',a
   assert.equal((await live).stale,false);
 });
 
+test('a live refresh that arrives after the person went to a task of another project leaves that page its data',async()=>{
+  const context={view:'board',projectId:'p1',board:{},hash:'#/board/p1'};const t=page(context);
+  const live=t.reload({background:true});
+  await waitFor(()=>t.calls.length===1);
+  Object.assign(context,{view:'task',taskId:'TWO-1',projectId:'p2',hash:'#/task/TWO-1'});
+  t.next('bootstrap').resolve(projection('board-of-p1',{view:'board'}));
+  assert.equal((await live).stale,true);
+  assert.equal(t.data.timeZone,'p1','the old page\'s answer replaces nothing');
+});
+
+test('a full live refresh keeps its answer when a refresh of the same page\'s view starts meanwhile',async()=>{
+  const context={view:'roadmap',projectId:'p1',hash:'#/roadmap/p1'};const t=page(context);
+  // A full refresh after a reconnect, then a hint that reads only the Roadmap again.
+  const full=t.reload({background:true,projectId:'p1'});
+  await waitFor(()=>t.calls.length===1);
+  t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic'}]});
+  await waitFor(()=>t.calls.length===2);assert.equal(t.calls[1].name,'roadmap');
+  t.next('bootstrap').resolve(projection('after-reconnect'));
+  assert.equal((await full).stale,false);
+  assert.equal(t.data.timeZone,'after-reconnect','the changes made while the tab was away arrive');
+});
+
 test('a live refresh of the old project waits for a project switch and then lets it stand',async()=>{
   const context={view:'board',projectId:'p1',board:{}};const t=page(context);
   const switching=t.bootstrap.load({projectId:'p2',view:'board'}),live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic'}]});

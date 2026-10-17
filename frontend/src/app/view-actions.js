@@ -41,7 +41,7 @@ export const ACTIONS = Object.freeze([
   'dateKey', 'dateTyping', 'delAttachment', 'delPool', 'deleteEpic', 'deleteMilestone',
   'deleteProject', 'descriptionKey', 'downloadAttachment', 'dragEnd', 'dropTask', 'editDescription',
   'editPoolDescription', 'epicHover', 'epicKey', 'epicLeave', 'expandDescription', 'goToday',
-  'inboxBulk', 'inboxFilter', 'jumpToComment', 'laneOver', 'leaveField', 'leaveProjectField',
+  'inboxBulk', 'inboxFilter', 'jumpToComment', 'leaveField', 'leaveProjectField',
   'loadMoreBoard', 'loadMoreEpicActivity', 'loadMoreEpicTasks', 'loadMorePool', 'loadMoreUsers',
   'loadOlderActivity', 'login', 'logout', 'menuAction', 'milestoneClick', 'milestoneHover',
   'moreInbox', 'nav', 'openAttachment', 'openModal', 'openNotification', 'openPeek', 'openTask',
@@ -55,8 +55,8 @@ export const ACTIONS = Object.freeze([
   'setPoolTab', 'setRoadmapScale', 'setTheme', 'showMoreMembers', 'sizeDescription',
   'sizeDescriptionEditors', 'sizeTaskTitle', 'taskActions', 'taskDragStart', 'taskMoveMenu',
   'toggleCommentText', 'toggleDescription', 'toggleDoneOrder',
-  'togglePoolDescription', 'toggleReplies', 'toggleSidebar', 'trackDragStart', 'trackDrop',
-  'trackMenu', 'trackReorderKey', 'updMe', 'updTask', 'updateProjectField', 'userMenu',
+  'togglePoolDescription', 'toggleReplies', 'toggleSidebar', 'trackMenu', 'updMe', 'updTask',
+  'updateProjectField', 'userMenu',
 ]);
 const ALLOWED = new Set(ACTIONS);
 

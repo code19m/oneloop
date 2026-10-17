@@ -13,6 +13,7 @@ const page = `<main>
   <button type="button" id="due" aria-describedby="card-context" data-tip="Deadline 2026-12-24">Dec 24</button>
   <time id="time" aria-label="2026-10-05 14:03:22" data-tip="2026-10-05 14:03:22">5m ago</time>
   <b id="name" data-tip="Olivia Owner" data-tip-overflow>Olivia Owner</b>
+  <button type="button" id="manage" aria-label="Manage Olivia Owner" data-tip="Olivia Owner" data-tip-overflow="name" data-tip-keyboard>⋮</button>
 </main>`;
 
 /** A page with tips. Keyboard focus counts as visible focus, which jsdom can't tell. */
@@ -103,6 +104,15 @@ test('with data-tip-overflow, only a name that is cut off or hidden shows its ti
   t.pointer('pointerover', name); ctx.mock.timers.tick(300);
   assert(t.tip(), 'a label that is not shown at all, such as in the icon rail');
   ctx.mock.timers.reset();
+});
+
+test('a control beside a name shows the name on keyboard focus while the name is cut off', () => {
+  const t = tips(), name = t.d.getElementById('name'), manage = t.d.getElementById('manage');
+  t.layout(name, false);
+  manage.focus(); assert.equal(t.tip(), null, 'the whole name shows');
+  manage.blur(); t.layout(name, true);
+  manage.focus(); assert.equal(t.tip().textContent, 'Olivia Owner');
+  assert.equal(manage.getAttribute('aria-describedby'), null, 'screen readers have the name from the label');
 });
 
 test('the tip goes when its element is redrawn, or when the page scrolls under a pointer', async () => {

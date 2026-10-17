@@ -84,11 +84,12 @@ export async function failUntilRetry(page, pattern, failure, { gate } = {}) {
 
 /** Hold matching server responses until released; writes still reach the real backend. */
 export async function holdResponses(page, pattern) {
-  let release, entered;
+  let release, entered, released = false;
   const gate = new Promise(resolve => { release = resolve; });
   const started = new Promise(resolve => { entered = resolve; });
   const pending = new Set();
   const handler = async route => {
+    if (released) return route.fallback();
     const work = (async () => {
       const response = await route.fetch();
       entered();
@@ -102,14 +103,14 @@ export async function holdResponses(page, pattern) {
   return {
     started,
     /**
-     * Deliver the held answers, then stop holding. The route stays until
-     * they are delivered: without it, the browser would ask the server again
-     * and the page would get a newer answer than the held one.
+     * Deliver the held answers, and pass later requests on. The route stays:
+     * removing a page's last route turns request interception off, and a
+     * request the page starts at that moment can be lost for good.
      */
     async release() {
+      released = true;
       release();
       while (pending.size) await Promise.allSettled([...pending]);
-      await page.unroute(pattern, handler);
     },
   };
 }

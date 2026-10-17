@@ -203,6 +203,15 @@ test('the task heading keeps focus while a slow task load shows its skeleton', a
   assert.equal(t.d.activeElement,t.d.getElementById('main'),'the main area keeps focus too');
 });
 
+test('Escape returns focus to a track menu button that a change made elsewhere drew again', () => {
+  const t=boot('roadmap'),kebab=t.d.querySelector('.lane[data-track="t2"] .kebab');
+  kebab.focus();t.A.trackMenu({currentTarget:kebab,clientX:0,clientY:0,stopPropagation(){}},'t2');
+  t.A.refreshRoadmap();assert(!kebab.isConnected,'the redraw replaced the button');
+  key(t,'Escape');
+  assert.equal(t.d.querySelector('#overlay-root > .menu'),null);
+  assert(t.d.activeElement.matches('.lane[data-track="t2"] .kebab'));
+});
+
 test('one Escape closes a track menu opened while an epic tooltip showed', () => {
   const t=boot('roadmap'),bar=t.d.querySelector('.bar[data-epic]'),kebab=t.d.querySelector('.lane[data-track] .kebab');
   bar.focus();t.A.epicHover({currentTarget:bar},bar.dataset.epic,true);assert(t.d.querySelector('.epic-tooltip'),'focus shows the tooltip');

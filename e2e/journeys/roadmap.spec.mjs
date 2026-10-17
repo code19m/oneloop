@@ -121,6 +121,82 @@ test.describe('with Reduce motion', () => {
   });
 });
 
+test('a track\'s name keeps clear of its grip and ⋮, takes two lines at most, and shows in full in its tip', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
+  for (const name of ['Internationalization', 'Customer support tools', long, 'Billing', 'Data', 'Mobile']) await command(instance.api, 'track.create', { projectId: project.id, name });
+  await openApp(page, instance, 'roadmap');
+  const names = await page.locator('.lane').evaluateAll(lanes => lanes.map(lane => {
+    const name = lane.querySelector('.name'), box = name.getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
+    text.selectNodeContents(name);
+    const shown = [...text.getClientRects()].filter(line => line.bottom <= box.bottom + 1);
+    return { name: name.textContent, lines: new Set(shown.map(line => Math.round(line.top))).size, covered: shown.some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom) };
+  }));
+  expect(names.length).toBe(7);
+  expect(names.filter(name => name.covered || name.lines > 2)).toEqual([]);
+  const tip = page.locator('#app-tip'), lane = name => page.locator('.lane').filter({ has: page.getByRole('heading', { name, exact: true }) });
+  await lane(long).locator('.name').hover();
+  await expect(tip).toHaveText(long);
+  await page.mouse.move(1, 1);
+  await expect(tip).toHaveCount(0);
+  // Keyboard focus reaches the grip from the ⋮ beside it.
+  await lane(long).getByRole('button', { name: `Manage ${long} track` }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(lane(long).getByRole('button', { name: `Reorder ${long}` })).toBeFocused();
+  await expect(tip).toHaveText(long);
+  await lane('Billing').getByRole('button', { name: 'Manage Billing track' }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(lane('Billing').getByRole('button', { name: 'Reorder Billing' })).toBeFocused();
+  await expect(tip, 'a name that fits needs no tip').toHaveCount(0);
+});
+
+test('a zoom gives far lanes their new height at once, and a lane grown by its name keeps its bars centered on whole pixels', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
+  const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  // Two weeks back to back take two rows at Months and one at Weeks; 25 lanes reach far below the view.
+  for (let i = 0; i < 24; i++) {
+    const [track] = (await command(instance.api, 'track.create', { projectId: project.id, name: i ? `Track ${i + 2}` : long })).entities;
+    for (const week of [0, 1]) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Week ${week + 1}`, startDate: day(7 * week), endDate: day(7 * week + 6) });
+  }
+  await openApp(page, instance, 'roadmap');
+  const lanes = page.locator('#rmScroll .lane'), scale = page.getByRole('group', { name: 'Timeline scale' });
+  await expect(lanes).toHaveCount(25);
+  const frames = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  const heights = () => lanes.evaluateAll(all => all.map(lane => lane.getBoundingClientRect().height));
+  const scrollTo = place => page.locator('#rmScroll').evaluate((view, place) => {
+    view.scrollTop = place === 'end' ? view.scrollHeight : 0;
+    return [...view.querySelectorAll('.lane')].at(-1).getBoundingClientRect().top;
+  }, place);
+  // Every lane is drawn once at Months, then the person goes back up and zooms to Weeks.
+  await scrollTo('end');
+  await frames();
+  await scrollTo('top');
+  await frames();
+  const months = await heights();
+  await scale.getByRole('button', { name: 'Weeks' }).click();
+  await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
+  const weeks = await heights();
+  // Lanes far below the view take their new height at once, so nothing moves when they come into view.
+  const last = await scrollTo('end');
+  await frames();
+  expect(await lanes.last().evaluate(lane => lane.getBoundingClientRect().top), 'the view stays put').toBe(last);
+  await page.evaluate(() => App.refreshRoadmap());
+  expect(weeks, 'heights as a fresh drawing gives them').toEqual(await heights());
+  expect(weeks.at(-1), 'the zoom made the far lanes shorter').toBeLessThan(months.at(-1));
+  expect(weeks.filter(height => !Number.isInteger(height)), 'whole-pixel lanes').toEqual([]);
+  await scrollTo('top');
+  // The name's two lines make its lane taller than one row needs; its bars stay in the middle.
+  const grown = lanes.filter({ has: page.getByRole('heading', { name: long, exact: true }) });
+  const { height, gaps } = await grown.evaluate(lane => {
+    const box = lane.getBoundingClientRect();
+    return { height: box.height, gaps: [...lane.querySelectorAll('.bar')].map(bar => { const b = bar.getBoundingClientRect(); return [b.top - box.top, box.bottom - b.bottom]; }) };
+  });
+  expect(height, 'the name needs more than one row').toBeGreaterThan(88);
+  expect(gaps.length).toBe(2);
+  for (const [above, below] of gaps) expect(Math.abs(above - below), `bar gaps ${above} and ${below}`).toBeLessThanOrEqual(1);
+});
+
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 375, height: 812 } });
 
@@ -140,6 +216,41 @@ test.describe('on a phone', () => {
     // Pinch zoom, the wheel and W, M and Q still change the scale here.
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });
+
+  test('a short lane\'s name stays clear of its grip and ⋮, and its rail cell fits in the lane', async ({ page, instance }) => {
+    const { project } = instance.projects[0];
+    // Seven tracks make every lane as short as a lane gets.
+    for (const name of ['Platform and infrastructure', 'Customer support tools', 'Growth experiments', 'Internationalization', 'Billing', 'Data']) await command(instance.api, 'track.create', { projectId: project.id, name });
+    await openApp(page, instance, 'roadmap');
+    const lanes = await page.locator('.lane').evaluateAll(all => all.map(lane => {
+      const head = lane.querySelector('.lane-head').getBoundingClientRect(), controls = lane.querySelector('.head-ctl').getBoundingClientRect(), text = document.createRange();
+      text.selectNodeContents(lane.querySelector('.name'));
+      const covered = [...text.getClientRects()].some(line => line.right > controls.left && line.left < controls.right && line.bottom > controls.top && line.top < controls.bottom);
+      const fits = [...lane.querySelector('.lane-head').children].every(child => { const box = child.getBoundingClientRect(); return box.top >= head.top && box.bottom <= head.bottom; });
+      return { name: lane.querySelector('.name').textContent, covered, fits };
+    }));
+    expect(lanes.length).toBe(7);
+    expect(lanes.filter(lane => lane.covered || !lane.fits)).toEqual([]);
+  });
+
+  test('marks scrolled under the rail stay behind it, also on its row lines', async ({ page, instance }) => {
+    // The lanes hold still instead of sliding when the Roadmap's read draws them again.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const { project } = instance.projects[0];
+    await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' });
+    await openApp(page, instance, 'roadmap');
+    // Today's pill and line scroll to the middle of the rail, where Track is.
+    const covered = await page.evaluate(() => {
+      const scroll = document.getElementById('rmScroll'), pill = document.querySelector('.today-pill'), rail = document.querySelector('.rm-axis .rail-cell');
+      const middle = box => box.left + box.width / 2;
+      scroll.scrollLeft += middle(pill.getBoundingClientRect()) - middle(rail.getBoundingClientRect());
+      const box = pill.getBoundingClientRect(), x = middle(box);
+      // The axis's line and the line between the lanes are their rail cells' too. The last lane's meets the month row.
+      const lines = [...document.querySelectorAll('.rm-axis, .lane')].slice(0, -1).map(row => row.querySelector('.rail-cell').contains(document.elementFromPoint(x, row.getBoundingClientRect().bottom - 1)));
+      return [rail.contains(document.elementFromPoint(x, box.top + box.height / 2)), ...lines];
+    });
+    expect(covered).toEqual([true, true, true]);
+  });
 });
 
 test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {
@@ -152,7 +263,7 @@ test('a teammate renaming a task updates the open epic drawer', async ({ page, i
   await expect(rows).toContainText('Renamed by a teammate');
 });
 
-test('track keyboard/menu moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
+test('track keyboard moves and pointer Board/track drags save and cancel', async ({ page, instance }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const { project, track, task } = instance.projects[0];
   const [second] = (await command(instance.api, 'track.create', { projectId: project.id, name: 'Second track' })).entities;
@@ -163,10 +274,11 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   const grip = page.getByRole('button', { name: `Reorder ${track.name}`, exact: true });
   await grip.press('ArrowDown');
   await expect(grip).toBeFocused();
+  // The only keyboard way to move a track shows its focus at full strength.
+  await expect(grip).toHaveCSS('opacity', '1');
   await expect.poll(order).toEqual([second.id, track.id, third.id]);
   await settled();
-  await page.getByRole('button', { name: `Manage ${track.name} track`, exact: true }).click();
-  await page.getByRole('button', { name: 'Move to bottom', exact: true }).click();
+  await grip.press('End');
   await expect.poll(order).toEqual([second.id, third.id, track.id]);
   await expect(grip).toBeFocused();
   await settled();
@@ -174,9 +286,15 @@ test('track keyboard/menu moves and pointer Board/track drags save and cancel', 
   await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
   await page.mouse.down();
   await page.mouse.move(target.x + 100, target.y + 4, { steps: 8 });
-  await expect(page.locator('#dropInd')).toBeVisible();
+  await expect(page.locator('.sort-marker')).toBeVisible();
+  // The held lane dims its name, but its rail cell stays solid, so no line shows through it.
+  const shown = locator => locator.evaluate(element => { let opacity = 1; for (let el = element; el; el = el.parentElement) opacity *= Number(getComputedStyle(el).opacity); return opacity; });
+  const held = page.locator(`.lane[data-track="${track.id}"]`);
+  await expect.poll(() => shown(held.locator('.lane-head'))).toBe(1);
+  await expect.poll(() => shown(held.locator('.name'))).toBe(0.4);
   await page.mouse.up();
   await expect.poll(order).toEqual([track.id, second.id, third.id]);
+  await expect(grip).toBeFocused();
   await settled();
   const server = await (await instance.api.get(`/api/projects/${project.id}/roadmap`)).json();
   expect(server.tracks.map(t => t.id)).toEqual([track.id, second.id, third.id]);

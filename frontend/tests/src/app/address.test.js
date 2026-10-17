@@ -7,10 +7,10 @@ const unfiltered = { search: '', trackIds: [], epicIds: [], assigneeIds: [], blo
 
 test('a Board address carries only the filters that are on, in a fixed order, and reads back the same', () => {
   const filters = { search: 'login page', trackIds: ['t2', 't1'], epicIds: ['e1'], assigneeIds: ['u2', NO_ASSIGNEE], blocked: true };
-  const address = projectAddress('board', 'p1', filters);
+  const address = projectAddress('board', 'p1', { filters });
   assert.equal(address, '#/board/p1?search=login%20page&track=t1,t2&epic=e1&assignee=none,u2&blocked=1');
-  assert.deepEqual(readAddress(address), { page: 'board', projectId: 'p1', taskId: null, filters: { ...filters, trackIds: ['t1', 't2'], assigneeIds: [NO_ASSIGNEE, 'u2'] } });
-  assert.equal(projectAddress('board', 'p1', unfiltered), '#/board/p1');
+  assert.deepEqual(readAddress(address), { page: 'board', projectId: 'p1', taskId: null, filters: { ...filters, trackIds: ['t1', 't2'], assigneeIds: [NO_ASSIGNEE, 'u2'] }, scale: null });
+  assert.equal(projectAddress('board', 'p1', { filters: unfiltered }), '#/board/p1');
   assert.deepEqual(readAddress('#/board/p1?search=a+b&track=t1,,t1&blocked=yes').filters, { ...unfiltered, search: 'a b', trackIds: ['t1'] });
 });
 

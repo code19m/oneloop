@@ -2,16 +2,17 @@
 /* The Roadmap: tracks, epics and milestones on a zoomable timeline, the epic
    drawer, and moving tracks. */
 
+import { pageOf, projectAddress } from '../../src/app/address.js';
 import { UIMotion } from '../../src/app/motion.js';
+import { sortable } from '../../src/app/sortable.js';
 import { sessionKey } from '../../src/data/projection-store.js';
 import {
   DAY, I, STATUS, UIAction, ago, d, esc, formatInstant, human, humanShort, setHTML, stIcon, today,
 } from './format.js';
-import { drag, makeDropIndicator, setDragImage } from './drag.js';
 import { descriptionReadHtml } from './forms.js';
 import {
-  App, D, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded, report, runtime,
-  state, taskById, tasks, trackById, tracks, userById,
+  App, D, OPENING_SCALE, ROADMAP_SCALES, canReadProject, canRoadmap, epicById, epics, milestones, project, projectLoaded,
+  report, runtime, state, taskById, tasks, trackById, tracks, userById,
 } from './model.js';
 import {
   EPIC_TIP, POP, hideEpicTip, mountRoadmapTip, openMenu, peekOpened, pendingConfirmation,
@@ -27,13 +28,9 @@ import { announce } from './toasts.js';
 let RAIL = 208;
 const AXIS = 70, MONTH_ROW = 32, BAR_H = 58, ROW_GAP = 8, LANE_PAD = 14, EPIC_GAP = 8, EPIC_MIN_WIDTH = 60, GOAL_ROW = 58;
 const ZOOM_MIN = 2.2, ZOOM_MAX = 42;
-/** Fixed scales of the timeline, in pixels per day. Months is the zoom a Roadmap opens at. */
-const ROADMAP_SCALES = [
-  { key: 'weeks', label: 'Weeks', ppd: 30, shortcut: 'W' },
-  { key: 'months', label: 'Months', ppd: 8.5, shortcut: 'M' },
-  { key: 'quarters', label: 'Quarters', ppd: 2.6, shortcut: 'Q' },
-];
-/** Closer to Weeks than to Months, the axis shows weeks instead of months: a week is 126 px or more. */
+/** The scale nearest a zoom, in proportion, as each wheel notch zooms by a factor. */
+const nearestScale = (ppd) => ROADMAP_SCALES.reduce((near, scale) => (Math.abs(Math.log(scale.ppd / ppd)) < Math.abs(Math.log(near.ppd / ppd)) ? scale : near));
+/** From 18 px a day, a week is 126 px or more, so the axis shows weeks instead of months. */
 const WEEK_AXIS_PPD = 18;
 const roadmapScale = () => ROADMAP_SCALES.find((scale) => Math.abs(scale.ppd - state.pxPerDay) < 0.005) || null;
 /** The epic last focused or opened on the Roadmap, which a scale change keeps in view. */
@@ -75,10 +72,11 @@ function roadmapModel() {
 
 /**
  * The parts of the layout that change at a zoom level: which row each epic
- * and goal label takes, the lane heights and the axis height. `width` and
- * `height` are the content area's size.
+ * and goal label takes, the lane heights and the axis height. `heads` are
+ * the heights the lanes' rail cells need; `width` and `height` are the
+ * content area's size.
  */
-function roadmapLayout(model, ppd, { barHeight, width, height }) {
+function roadmapLayout(model, ppd, { barHeight, heads, width, height }) {
   const x = (days) => dayX(days, ppd);
   const timeline = timelineWidth(model, ppd, width);
   // Goal labels pack independently of epic lanes, including room for Today.
@@ -106,9 +104,9 @@ function roadmapLayout(model, ppd, { barHeight, width, height }) {
     });
     return { assigned, count: Math.max(rows.length, 1) };
   });
-  // Packed minimum heights, then leftover viewport height shared evenly.
+  // Packed minimum heights, as tall as the rail cell needs, then leftover viewport height shared evenly.
   const rowsHeight = (count) => count * barHeight + (count - 1) * ROW_GAP;
-  const minHs = packed.map((lane) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88));
+  const minHs = packed.map((lane, i) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88, heads[i]));
   const availH = height - axisHeight - MONTH_ROW - 8;
   const extra = packed.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / packed.length, 0) : 0;
   const lanes = packed.map((lane, i) => {
@@ -195,15 +193,40 @@ function showMilestoneTip(anchor, id) {
 
 export let roadmapHeight=null;
 
-function measureEpicHeight() {
+/**
+ * What the rows need, measured on hidden copies in one layout: an epic bar's
+ * height, and each lane's rail cell height, `heads`, as its name and epic
+ * count wrap. The copies have no row line: in a lane, the line takes a pixel
+ * of the cell's padding, so a one-line name fits the least lane height, 88 px.
+ * Whole pixels keep the lanes on the pixel grid.
+ */
+function measureRows(heads) {
   const probe = document.createElement('div');
-  probe.className = 'bar planning';
-  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;width:300px';
-  setHTML(probe, '<div class="t"><span class="txt">Epic</span></div><div class="m">0/1 · ongoing</div>');
+  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none';
+  setHTML(probe, `<div class="bar planning" style="width:300px"><div class="t"><span class="txt">Epic</span></div><div class="m">0/1 · ongoing</div></div>${heads.join('')}`);
   (document.querySelector('.content') || document.body).append(probe);
-  const height = Math.max(BAR_H, Math.ceil(probe.getBoundingClientRect().height));
+  const [bar, ...rails] = [...probe.children].map((el) => Math.ceil(el.getBoundingClientRect().height));
   probe.remove();
-  return height;
+  return { barHeight: Math.max(BAR_H, bar), heads: rails };
+}
+
+/** A lane's rail cell: its track's name and a summary of its epics, with the grip and ⋮ for people who manage the Roadmap. */
+function laneHeadHtml(t, list) {
+  const active = list.filter((e) => e.state === 'active').length;
+  const doneN = list.filter((e) => e.state === 'done').length;
+  const cont = list.some((e) => !e.end);
+  const sub = list.length
+    ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
+    : 'no epics yet';
+  // A name cut off after two lines shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
+  const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
+  return `<div class="rail-cell lane-head" style="width:${RAIL}px">
+        <h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
+        ${canRoadmap() ? `<div class="head-ctl">
+          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
+          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
+        </div>` : ''}
+      </div>`;
 }
 /** The latest rendered Roadmap, which mountRoadmap binds. */
 let renderedRoadmap = null;
@@ -211,12 +234,13 @@ let renderedRoadmap = null;
 export function renderRoadmap() {
   // A scale change still easing finishes first, so the new Roadmap starts at its zoom.
   roadmapGestureCleanup();
-  const barHeight = measureEpicHeight();
   RAIL = window.innerWidth <= 900 ? 132 : 208;
   const model = roadmapModel();
+  const heads = model.lanes.map(({ track, epics: items }) => laneHeadHtml(track, items.map((item) => item.epic)));
+  const { barHeight, heads: headHeights } = measureRows(heads);
   const contentEl = document.querySelector('.content');
   roadmapHeight=contentEl ? contentEl.clientHeight : window.innerHeight - 80;
-  const metrics = { barHeight, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
+  const metrics = { barHeight, heads: headHeights, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
   const ppd = state.pxPerDay;
   const layout = roadmapLayout(model, ppd, metrics);
   const { axisHeight } = layout;
@@ -226,22 +250,9 @@ export function renderRoadmap() {
   let lanes = '';
   model.lanes.forEach(({ track: t, epics: items }, ti) => {
     const lane = layout.lanes[ti];
-    const list = items.map((item) => item.epic);
-    const active = list.filter((e) => e.state === 'active').length;
-    const doneN = list.filter((e) => e.state === 'done').length;
-    const cont = list.some((e) => !e.end);
-    const sub = list.length
-      ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
-      : 'no epics yet';
     const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-    lanes += `<div class="lane" data-track="${esc(t.id)}" ${canRoadmap() ? `${UIAction.on('dragover', 'laneOver', UIAction.event)} ${UIAction.on('drop', 'trackDrop', UIAction.event, t.id)}` : ''} style="height:${lane.height}px">
-      <div class="rail-cell lane-head" style="width:${RAIL}px">
-        <h2 class="name" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
-        ${canRoadmap() ? `<div class="head-ctl">
-          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" ${UIAction.on('keydown', 'trackReorderKey', UIAction.event, t.id)} data-reorderable="true" ${UIAction.on('dragstart', 'trackDragStart', UIAction.event, t.id)} ${UIAction.on('dragend', 'dragEnd')} title="Drag to reorder or use arrow keys">${I.grip}</button>
-          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
-        </div>` : ''}
-      </div>
+    lanes += `<div class="lane" data-track="${esc(t.id)}" style="height:${lane.height}px">
+      ${heads[ti]}
       <div class="lane-body">${bars}</div>
     </div>`;
   });
@@ -293,8 +304,45 @@ function focusMovedTrack(id) {
   const lane = [...document.querySelectorAll('.lane[data-track]')].find(el=>el.dataset.track===id);
   revealLane(lane);
   lane?.querySelector('.grip')?.focus({preventScroll:true});
-  announce(`${trackById(id)?.name || 'Track'} moved to position ${tracks().findIndex(track=>track.id===id)+1}`);
 }
+
+/** Show track `id` at `position` at once, then save the move. */
+function moveTrack(id, position) {
+  if (!App.require('manage_roadmap') || pendingMove) return;
+  const list = tracks(), index = list.findIndex(track=>track.id===id);
+  if (index < 0) return;
+  const to = Math.max(0, Math.min(list.length-1, position));
+  if (to === index) return;
+  const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
+  const moved = list.splice(index, 1)[0];
+  list.splice(to, 0, moved);
+  list.forEach((t, i) => { t.order = i; });
+  App.refreshRoadmap(id);
+  announce(`${moved.name} moved to position ${to+1} of ${list.length}`);
+  const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
+  runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
+    const sameSession=session===sessionKey(D);
+    if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId)App.refreshRoadmap();}
+    report(error);
+  }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
+}
+
+// A track moves by its grip, with the pointer or the arrow keys, Home and End.
+sortable({
+  grip: '#app .lane[data-track] .grip', row: '.lane[data-track]', list: '.rm-scroll', scroll: '.rm-scroll',
+  label: (row) => trackById(row.dataset.track)?.name ?? '',
+  // Tracks move one at a time: while the last move saves, a press on a grip says so.
+  ready: () => {
+    if (!canRoadmap()) return false;
+    if (pendingMove) App.toast('The last track move is still saving.', 'info');
+    return !pendingMove;
+  },
+  move: (grip, target, after) => {
+    const id = grip.closest('.lane').dataset.track;
+    const index = tracks().filter((track) => track.id !== id).findIndex((track) => track.id === target.dataset.track);
+    if (index >= 0) moveTrack(id, index + (after ? 1 : 0));
+  },
+});
 
 // ---------- epic drawer ----------
 const actFeed = (list, limit) => (list || []).slice(-(limit || 8)).reverse().map((a) =>
@@ -487,7 +535,10 @@ function roadmapScaleHtml() {
   return `<div class="seg roadmap-scale" role="group" aria-label="Timeline scale">${ROADMAP_SCALES.map((scale) => `<button type="button" data-scale="${esc(scale.key)}" class="${pressedScale === scale.key ? 'on' : ''}" aria-pressed="${pressedScale === scale.key}" aria-keyshortcuts="${esc(scale.shortcut)}" ${UIAction('setRoadmapScale', scale.key)}>${scale.label}</button>`).join('')}</div>`;
 }
 
+/** Show the zoom's scale as pressed in the header, and the scale nearest it in the address. */
 function syncRoadmapScale() {
+  // A zoom step can run after Back or a link moved the tab to another page: that address stays.
+  if (pageOf(location.hash) === projectAddress('roadmap', state.projectId)) App.replaceAddress();
   const current = roadmapScale()?.key ?? null;
   if (current === pressedScale) return;
   pressedScale = current;
@@ -496,6 +547,26 @@ function syncRoadmapScale() {
     button.setAttribute('aria-pressed', String(on)); button.classList.toggle('on', on);
   });
 }
+
+/** The scale the Roadmap's address names: the one nearest its zoom, or none at Months. */
+export function roadmapAddressScale() {
+  const scale = nearestScale(state.pxPerDay);
+  return scale === OPENING_SCALE ? null : scale.key;
+}
+
+/**
+ * Show the scale an address names, or Months when it names none or one the
+ * Roadmap doesn't have. Another scale starts at today, since a scroll position
+ * belongs to its zoom; a free zoom nearest the named scale stays, as after Back.
+ */
+export function showRoadmapScale(key) {
+  const scale = ROADMAP_SCALES.find((item) => item.key === key) ?? OPENING_SCALE;
+  if (nearestScale(state.pxPerDay) === scale) return;
+  state.pxPerDay = scale.ppd; state.rmScrollLeft = null;
+}
+
+/** Open the Roadmap at Months again, as for the next person to sign in here. */
+export function resetRoadmapScale() { state.pxPerDay = OPENING_SCALE.ppd; }
 
 /** The selected epic's bar while it shows in the view, or null. */
 function selectedEpicBar(view) {
@@ -667,7 +738,8 @@ export function mountRoadmap() {
   const spread = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
   function movePinch(e) {
     if (gesture?.kind !== 'pinch' || e.touches.length !== 2) return;
-    e.preventDefault();
+    // A pinch that starts while a finger drags a grip gets moves the browser can no longer cancel.
+    if (e.cancelable) e.preventDefault();
     const point = center(e.touches);
     gesture.target = gesture.ppd0 * spread(e.touches) / gesture.distance;
     gesture.cx = point.x - gesture.left;
@@ -765,6 +837,9 @@ document.addEventListener('pointerdown', (e) => {
   if (EPIC_TIP.el && !EPIC_TIP.el.contains(e.target) && !EPIC_TIP.anchor?.contains(e.target)) hideEpicTip();
 });
 
+/** The Roadmap as it is now, drawn once when a press that delayed it ends. */
+const refreshShownRoadmap = () => App.refreshRoadmap();
+
 Object.assign(App, {
   refreshEpic() {
     if (!state.peek) return;
@@ -780,20 +855,29 @@ Object.assign(App, {
     rows.replaceWith(next);peek.scrollTop=peekScroll;next.scrollTop=rowsScroll;
     if (focus && !peek.inert && !document.querySelector('.confirmation-layer,.file-overlay')) restoreOpener(focus);
   },
-  refreshRoadmap() {
+  /**
+   * Draw the Roadmap again in place: its scroll and the focused control stay,
+   * and lanes slide to their new places. A track moved here, `moved`, first
+   * comes into view with focus on its grip, so its lane slides from where it
+   * showed instead of jumping.
+   */
+  refreshRoadmap(moved) {
+    // A change from elsewhere waits for a press on the page to end, as on a
+    // held grip: lanes drawn again under the pointer would drop the drag.
+    if(!moved&&App.afterPress(refreshShownRoadmap))return;
     refreshEpicSummary();
     if(state.view!=='roadmap'){App.refreshBackground();return;}
     const content=document.querySelector('.content'),scroll=document.getElementById('rmScroll');
     if(!content||!scroll){App.refresh();return;}
     roadmapGestureCleanup();
     const before=UIMotion.positions('.lane'),left=scroll.scrollLeft,top=scroll.scrollTop;
-    const focus=document.activeElement,focusType=focus?.dataset?.epic?'epic':focus?.dataset?.milestone?'milestone':null,focusId=focusType?focus.dataset[focusType]:null;
+    const focus=content.contains(document.activeElement)?rememberOpener(document.activeElement):null;
     setHTML(content,renderRoadmap());mountRoadmap();
     // The header counts what the timeline now shows.
     const stats=document.querySelector('.topbar .roadmap-structure-stats'),counted=roadmapStatsHtml();
     if(stats&&stats.outerHTML!==counted){const template=document.createElement('template');setHTML(template,counted);stats.replaceWith(template.content);}
     const next=document.getElementById('rmScroll');if(next){next.scrollLeft=left;next.scrollTop=top;}
-    if(focusId){const equivalent=[...content.querySelectorAll(`[data-${focusType}]`)].find(el=>el.dataset[focusType]===focusId);(equivalent||document.querySelector('.topbar button'))?.focus({preventScroll:true});}
+    if(moved)focusMovedTrack(moved);else if(focus)restoreOpener(focus);
     App.updateDocumentTitle();
     if(before)UIMotion.layout(before,'.lane');
     App.refreshCounts();
@@ -844,79 +928,11 @@ Object.assign(App, {
   trackMenu(ev, id) {
     ev.stopPropagation();
     if (!App.require('manage_roadmap')) return;
-    const list = tracks(), index = list.findIndex(track=>track.id===id);
-    const moves = [];
-    if (index > 0) moves.push({label:'Move up',fn:()=>App.moveTrack(id,index-1)}, {label:'Move to top',fn:()=>App.moveTrack(id,0)});
-    if (index < list.length-1) moves.push({label:'Move down',fn:()=>App.moveTrack(id,index+1)}, {label:'Move to bottom',fn:()=>App.moveTrack(id,list.length-1)});
+    // The grip moves a track; the menu only renames and deletes it.
     openMenu([
-      ...moves, ...(moves.length ? [{sep:true}] : []),
       { label: 'Rename track', fn: () => { state.modal = { type: 'track', id }; App.refreshOverlays(); } },
       { sep: true },
       { label: 'Delete track', danger: true, fn: () => App.deleteTrack(id) },
     ], 0, 0, {trigger:ev.currentTarget, trackId:id});
-  },
-
-  trackDragStart(ev, id) {
-    if (!App.require('manage_roadmap')) { ev.preventDefault(); return; }
-    if (pendingMove) { ev.preventDefault(); return; }
-    App.dragEnd(false);
-    ev.dataTransfer.setData('text/track', id);
-    ev.dataTransfer.effectAllowed = 'move';
-    const lane = ev.target.closest('.lane');
-    drag.item = { kind: 'track', id };
-    setDragImage(ev, lane.querySelector('.lane-head'), true);
-    document.body.classList.add('is-dragging');
-    requestAnimationFrame(() => { if (drag.item?.id === id) lane.classList.add('dragging'); });
-  },
-  laneOver(ev) {
-    if (!canRoadmap() || drag.item?.kind !== 'track') return;
-    if (!ev.dataTransfer.types.includes('text/track')) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = 'move';
-    const lane = ev.currentTarget;
-    const r = lane.getBoundingClientRect();
-    drag.laneBefore = ev.clientY < r.top + r.height / 2;
-    const ind = makeDropIndicator(true);
-    ind.style.top = (lane.offsetTop + (drag.laneBefore ? -2 : lane.offsetHeight - 1)) + 'px';
-    lane.parentNode.appendChild(ind);
-  },
-  trackDrop(ev, targetId) {
-    if (!App.require('manage_roadmap')) return;
-    if (pendingMove) { ev.preventDefault(); App.dragEnd(); return; }
-    if (!ev.dataTransfer.types.includes('text/track') || drag.item?.kind !== 'track') return;
-    ev.preventDefault();
-    const id = ev.dataTransfer.getData('text/track');
-    const beforeTarget = drag.laneBefore;
-    App.dragEnd(false);
-    if (!id || id === targetId) return;
-    const list = tracks().filter(track=>track.id!==id);
-    const index = list.findIndex(track=>track.id===targetId);
-    if (index < 0) return;
-    App.moveTrack(id, index + (beforeTarget ? 0 : 1));
-  },
-  trackReorderKey(event, id) {
-    const delta = {ArrowUp:-1,ArrowDown:1}[event.key];
-    if (!delta || event.isComposing) return;
-    event.preventDefault(); App.moveTrack(id, tracks().findIndex(track=>track.id===id) + delta);
-  },
-  moveTrack(id, position) {
-    if (!App.require('manage_roadmap') || pendingMove) return;
-    const list = tracks(), index = list.findIndex(track=>track.id===id);
-    if (index < 0) return;
-    const to = Math.max(0, Math.min(list.length-1, position));
-    if (to === index) return;
-    const before = UIMotion.positions('.lane');
-    const original=[...list],originalOrders=new Map(original.map((item)=>[item,item.order]));
-    const moved = list.splice(index, 1)[0];
-    list.splice(to, 0, moved);
-    list.forEach((t, i) => { t.order = i; });
-    App.refresh();
-    focusMovedTrack(id);
-    UIMotion.layout(before, '.lane');
-    const pending={};pendingMove=pending;const revision=moved.revision,projectId=moved.projectId,session=sessionKey(D),optimisticOrders=new Map(original.map((item)=>[item,item.order]));
-    runtime().moveTrack({trackId:id,position:to,optimistic:true}).catch((error)=>{
-      const sameSession=session===sessionKey(D);
-      if(!error?.uncertain&&sameSession&&D.tracks.includes(moved)&&moved.revision===revision){for(const [item,order] of originalOrders)if(D.tracks.includes(item)&&item.order===optimisticOrders.get(item))item.order=order;if(state.view==='roadmap'&&state.projectId===projectId){const rollbackBefore=UIMotion.positions('.lane');App.refresh();UIMotion.layout(rollbackBefore,'.lane');}}
-      report(error);
-    }).finally(()=>{if(pendingMove===pending)pendingMove=null;});
   },
 });
