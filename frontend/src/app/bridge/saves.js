@@ -112,8 +112,9 @@ export function createSaves(ctx) {
     }finally{queue.active=false;queue.running=null;if(records.get(key)===queue&&!queue.jobs.size)records.delete(key);}
   }
 
-  // A draft lives in this tab only, so leaving oneloop before it saves loses it.
-  recovery.trackUnsaved(()=>{pruneDrafts();return drafts.size>0;});
+  // A draft lives in this tab only, so leaving oneloop before it saves loses
+  // it, and so does signing out in this tab, checklist titles included.
+  recovery.trackUnsaved(()=>{pruneDrafts();return drafts.size>0;},()=>drafts.clear());
 
   async function execute(operation, payload, entity, message, options = {}) {
     const record=options.create?null:recordOf(operation,payload);

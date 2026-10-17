@@ -60,7 +60,11 @@ browser journeys live in [`../e2e/journeys/`](../e2e/README.md).
   recovery controller looks for changed fields in open editors. Mark a field
   that saves itself when it loses focus with `data-autosave`, so it counts only
   while it is being typed. One whose save was refused gets `data-unsaved` and
-  counts until it saves.
+  counts until it saves. Text kept outside open editors, such as a task
+  field's draft, counts through `recovery.trackUnsaved(check, forget)`:
+  `forget` drops it when its person signs out in that tab. A sign-out in
+  another tab keeps it for their next sign-in, as a session that ends by
+  itself does.
 - **Cmd/Ctrl+S.** `src/app/save-shortcut.js` saves a `data-autosave` field
   through its blur action and keeps focus there. Mark a dialog's form or an
   editor with `data-save-shortcut` so the key presses its `.btn.primary`, and

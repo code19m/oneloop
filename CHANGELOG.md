@@ -32,6 +32,15 @@ All notable changes to oneloop are recorded here. The format follows
   session that ends by itself still keeps each tab's address. A tab that still
   shows you after someone else signed in elsewhere signs out too, and leaves
   their session alone.
+- **Sign out** now drops what you typed in its tab and didn't save, as its
+  question says, such as a task's title or description, a checklist item's
+  title, a comment or a Pool item. Before, it came back when you signed in
+  again there. Your other open tabs keep what you typed in them for your next
+  sign-in there, as when a session ends by itself: it comes back when you open
+  its page again. Only text in an open dialog goes with the dialog.
+- A Pool item still on its way when your session ended by itself was lost. It
+  now comes back in the Pool's field after you sign in again, as a comment
+  does.
 - **Confirm your identity** now closes when the session ends while it asks,
   as when you sign out in another tab, so the sign-in page can be used at
   once instead of after **Cancel**.

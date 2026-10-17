@@ -140,15 +140,18 @@ function browser(count){
 
 /**
  * A tab in `window` that started while `person` was signed in, or no one.
- * `cleared` counts the addresses its views cleared, and `signedOut` whether
- * its last session change was a sign-out on purpose.
+ * `cleared` counts the addresses its views cleared, `signedOut` whether its
+ * last session change was a sign-out on purpose, and `here` whether in this
+ * tab. `kept` names whose typed text it kept, while their data was still in
+ * place, as another tab signed them out.
  */
 async function tabOf(window,person,{api={},loadBootstrap=async()=>({stale:false})}={}){
-  const tab={data:authData(),cleared:0,signedOut:false,changes:[]};
+  const tab={data:authData(),cleared:0,signedOut:false,here:false,kept:[],changes:[]};
   tab.auth=createAuthController({
     api:{me:async()=>{if(!person)throw new ApiError('Sign in',{status:401});return authAs(person);},logout:async()=>{},...api},
     data:tab.data,refresh:()=>{},getApp:()=>({clearAddress(){tab.cleared++;}}),loadBootstrap,reportError:()=>{},windowObject:window,
-    onSessionChange:(session,change)=>{tab.signedOut=!!change?.signedOut;if(!session)tab.changes.push(tab.signedOut?'signed out':'session ended');},
+    keepTyped:()=>{tab.kept.push(tab.data.session?.userId??null);},
+    onSessionChange:(session,change)=>{tab.signedOut=!!change?.signedOut;tab.here=!!change?.here;if(!session)tab.changes.push(!tab.signedOut?'session ended':tab.here?'signed out here':'signed out in another tab');},
   });
   await tab.auth.initialize();
   return tab;
@@ -159,6 +162,8 @@ test('Sign out, and Use another account after a failed load, sign out the browse
   const [here,there]=browser(2),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1');
   await signingOut.auth.logout();await settle();
   assert.equal(other.data.session,null,'Sign out');assert.equal(other.cleared,1);assert.equal(other.signedOut,true);
+  assert.equal(signingOut.here,true,'the tab that signs out forgets what was typed in it');
+  assert.equal(other.here,false);assert.deepEqual(other.kept,['u1'],'the other tab keeps what was typed for its person');
   // The same person signed in again in a tab of theirs, whose workspace then didn't load.
   const [again,elsewhere]=browser(2),shown=await tabOf(elsewhere,'u1');
   const retrying=await tabOf(again,null,{api:{login:async()=>authAs('u1')},loadBootstrap:async()=>{throw new Error('offline');}});
@@ -175,7 +180,7 @@ test('a sign-out on purpose wins over a request that met the end of its session 
   // The server ended the session; a read in each tab met that before the sign-out's answer came.
   other.auth.expire();signingOut.auth.expire();
   answer.resolve();await leaving;await settle();
-  for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);}
+  for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);assert.equal(tab.here,name==='here',name);}
 });
 
 test('a tab whose session ends while its person signs out in another tab goes straight to the sign-in page',async(t)=>{
@@ -185,6 +190,7 @@ test('a tab whose session ends while its person signs out in another tab goes st
   // The server ended the session, and a read in the other tab met that before the sign-out's answer came.
   other.auth.expire();
   assert.equal(other.signedOut,true,'it says nothing about a session that ended by itself');assert.equal(other.cleared,1);
+  assert.equal(other.here,false,'and keeps what was typed for its person');
   answer.resolve();await leaving;await settle();
   assert.equal(other.cleared,1,'it signs out once');
 });
@@ -197,7 +203,7 @@ test('a sign-out note that a closed tab left still reaches the other tabs at the
   const answer=deferred(),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1',{api:{logout:()=>answer.promise}});
   const leaving=signingOut.auth.logout();await settle();
   other.auth.expire();
-  assert.deepEqual(other.changes,['signed out'],'it goes straight to the sign-in page');
+  assert.deepEqual(other.changes,['signed out in another tab'],'it goes straight to the sign-in page');
   answer.resolve();await leaving;await settle();
 });
 
@@ -207,7 +213,7 @@ test('the other tabs hear of a sign-out before its note goes, so none meets the 
   // A request of the other tab meets the ended session just as the note goes, as the app's response observer does.
   there.addEventListener('storage',(event)=>{if(event.key==='oneloop.signingOut'&&event.newValue===null&&other.data.session)other.auth.expire();});
   await signingOut.auth.logout();await settle();
-  assert.deepEqual(other.changes,['signed out']);
+  assert.deepEqual(other.changes,['signed out in another tab']);
 });
 
 test('a sign-out that doesn\'t reach the server, or whose tab went away, leaves a session that ends later to end by itself',async(t)=>{
@@ -249,7 +255,7 @@ test('a sign-out the server refuses, as the cookie now belongs to someone who si
   const stale=await tabOf(here,'u1',{api:{logout:async()=>{requests++;stale.auth.expire();throw new ApiError('Authentication is required',{status:401,code:'unauthorized'});}}});
   await stale.auth.logout();await settle();
   assert.equal(requests,1,'nothing asks again for the other person\'s session');
-  assert.equal(stale.cleared,1);assert.equal(stale.signedOut,true);
+  assert.equal(stale.cleared,1);assert.equal(stale.signedOut,true);assert.equal(stale.here,true);
   assert.equal(other.cleared,1,'the person\'s other tabs sign out too');
   const offline=await tabOf(here,'u2',{api:{logout:async()=>{throw new ApiError('Unable to reach oneloop',{code:'network_error'});}}});
   await assert.rejects(offline.auth.logout(),(error)=>error.code==='network_error');

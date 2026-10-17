@@ -29,6 +29,17 @@ function fixture(overrides={}){
   return {controller,data,app,window,document,get expires(){return expires;},get reloads(){return reloads;}};
 }
 
+test('what a tracked source keeps is forgotten only in the tab where its person signs out',()=>{
+  const state=fixture();let kept=true;
+  state.controller.trackUnsaved(()=>kept,()=>{kept=false;});
+  state.data.session=null;state.controller.sessionChanged(null);
+  assert.equal(state.controller.keepsInput,true,'a session that ends by itself keeps it for the person\'s next sign-in');
+  state.controller.sessionChanged(null,{signedOut:true});
+  assert.equal(state.controller.keepsInput,true,'so does a sign-out in another tab');
+  state.controller.sessionChanged(null,{signedOut:true,here:true});
+  assert.equal(kept,false);assert.equal(state.controller.keepsInput,false);
+});
+
 test('recognizes revision conflicts by their code, not their wording',()=>{
   const {controller}=fixture();
   assert.equal(controller.isRevisionConflict(new ApiError('record changed since revision 1; latest revision is 2',{status:409,code:'revision_conflict'})),true);

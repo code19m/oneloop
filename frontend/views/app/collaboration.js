@@ -256,8 +256,9 @@ let resumedComment=null;
 // A new comment or reply on its way `leaves` the box.
 const sendingComments=new Map();
 // New comments and replies that weren't saved, kept for their writer until
-// the box on their task page is empty. Each keeps its interaction, so
-// sending it again after an unknown result can't add it twice.
+// the box on their task page is empty, or until they sign out in this tab.
+// Each keeps its interaction, so sending it again after an unknown result
+// can't add it twice.
 const unsentComments=[];
 /** Whether a new comment from this person on `task` is on its way. */
 const commentsOnTheirWay=task=>[...sendingComments.values()].some(item=>item.leaves&&item.taskId===task.id&&item.userId===me()?.id);
@@ -278,7 +279,8 @@ function emptyComposer(task){
  * waits, with its interaction, until the box on its page is empty.
  */
 function returnUnsent(pending,error){
- sendingComments.delete(pending.interactionId);
+ // Its writer signed out in this tab while it was on its way, so it goes too.
+ if(!sendingComments.delete(pending.interactionId))return;
  const task=taskById(pending.taskId),host=document.querySelector('[data-comment-task]');
  if(task&&me()?.id===pending.userId&&mountedTaskId===task.id&&canComment(task)&&host?.dataset.commentTask===task.id){
   capture();
@@ -350,7 +352,7 @@ export {beforeRender as beforeCollaborationRender,blockReasonHtml,blockText,comp
 // Leaving oneloop would lose comments kept for an empty box. While no one
 // is signed in, that is any of them, and any comment still on its way when
 // the session ended, which comes back if it isn't saved.
-recovery.trackUnsaved(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);});
+recovery.trackUnsaved(()=>{const userId=me()?.id;return unsentComments.some(item=>!userId||item.userId===userId)||!userId&&[...sendingComments.values()].some(item=>item.leaves);},()=>{unsentComments.length=0;sendingComments.clear();});
 Object.assign(App,{
  prepareBlock,
  loadOlderActivity:(taskId)=>controller.moreTask(taskId),

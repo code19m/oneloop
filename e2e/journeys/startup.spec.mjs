@@ -75,6 +75,28 @@ test('Sign out signs out the other open tabs at once, and they forget their proj
   await expect(other.locator('.auth-notice')).toHaveCount(0);
 });
 
+test('Sign out keeps what was typed in the other open tabs for the same person', async ({ page, context, instance }) => {
+  const [first] = instance.projects;
+  await openApp(page, instance, `board/${first.project.id}`);
+  const other = await context.newPage();
+  await other.goto(`${instance.url}/#/task/${first.task.taskKey}`);
+  await expectSignedIn(other);
+  await other.locator('#cmtIn').fill('Typed in the other tab');
+  await page.evaluate(() => App.logout());
+  // Nothing is typed in this tab, so its question warns of nothing.
+  const question = page.locator('.confirmation-layer');
+  await expect(question).toContainText('End your current browser session.');
+  await expect(question).not.toContainText('will be lost');
+  await question.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(other.locator('input[name="username"]')).toBeVisible();
+  await expect(other.locator('.auth-notice')).toHaveCount(0);
+  await signIn(other, instance);
+  await expectSignedIn(other);
+  // The tab forgot its address, so the comment waits until its task opens again.
+  await other.evaluate(key => { location.hash = `#/task/${key}`; }, first.task.taskKey);
+  await expect(other.locator('#cmtIn')).toHaveValue('Typed in the other tab');
+});
+
 test('a hidden tab ends its session when someone else signs in from another tab, and keeps what was typed for its person', async ({ page, context, instance, allowedConsoleErrors }) => {
   allowedConsoleErrors.push(/status of 401/);
   // A background tab tells the page only through document.visibilityState.

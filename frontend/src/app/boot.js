@@ -73,6 +73,7 @@ const auth = createAuthController({
   reportError,
   getApp: () => app,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
+  keepTyped:()=>recovery?.keepTyped(),
   onSessionChange:(session,change)=>{
     signInLoad.sessionChanged();
     runtimeHooks?.publish({type:'auth',session});
