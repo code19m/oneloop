@@ -178,8 +178,10 @@ const clickAction = el => el.hasAttribute('data-action') ? `${el.getAttribute('d
 export function rememberOpener(element) {
   const el = element?.closest?.('button,a[href],[role="button"],input,textarea') || element;
   if (!el || el === document.body) return null;
-  return { element:el, id:el.id, action:clickAction(el), label:el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
-    epic:el.dataset.epic, milestone:el.dataset.milestone, text:el.textContent.trim(),
+  // A Roadmap grip is found by its track, as two tracks may share a name, which a rename also changes.
+  const track = el.matches('.lane[data-track] .grip') ? el.closest('.lane[data-track]').dataset.track : undefined;
+  return { element:el, id:el.id, action:clickAction(el), label:track ? null : el.getAttribute('aria-label'), name:el.getAttribute('name'), tag:el.tagName,
+    epic:el.dataset.epic, milestone:el.dataset.milestone, track, text:el.textContent.trim(),
     selection: typeof el.selectionStart === 'number' ? [el.selectionStart,el.selectionEnd,el.selectionDirection] : null,
     scope:el.closest('.topbar') ? '.topbar' : el.closest('.sidebar') ? '.sidebar' : el.closest('.peek') ? '.peek' : el.closest('.modal') ? '.modal' : '#app' };
 }
@@ -190,6 +192,7 @@ export function restoreOpener(record) {
   if (!target && record?.id) target = document.getElementById(record.id);
   if (!target && record?.epic) target = [...app.querySelectorAll('[data-epic]')].find(el => el.dataset.epic === record.epic);
   if (!target && record?.milestone) target = [...app.querySelectorAll('[data-milestone]')].find(el => el.dataset.milestone === record.milestone);
+  if (!target && record?.track) target = [...app.querySelectorAll('.lane[data-track]')].find(el => el.dataset.track === record.track)?.querySelector('.grip');
   // A scrim and a close button can share an action; prefer the same kind of control in the same place.
   if (!target && record?.action) target = [...app.querySelectorAll(`${record.scope} [data-action]`), ...app.querySelectorAll('[data-action]')].find(el => el.tagName === record.tag && clickAction(el) === record.action);
   if (!target && record?.label) target = [...app.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === record.label);

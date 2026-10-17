@@ -162,6 +162,11 @@ test('Roadmap refreshes keep focus on the focused epic, milestone, grip or track
     t.d.querySelector(selector).focus();t.A.refreshRoadmap();
     assert(t.d.activeElement.matches(selector),selector);
   }
+  // Two tracks share a name, and the focused one is then renamed elsewhere: its own grip keeps focus.
+  const track=id=>t.D.tracks.find(item=>item.id===id),grip='.lane[data-track="t4"] .grip';
+  track('t4').name=track('t2').name;t.A.refreshRoadmap();
+  t.d.querySelector(grip).focus();t.A.refreshRoadmap();assert(t.d.activeElement.matches(grip),'a shared name');
+  track('t4').name='Renamed elsewhere';t.A.refreshRoadmap();assert(t.d.activeElement.matches(grip),'a rename');
 });
 
 test('the task feed shows load states, refreshes in place and ignores unmounted or stale callbacks', () => {
