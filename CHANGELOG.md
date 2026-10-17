@@ -51,7 +51,8 @@ All notable changes to oneloop are recorded here. The format follows
   other controls when the task's files are drawn again, such as after a move
   or a change made elsewhere. When the file is deleted, focus goes to the same
   control of the file in its place, and when an upload ends or is dismissed,
-  to the drop area.
+  to the drop area. When an upload fails, focus on its **Cancel** goes to its
+  **Retry**, and back to **Cancel** when you retry.
 - Esc or Ctrl+Enter (Cmd+Enter on macOS) in an empty description now keeps
   focus on its field, instead of losing it to the page.
 - A click on a task's description now puts the cursor where you clicked, and

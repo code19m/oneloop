@@ -501,6 +501,20 @@ test('focus stays on a file\'s control when the server answers a move, and goes 
   assert.equal(t.d.activeElement, t.d.querySelector('[data-attachment-id="hello"] .file-remove'));
 });
 
+test('a control that an upload\'s new state hides gives its focus to the row\'s next one: Cancel to Retry, and Retry to Cancel', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  const control = action => t.d.querySelector(`[data-upload-action="${action}"]`);
+  t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+  await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment' && !call.settled), 'the upload was sent');
+  control('cancel').focus();
+  t.calls.filter(call => call.method === 'uploadAttachment').at(-1).reject(new ApiError('The server is busy', { status: 503, code: 'unavailable' }));
+  await waitFor(() => control('cancel').hidden, 'the upload fails');
+  assert.equal(t.d.activeElement, control('retry'), 'Cancel of an upload that failed');
+  control('retry').click();
+  await waitFor(() => !control('cancel').hidden, 'the upload starts again');
+  assert.equal(t.d.activeElement, control('cancel'), 'Retry of an upload that starts again');
+});
+
 test('when an upload ends or is dismissed, focus on its controls goes to the drop area', async () => {
   const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
   const send = async () => {
