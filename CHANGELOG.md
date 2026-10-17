@@ -58,7 +58,8 @@ All notable changes to oneloop are recorded here. The format follows
   name: on a phone they sit above the name, and on a wider screen the name
   keeps clear of them. A name shows two lines at most and then ends with an
   ellipsis; its tip shows all of it, on hover or, from its grip or **⋮**, on
-  keyboard focus. A lane grows when its name and note need the room.
+  keyboard focus. A lane grows to fit a two-line name and the epic count
+  under it.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,
