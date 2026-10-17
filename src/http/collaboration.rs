@@ -189,7 +189,7 @@ async fn events(
                 .event("reconcile")
                 .data(r#"{"kind":"reconcile"}"#),
             LiveEvent::Hint(hint) => {
-                let data = json!({
+                let mut data = json!({
                     "kind":hint.kind,
                     "projectId":hint.project_id,
                     "taskId":hint.task_id,
@@ -197,8 +197,10 @@ async fn events(
                     "entityId":hint.entity_id,
                     "entityRevision":hint.entity_revision,
                     "notificationId":hint.notification_id,
-                    "respaced":hint.respaced,
                 });
+                if hint.respaced {
+                    data["respaced"] = json!(true);
+                }
                 Event::default()
                     .id(hint.id.clone())
                     .event("hint")

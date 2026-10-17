@@ -211,6 +211,54 @@ async fn event_streams_announce_readiness_reconcile_stale_cursors_and_end_on_shu
 }
 
 #[tokio::test]
+async fn a_hint_says_that_its_change_re_spaced_a_column_only_when_it_did() {
+    let (_root, db, alice, app, runtime) = app().await;
+    let mut body = events(&app, "/api/events").await.into_body();
+    frame(&mut body).await;
+    let actor = alice.clone();
+    db.transaction(move |tx| {
+        for (revision, metadata) in [(2, json!({"respaced":true})), (3, json!({}))] {
+            record_activity_tx(
+                tx,
+                &actor,
+                ActivityInput {
+                    project_id: Some("p1"),
+                    entity_type: "task",
+                    entity_id: "task",
+                    task_id: Some("task"),
+                    event_type: "task.moved",
+                    field_key: Some("position"),
+                    before: Some(json!(0)),
+                    after: Some(json!(1)),
+                    metadata,
+                    entity_revision: Some(revision),
+                },
+                now(),
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let payloads: String = query_one(
+        &db,
+        "SELECT json_group_array(json(payload_json)) FROM (SELECT payload_json FROM outbox_messages
+         WHERE json_extract(payload_json,'$.entityId')='task' ORDER BY json_extract(payload_json,'$.entityRevision'))",
+        [],
+    )
+    .await;
+    let payloads: serde_json::Value = serde_json::from_str(&payloads).unwrap();
+    assert_eq!(payloads[0]["respaced"], json!(true));
+    assert!(payloads[1].get("respaced").is_none(), "{payloads}");
+    runtime.worker().run_once().await.unwrap();
+    let respaced = frame(&mut body).await;
+    assert!(respaced.contains(r#""respaced":true"#), "{respaced}");
+    let other = frame(&mut body).await;
+    assert!(other.contains("event: hint"), "{other}");
+    assert!(!other.contains("respaced"), "{other}");
+}
+
+#[tokio::test]
 async fn an_event_stream_names_the_person_it_is_for() {
     let (_root, _db, _alice, app, _runtime) = app().await;
     let mut body = events(&app, "/api/events").await.into_body();

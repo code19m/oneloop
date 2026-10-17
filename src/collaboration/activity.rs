@@ -129,7 +129,7 @@ fn record_activity_inner(
     project_activity_tx(tx, &projection)?;
     let private_owner = input.metadata.get("ownerUserId").and_then(Value::as_str);
     let visibility = input.metadata.get("visibility").and_then(Value::as_str);
-    let payload = json!({
+    let mut payload = json!({
         "activityEventId": id,
         "projectId": input.project_id,
         "taskId": input.task_id,
@@ -139,8 +139,11 @@ fn record_activity_inner(
         "actorUserId": actor_user_id,
         "visibility": visibility,
         "ownerUserId": private_owner,
-        "respaced": input.metadata.get("respaced").and_then(Value::as_bool).unwrap_or_default(),
     });
+    // Only a change that re-spaced its column says so.
+    if input.metadata.get("respaced") == Some(&Value::Bool(true)) {
+        payload["respaced"] = Value::Bool(true);
+    }
     // Live updates go to a project's audience or to the acting person. An
     // event with neither, such as a system event whose project was deleted,
     // stays in the audit trail only.
