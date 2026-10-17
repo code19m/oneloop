@@ -589,6 +589,9 @@ const releasePressedControl=()=>{clearTimeout(pressedControlTimer);pressedContro
 window.addEventListener('pointerup',releasePressedControl,true);
 window.addEventListener('pointercancel',releasePressedControl,true);
 window.addEventListener('click',releasePressedControl,true);
+// Once its click has reached every handler, the press is over, also while
+// timers wait, as under a paused test clock.
+window.addEventListener('click',()=>{clearTimeout(pressedControlTimer);releasePress();});
 // A context menu on macOS ends a press without pointerup, and a native drag in Safari ends it with only dragend.
 for(const type of ['contextmenu','dragend'])window.addEventListener(type,releasePressedControl,true);
 window.addEventListener('blur',()=>{clearTimeout(pressedControlTimer);releasePress();});
