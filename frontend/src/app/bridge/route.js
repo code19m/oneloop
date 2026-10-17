@@ -69,7 +69,8 @@ export function installRoute(ctx, account) {
         app.refreshAfterDialog();reuse=true;Object.assign(current,context());
       }
       if(current.view==='board'){if(!reuse||!reads.adoptBoard(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
-      else if(current.view==='roadmap'&&current.projectId){if(!reuse)await reads.roadmap(current.projectId,{background});}
+      // A bootstrap for another page, such as after Page not found, has no epic counts.
+      else if(current.view==='roadmap'&&current.projectId){if(!reuse||data.bootstrapView!=='roadmap')await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
           if(current.view!=='task'){recovery.clearPageError();app.openTask(task(current.taskId).id);}

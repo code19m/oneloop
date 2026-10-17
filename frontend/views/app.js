@@ -360,16 +360,17 @@ Object.assign(App, {
   followAddress,
   /**
    * Switch to a project whose data the caller loaded. The page stays, but a
-   * task page goes to the Board and Knowledge to its top folder. The switch is
-   * a new history entry.
+   * task page goes to the Board, Knowledge to its top folder, and Page not
+   * found or Access denied to the project's page of the kind the address
+   * names, else its Board. The switch is a new history entry.
    */
   selectProject(id) {
     if(!visibleProjects().some(project=>project.id===id))return;
-    const leaveTask=state.view==='task'&&state.projectId!==id;
-    switchTo(id);
-    if(leaveTask){state.view='board';state.taskId=null;}
-    if(state.view==='knowledge')knowledge.route('knowledge',id);
-    pushAddress(addressOf(state.view));render();
+    const view=pageAfterSwitch(id);
+    switchTo(id);recovery.clearPageError();state.view=view;
+    if(view!=='task')state.taskId=null;
+    if(view==='knowledge')knowledge.route('knowledge',id);
+    pushAddress(addressOf(view));render();
   },
   /** Go to page `v`, which then loads: of the project on screen, or of `projectId` as a switch to it, in the same history entry. */
   nav(v, { projectId } = {}) {
@@ -450,6 +451,12 @@ export { App };
 // ---------- routing ----------
 /** Show project `id` as someone switches to it: an unfiltered Board and the Roadmap at today. This person's new tabs in this browser open it. */
 function switchTo(id){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);}
+/** The page a switch to project `id` shows; see `selectProject`. */
+function pageAfterSwitch(id){
+  if(!['notfound','forbidden'].includes(state.view))return state.view==='task'&&state.projectId!==id?'board':state.view;
+  const {page}=readAddress(location.hash);
+  return ['board','roadmap','knowledge'].includes(page)||page==='settings'&&isAdmin()?page:'board';
+}
 /** The project to show when the address names none: the one on screen, else the loaded one, else the first. */
 const defaultProject=()=>[state.projectId,D.bootstrapProjectId].find(id=>visibleProjects().some(project=>project.id===id))??visibleProjects()[0]?.id;
 /**

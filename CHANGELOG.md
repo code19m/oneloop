@@ -14,6 +14,9 @@ All notable changes to oneloop are recorded here. The format follows
   ends by itself still keeps each tab's address.
 - Creating a project, or losing access to the one on screen, now adds one step
   to the browser's history, so **Back** returns to the page you were on.
+- Choosing another project on **Page not found** or **Access denied** now opens
+  that project's page of the same kind, such as its **Knowledge**, or else its
+  **Board**.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

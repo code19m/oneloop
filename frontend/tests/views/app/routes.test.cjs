@@ -60,3 +60,18 @@ test('creating a project, or losing the one on screen, takes one history entry, 
   await back(lost);
   assert.equal(lost.w.location.hash, '#/roadmap/p2');
 });
+
+test('switching projects from Page not found or Access denied opens that kind of page of the project, else its Board', async () => {
+  // Robin is a member of p1 only, and no admin.
+  for (const [route, address] of [['board/missing', '#/board/p1'], ['roadmap/p2', '#/roadmap/p1'], ['settings/p2', '#/board/p1'], ['task/BIR-999', '#/board/p1'], ['nonsense', '#/board/p1']]) {
+    const t = bootApp({ route, prepare: D => { D.session.userId = 'robin'; } });
+    // A task's page says Page not found once its read does.
+    if (route.startsWith('task/')) t.w.Recovery.handleRouteError(new t.w.TestApiError('Not found', { status: 404 }));
+    assert(t.d.querySelector('.page-error'), route);
+    await t.bridge.selectProject('p1');
+    assert.equal(t.w.location.hash, address, route);
+    assert.equal(t.d.querySelector('.page-error'), null, route);
+    // A Roadmap reads its epics' task counts, which a bootstrap for another page lacks.
+    assert.equal(t.reads.calls.some(([name]) => name === 'roadmap'), address.startsWith('#/roadmap'), route);
+  }
+});
