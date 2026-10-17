@@ -46,6 +46,9 @@ All notable changes to oneloop are recorded here. The format follows
   so, instead of doing nothing.
 - The grip next to a track's name now shows keyboard focus at full strength.
   Before, it was faint.
+- Opening a task of another project just as a change made elsewhere reloaded
+  the page could leave the task loading, or show **Access denied**. The
+  reload now leaves the new page alone.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,

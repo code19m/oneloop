@@ -46,6 +46,16 @@ test('a live refresh lets the task someone is opening load, then refreshes it',a
   assert.equal((await live).stale,false);
 });
 
+test('a live refresh that arrives after the person went to a task of another project leaves that page its data',async()=>{
+  const context={view:'board',projectId:'p1',board:{},hash:'#/board/p1'};const t=page(context);
+  const live=t.reload({background:true});
+  await waitFor(()=>t.calls.length===1);
+  Object.assign(context,{view:'task',taskId:'TWO-1',projectId:'p2',hash:'#/task/TWO-1'});
+  t.next('bootstrap').resolve(projection('board-of-p1',{view:'board'}));
+  assert.equal((await live).stale,true);
+  assert.equal(t.data.timeZone,'p1','the old page\'s answer replaces nothing');
+});
+
 test('a live refresh of the old project waits for a project switch and then lets it stand',async()=>{
   const context={view:'board',projectId:'p1',board:{}};const t=page(context);
   const switching=t.bootstrap.load({projectId:'p2',view:'board'}),live=t.reload({background:true,projectId:'p1',viewOnly:true,hints:[{entityType:'epic'}]});

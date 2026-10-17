@@ -123,11 +123,11 @@ export function createProjectionReload({ data, bootstrap, reads, getApp, getBrid
         }
       }
       let loaded,destinationError;
-      try { loaded=await bootstrap.load(routeScope(location.hash,app,scope)); }
+      try { loaded=await bootstrap.load({...routeScope(location.hash,app,scope),isCurrent:requestIsCurrent}); }
       catch(error) {
         if (!(error instanceof ApiError) || ![403,404].includes(error.status) || !requestIsCurrent()) throw error;
         destinationError=error;
-        loaded=await bootstrap.load({view:'board',background:!!scope.background});
+        loaded=await bootstrap.load({view:'board',background:!!scope.background,isCurrent:requestIsCurrent});
       }
       if(loaded?.stale||!app)return loaded;
       if(leaveUnavailableProject(data,app,previous,previousName)||leaveAdminPage(data,app,previous))return loaded;
