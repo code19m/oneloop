@@ -140,6 +140,19 @@ test.describe('on a phone', () => {
     // Pinch zoom, the wheel and W, M and Q still change the scale here.
     await expect(page.getByRole('group', { name: 'Timeline scale' })).toBeHidden();
   });
+
+  test('a mark scrolled under the rail stays behind it', async ({ page, instance }) => {
+    await openApp(page, instance, 'roadmap');
+    // Today's pill scrolls to the middle of the rail, where Track is.
+    const covered = await page.evaluate(() => {
+      const scroll = document.getElementById('rmScroll'), pill = document.querySelector('.today-pill'), rail = document.querySelector('.rm-axis .rail-cell');
+      const middle = box => box.left + box.width / 2;
+      scroll.scrollLeft += middle(pill.getBoundingClientRect()) - middle(rail.getBoundingClientRect());
+      const box = pill.getBoundingClientRect();
+      return rail.contains(document.elementFromPoint(middle(box), box.top + box.height / 2));
+    });
+    expect(covered).toBe(true);
+  });
 });
 
 test('a teammate renaming a task updates the open epic drawer', async ({ page, instance }) => {

@@ -374,7 +374,9 @@ select:focus-visible, input:focus-visible, textarea:focus-visible {
 .roadmap-scale button { white-space:nowrap; }
 
 .rail-cell { position: sticky; left: 0; z-index: 5; width: 208px; flex-shrink: 0; border-right: 1px solid rgb(var(--tone-rgb) / 0.12); background: var(--rail); box-shadow: none; }
-.rm-axis .rail-cell { z-index: 6; box-shadow: none; }
+/* Each row is a rail cell, then its part of the timeline. That part stacks its
+   own marks, such as the today pill, so none of them can rise above the rail. */
+.rm-axis-labels, .lane-body, .rm-month-grid { isolation: isolate; }
 
 /* Lanes far outside the view skip style, layout and paint, so a zoom step
    costs what is near the view. That makes a lane a stacking context, so it

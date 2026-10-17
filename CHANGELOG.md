@@ -35,6 +35,8 @@ All notable changes to oneloop are recorded here. The format follows
 
 ### Fixed
 
+- On the **Roadmap**, today's date no longer shows over **+ Track** when you
+  scroll past today, as on a phone.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,
