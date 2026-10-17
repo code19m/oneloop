@@ -467,17 +467,21 @@ test('closing a preview gives focus back to its file name after a live update dr
   assert.equal(t.d.activeElement, t.d.querySelector('.attachment-title'));
 });
 
-test('each control of a file, and the drop area, keeps focus when a change from elsewhere draws the files again', async () => {
+test('each control of a file, and the drop area, keeps focus when a change from elsewhere draws the files again', async context => {
   const files = [serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown')];
   // A live read waits for the page's feed and reads the activity too, so both land before the next change reads again.
   const feed = async () => ({ items: [], nextCursor: null });
   const t = await withServerFiles(files, {}, { api: { attachments: async () => ({ items: files }), comments: feed, activity: feed } });
+  context.mock.timers.enable({ apis: ['setTimeout'] });
   for (const control of ['[data-attachment-id="world"] .attachment-grip', '[data-attachment-id="world"] .attachment-thumbnail', '[data-attachment-id="world"] .attachment-title', '[data-attachment-id="world"] .retention-switch', '[data-attachment-id="world"] .file-download', '[data-attachment-id="world"] .file-remove', '.attachment-dropzone']) {
     const old = t.d.querySelector(control); old.focus();
     filesChanged(t);
-    await waitFor(() => !old.isConnected, 'the live read draws the files again');
+    // The live read waits a moment, so that changes made together read once.
+    for (let step = 0; step < 3; step++) { context.mock.timers.tick(100); await settle(); }
+    assert.equal(old.isConnected, false, `${control}: the live read draws the files again`);
     assert.equal(t.d.activeElement, t.d.querySelector(control), control);
   }
+  context.mock.timers.reset();
 });
 
 test('focus stays on a file\'s control when the server answers a move, and goes to the file in its place when it is deleted', async () => {
