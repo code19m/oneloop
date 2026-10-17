@@ -133,6 +133,21 @@ test('a touch pinch follows the fingers and ignores the gesture events iOS sends
   assert(Math.abs(width() / before - 2) < 0.005, 'lifting the fingers keeps the zoom');
 });
 
+test('a pinch zooms on touch moves that can no longer be cancelled, without trying to cancel them', async () => {
+  const { w, d } = bootApp({ route: 'roadmap' });
+  const { sc, width } = timeline(d), before = width();
+  const fingers = (x, y, spread) => [{ clientX: x - spread / 2, clientY: y }, { clientX: x + spread / 2, clientY: y }];
+  sc.dispatchEvent(new w.TouchEvent('touchstart', { touches: fingers(400, 300, 100), bubbles: true }));
+  // Chrome sends such moves in a pinch that starts while a finger drags a grip, and warns about each cancel.
+  const move = new w.TouchEvent('touchmove', { touches: fingers(400, 300, 200), bubbles: true, cancelable: false });
+  let cancelled = false;
+  move.preventDefault = () => { cancelled = true; };
+  sc.dispatchEvent(move);
+  await nextFrame(w);
+  assert(Math.abs(width() / before - 2) < 0.005, 'the zoom follows the fingers');
+  assert.equal(cancelled, false, 'no attempt to cancel the move');
+});
+
 test('Safari touchpad pinch gestures zoom the Roadmap around the pointer instead of the page', async () => {
   const { w, d } = bootApp({ route: 'roadmap' });
   const { sc, width, startX } = timeline(d), before = width();

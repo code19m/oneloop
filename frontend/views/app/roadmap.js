@@ -738,7 +738,8 @@ export function mountRoadmap() {
   const spread = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
   function movePinch(e) {
     if (gesture?.kind !== 'pinch' || e.touches.length !== 2) return;
-    e.preventDefault();
+    // A pinch that starts while a finger drags a grip gets moves the browser can no longer cancel.
+    if (e.cancelable) e.preventDefault();
     const point = center(e.touches);
     gesture.target = gesture.ppd0 * spread(e.touches) / gesture.distance;
     gesture.cx = point.x - gesture.left;
