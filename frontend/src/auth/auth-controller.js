@@ -32,9 +32,12 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   const current=(token)=>token===generation;
   /** The person the tab shows, or whose session ended by itself here. */
   const person=()=>data.session?.userId??endedFor;
+  /** Closes the Confirm your identity prompt that is open, as its session ended. */
+  let closePrompt=null;
 
   /** `signedOut`: on purpose, so nothing is kept for the person's next sign-in. */
   function clearPrivateData(signedOut=false){
+    closePrompt?.();
     pendingCompletion=null;
     for(const key of ['users','projects','tracks','epics','milestones','tasks','pool','notifications','browserSessions','appGrants'])data[key]?.splice?.(0);
     data.session=null;data.inboxUnreadCount=0;data.boardPageInfo=null;data.projectTaskCounts={};data.poolPageInfo={};data.epicPageInfo={};data.adminUsers={ids:[],nextCursor:null,loaded:false};
@@ -248,8 +251,10 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
       const dialog=openDialog({form,className:'confirmation-layer reauth-layer',inert:[document.getElementById('app')],onEscape:()=>{if(!cancel.disabled)cancel.click();}});
       let closed=false,phase='password';
       const authController=new AbortController();
-      const close=()=>{if(closed)return;closed=true;dialog.close();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
+      const close=()=>{if(closed)return;closed=true;closePrompt=null;dialog.close();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
       cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
+      // A session that ends under the prompt leaves nothing to confirm: the sign-in page takes input, and the action stops quietly.
+      closePrompt=()=>{if(phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('The session ended',{code:'stale_session'}));};
       form.addEventListener('submit',async(event)=>{
         event.preventDefault();
         if(phase!=='password'||isFormRetryPending(form))return;

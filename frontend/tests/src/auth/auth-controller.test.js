@@ -177,6 +177,21 @@ test('a sign-out on purpose wins over a request that met the end of its session 
   for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);}
 });
 
+test('a Confirm your identity prompt closes when its session ends, by itself or by a sign-out in another tab, and its action stops quietly',async(t)=>{
+  const document=page(t);
+  for(const end of ['by itself','by a sign-out in another tab']){
+    let signal;
+    const [here,there]=browser(2),signingOut=await tabOf(here,'u1');
+    const prompted=await tabOf(there,'u1',{api:{recentAuth:(_password,options)=>new Promise(()=>{signal=options.signal;})}});
+    let ran=false;const stopped=assert.rejects(prompted.auth.withRecentAuth(()=>{ran=true;}),(error)=>error.code==='stale_session');
+    const form=document.querySelector('.reauth-layer form');form.querySelector('input').value='secret';submit(form);
+    if(end==='by itself')prompted.auth.expire();else{await signingOut.auth.logout();await settle();}
+    assert.equal(document.querySelector('.reauth-layer'),null,end);assert.ok(!document.getElementById('app').inert,'the sign-in page takes input');
+    await stopped;
+    assert.equal(signal.aborted,true,'the password check is dropped');assert.equal(ran,false);
+  }
+});
+
 test('a session that ends by itself, or someone else\'s sign-out, leaves the browser\'s other tabs as they are',async(t)=>{
   page(t);
   const [here,there]=browser(2),other=await tabOf(there,'u1'),ending=await tabOf(here,'u1');

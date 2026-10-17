@@ -12,6 +12,9 @@ All notable changes to oneloop are recorded here. The format follows
   They forget their project, the Board's filters and open dialogs too, so the
   next person who signs in there starts from their own project. A session that
   ends by itself still keeps each tab's address.
+- **Confirm your identity** now closes when the session ends while it asks,
+  as when you sign out in another tab, so the sign-in page can be used at
+  once instead of after **Cancel**.
 - Creating a project, or losing access to the one on screen, now adds one step
   to the browser's history, so **Back** returns to the page you were on.
 - Choosing another project on **Page not found** or **Access denied** now opens
