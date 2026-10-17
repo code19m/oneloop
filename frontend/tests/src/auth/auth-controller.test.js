@@ -192,6 +192,20 @@ test('a Confirm your identity prompt closes when its session ends, by itself or 
   }
 });
 
+test('a sign-out the server refuses, as the cookie now belongs to someone who signed in later, still signs the tab out',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),other=await tabOf(there,'u1');let requests=0;
+  // The server keeps the later person's session; its answer ends this tab's session first, as the response observer does.
+  const stale=await tabOf(here,'u1',{api:{logout:async()=>{requests++;stale.auth.expire();throw new ApiError('Authentication is required',{status:401,code:'unauthorized'});}}});
+  await stale.auth.logout();await settle();
+  assert.equal(requests,1,'nothing asks again for the other person\'s session');
+  assert.equal(stale.cleared,1);assert.equal(stale.signedOut,true);
+  assert.equal(other.cleared,1,'the person\'s other tabs sign out too');
+  const offline=await tabOf(here,'u2',{api:{logout:async()=>{throw new ApiError('Unable to reach oneloop',{code:'network_error'});}}});
+  await assert.rejects(offline.auth.logout(),(error)=>error.code==='network_error');
+  assert.equal(offline.data.session?.userId,'u2','a sign-out that didn\'t reach the server signs nothing out');
+});
+
 test('a session that ends by itself, or someone else\'s sign-out, leaves the browser\'s other tabs as they are',async(t)=>{
   page(t);
   const [here,there]=browser(2),other=await tabOf(there,'u1'),ending=await tabOf(here,'u1');

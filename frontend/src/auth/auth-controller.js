@@ -58,6 +58,16 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     if(userId)try{windowObject.localStorage.setItem(SIGNED_OUT,userId);windowObject.localStorage.removeItem(SIGNED_OUT);}catch{}
   }
 
+  /**
+   * End this tab's session on the server. When the server refuses because the
+   * cookie now belongs to someone who signed in later, their session stays,
+   * and this tab still signs out, as its person asked.
+   */
+  async function logoutHere(){
+    try{await api.logout();}
+    catch(error){if(!(error instanceof ApiError&&error.status===401))throw error;}
+  }
+
   /** Another tab signed out this tab's person on purpose, so this tab does the same, as its own Sign out would. */
   function signedOutElsewhere(/** @type {StorageEvent} */ event){
     if(event.key!==SIGNED_OUT||!event.newValue||event.newValue!==person())return;
@@ -152,7 +162,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     otherButton.addEventListener('click',async()=>{
       retryButton.disabled=true;otherButton.disabled=true;
       const signedIn=person();
-      try{await api.logout();signOutEverywhere(signedIn);}
+      try{await logoutHere();signOutEverywhere(signedIn);}
       catch(error){retryButton.disabled=false;otherButton.disabled=false;reportError(error,section);}
     });
     section.append(heading,copy,retryButton,otherButton);form.hidden=true;card.querySelector('.session-limit-list')?.remove();card.append(section);retryButton.focus();return true;
@@ -215,7 +225,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     },
     async logout() {
       const signedIn=person(),token=begin();
-      await api.logout();
+      await logoutHere();
       if(current(token)||!data.session&&endedFor===signedIn)signOutEverywhere(signedIn);
     },
     setTemporaryPassword,

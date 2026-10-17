@@ -11,7 +11,9 @@ All notable changes to oneloop are recorded here. The format follows
 - **Sign out** now signs out your other open tabs in the browser at once.
   They forget their project, the Board's filters and open dialogs too, so the
   next person who signs in there starts from their own project. A session that
-  ends by itself still keeps each tab's address.
+  ends by itself still keeps each tab's address. A tab that still shows you
+  after someone else signed in elsewhere signs out too, and leaves their
+  session alone.
 - **Confirm your identity** now closes when the session ends while it asks,
   as when you sign out in another tab, so the sign-in page can be used at
   once instead of after **Cancel**.
