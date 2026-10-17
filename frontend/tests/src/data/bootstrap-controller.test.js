@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBootstrapController } from '../../../src/data/bootstrap-controller.js';
-import { createLegacyData } from '../../../src/data/projection-store.js';
+import { createCommandGateway } from '../../../src/data/command-gateway.js';
+import { createLegacyData, hydrateLegacyData } from '../../../src/data/projection-store.js';
 import { settle } from '../../support/helpers.cjs';
 
 const projection = (zone, userId = 'u1') => ({timeZone:zone,session:{userId},users:[],projects:[],memberships:[],tracks:[],epics:[],milestones:[],tasks:[],pool:[],notifications:[],browserSessions:[],appGrants:[]});
@@ -52,4 +53,41 @@ test('a tab where no one is signed in takes no bootstrap', async () => {
   const controller=createBootstrapController({api:{bootstrap:async()=>projection('Asia/Tashkent')},data,onForeign:(userId)=>foreign.push(userId)});
   assert.deepEqual(await controller.load(),{stale:true});
   assert.deepEqual(foreign,[]);assert.equal(data.session,null);assert.equal(data.timeZone,'UTC');
+});
+
+/** A task as the server sends it, in Planning at `position`. */
+const card = (id, position, revision = 1) => ({id,projectId:'p1',epicId:'e1',taskKey:id.toUpperCase(),title:id,description:'',status:'planning',position,createdAt:1,updatedAt:1,revision,assigneeIds:[],activeBlock:null});
+const withTasks = (tasks) => ({...projection('UTC'),tasks});
+
+test('a live bootstrap never undoes a card the tab moves, adds or deletes while it loads', async () => {
+  // What each change sends, what the server answers, and the cards the tab then shows.
+  const changes = {
+    move: {send: (gateway) => gateway.execute('task.move',{taskId:'c',status:'planning',position:0},{expectedRevision:1}), saved: [card('c',0,2)], shown: ['c','a','b'], server: [card('c',0,2),card('a',1),card('b',2)]},
+    add: {send: (gateway) => gateway.execute('task.create',{projectId:'p1',epicId:'e1',title:'d'}), saved: [card('d',0)], shown: ['a','b','c','d'], server: [card('d',0),card('a',1),card('b',2),card('c',3)]},
+    delete: {send: (gateway) => gateway.execute('task.delete',{id:'b'},{expectedRevision:1}), saved: [{id:'b',deleted:true,revision:2}], shown: ['a','c'], server: [card('a',1),card('c',3)]},
+  };
+  for (const [kind, first] of [['move','command'],['move','load'],['add','command'],['delete','command']]) {
+    const {send, saved, shown, server} = changes[kind], label = `${kind}, ${first} answers first`;
+    const requests = [], held = (name) => (...args) => new Promise((resolve) => requests.push({name,args,resolve}));
+    const api = {bootstrap: held('bootstrap'), command: held('command')};
+    const data = signedIn();hydrateLegacyData(data,withTasks([card('a',1),card('b',2),card('c',3)]));
+    const gateway = createCommandGateway({api,data}), controller = createBootstrapController({api,data,writes:gateway});
+    const loads = () => requests.filter((request) => request.name === 'bootstrap');
+    // A move shows at once, as the Board shows its own moves; the order matters only for it.
+    const cards = () => { const ids = data.tasks.map((task) => task.internalId); return kind === 'move' ? ids : ids.sort(); };
+    const live = controller.load({background:true});await settle();
+    if (kind === 'move') { const moved = data.tasks.find((task) => task.internalId === 'c'); data.tasks.splice(data.tasks.indexOf(moved),1); data.tasks.unshift(moved); moved.order = data.tasks[1].order - 1; }
+    const sent = send(gateway);await settle();
+    const command = requests.find((request) => request.name === 'command'), answer = {entities: saved.map((entity) => ({entityType:'task',...entity})), events: []};
+    // The load answers from before the change.
+    const before = withTasks([card('a',1),card('b',2),card('c',3)]);
+    if (first === 'command') { command.resolve(answer);await sent;loads()[0].resolve(before); }
+    else { loads()[0].resolve(before);await settle();assert.deepEqual(cards(),shown,`${label}: the move stays while it is saved`);command.resolve(answer);await sent; }
+    await settle();
+    assert.deepEqual(cards(),shown,`${label}: the tab's change stays`);
+    assert.equal(loads().length,2,`${label}: it loads again once the change is saved`);
+    loads()[1].resolve(withTasks(server));
+    assert.equal((await live).stale,false);
+    assert.deepEqual(cards(),shown,label);
+  }
 });

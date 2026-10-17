@@ -9,8 +9,10 @@ import { hydrateLegacyData } from './projection-store.js';
  * A bootstrap answers for whoever the browser's session cookie names, which
  * another tab can change. Only the person this tab shows gets their data in;
  * `onForeign` hears of anyone else, whose sign-in ended this tab's session.
+ * `writes`, the tab's command gateway, runs a background load again when it
+ * overlapped one of the tab's own changes, which its answer would undo.
  */
-export function createBootstrapController({ api, data, onReady = (_projection) => {}, onError = (_error) => {}, onForeign = (_userId) => {} }) {
+export function createBootstrapController({ api, data, writes = { readUnchanged: (/** @type {()=>Promise<any>} */ read, /** @type {()=>boolean} */ _current) => read() }, onReady = (_projection) => {}, onError = (_error) => {}, onForeign = (_userId) => {} }) {
   let generation = 0;
   let controller = null;
   /** @type {Promise<unknown>|null} */ let foreground = null;
@@ -22,8 +24,10 @@ export function createBootstrapController({ api, data, onReady = (_projection) =
       controller = new AbortController();
       const work = (async () => {
         try {
-          // A read that started earlier, as the first one after sign-in does.
-          const projection = await (scope.response ?? api.bootstrap({ ...scope, signal: controller.signal }));
+          const ask = () => api.bootstrap({ ...scope, signal: controller.signal });
+          // A read that started earlier, as the first one after sign-in does,
+          // or a live load, which a change this tab makes meanwhile repeats.
+          const projection = await (scope.response ?? (scope.background ? writes.readUnchanged(ask, () => current === generation) : ask()));
           if (current !== generation) return { stale: true };
           const person = projection?.session?.userId ?? projection?.session?.id;
           if (!data.session || (person && person !== data.session.userId)) {
