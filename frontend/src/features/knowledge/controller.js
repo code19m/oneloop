@@ -398,21 +398,7 @@ export function installKnowledgeController({ runtime, getApp, documentObject = d
     return {
       resolveLink: (/** @type {string} */ href) => resolveLink(href, fromPath, files(), projectId),
       resolveImage: (/** @type {string} */ src) => resolveImage(src, fromPath, files(), projectId),
-      diagramTheme,
     };
-  }
-
-  /** Mermaid draws into an isolated image, so theme tokens become opaque colors here. */
-  function tokenColor(/** @type {string} */ name, over = '--surface-canvas') {
-    const probe = documentObject.createElement('i'); probe.style.color = `var(${name})`; documentObject.body.append(probe);
-    const [r, g, b, a = 1] = (windowObject.getComputedStyle(probe).color.match(/[\d.]+/g) ?? ['0', '0', '0']).map(Number); probe.remove();
-    const base = a < 1 ? (tokenColor(over).match(/[0-9a-f]{2}/g) ?? ['00', '00', '00']).map((hex) => parseInt(hex, 16)) : [r, g, b];
-    return '#' + [r, g, b].map((channel, index) => Math.round(channel * a + base[index] * (1 - a)).toString(16).padStart(2, '0')).join('');
-  }
-
-  function diagramTheme() {
-    const raised = tokenColor('--surface-raised'), canvas = tokenColor('--surface-canvas'), border = tokenColor('--line-strong', '--surface-raised'), ink = tokenColor('--ink');
-    return { theme: 'base', themeVariables: { darkMode: documentObject.documentElement.dataset.theme === 'dark', background: canvas, primaryColor: raised, secondaryColor: raised, tertiaryColor: canvas, primaryBorderColor: border, secondaryBorderColor: border, tertiaryBorderColor: border, lineColor: tokenColor('--ink-faint'), primaryTextColor: ink, secondaryTextColor: ink, tertiaryTextColor: ink, textColor: ink, edgeLabelBackground: canvas, clusterBkg: raised, clusterBorder: border, dropShadow: 'none', useGradient: false } };
   }
 
   async function textOf(/** @type {string} */ projectId, /** @type {KnowledgeFile} */ file) {

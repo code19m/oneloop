@@ -36,6 +36,8 @@ All notable changes to oneloop are recorded here. The format follows
 - A footnote link in a description now brings its footnote into view, and the
   footnote's back link returns to the reference. Before, it scrolled only the
   description's own box, so the footnote could stay out of view.
+- Mermaid diagrams in descriptions and file previews now use the app's colors
+  in light and dark, as Knowledge already did.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

@@ -249,17 +249,20 @@ test('diagrams wait for a slow renderer download, and blame the connection when 
   await waitFor(() => host.querySelector('.markdown-diagram img'), 'the diagram is drawn');
 });
 
-test('a diagram is drawn again in the new colors when the theme changes, also with System', async () => {
+test('a diagram shows in the app\'s colors, in a description as in a file, and again in the new ones when the theme changes', async () => {
   const { w, d, views } = boot();
-  stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme}</text></svg>`, width: 10, height: 10 }; } });
+  // jsdom resolves no custom properties, so the page gives each theme's ink.
+  const ink = { light: 'rgb(17, 17, 17)', dark: 'rgb(238, 238, 238)' }, computed = w.getComputedStyle.bind(w);
+  w.getComputedStyle = element => element.style.color === 'var(--ink)' ? { color: ink[d.documentElement.dataset.theme] } : computed(element);
+  stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme} ${value.themeVariables.textColor}</text></svg>`, width: 10, height: 10 }; } });
   const host = d.createElement('div'); d.body.append(host);
   d.documentElement.dataset.theme = 'light';
-  views.markdownView(host, { name: 'diagram.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
-  const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>(\w+)<\/text>/)?.[1];
-  await waitFor(() => drawnIn() === 'default', 'the diagram shows in the light colors');
+  views.markdownInto(host, '```mermaid\nflowchart LR\n A-->B\n```', { breaks: true });
+  const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>([^<]+)<\/text>/)?.[1];
+  await waitFor(() => drawnIn() === 'base #111111', 'the diagram shows in the app\'s light colors');
   // The device turned dark while the theme follows it.
   d.documentElement.dataset.theme = 'dark';
-  await waitFor(() => drawnIn() === 'dark', 'the diagram shows in the dark colors');
+  await waitFor(() => drawnIn() === 'base #eeeeee', 'the diagram shows in the app\'s dark colors');
 });
 
 test('the renderer document returns sanitized SVG with its size', async () => {
