@@ -88,7 +88,7 @@ test('a live refresh of an account page reloads the pages already shown, passive
 test('a refresh that removes the shown project names it when leaving',async()=>{
   const context={view:'task',projectId:'p2',taskId:'TWO-1'},toasts=[];
   const data=createLegacyData();hydrateLegacyData(data,projection('p2'));
-  const app={context:()=>context,toast:(...args)=>toasts.push(args),selectProject:id=>{context.projectId=id;},nav:view=>{context.view=view;},updateDocumentTitle(){}};
+  const app={context:()=>context,toast:(...args)=>toasts.push(args),nav:(view,options)=>{context.view=view;context.projectId=options?.projectId??context.projectId;},updateDocumentTitle(){}};
   const bootstrap={idle:async()=>{},load:async()=>{hydrateLegacyData(data,{...projection('p1'),projects:[{id:'p1',name:'One',taskPrefix:'ONE',revision:1}]});return {stale:false};}};
   const reload=createProjectionReload({data,bootstrap,reads:{idle:async()=>{}},getApp:()=>app,getBridge:()=>null,getRecovery:()=>({refreshSucceeded(){}}),location:{hash:'#/task/TWO-1'}});
   await reload({background:true});

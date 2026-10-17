@@ -361,18 +361,21 @@ Object.assign(App, {
   /**
    * Switch to a project whose data the caller loaded. The page stays, but a
    * task page goes to the Board and Knowledge to its top folder. The switch is
-   * a new history entry, and this person's new tabs in this browser open the
-   * project.
+   * a new history entry.
    */
   selectProject(id) {
     if(!visibleProjects().some(project=>project.id===id))return;
     const leaveTask=state.view==='task'&&state.projectId!==id;
-    state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);
+    switchTo(id);
     if(leaveTask){state.view='board';state.taskId=null;}
     if(state.view==='knowledge')knowledge.route('knowledge',id);
     pushAddress(addressOf(state.view));render();
   },
-  nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash(addressOf(v)); render(); },
+  /** Go to page `v`, which then loads: of the project on screen, or of `projectId` as a switch to it, in the same history entry. */
+  nav(v, { projectId } = {}) {
+    if (projectId && visibleProjects().some(project => project.id === projectId)) switchTo(projectId);
+    recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash(addressOf(v)); render();
+  },
   require(permission) {
     if (hasPermission(permission)) return true;
     App.toast(`${permission === 'manage_roadmap' ? 'Roadmap' : 'Board'}: read only`, 'info');
@@ -445,6 +448,8 @@ window.App = App;
 export { App };
 
 // ---------- routing ----------
+/** Show project `id` as someone switches to it: an unfiltered Board and the Roadmap at today. This person's new tabs in this browser open it. */
+function switchTo(id){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);}
 /** The project to show when the address names none: the one on screen, else the loaded one, else the first. */
 const defaultProject=()=>[state.projectId,D.bootstrapProjectId].find(id=>visibleProjects().some(project=>project.id===id))??visibleProjects()[0]?.id;
 /**

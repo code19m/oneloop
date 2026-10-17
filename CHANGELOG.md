@@ -12,6 +12,8 @@ All notable changes to oneloop are recorded here. The format follows
   They forget their project, the Board's filters and open dialogs too, so the
   next person who signs in there starts from their own project. A session that
   ends by itself still keeps each tab's address.
+- Creating a project, or losing access to the one on screen, now adds one step
+  to the browser's history, so **Back** returns to the page you were on.
 
 ## [0.1.0-rc.6] - 2026-10-17
 

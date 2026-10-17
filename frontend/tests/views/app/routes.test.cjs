@@ -1,7 +1,10 @@
 // views/app.js: addresses, the projects they name, and history.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bootApp } = require('../../support/dom.cjs');
+const { bootApp, settle, waitFor } = require('../../support/dom.cjs');
+
+/** Press the browser's Back and wait for the page it goes to. */
+async function back(t) { const before = t.w.location.href; t.w.history.back(); await waitFor(() => t.w.location.href !== before, 'Back changed the page'); await settle(); }
 
 test('an address from before projects had one gets the project on screen in place', () => {
   for (const [route, address] of [['', '#/roadmap/p1'], ['board', '#/board/p1'], ['roadmap', '#/roadmap/p1'], ['settings', '#/settings/p1'], ['knowledge', '#/knowledge/p1/tree']]) {
@@ -38,4 +41,22 @@ test('after a sign-out on purpose, the address keeps only the page, so the next 
     assert.equal(t.A.context().board.search, ''); assert.equal(t.A.context().board.trackIds.length, 0);
     assert.equal(t.A.context().modal, null, 'the dialog does not open again for the next person');
   }
+});
+
+test('creating a project, or losing the one on screen, takes one history entry, so Back returns to the page before', async () => {
+  const created = bootApp({ route: 'board/p1', api: { command: async () => ({ entities: [{ entityType: 'project', id: 'p9', name: 'Atlas', taskPrefix: 'ATL', revision: 1 }], events: [] }) } });
+  created.A.openModal('project');
+  const form = created.d.querySelector('.modal form');
+  form.querySelector('[name="name"]').value = 'Atlas'; form.querySelector('[name="key"]').value = 'ATL';
+  created.A.saveProjectNew({ target: form, preventDefault() {} }); await settle();
+  assert.equal(created.w.location.hash, '#/roadmap/p9'); assert.equal(created.w.history.length, 2);
+  assert.equal(created.d.querySelector('.modal'), null);
+  await back(created);
+  assert.equal(created.w.location.hash, '#/board/p1');
+  const lost = bootApp({ route: 'roadmap/p2' });
+  lost.D.projects.splice(lost.D.projects.findIndex(project => project.id === 'p2'), 1);
+  lost.module('src/features/recovery/controller.js').leaveUnavailableProject(lost.D, lost.A, { projectId: 'p2', view: 'roadmap' }, 'oneloop');
+  assert.equal(lost.w.location.hash, '#/board/p1'); assert.equal(lost.w.history.length, 2);
+  await back(lost);
+  assert.equal(lost.w.location.hash, '#/roadmap/p2');
 });

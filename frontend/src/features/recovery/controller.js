@@ -763,15 +763,14 @@ export function leaveAdminPage(data, app, previous) {
   return true;
 }
 
-/** Leave an inaccessible project after an authoritative metadata refresh, and say why.
+/** Leave an inaccessible project for the Board of the first one after an authoritative metadata refresh, and say why.
  * @param {any} data @param {any} app @param {any} previous @param {string} [name] the project's name before the refresh
  */
 export function leaveUnavailableProject(data, app, previous, name) {
   if (!previous?.projectId || !['roadmap','board','task'].includes(previous.view)
       || data.projects.some((project) => project.id === previous.projectId)) return false;
-  if(data.projects.length)app.selectProject(data.projects[0].id);
   // Nothing typed there can be saved any more, so this never asks first.
-  app.nav('board',{discard:true});
+  app.nav('board',{discard:true,projectId:data.projects[0]?.id});
   app.toast?.(name?`You no longer have access to ${name}.`:'You no longer have access to that project.','info');
   return true;
 }

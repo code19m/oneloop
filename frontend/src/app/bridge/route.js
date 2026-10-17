@@ -24,10 +24,11 @@ export function installRoute(ctx, account) {
   // A page change someone asks for, from the sidebar, a menu or a back button.
   // One that must happen, such as leaving a project that is gone, passes
   // `discard`; one that follows the person's own change, such as deleting a
-  // task, calls `nav` directly. Neither asks.
+  // task, calls `nav` directly. Neither asks. `projectId` names the page's
+  // project when it is another one.
   app.nav=(view,options)=>{
-    if(options?.discard||!losesInput())return nav(view);
-    askToDiscard(()=>nav(view));
+    if(options?.discard||!losesInput())return nav(view,options);
+    askToDiscard(()=>nav(view,options));
   };
   document.addEventListener('click',(event)=>{
     const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element} */(event.target).closest('a[href^="#/"]'));

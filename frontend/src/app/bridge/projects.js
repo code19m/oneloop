@@ -7,13 +7,14 @@ import { text } from './commands.js';
 
 /** @param {import('../view-bridge.js').BridgeContext} ctx */
 export function installProjects(ctx) {
-  const { app, data, auth, reloadBootstrap, context, sessionScope, nav, execute, fire, formValues, fieldError, ifCurrent, report, stillAdmin, adminGone } = ctx;
+  const { app, data, auth, context, sessionScope, nav, execute, fire, formValues, fieldError, ifCurrent, report, stillAdmin, adminGone } = ctx;
 
   app.saveProjectNew=(event)=>{
     const form=event.target,values=formValues(event),name=text(values.get('name'),60),taskPrefix=text(values.get('key'),4).toUpperCase(),scope=sessionScope();if(!name)return fieldError(form,'name','The project needs a name.');if(!/^[A-Z0-9]{2,4}$/.test(taskPrefix))return fieldError(form,'key','Use 2–4 letters or digits.');
     // The new project opens only while its dialog is still the open one; a re-render keeps it open.
     const open=()=>completeForm(form,()=>{});
-    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,async()=>{if(!open()){app.refreshBackground();return;}const created=result.entities?.find((entity)=>entity.entityType==='project');if(created?.id){await reloadBootstrap({projectId:created.id});if(sessionScope()!==scope||!open())return;app.selectProject(created.id);}if(sessionScope()===scope)nav('roadmap');})));
+    // Its Roadmap then loads, as the page of an address does, in one history entry.
+    return fire(execute('project.create',{name,taskPrefix},null,'Project created',{create:true,form,paint:false}).then((result)=>ifCurrent(result,()=>{if(!open()){app.refreshBackground();return;}if(sessionScope()===scope)nav('roadmap',{projectId:result.entities?.find((entity)=>entity.entityType==='project')?.id});})));
   };
   app.updateProjectField=(input)=>{const item=data.projects.find((entry)=>entry.id===context().projectId);if(!item||!['name','key'].includes(input.name))return false;const form=input.closest('.project-fields'),field=input.name==='key'?'taskPrefix':'name',value=field==='taskPrefix'?text(input.value,4).toUpperCase():text(input.value,60);if(field==='name'&&!value)return fieldError(form,'name','The project needs a name.');if(field==='taskPrefix'&&!/^[A-Z0-9]{2,4}$/.test(value))return fieldError(form,'key','Use 2–4 letters or digits.');input.value=value;return fire(execute('project.update',{projectId:item.id,[field]:value},item,'Project updated',{form,coalesce:true}));};
   app.addMember=(userId)=>fire(execute('membership.add',{projectId:context().projectId,userId,manageRoadmap:false,manageBoard:false},null,'Member added',{create:true}).catch(report));

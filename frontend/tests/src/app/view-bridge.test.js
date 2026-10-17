@@ -749,14 +749,14 @@ test('a block saved from the task page repaints before its counts read finishes'
 test('a new project opens after a re-render of its dialog but not after the dialog closed',async()=>{
   for(const closed of [false,true]){
     document.body.replaceChildren();
-    const selected=[],navigated=[],background=[],dialog=dialogForm({name:'Atlas',key:'ATL'}),modal=dialog.closest('.modal');modal.dataset.openGeneration='7';
-    const state=fixture({view:'roadmap',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[{entityType:'project',id:'p9'}],events:[]})},app:{selectProject:id=>selected.push(id),nav:view=>navigated.push(view),refreshBackground:()=>background.push(true)}});
+    const navigated=[],background=[],dialog=dialogForm({name:'Atlas',key:'ATL'}),modal=dialog.closest('.modal');modal.dataset.openGeneration='7';
+    const state=fixture({view:'roadmap',projectId:'p1',board:{}},{gateway:{execute:async()=>({entities:[{entityType:'project',id:'p9'}],events:[]})},app:{nav:(view,options)=>navigated.push([view,options?.projectId]),refreshBackground:()=>background.push(true)}});
     state.app.saveProjectNew(submit(dialog));
     // While it saves, the dialog draws again, with its open generation, or closes.
     modal.remove();
     if(!closed)document.body.insertAdjacentHTML('beforeend','<div class="modal" data-open-generation="7"></div>');
     await settle();await settle();
-    assert.deepEqual([selected,navigated,background.length],closed?[[],[],1]:[['p9'],['roadmap'],0]);
+    assert.deepEqual([navigated,background.length],closed?[[],1]:[[['roadmap','p9']],0]);
   }
 });
 

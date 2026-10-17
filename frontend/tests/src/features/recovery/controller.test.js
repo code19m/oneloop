@@ -262,9 +262,9 @@ test('access reconciliation leaves a removed project and clears its route and ov
   for (const view of ['board','task','roadmap']) {
     for (const projects of [[],[{id:'other'}]]) {
       const calls=[],toasts=[];
-      const app={nav:(view)=>calls.push(view),selectProject:(id)=>calls.push(id),toast:(...args)=>toasts.push(args)};
+      const app={nav:(...args)=>calls.push(args),toast:(...args)=>toasts.push(args)};
       assert.equal(leaveUnavailableProject({projects},app,{projectId:'removed',view},'Customer portal'),true);
-      assert.deepEqual(calls,projects.length?['other','board']:['board']);
+      assert.deepEqual(calls,[['board',{discard:true,projectId:projects[0]?.id}]]);
       assert.deepEqual(toasts,[['You no longer have access to Customer portal.','info']],'the page says why it changed');
     }
   }
