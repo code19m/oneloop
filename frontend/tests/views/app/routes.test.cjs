@@ -29,10 +29,13 @@ test('a project switch is a history entry that keeps the page, and is remembered
 test('after a sign-out on purpose, the address keeps only the page, so the next person starts from their own project', () => {
   for (const [route, address] of [['board/p1?search=reader&track=t1', '#/board'], ['task/BIR-079', '#/board'], ['knowledge/p1/tree/guides', '#/knowledge']]) {
     const t = bootApp({ route });
+    // Another tab signed out while this one had a dialog open.
+    t.A.openModal('project');
     t.A.clearAddress();
     assert.equal(t.w.location.hash, address, route); assert.equal(t.w.history.length, 1, 'in place');
     // The next sign-in asks for no project of the person before, and the Board's search is empty.
     assert.equal(JSON.stringify(t.module('src/app/projection-reload.js').routeScope(t.w.location.hash, t.A)), JSON.stringify({ view: address === '#/board' ? 'board' : 'metadata' }), route);
     assert.equal(t.A.context().board.search, ''); assert.equal(t.A.context().board.trackIds.length, 0);
+    assert.equal(t.A.context().modal, null, 'the dialog does not open again for the next person');
   }
 });

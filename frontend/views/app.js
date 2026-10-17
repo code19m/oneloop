@@ -335,14 +335,14 @@ Object.assign(App, {
   updateDocumentTitle,
   replaceAddress,
   /**
-   * Forget the project, page and Board filters the tab showed, with its
-   * address, as its person signed out on purpose: the next person to sign in
-   * here starts from their own project. A session that ends by itself keeps
+   * Forget the project, page, Board filters and dialogs the tab showed, with
+   * its address, as its person signed out on purpose: the next person to sign
+   * in here starts from their own project. A session that ends by itself keeps
    * them, for the same person to come back to.
    */
   clearAddress() {
     const {page}=readAddress(location.hash);
-    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;resetBoardFilters();
+    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;state.modal=null;state.peek=null;state.menu=null;resetBoardFilters();
     // A task names its project too, so it gives way to the Board, as does an address that can't be read.
     state.view=['task','notfound'].includes(page)?'board':page;
     replaceAddress();

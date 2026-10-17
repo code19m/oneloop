@@ -734,7 +734,13 @@ export function createRecoveryController({
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility and the connection. */
     start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    /**
+     * Someone signed in, or the session ended. A person who signed out on
+     * purpose (`signedOut`) gets nothing kept for their next sign-in, and the
+     * sign-in page doesn't say their session ended.
+     * @param {any} session @param {{signedOut?:boolean}} [change]
+     */
+    sessionChanged(session,{signedOut=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){resume=null;expired=false;}}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);

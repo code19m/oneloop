@@ -72,10 +72,10 @@ const auth = createAuthController({
   reportError,
   getApp: () => app,
   invalidate:()=>{bootstrap.cancel();reads.cancel();gateway.invalidate();},
-  onSessionChange:(session)=>{
+  onSessionChange:(session,change)=>{
     signInLoad.sessionChanged();
     runtimeHooks?.publish({type:'auth',session});
-    recovery?.sessionChanged(session);
+    recovery?.sessionChanged(session,change);
     if(session&&!session.temporary&&pendingAuthorization){const target=pendingAuthorization;pendingAuthorization=null;location.replace(target);return;}
     if(session&&!session.temporary)app?.resolveRoute();
     if(session)queueMicrotask(()=>routeLoader({reuseBootstrap:true}));

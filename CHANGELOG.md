@@ -6,6 +6,13 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sign out** now signs out your other open tabs in the browser at once.
+  They forget their project, the Board's filters and open dialogs too, so the
+  next person who signs in there starts from their own project. A session that
+  ends by itself still keeps each tab's address.
+
 ## [0.1.0-rc.6] - 2026-10-17
 
 The sixth release candidate. It adds task checklists, shows descriptions as

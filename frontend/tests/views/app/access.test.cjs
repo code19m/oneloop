@@ -287,6 +287,19 @@ test('a kept comment that waits for its task goes when its writer signs out', ()
  assert.equal(t.d.getElementById('cmtIn').value, '', 'someone else never sees it');
 });
 
+test('a sign-out on purpose after the session ended keeps nothing for the next sign-in and says nothing ended', () => {
+ const t = bootApp({ route: 'profile' });
+ const name = t.d.querySelector('.settings [name="name"]'), saved = name.value;
+ name.focus(); name.value = 'Typed as the session ended';
+ const session = endSession(t);
+ // The same person signs out on purpose in another tab, as the auth controller then does here.
+ t.D.session = null; t.w.Recovery.sessionChanged(null, { signedOut: true }); t.A.clearAddress(); t.A.refresh();
+ assert.equal(t.d.querySelector('.auth-notice'), null);
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, { ...session, id: 'next-session' });
+ assert.equal(t.d.querySelector('.settings [name="name"]').value, saved);
+});
+
 test('the sign-in page still focuses Username when nothing typed is waiting', () => {
  const t = bootApp({ route: 'board' });
  endSession(t);

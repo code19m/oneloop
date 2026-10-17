@@ -17,9 +17,10 @@ The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
 names the project, so a refresh, a bookmark or a link opens the same project.
 An address without a project, such as an older bookmark, opens the project you
 last switched to in this browser, or else your first project. A link to a
-project you can't open shows **Page not found**. When you sign out, the tab's
-address drops the project and the Board's filters, so the next person who signs
-in there starts from their own project.
+project you can't open shows **Page not found**. When you sign out, your open
+tabs in that browser show the sign-in page, and their addresses drop the
+project and the Board's filters, so the next person who signs in there starts
+from their own project.
 
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
@@ -303,9 +304,9 @@ Sessions end by themselves after a while; see
 
 If your session ends while you type, sign in again in the same tab and your
 text comes back. The tab keeps it only in memory, and drops it if someone else
-signs in there. Tabs of one browser share a session, so when you sign out and
-someone else signs in, your other open tabs show that your session ended
-instead of their work.
+signs in there. Tabs of one browser share a session: when you sign out, your
+other open tabs sign out too, and when someone else signs in, your open tabs
+show that your session ended instead of their work.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

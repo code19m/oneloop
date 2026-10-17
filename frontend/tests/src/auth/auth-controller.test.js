@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test, {mock} from 'node:test';
 import {createRequire} from 'node:module';
 import {createAuthController} from '../../../src/auth/auth-controller.js';
-import {useGlobals,settle,waitFor} from '../../support/helpers.cjs';
+import {useGlobals,settle,waitFor,deferred} from '../../support/helpers.cjs';
 
 const {JSDOM}=createRequire(import.meta.url)('../../support/dom.cjs');
 
@@ -117,6 +117,75 @@ test('Sign out, and Use another account after a failed load, clear the tab\'s ad
   assert.equal(cleared,1,'a session that ends by itself keeps the address');
   data.session={id:'s3',userId:'u1'};await auth.logout();
   assert.equal(cleared,2,'Sign out');
+});
+
+/** What the server answers for `person`'s session. */
+const authAs=(person)=>({sessionId:`s-${person}`,authenticatedAt:1,user:{id:person,username:person,displayName:person,isAdmin:false},mustChangePassword:false});
+
+/**
+ * The windows of `count` tabs of one browser. A change of local storage in one
+ * fires a storage event in the others, as browsers do and jsdom doesn't.
+ */
+function browser(count){
+  const windows=Array.from({length:count},()=>new JSDOM('',{url:'http://localhost/'}).window);
+  for(const from of windows){
+    const {setItem,removeItem}=from.Storage.prototype,others=windows.filter((window)=>window!==from);
+    const tell=(key,newValue)=>queueMicrotask(()=>{for(const to of others)to.dispatchEvent(new to.StorageEvent('storage',{key,newValue}));});
+    from.Storage.prototype.setItem=function(key,value){setItem.call(this,key,value);tell(key,String(value));};
+    from.Storage.prototype.removeItem=function(key){removeItem.call(this,key);tell(key,null);};
+  }
+  return windows;
+}
+
+/**
+ * A tab in `window` that started while `person` was signed in, or no one.
+ * `cleared` counts the addresses its views cleared, and `signedOut` whether
+ * its last session change was a sign-out on purpose.
+ */
+async function tabOf(window,person,{api={},loadBootstrap=async()=>({stale:false})}={}){
+  const tab={data:authData(),cleared:0,signedOut:false};
+  tab.auth=createAuthController({
+    api:{me:async()=>{if(!person)throw new ApiError('Sign in',{status:401});return authAs(person);},logout:async()=>{},...api},
+    data:tab.data,refresh:()=>{},getApp:()=>({clearAddress(){tab.cleared++;}}),loadBootstrap,reportError:()=>{},windowObject:window,
+    onSessionChange:(_session,change)=>{tab.signedOut=!!change?.signedOut;},
+  });
+  await tab.auth.initialize();
+  return tab;
+}
+
+test('Sign out, and Use another account after a failed load, sign out the browser\'s other tabs that show the person and clear their addresses',async(t)=>{
+  const document=page(t);
+  const [here,there]=browser(2),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1');
+  await signingOut.auth.logout();await settle();
+  assert.equal(other.data.session,null,'Sign out');assert.equal(other.cleared,1);assert.equal(other.signedOut,true);
+  // The same person signed in again in a tab of theirs, whose workspace then didn't load.
+  const [again,elsewhere]=browser(2),shown=await tabOf(elsewhere,'u1');
+  const retrying=await tabOf(again,null,{api:{login:async()=>authAs('u1')},loadBootstrap:async()=>{throw new Error('offline');}});
+  const {card,form}=authForm(document);
+  await retrying.auth.login({username:'u1',password:'secret'},form);
+  button(card,'Use another account').click();await settle();
+  assert.equal(shown.data.session,null,'Use another account');assert.equal(shown.cleared,1);
+});
+
+test('a sign-out on purpose wins over a request that met the end of its session first, here and in the other tabs',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),answer=deferred(),other=await tabOf(there,'u1'),signingOut=await tabOf(here,'u1',{api:{logout:()=>answer.promise}});
+  const leaving=signingOut.auth.logout();
+  // The server ended the session; a read in each tab met that before the sign-out's answer came.
+  other.auth.expire();signingOut.auth.expire();
+  answer.resolve();await leaving;await settle();
+  for(const [name,tab] of [['here',signingOut],['there',other]]){assert.equal(tab.cleared,1,name);assert.equal(tab.signedOut,true,name);}
+});
+
+test('a session that ends by itself, or someone else\'s sign-out, leaves the browser\'s other tabs as they are',async(t)=>{
+  page(t);
+  const [here,there]=browser(2),other=await tabOf(there,'u1'),ending=await tabOf(here,'u1');
+  ending.auth.expire();await settle();
+  assert.equal(other.data.session?.userId,'u1');assert.equal(ending.signedOut,false);
+  // A tab still shows the person before someone else signed in and out.
+  const [newer,older]=browser(2),stale=await tabOf(older,'u1'),someoneElse=await tabOf(newer,'u2');
+  await someoneElse.auth.logout();await settle();
+  assert.equal(stale.data.session?.userId,'u1');assert.equal(stale.cleared,0);
 });
 
 test('temporary-password completion retries only bootstrap after the password changed',async(t)=>{
