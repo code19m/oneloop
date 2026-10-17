@@ -237,7 +237,8 @@ export function createRecoveryController({
   /** @type {Set<()=>void>} */ const onlineListeners=new Set();
   // What each autosaved field last saved: when it lost focus, or when a key such as Enter saved it.
   /** @type {WeakMap<Element,string>} */ const committed=new WeakMap();
-  /** @type {Set<()=>boolean>} */ const unsavedChecks=new Set();
+  // What tracked sources keep that isn't saved, by the check that says so, with how to forget it.
+  /** @type {Map<()=>boolean,(()=>void)|undefined>} */ const unsavedChecks=new Map();
   let writes=0;
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
   // A page that is leaving (pagehide), by Reload now or the browser, hides on its way out: no moment to reload by itself.
@@ -306,7 +307,7 @@ export function createRecoveryController({
     // A comment being sent is on its way; it counts again if the send fails.
     const comment=getApp()?.commentDraft();
     if(comment&&!comment.sending)return true;
-    return leaving&&(!!resume||writes>0||gateway.hasPending()||[...unsavedChecks].some((check)=>check()));
+    return leaving&&(!!resume||writes>0||gateway.hasPending()||[...unsavedChecks.keys()].some((check)=>check()));
   }
 
   function warnBeforeUnload(event){
@@ -696,7 +697,7 @@ export function createRecoveryController({
      * held when the session ended, or, while no one is signed in, anything
      * else kept for them, such as a draft or a comment that wasn't saved.
      */
-    get keepsInput(){return !!resume||!data?.session&&[...unsavedChecks].some((check)=>check());},
+    get keepsInput(){return !!resume||!data?.session&&[...unsavedChecks.keys()].some((check)=>check());},
     resumeEditing,
     requestContext,isRevisionConflict,observeResponse,handleRouteError,handleCommandFailure,resolveConflict,sessionExpired,ownsAnswer,
     errorHtml,
@@ -716,8 +717,12 @@ export function createRecoveryController({
     markSaved(element){rememberCommitted(element);},
     /** Whether one editor, such as a dialog, holds text the person typed. @param {Element} root */
     hasTypedInputIn(root){return hasTypedInput(documentObject,committed,()=>false,[root]);},
-    /** Count what `check` reports, such as drafts not saved yet, when someone leaves oneloop. */
-    trackUnsaved(check){unsavedChecks.add(check);return ()=>unsavedChecks.delete(check);},
+    /**
+     * Count what `check` reports, such as drafts not saved yet, when someone
+     * leaves oneloop. `forget` drops it when its person signs out on purpose.
+     * @param {()=>boolean} check @param {()=>void} [forget]
+     */
+    trackUnsaved(check,forget){unsavedChecks.set(check,forget);return ()=>unsavedChecks.delete(check);},
     /** Count a save or upload that is not a command until it settles. */
     trackWrite(promise){writes++;Promise.resolve(promise).catch(()=>{}).finally(()=>{writes--;});return promise;},
     /** The server runs another version than this page; `build` is that version. */
@@ -744,11 +749,12 @@ export function createRecoveryController({
     start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
     /**
      * Someone signed in, or the session ended. A person who signed out on
-     * purpose (`signedOut`) gets nothing kept for their next sign-in, and the
-     * sign-in page doesn't say their session ended.
+     * purpose (`signedOut`) gets nothing kept for their next sign-in, neither
+     * what an editor held nor what a tracked source keeps, such as drafts, and
+     * the sign-in page doesn't say their session ended.
      * @param {any} session @param {{signedOut?:boolean}} [change]
      */
-    sessionChanged(session,{signedOut=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){resume=null;expired=false;}}},
+    sessionChanged(session,{signedOut=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){resume=null;expired=false;for(const forget of unsavedChecks.values())forget?.();}}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);

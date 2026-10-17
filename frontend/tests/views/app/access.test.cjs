@@ -205,6 +205,12 @@ function endSession(t) {
  return session;
 }
 function signInAgain(t, session) { t.D.session = session; t.runtime.publish({ type: 'auth', session }); t.w.Recovery.sessionChanged(session); t.A.refresh(); }
+/** Sign out on purpose, the way the auth controller does: nothing is kept for the person's next sign-in. */
+function signOutOnPurpose(t) {
+ const session = t.D.session;
+ t.D.session = null; t.runtime.publish({ type: 'auth', session: null }); t.w.Recovery.sessionChanged(null, { signedOut: true }); t.A.clearAddress(); t.A.refresh();
+ return session;
+}
 
 test('text typed when the session ends waits for the same person to sign in again', () => {
  const t = bootApp({ route: 'task/BIR-079' });
@@ -293,11 +299,84 @@ test('a sign-out on purpose after the session ended keeps nothing for the next s
  name.focus(); name.value = 'Typed as the session ended';
  const session = endSession(t);
  // The same person signs out on purpose in another tab, as the auth controller then does here.
- t.D.session = null; t.w.Recovery.sessionChanged(null, { signedOut: true }); t.A.clearAddress(); t.A.refresh();
+ signOutOnPurpose(t);
  assert.equal(t.d.querySelector('.auth-notice'), null);
  assert.equal(t.w.Recovery.keepsInput, false);
  signInAgain(t, { ...session, id: 'next-session' });
  assert.equal(t.d.querySelector('.settings [name="name"]').value, saved);
+});
+
+const withChecklist = D => { Object.assign(D.tasks.find(task => task.id === 'BIR-079'), { checklist: [{ id: 'c1', taskId: 'bir-079', title: 'Plan', done: false, revision: 1 }], checklistDone: 0, checklistTotal: 1, checklistVersion: 0 }); };
+/** Leave a title, a checklist item's title and a comment of task BIR-079 not saved, and go to the Board. */
+async function leaveTaskUnsaved(t) {
+ t.bridge.keepTaskDraft('BIR-079', 'title', 'A title not saved');
+ t.bridge.updateChecklistItem('BIR-079', 'c1', { title: 'An item title on its way' });
+ // A comment that wasn't saved after its page closed waits for its writer.
+ t.d.getElementById('cmtIn').value = 'A comment not sent'; t.A.addComment('BIR-079'); await settle();
+ t.A.nav('board');
+ t.commands.find(command => command.operation === 'discussion.comment.create').reject(new t.w.TestApiError('Service unavailable', { status: 503, code: 'unavailable' })); await settle();
+}
+/** Leave a Pool item that could not be added: the Pool closed before it was refused, so it waits for the field. */
+async function leavePoolItemUnsent(t) {
+ t.A.openModal('pool');
+ const input = t.d.getElementById('poolAdd'); input.value = 'An idea not added';
+ t.A.poolKey({ key: 'Enter', target: input, preventDefault() {} });
+ t.A.closeOverlays();
+ t.commands.find(command => command.operation === 'pool.create').reject(new t.w.TestApiError('Service unavailable', { status: 503, code: 'unavailable' })); await settle();
+}
+
+test('task drafts, checklist titles and unsent comments wait for their person when the session ends by itself', async () => {
+ const t = bootApp({ route: 'task/BIR-079', prepare: withChecklist });
+ await leaveTaskUnsaved(t);
+ const session = endSession(t);
+ assert.equal(t.w.Recovery.keepsInput, true);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openTask('BIR-079');
+ assert.equal(t.bridge.taskDraft('bir-079', 'title')?.value, 'A title not saved');
+ assert.equal(t.bridge.checklistDraft('bir-079', 'c1')?.value, 'An item title on its way');
+ assert.equal(t.d.getElementById('cmtIn').value, 'A comment not sent');
+});
+
+test('a sign-out on purpose forgets the person\'s task drafts, checklist titles and unsent comments', async () => {
+ const t = bootApp({ route: 'task/BIR-079', prepare: withChecklist });
+ await leaveTaskUnsaved(t);
+ const session = signOutOnPurpose(t);
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openTask('BIR-079');
+ assert.equal(t.bridge.taskDraft('bir-079', 'title'), null);
+ assert.equal(t.bridge.checklistDraft('bir-079', 'c1'), null);
+ assert.equal(t.d.getElementById('cmtIn').value, '');
+});
+
+test('a comment on its way when its writer signs out on purpose is not kept for their next sign-in', async () => {
+ const t = bootApp({ route: 'task/BIR-079' });
+ t.d.getElementById('cmtIn').value = 'Sent as they signed out'; t.A.addComment('BIR-079'); await settle();
+ const session = signOutOnPurpose(t);
+ // The send then meets the ended session.
+ t.commands.find(command => command.operation === 'discussion.comment.create').reject(new t.w.TestApiError('Authentication is required', { status: 401, code: 'unauthorized' })); await settle();
+ assert.equal(t.w.Recovery.keepsInput, false);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openTask('BIR-079');
+ assert.equal(t.d.getElementById('cmtIn').value, '');
+});
+
+test('a Pool item that could not be added waits for its person when the session ends by itself', async () => {
+ const t = bootApp({ route: 'board' });
+ await leavePoolItemUnsent(t);
+ const session = endSession(t);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openModal('pool'); await settle();
+ assert.equal(t.d.getElementById('poolAdd').value, 'An idea not added');
+});
+
+test('a sign-out on purpose forgets a Pool item that could not be added', async () => {
+ const t = bootApp({ route: 'board' });
+ await leavePoolItemUnsent(t);
+ const session = signOutOnPurpose(t);
+ signInAgain(t, { ...session, id: 'next-session' });
+ t.A.openModal('pool'); await settle();
+ assert.equal(t.d.getElementById('poolAdd').value, '');
 });
 
 test('the sign-in page still focuses Username when nothing typed is waiting', () => {
