@@ -72,10 +72,11 @@ function roadmapModel() {
 
 /**
  * The parts of the layout that change at a zoom level: which row each epic
- * and goal label takes, the lane heights and the axis height. `width` and
- * `height` are the content area's size.
+ * and goal label takes, the lane heights and the axis height. `heads` are
+ * the heights the lanes' rail cells need; `width` and `height` are the
+ * content area's size.
  */
-function roadmapLayout(model, ppd, { barHeight, width, height }) {
+function roadmapLayout(model, ppd, { barHeight, heads, width, height }) {
   const x = (days) => dayX(days, ppd);
   const timeline = timelineWidth(model, ppd, width);
   // Goal labels pack independently of epic lanes, including room for Today.
@@ -103,9 +104,9 @@ function roadmapLayout(model, ppd, { barHeight, width, height }) {
     });
     return { assigned, count: Math.max(rows.length, 1) };
   });
-  // Packed minimum heights, then leftover viewport height shared evenly.
+  // Packed minimum heights, as tall as the rail cell needs, then leftover viewport height shared evenly.
   const rowsHeight = (count) => count * barHeight + (count - 1) * ROW_GAP;
-  const minHs = packed.map((lane) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88));
+  const minHs = packed.map((lane, i) => Math.max(2 * LANE_PAD + rowsHeight(lane.count), 88, heads[i]));
   const availH = height - axisHeight - MONTH_ROW - 8;
   const extra = packed.length ? Math.max((availH - minHs.reduce((a, b) => a + b, 0)) / packed.length, 0) : 0;
   const lanes = packed.map((lane, i) => {
@@ -192,15 +193,40 @@ function showMilestoneTip(anchor, id) {
 
 export let roadmapHeight=null;
 
-function measureEpicHeight() {
+/**
+ * What the rows need, measured on hidden copies in one layout: an epic bar's
+ * height, and each lane's rail cell height, `heads`, as its name and epic
+ * count wrap. The copies have no row line: in a lane, the line takes a pixel
+ * of the cell's padding, so a one-line name fits the least lane height, 88 px.
+ * Whole pixels keep the lanes on the pixel grid.
+ */
+function measureRows(heads) {
   const probe = document.createElement('div');
-  probe.className = 'bar planning';
-  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;width:300px';
-  setHTML(probe, '<div class="t"><span class="txt">Epic</span></div><div class="m">0/1 · ongoing</div>');
+  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none';
+  setHTML(probe, `<div class="bar planning" style="width:300px"><div class="t"><span class="txt">Epic</span></div><div class="m">0/1 · ongoing</div></div>${heads.join('')}`);
   (document.querySelector('.content') || document.body).append(probe);
-  const height = Math.max(BAR_H, Math.ceil(probe.getBoundingClientRect().height));
+  const [bar, ...rails] = [...probe.children].map((el) => Math.ceil(el.getBoundingClientRect().height));
   probe.remove();
-  return height;
+  return { barHeight: Math.max(BAR_H, bar), heads: rails };
+}
+
+/** A lane's rail cell: its track's name and a summary of its epics, with the grip and ⋮ for people who manage the Roadmap. */
+function laneHeadHtml(t, list) {
+  const active = list.filter((e) => e.state === 'active').length;
+  const doneN = list.filter((e) => e.state === 'done').length;
+  const cont = list.some((e) => !e.end);
+  const sub = list.length
+    ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
+    : 'no epics yet';
+  // A name cut off after two lines shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
+  const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
+  return `<div class="rail-cell lane-head" style="width:${RAIL}px">
+        <h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
+        ${canRoadmap() ? `<div class="head-ctl">
+          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
+          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
+        </div>` : ''}
+      </div>`;
 }
 /** The latest rendered Roadmap, which mountRoadmap binds. */
 let renderedRoadmap = null;
@@ -208,12 +234,13 @@ let renderedRoadmap = null;
 export function renderRoadmap() {
   // A scale change still easing finishes first, so the new Roadmap starts at its zoom.
   roadmapGestureCleanup();
-  const barHeight = measureEpicHeight();
   RAIL = window.innerWidth <= 900 ? 132 : 208;
   const model = roadmapModel();
+  const heads = model.lanes.map(({ track, epics: items }) => laneHeadHtml(track, items.map((item) => item.epic)));
+  const { barHeight, heads: headHeights } = measureRows(heads);
   const contentEl = document.querySelector('.content');
   roadmapHeight=contentEl ? contentEl.clientHeight : window.innerHeight - 80;
-  const metrics = { barHeight, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
+  const metrics = { barHeight, heads: headHeights, width: contentEl?.clientWidth || window.innerWidth, height: roadmapHeight };
   const ppd = state.pxPerDay;
   const layout = roadmapLayout(model, ppd, metrics);
   const { axisHeight } = layout;
@@ -223,24 +250,9 @@ export function renderRoadmap() {
   let lanes = '';
   model.lanes.forEach(({ track: t, epics: items }, ti) => {
     const lane = layout.lanes[ti];
-    const list = items.map((item) => item.epic);
-    const active = list.filter((e) => e.state === 'active').length;
-    const doneN = list.filter((e) => e.state === 'done').length;
-    const cont = list.some((e) => !e.end);
-    const sub = list.length
-      ? `${list.length} epic${list.length > 1 ? 's' : ''}${active ? ` · ${active} active` : ''}${doneN ? ` · ${doneN} done` : ''}${cont ? ' · continuous' : ''}`
-      : 'no epics yet';
     const bars = items.map((item, i) => epicBar(item, ppd, barTop(lane, lane.rows[i], barHeight))).join('');
-    // A name cut off after two lines shows in full in its tip, on hover or, from its grip and ⋮, on keyboard focus.
-    const nameTip = `data-tip="${esc(t.name)}" data-tip-overflow="track-name-${esc(t.id)}" data-tip-keyboard`;
-    lanes += `<div class="lane" data-track="${esc(t.id)}" style="min-height:${lane.height}px">
-      <div class="rail-cell lane-head" style="width:${RAIL}px">
-        <h2 class="name" id="track-name-${esc(t.id)}" data-tip="${esc(t.name)}" data-tip-overflow>${esc(t.name)}</h2><div class="sub">${sub}</div>
-        ${canRoadmap() ? `<div class="head-ctl">
-          <button type="button" class="grip" aria-label="Reorder ${esc(t.name)}" title="Drag to reorder · Arrow keys to move" ${nameTip}>${I.grip}</button>
-          <button type="button" class="kebab icon-button" aria-label="Manage ${esc(t.name)} track" ${nameTip} ${UIAction('trackMenu', UIAction.event, t.id)}>${I.kebab}</button>
-        </div>` : ''}
-      </div>
+    lanes += `<div class="lane" data-track="${esc(t.id)}" style="height:${lane.height}px">
+      ${heads[ti]}
       <div class="lane-body">${bars}</div>
     </div>`;
   });
@@ -474,7 +486,7 @@ function applyRoadmapLayout(view, next) {
   next.lanes.forEach((lane, i) => {
     const before = prev.lanes[i], bound = view.lanes[i];
     if (!bound?.lane) return;
-    if (lane.height !== before.height) bound.lane.style.minHeight = `${lane.height}px`;
+    if (lane.height !== before.height) bound.lane.style.height = `${lane.height}px`;
     bound.bars.forEach((bar, j) => { if (lane.pad !== before.pad || lane.rows[j] !== before.rows[j]) bar.el.style.top = barTop(lane, lane.rows[j], barHeight); });
   });
   view.layout = next;

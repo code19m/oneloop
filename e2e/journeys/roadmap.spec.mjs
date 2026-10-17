@@ -150,6 +150,53 @@ test('a track\'s name keeps clear of its grip and ⋮, takes two lines at most, 
   await expect(tip, 'a name that fits needs no tip').toHaveCount(0);
 });
 
+test('a zoom gives far lanes their new height at once, and a lane grown by its name keeps its bars centered on whole pixels', async ({ page, instance }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const { project } = instance.projects[0], long = 'Platform and infrastructure for every region and partner';
+  const day = offset => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  // Two weeks back to back take two rows at Months and one at Weeks; 25 lanes reach far below the view.
+  for (let i = 0; i < 24; i++) {
+    const [track] = (await command(instance.api, 'track.create', { projectId: project.id, name: i ? `Track ${i + 2}` : long })).entities;
+    for (const week of [0, 1]) await command(instance.api, 'epic.create', { projectId: project.id, trackId: track.id, title: `Week ${week + 1}`, startDate: day(7 * week), endDate: day(7 * week + 6) });
+  }
+  await openApp(page, instance, 'roadmap');
+  const lanes = page.locator('#rmScroll .lane'), scale = page.getByRole('group', { name: 'Timeline scale' });
+  await expect(lanes).toHaveCount(25);
+  const frames = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  const heights = () => lanes.evaluateAll(all => all.map(lane => lane.getBoundingClientRect().height));
+  const scrollTo = place => page.locator('#rmScroll').evaluate((view, place) => {
+    view.scrollTop = place === 'end' ? view.scrollHeight : 0;
+    return [...view.querySelectorAll('.lane')].at(-1).getBoundingClientRect().top;
+  }, place);
+  // Every lane is drawn once at Months, then the person goes back up and zooms to Weeks.
+  await scrollTo('end');
+  await frames();
+  await scrollTo('top');
+  await frames();
+  const months = await heights();
+  await scale.getByRole('button', { name: 'Weeks' }).click();
+  await expect(scale.getByRole('button', { name: 'Weeks' })).toHaveAttribute('aria-pressed', 'true');
+  const weeks = await heights();
+  // Lanes far below the view take their new height at once, so nothing moves when they come into view.
+  const last = await scrollTo('end');
+  await frames();
+  expect(await lanes.last().evaluate(lane => lane.getBoundingClientRect().top), 'the view stays put').toBe(last);
+  await page.evaluate(() => App.refreshRoadmap());
+  expect(weeks, 'heights as a fresh drawing gives them').toEqual(await heights());
+  expect(weeks.at(-1), 'the zoom made the far lanes shorter').toBeLessThan(months.at(-1));
+  expect(weeks.filter(height => !Number.isInteger(height)), 'whole-pixel lanes').toEqual([]);
+  await scrollTo('top');
+  // The name's two lines make its lane taller than one row needs; its bars stay in the middle.
+  const grown = lanes.filter({ has: page.getByRole('heading', { name: long, exact: true }) });
+  const { height, gaps } = await grown.evaluate(lane => {
+    const box = lane.getBoundingClientRect();
+    return { height: box.height, gaps: [...lane.querySelectorAll('.bar')].map(bar => { const b = bar.getBoundingClientRect(); return [b.top - box.top, box.bottom - b.bottom]; }) };
+  });
+  expect(height, 'the name needs more than one row').toBeGreaterThan(88);
+  expect(gaps.length).toBe(2);
+  for (const [above, below] of gaps) expect(Math.abs(above - below), `bar gaps ${above} and ${below}`).toBeLessThanOrEqual(1);
+});
+
 test.describe('on a phone', () => {
   test.use({ viewport: { width: 375, height: 812 } });
 
