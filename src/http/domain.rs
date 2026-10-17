@@ -34,79 +34,67 @@ pub(crate) fn read_router() -> Router<AppState> {
         .route("/api/tasks/{task_id}", get(task))
 }
 
-/// The query of both Board reads: the filter, and for a page of one column
-/// its status and cursor. It is one struct because serde can't flatten the
-/// shared filter into structs that refuse unknown fields.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BoardParams {
-    status: Option<TaskStatus>,
-    cursor: Option<String>,
-    limit: Option<usize>,
-    search: Option<String>,
-    track_ids: Option<String>,
-    epic_ids: Option<String>,
-    assignee_ids: Option<String>,
-    #[serde(default)]
-    no_assignee: bool,
-    #[serde(default)]
-    blocked: bool,
-    /// The Board's Done order; columns other than Done ignore it.
-    #[serde(default)]
-    done_order: DoneOrder,
+/// Declare the query struct of a read that can load the Board, with the Board
+/// filter's fields after its own, and `filter()`, which reads them. The Board
+/// reads and the bootstrap take the same filter fields, and this is their one
+/// list: serde can't flatten a shared struct into structs that refuse unknown
+/// fields, and URL-encoded flags fail under `flatten`.
+macro_rules! with_board_filter {
+    ($(#[$meta:meta])* struct $name:ident { $($(#[$field_meta:meta])* $field:ident: $type:ty,)* }) => {
+        $(#[$meta])*
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $name {
+            $($(#[$field_meta])* $field: $type,)*
+            search: Option<String>,
+            track_ids: Option<String>,
+            epic_ids: Option<String>,
+            assignee_ids: Option<String>,
+            #[serde(default)]
+            no_assignee: bool,
+            #[serde(default)]
+            blocked: bool,
+            /// The Board's Done order; columns other than Done ignore it.
+            #[serde(default)]
+            done_order: DoneOrder,
+        }
+
+        impl $name {
+            /// The Board filter that the query names. Tracks, epics and
+            /// assignees come as IDs separated by commas.
+            fn filter(&self) -> TaskFilter {
+                TaskFilter {
+                    search: self.search.clone(),
+                    track_ids: id_list(self.track_ids.as_deref()),
+                    epic_ids: id_list(self.epic_ids.as_deref()),
+                    assignee_ids: id_list(self.assignee_ids.as_deref()),
+                    no_assignee: self.no_assignee,
+                    blocked: self.blocked,
+                    done_order: self.done_order,
+                }
+            }
+        }
+    };
 }
 
-impl BoardParams {
-    fn filter(&self) -> TaskFilter {
-        board_filter(
-            self.search.clone(),
-            [&self.track_ids, &self.epic_ids, &self.assignee_ids],
-            self.no_assignee,
-            self.blocked,
-            self.done_order,
-        )
+with_board_filter! {
+    /// The query of both Board reads: the filter, and for a page of one
+    /// column its status and cursor.
+    struct BoardParams {
+        status: Option<TaskStatus>,
+        cursor: Option<String>,
+        limit: Option<usize>,
     }
 }
 
-/// The bootstrap's query: what it loads, and for the Board the filter in the
-/// fields that the Board reads take.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BootstrapParams {
-    project_id: Option<String>,
-    task_id: Option<String>,
-    view: Option<String>,
-    switched_to: Option<String>,
-    switched_by: Option<String>,
-    search: Option<String>,
-    track_ids: Option<String>,
-    epic_ids: Option<String>,
-    assignee_ids: Option<String>,
-    #[serde(default)]
-    no_assignee: bool,
-    #[serde(default)]
-    blocked: bool,
-    #[serde(default)]
-    done_order: DoneOrder,
-}
-
-/// The Board filter of a query: its text, its tracks, epics and assignees
-/// as IDs separated by commas, and its flags.
-fn board_filter(
-    search: Option<String>,
-    [track_ids, epic_ids, assignee_ids]: [&Option<String>; 3],
-    no_assignee: bool,
-    blocked: bool,
-    done_order: DoneOrder,
-) -> TaskFilter {
-    TaskFilter {
-        search,
-        track_ids: id_list(track_ids.as_deref()),
-        epic_ids: id_list(epic_ids.as_deref()),
-        assignee_ids: id_list(assignee_ids.as_deref()),
-        no_assignee,
-        blocked,
-        done_order,
+with_board_filter! {
+    /// The bootstrap's query: what it loads, and for the Board the filter.
+    struct BootstrapParams {
+        project_id: Option<String>,
+        task_id: Option<String>,
+        view: Option<String>,
+        switched_to: Option<String>,
+        switched_by: Option<String>,
     }
 }
 
@@ -148,13 +136,7 @@ async fn bootstrap(
     Extension(actor): Extension<Actor>,
     ApiQuery(query): ApiQuery<BootstrapParams>,
 ) -> AppResult<Json<crate::domain::BootstrapView>> {
-    let filter = board_filter(
-        query.search,
-        [&query.track_ids, &query.epic_ids, &query.assignee_ids],
-        query.no_assignee,
-        query.blocked,
-        query.done_order,
-    );
+    let filter = query.filter();
     let query = BootstrapQuery {
         project_id: query.project_id,
         task_id: query.task_id,
