@@ -153,11 +153,12 @@ export function createReadController({api,data,writes={readUnchanged:(/** @type 
     return read('board',target,true,async token=>{
       try{
         const filtered=boardFiltered(common);
-        const [tasks,counts,head]=await Promise.all([
+        // The cards as the hints left them, read again when the tab changed one meanwhile.
+        const [tasks,counts,head]=await answerOf(token,()=>Promise.all([
           Promise.all(ids.map(async id=>{try{return {id,view:await api.task(id,{signal:token.signal,background:true})};}catch(error){if(error?.status===404)return {id,view:null};throw error;}})),
           moved?api.counts(projectId,{signal:token.signal,background:true}):null,
           moved&&filtered?api.boardView(projectId,common,{signal:token.signal,background:true}):null,
-        ]);
+        ]));
         if(!current(token)||boardState?.projectId!==projectId)return {stale:true};
         for(const {id,view} of tasks){
           const old=data.tasks.find(item=>item.internalId===id);

@@ -389,3 +389,25 @@ test('a live Roadmap or Pool read never undoes a change the tab makes while it r
     assert.deepEqual(shown(data),expected,name);
   }
 });
+
+test('a live patch of a card that the tab is moving never puts the card back',async()=>{
+  const requests=held(),api={boardView:requests.api('boardView'),task:requests.api('task'),command:requests.api('command')};
+  const data=createLegacyData();data.session={id:'s1',userId:'u1'};
+  const gateway=createCommandGateway({api,data}),reads=createReadController({api,data,writes:gateway});
+  const card=(id,status,position,revision=1,checklist=0)=>({...task(id,status),position,revision,checklistTotal:1,checklistDone:checklist});
+  const shown=()=>{const moved=data.tasks.find(item=>item.internalId==='b');return [moved.state,moved.checklistDone];};
+  const opened=reads.board('p1');requests.calls[0].resolve(boardView([card('a','planning',1),card('b','planning',2)]));await opened;
+  // The tab moves b to In progress; the Board shows that at once.
+  const b=data.tasks.find(item=>item.internalId==='b');b.state='progress';b.order=0;
+  const moved=gateway.execute('task.move',{taskId:'b',status:'in_progress',position:0},{expectedRevision:1});await settle();
+  // Meanwhile another person ticks b's checklist, and the patch reads b as the server had it before the move.
+  const patch=reads.patchBoard('p1',{},[{entityType:'checklist',entityId:'b',taskId:'b'}]);await settle();
+  const cardReads=()=>requests.calls.filter(call=>call.name==='task');
+  cardReads()[0].resolve(card('b','planning',2,1,1));await settle();
+  assert.deepEqual(shown(),['progress',0],'the move stays while it is saved');
+  requests.calls.find(call=>call.name==='command').resolve({entities:[{entityType:'task',...card('b','in_progress',0,2)}],events:[]});await moved;await settle();
+  assert.equal(cardReads().length,2,'it reads the card again once the move is saved');
+  cardReads()[1].resolve(card('b','in_progress',0,2,1));
+  assert.equal((await patch).stale,false);
+  assert.deepEqual(shown(),['progress',1]);
+});
