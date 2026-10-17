@@ -1050,7 +1050,8 @@ div.ms-label {cursor:default}
 /* Shared control geometry and keyboard feedback, including compact actions. */
 .user-row.clickable:focus-visible { background:var(--fill-hover);outline-offset:-2px; }
 .row-x.icon-button,.kebab.icon-button,.pool-delete { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;padding:0;border-radius:6px; }
-.row-x:focus-visible,.kebab:focus-visible { opacity:1;background:var(--fill-hover); }
+/* A lane's grip and ⋮ show their focus at full strength, also on a hovered lane. */
+.row-x:focus-visible,.kebab:focus-visible,.lane .head-ctl :is(.grip,.kebab):focus-visible { opacity:1;background:var(--fill-hover); }
 .pool-promote { min-width:0;padding:4px 0;text-align:left;font:inherit;color:inherit;background:transparent;border:0;border-radius:4px;cursor:pointer; }
 .pool-row:focus-within { background:var(--fill-hover); }
 .peek-head { flex-shrink:0;max-height:40dvh;overflow-y:auto; }

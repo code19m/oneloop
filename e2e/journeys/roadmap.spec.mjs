@@ -176,6 +176,8 @@ test('track keyboard moves and pointer Board/track drags save and cancel', async
   const grip = page.getByRole('button', { name: `Reorder ${track.name}`, exact: true });
   await grip.press('ArrowDown');
   await expect(grip).toBeFocused();
+  // The only keyboard way to move a track shows its focus at full strength.
+  await expect(grip).toHaveCSS('opacity', '1');
   await expect.poll(order).toEqual([second.id, track.id, third.id]);
   await settled();
   await grip.press('End');
