@@ -47,6 +47,10 @@ All notable changes to oneloop are recorded here. The format follows
   tab before the new page arrived made the tab start a second reload, and the
   new page then said **oneloop was updated**.
 - Dragging selected text no longer causes an error in Firefox.
+- A click on **Back to Board**, or on another control outside the task's
+  own fields, could do nothing when a change made elsewhere arrived just then
+  and drew the page while the button was pressed. The page now waits for the
+  press to end.
 - Focus stays on a file's name, **Download**, **Delete**, **Temporary** and its
   other controls when the task's files are drawn again, such as after a move
   or a change made elsewhere. When the file is deleted, focus goes to the same

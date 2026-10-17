@@ -223,6 +223,18 @@ test('a sidebar click still navigates when a render lands between press and rele
   await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
 });
 
+test('Back to Board still goes to the Board when a change made elsewhere draws the task page between press and release', async ({ page, instance }) => {
+  await openApp(page, instance);
+  const back = await page.getByRole('button', { name: 'Back to Board' }).boundingBox();
+  await page.mouse.move(back.x + back.width / 2, back.y + back.height / 2);
+  await page.mouse.down();
+  // A live update draws the page in the background, which waits for no field there now.
+  await page.evaluate(() => window.App.refreshBackground());
+  await page.mouse.up();
+  await expect(page).toHaveURL(new RegExp(`#/board/${instance.projects[0].project.id}$`));
+  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible();
+});
+
 test('keyboard menus, refresh focus and titles stay contextual across navigation', async ({ page, instance }) => {
   const primary = instance.projects[0], secondary = instance.projects[1];
   await openApp(page, instance);
