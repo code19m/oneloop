@@ -372,6 +372,8 @@ Object.assign(App, {
     if(view==='knowledge')knowledge.route('knowledge',id);
     pushAddress(addressOf(view));render();
   },
+  /** The page that a switch to project `id` shows, which its data loads for first. */
+  pageAfterSwitch,
   /** Go to page `v`, which then loads: of the project on screen, or of `projectId` as a switch to it, in the same history entry. */
   nav(v, { projectId } = {}) {
     if (projectId && visibleProjects().some(project => project.id === projectId)) switchTo(projectId);

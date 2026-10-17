@@ -258,6 +258,29 @@ test('the address keeps the project through a refresh, Back and Forward, and a n
   await expect(titles(tab)).toHaveText([second.task.title]);
 });
 
+test('choosing another project on Page not found opens its page of that kind with one request', async ({ page, instance, allowedConsoleErrors }) => {
+  allowedConsoleErrors.push(/404 .*\/api\/bootstrap\?/);
+  const [, second] = instance.projects;
+  const shown = {
+    board: page.locator('.board .card-title-button').filter({ hasText: second.task.title }),
+    // The epic's task counts come with the project, so no Roadmap read follows.
+    roadmap: page.locator('[data-epic]').filter({ hasText: second.epic.title }).filter({ hasText: '0 done · 1 open' }),
+  };
+  for (const kind of ['board', 'roadmap']) {
+    await openApp(page, instance, `${kind}/no-such-project`);
+    await expect(page.locator('.page-error .error-code')).toHaveText('404');
+    // The project's reads, without the live stream or session checks, which run at any moment.
+    const requests = [], record = request => { const url = new URL(request.url()); if (url.pathname === '/api/bootstrap' || url.pathname.startsWith('/api/projects/')) requests.push(url); };
+    page.on('request', record);
+    await page.locator('.switcher-btn').click();
+    await page.locator('#project-switcher-menu').getByRole('button', { name: second.project.name }).click();
+    await expect(page).toHaveURL(`${instance.url}/#/${kind}/${second.project.id}`);
+    await expect(shown[kind]).toBeVisible();
+    page.off('request', record);
+    expect(requests.map(url => [url.pathname, url.searchParams.get('projectId'), url.searchParams.get('view')]), kind).toEqual([['/api/bootstrap', second.project.id, kind]]);
+  }
+});
+
 test('a link into another project loads that project first, showing the Board skeleton until it lands', async ({ page, instance }) => {
   const [first, second] = instance.projects;
   const titles = page.locator('.board .card-title-button');
