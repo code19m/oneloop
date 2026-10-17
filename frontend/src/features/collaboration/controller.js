@@ -51,6 +51,9 @@ export function installCollaborationController({ transport, recovery, eventSourc
   const pendingProjectHints=new Map();
   const liveReads=new Map();
   const changedComments=new Set();
+  // The revisions at which this tab's own commands deleted records, by ID.
+  // The hint of such a deletion names a record the tab no longer has.
+  const deletedHere=new Map();
   function clearLiveReads(prefix=''){
     for(const [key,job] of liveReads)if(key.startsWith(prefix)){clearTimeout(job.timer);liveReads.delete(key);job.finish({stale:true});}
   }
@@ -335,7 +338,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
     const collections={project:data.projects,track:data.tracks,epic:data.epics,milestone:data.milestones,task:data.tasks,pool_item:data.pool};
     const collection=collections[entityType];if(!collection)return null;
     const item=collection.find((entry)=>entry.id===entityId||entry.internalId===entityId);
-    return Number.isFinite(item?.revision)?Number(item.revision):null;
+    if(!item)return deletedHere.get(entityId)??null;
+    return Number.isFinite(item.revision)?Number(item.revision):null;
   }
 
   function hintIsCovered(hint){
@@ -477,7 +481,8 @@ export function installCollaborationController({ transport, recovery, eventSourc
       if(Number.isFinite(data.inboxUnreadCount))facade?.unreadCount?.(data.inboxUnreadCount);
       unsubscribe?.();unsubscribe=transport.subscribe((change)=>{
         const next=currentSession();
-        if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
+        if(next!==sessionKey){sessionKey=next;taskGeneration++;inboxGeneration++;taskController?.abort();inboxController?.abort();taskPages=new Map();deletedHere.clear();clearProjectReconcile();clearLiveReads();sessionCheck=null;inboxPage={key:'',nextCursor:null,unreadCount:0,filteredCount:0,loaded:false};startEvents(true);}
+        if(change?.type==='command')for(const entity of change.result?.entities??[])if(entity?.deleted&&Number.isSafeInteger(entity.revision))deletedHere.set(entity.id,entity.revision);
         if(change?.type==='bootstrap'){
           if(Number.isFinite(change.projection?.inboxUnreadCount))facade?.unreadCount?.(change.projection.inboxUnreadCount);
           // A new projection reads the open page's comments and activity again.

@@ -58,6 +58,10 @@ All notable changes to oneloop are recorded here. The format follows
   its data twice, and when you couldn't open their project, the browser
   console showed an error. It now loads once and opens the project its
   address names, or else the one you switched to last, or else your first.
+- After you turned a Pool item into a task, or deleted a Pool item, a task,
+  an epic, a track or a milestone, your tab loaded the page's data a second
+  time when it heard of its own change. It now loads only what the change
+  needs; other open tabs still load it once.
 
 ## [0.1.0-rc.6] - 2026-10-17
 
