@@ -1,5 +1,5 @@
 // Startup, sign-in, upgrades and navigation between routes.
-import { test, expect, openApp, signIn, holdResponses, command } from '../support/test.mjs';
+import { test, expect, openApp, signIn, expectSignedIn, holdResponses, command } from '../support/test.mjs';
 
 test('cold startup stays neutral and sign-in does not depend on previews', { tag: '@smoke' }, async ({ page, instance }) => {
   const optional = [];
@@ -59,6 +59,20 @@ test('signing in again in the same tab keeps the project you chose', async ({ pa
   await expect(cards).toContainText(second.task.title);
   await page.getByRole('button', { name: 'Task', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'New task' }).getByRole('textbox', { name: 'Title' })).toBeVisible();
+});
+
+test('Sign out signs out the other open tabs at once, and they forget their project', async ({ page, context, instance }) => {
+  const [, second] = instance.projects;
+  await openApp(page, instance, `board/${second.project.id}`);
+  const other = await context.newPage();
+  await other.goto(`${instance.url}/#/roadmap/${second.project.id}`);
+  await expectSignedIn(other);
+  await page.evaluate(() => App.logout());
+  await page.locator('.confirmation-layer').getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(other.locator('input[name="username"]')).toBeVisible();
+  await expect(other).toHaveURL(`${instance.url}/#/roadmap`);
+  // Signed out on purpose, as in the tab that signed out: no session ended by itself.
+  await expect(other.locator('.auth-notice')).toHaveCount(0);
 });
 
 test('a hidden tab ends its session when someone else signs in from another tab, and keeps what was typed for its person', async ({ page, context, instance, allowedConsoleErrors }) => {

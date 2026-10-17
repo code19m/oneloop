@@ -412,3 +412,24 @@ test('the epic drawer names every status as the Roadmap does, and an ongoing epi
   }
   assert.deepEqual(shown, ['Planning', 'In progress', 'Done', 'Ongoing · Planning', 'Ongoing · In progress', 'Ongoing · Done']);
 });
+
+test('the Roadmap header counts what its timeline shows, and shows no numbers while another project\'s Roadmap loads', () => {
+  const t = boot('roadmap/p1'), stats = () => [...t.d.querySelectorAll('.topbar .roadmap-stat')].map(stat => stat.textContent);
+  assert.deepEqual(stats(), ['Tracks5', 'Epics11', 'Milestones2']);
+  // A live change adds an epic, and the read that follows draws the timeline again.
+  const epic = t.D.epics.find(item => t.D.tracks.find(track => track.id === item.trackId).projectId === 'p1');
+  t.D.epics.push({ ...epic, id: 'e-new', title: 'Added elsewhere' });
+  t.A.refreshRoadmap();
+  assert.deepEqual(stats(), ['Tracks5', 'Epics12', 'Milestones2']);
+  // Back to the Roadmap of a project whose data isn't loaded yet.
+  t.w.location.hash = '#/roadmap/p2';
+  t.w.dispatchEvent(new t.w.HashChangeEvent('hashchange', { oldURL: 'http://localhost/#/roadmap/p1', newURL: t.w.location.href }));
+  assert(t.d.querySelector('.loading-roadmap'));
+  assert.deepEqual(stats(), ['Tracks', 'Epics', 'Milestones']);
+  assert.equal(t.d.querySelector('.roadmap-structure-stats').getAttribute('aria-busy'), 'true');
+  assert.equal(t.d.querySelector('.sidebar .nav-item[title="Board"] .end').textContent, '', 'the sidebar\'s Board count waits too');
+  // Its data arrives.
+  t.D.bootstrapProjectId = 'p2'; t.A.refresh();
+  assert.equal(t.d.querySelectorAll('.topbar .roadmap-stat strong').length, 3);
+  assert(!t.d.querySelector('.roadmap-structure-stats[aria-busy]'));
+});

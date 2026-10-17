@@ -98,7 +98,7 @@ test('large Markdown previews are bounded in both modes', async () => {
 });
 
 test('math, alerts and footnotes render and footnote links move focus', async () => {
-  const { d, views } = boot();
+  const { w, d, views } = boot();
   const extras = d.createElement('div'); d.body.append(extras);
   const sample = fs.readFileSync(path.join(fixtures, 'math.md'), 'utf8');
   views.markdownView(extras, { name: 'extras.md' }, sample, false);
@@ -108,8 +108,9 @@ test('math, alerts and footnotes render and footnote links move focus', async ()
   const refs = [...extras.querySelectorAll('sup a')]; assert.equal(refs.length, 2);
   for (const ref of refs) assert(extras.querySelector(ref.getAttribute('href')));
   const back = extras.querySelector('.footnotes a'); assert(extras.querySelector(back.getAttribute('href')));
-  const scroller = extras.querySelector('.markdown-scroll'); let scrolled = false; scroller.scrollTo = () => scrolled = true;
-  refs[0].click(); assert(scrolled); assert.equal(d.activeElement.id, refs[0].getAttribute('href').slice(1));
+  // jsdom lays nothing out, so it has no scrollIntoView.
+  let shown = null; w.Element.prototype.scrollIntoView = function () { shown = this; };
+  refs[0].click(); assert.equal(shown?.id, refs[0].getAttribute('href').slice(1)); assert.equal(d.activeElement, shown);
   assert.equal(extras.querySelector('.html-source').textContent, sample);
   extras.querySelector('[data-view-source]').click(); assert.equal(extras.querySelector('.html-source').textContent, sample);
 });
@@ -147,13 +148,14 @@ test('a spoofed heading marker in uploaded HTML gives no server anchor', async (
 });
 
 test('in-page links reach headings in any script', async () => {
-  const { d, views } = boot();
+  const { w, d, views } = boot();
   const host = d.createElement('div'); d.body.append(host);
   views.markdownView(host, { name: 'ru.md' }, '[Оплата и сроки](#оплата-и-сроки)\n\n## Оплата и сроки\n\nТекст.\n', false);
   await waitFor(() => host.querySelector('.markdown-body'), 'Markdown renders');
   const link = host.querySelector('.markdown-body a');
   assert.equal(link.getAttribute('href'), '#md-оплата-и-сроки');
-  host.querySelector('.markdown-scroll').scrollTo = () => {};
+  // jsdom lays nothing out, so it has no scrollIntoView.
+  w.Element.prototype.scrollIntoView = () => {};
   link.click();
   assert.equal(d.activeElement, host.querySelector('#md-оплата-и-сроки'));
 });
@@ -247,17 +249,20 @@ test('diagrams wait for a slow renderer download, and blame the connection when 
   await waitFor(() => host.querySelector('.markdown-diagram img'), 'the diagram is drawn');
 });
 
-test('a diagram is drawn again in the new colors when the theme changes, also with System', async () => {
+test('a diagram shows in the app\'s colors, in a description as in a file, and again in the new ones when the theme changes', async () => {
   const { w, d, views } = boot();
-  stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme}</text></svg>`, width: 10, height: 10 }; } });
+  // jsdom resolves no custom properties, so the page gives each theme's ink.
+  const ink = { light: 'rgb(17, 17, 17)', dark: 'rgb(238, 238, 238)' }, computed = w.getComputedStyle.bind(w);
+  w.getComputedStyle = element => element.style.color === 'var(--ink)' ? { color: ink[d.documentElement.dataset.theme] } : computed(element);
+  stubRenderer(w, { async render(_id, _text, value) { return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>${value.theme} ${value.themeVariables.textColor}</text></svg>`, width: 10, height: 10 }; } });
   const host = d.createElement('div'); d.body.append(host);
   d.documentElement.dataset.theme = 'light';
-  views.markdownView(host, { name: 'diagram.md' }, '```mermaid\nflowchart LR\n A-->B\n```', false);
-  const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>(\w+)<\/text>/)?.[1];
-  await waitFor(() => drawnIn() === 'default', 'the diagram shows in the light colors');
+  views.markdownInto(host, '```mermaid\nflowchart LR\n A-->B\n```', { breaks: true });
+  const drawnIn = () => decodeURIComponent(host.querySelector('.markdown-diagram img')?.src ?? '').match(/<text>([^<]+)<\/text>/)?.[1];
+  await waitFor(() => drawnIn() === 'base #111111', 'the diagram shows in the app\'s light colors');
   // The device turned dark while the theme follows it.
   d.documentElement.dataset.theme = 'dark';
-  await waitFor(() => drawnIn() === 'dark', 'the diagram shows in the dark colors');
+  await waitFor(() => drawnIn() === 'base #eeeeee', 'the diagram shows in the app\'s dark colors');
 });
 
 test('the renderer document returns sanitized SVG with its size', async () => {
@@ -347,6 +352,23 @@ function directPreviews() {
   for (const name of previewLibraries) w.eval(source(name));
   return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
+
+test('a spot in rendered Markdown is found in its source piece by piece, past link addresses, repeated words and math', () => {
+  const { d, views } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  const source = '## Plan\n\nSee [README](README.md) then **README**, and [the docs](https://example.com/docs) then **docs**.\n\nMath $x^2 + y$ is Tom &amp; Jerry.\n\n| Where | What |\n| - | - |\n| docs | two |';
+  views.markdownInto(host, source, { breaks: true });
+  // A text node that `selector` shows with the text `value`.
+  const text = (selector, value) => [...host.querySelectorAll(selector)].flatMap(element => [...element.childNodes]).find(node => node.nodeValue === value);
+  const at = (node, offset) => views.sourcePosition(host, node, offset, source);
+  assert.equal(at(text('h2', 'Plan'), 1), 4, 'after the P of ## Plan');
+  assert.equal(at(text('strong', 'README'), 2), source.indexOf('**README**') + 4, 'the bold README, not the link\'s address');
+  assert.equal(at(text('strong', 'docs'), 0), source.indexOf('**docs**') + 2, 'the bold docs, not the end of the URL');
+  assert.equal(at(text('td', 'docs'), 1), source.indexOf('| docs |') + 3, 'the table cell, not the bold docs before it');
+  assert.equal(at(text('.katex-html span', 'y'), 0), source.indexOf('+ y$') + 2, 'the y of the formula');
+  assert.equal(at(text('p', ' is Tom & Jerry.'), 4), null, 'the source writes & otherwise');
+  assert.equal(at(d.createTextNode('Plan'), 0), null, 'text the page doesn\'t show there');
+});
 
 test('a Knowledge context links relative files and shows relative images; attachments keep them inert', () => {
   const text = ['[Guide](guides/setup.md#install)', '[Missing](missing.md)', '[Unsafe](javascript:alert(1))', '![Logo](assets/logo.png)', '![Other](other.png)'].join('\n\n');

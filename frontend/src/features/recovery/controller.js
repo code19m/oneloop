@@ -242,6 +242,8 @@ export function createRecoveryController({
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
   // A page that is leaving (pagehide), by Reload now or the browser, hides on its way out: no moment to reload by itself.
   let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now(),leaving=false;
+  // When the browser was last about to load another page here, as for Reload now.
+  let departedAt=-Infinity;
 
   function entityKey(entity){
     if(!entity)return null;
@@ -308,6 +310,8 @@ export function createRecoveryController({
   }
 
   function warnBeforeUnload(event){
+    // Even after the browser asks, the person may leave, and the next page may come slowly.
+    departedAt=now();
     if(!hasUnsavedInput())return;
     // The browser shows its own prompt; returnValue is for older browsers.
     event.preventDefault();event.returnValue=true;
@@ -346,7 +350,10 @@ export function createRecoveryController({
    * person has not used it for five minutes. Until then it checks again every
    * 30 seconds, when the tab hides and when a save settles. A tab reloads by
    * itself once per page load and once per version, so servers that disagree
-   * about the version can't make it loop.
+   * about the version can't make it loop. A page on its way, as after Reload
+   * now on a slow network, comes once: the tab waits for it as long as an
+   * idle tab waits, and if its load stopped, or the person stayed when the
+   * browser asked, reloads by itself after that.
    */
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
@@ -354,7 +361,8 @@ export function createRecoveryController({
     const version=newBuild?`${newBuild.version}+${newBuild.revision}`:'';
     if(reloadedFor().includes(version))return;
     const away=documentObject.visibilityState==='hidden'||now()-lastActivity>=IDLE_BEFORE_RELOAD_MS;
-    if(!away||hasUnsavedInput()||documentObject.querySelector(IN_PROGRESS)){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
+    const arriving=now()-departedAt<IDLE_BEFORE_RELOAD_MS;
+    if(arriving||!away||hasUnsavedInput()||documentObject.querySelector(IN_PROGRESS)){autoReloadTimer=setTimer(reloadWhenSafe,AUTO_RELOAD_CHECK_MS);return;}
     autoReloaded=true;
     try{
       storage('sessionStorage')?.setItem(RELOADED_FOR,JSON.stringify([...reloadedFor(),version].slice(-10)));
@@ -733,8 +741,14 @@ export function createRecoveryController({
     copyReference(){if(!pageReference)return;globalThis.navigator?.clipboard?.writeText(pageReference).then(()=>getApp()?.toast('Error reference copied'),()=>getApp()?.toast('Could not copy reference','error'));},
     blockDrag(){if(connection()!=='offline')return false;getApp()?.toast('Move was not saved. Try again.','error');return true;},
     /** Start following the page: focus, input, activity, visibility and the connection. */
-    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
-    sessionChanged(session){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);}},
+    start(){if(!bound){bound=true;scheduleAccessProbe();documentObject.addEventListener('focusin',rememberEditorRevision,true);documentObject.addEventListener('focusout',(event)=>rememberCommitted(event.target),true);windowObject.addEventListener('beforeunload',warnBeforeUnload);for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])documentObject.addEventListener(type,noteActivity,{capture:true,passive:true});documentObject.addEventListener('visibilitychange',visibilityChanged);windowObject.addEventListener('pagehide',()=>{leaving=true;});windowObject.addEventListener('pageshow',(event)=>{if(event.persisted){leaving=false;departedAt=-Infinity;reloadWhenSafe();}});scheduleHiddenCheck();windowObject.addEventListener('offline',()=>{connectivityGeneration++;reconnectGeneration++;setConnectivity(false);scheduleReconnect();});windowObject.addEventListener('online',()=>reconnect(true));sayReloaded();}return controller;},
+    /**
+     * Someone signed in, or the session ended. A person who signed out on
+     * purpose (`signedOut`) gets nothing kept for their next sign-in, and the
+     * sign-in page doesn't say their session ended.
+     * @param {any} session @param {{signedOut?:boolean}} [change]
+     */
+    sessionChanged(session,{signedOut=false}={}){cancelRouteLoading();clearPendingSaves();refreshFailureScope=null;resumeLive=null;liveOpen=false;sessionGeneration++;reconnectGeneration++;clearTimer(reconnectTimer);if(session){if(resume&&resume.userId!==session.userId)resume=null;expired=false;pageError=null;pageReference=null;setConnectivity(online(),liveReachable);scheduleAccessProbe();}else{pendingEditors.clear();clearTimer(accessTimer);if(signedOut){resume=null;expired=false;}}},
     dispose(){disposed=true;resume=null;cancelRouteLoading();clearPendingSaves();pendingEditors.clear();unsavedChecks.clear();windowObject.removeEventListener('beforeunload',warnBeforeUnload);clearTimer(autoReloadTimer);clearTimer(hiddenCheckTimer);clearTimer(reconnectTimer);clearTimer(liveTimer);clearTimer(accessTimer);},
   };
   return Object.freeze(controller);
@@ -757,15 +771,14 @@ export function leaveAdminPage(data, app, previous) {
   return true;
 }
 
-/** Leave an inaccessible project after an authoritative metadata refresh, and say why.
+/** Leave an inaccessible project for the Board of the first one after an authoritative metadata refresh, and say why.
  * @param {any} data @param {any} app @param {any} previous @param {string} [name] the project's name before the refresh
  */
 export function leaveUnavailableProject(data, app, previous, name) {
   if (!previous?.projectId || !['roadmap','board','task'].includes(previous.view)
       || data.projects.some((project) => project.id === previous.projectId)) return false;
-  if(data.projects.length)app.selectProject(data.projects[0].id);
   // Nothing typed there can be saved any more, so this never asks first.
-  app.nav('board',{discard:true});
+  app.nav('board',{discard:true,projectId:data.projects[0]?.id});
   app.toast?.(name?`You no longer have access to ${name}.`:'You no longer have access to that project.','info');
   return true;
 }

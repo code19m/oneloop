@@ -24,10 +24,11 @@ export function installRoute(ctx, account) {
   // A page change someone asks for, from the sidebar, a menu or a back button.
   // One that must happen, such as leaving a project that is gone, passes
   // `discard`; one that follows the person's own change, such as deleting a
-  // task, calls `nav` directly. Neither asks.
+  // task, calls `nav` directly. Neither asks. `projectId` names the page's
+  // project when it is another one.
   app.nav=(view,options)=>{
-    if(options?.discard||!losesInput())return nav(view);
-    askToDiscard(()=>nav(view));
+    if(options?.discard||!losesInput())return nav(view,options);
+    askToDiscard(()=>nav(view,options));
   };
   document.addEventListener('click',(event)=>{
     const link=/** @type {HTMLAnchorElement|null} */(/** @type {Element} */(event.target).closest('a[href^="#/"]'));
@@ -68,7 +69,8 @@ export function installRoute(ctx, account) {
         app.refreshAfterDialog();reuse=true;Object.assign(current,context());
       }
       if(current.view==='board'){if(!reuse||!reads.adoptBoard(current.projectId,current.board))await reads.board(current.projectId,current.board,{skipUnchanged:true,background});}
-      else if(current.view==='roadmap'&&current.projectId){if(!reuse)await reads.roadmap(current.projectId,{background});}
+      // A bootstrap for another page, such as after Page not found, has no epic counts.
+      else if(current.view==='roadmap'&&current.projectId){if(!reuse||data.bootstrapView!=='roadmap')await reads.roadmap(current.projectId,{background});}
       else if(current.taskId&&routeHash?.startsWith('#/task/')){
         if(reuseBootstrap&&task(current.taskId)?.detailsLoaded){
           if(current.view!=='task'){recovery.clearPageError();app.openTask(task(current.taskId).id);}

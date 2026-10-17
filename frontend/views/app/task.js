@@ -6,6 +6,7 @@
 import { UIMotion } from '../../src/app/motion.js';
 import { fadeOutRows, placeRows } from '../../src/app/rows.js';
 import { checklistHtml, refreshChecklist } from '../../src/features/checklist/checklist.js';
+import { sourcePosition } from '../../src/features/files/file-views.js';
 import { attachmentsHtml } from './attachments.js';
 import { renderBoard } from './board.js';
 import { blockText, composerHtml, feedHtml, retryTaskPage, sizeCommentBodies, taskFeedState } from './collaboration.js';
@@ -156,6 +157,20 @@ function paintDescription(t) {
   placeEditButton(t); placeDraftNote(section, t, 'desc');
 }
 function repaintDescription() { const t = state.view === 'task' ? taskById(state.taskId) : null; if (t) paintDescription(t); }
+/** Where in its text the description reader shows a click: the place in its Markdown, or null where the browser can't tell. */
+function clickedPlace(reader, event) {
+  const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY), range = caret ? null : document.caretRangeFromPoint?.(event.clientX, event.clientY);
+  const node = caret?.offsetNode ?? range?.startContainer;
+  return node ? sourcePosition(reader, node, caret?.offset ?? range.startOffset, reader.getAttribute('data-markdown')) : null;
+}
+/** Select the word around `at` in `input`, as a double-click on it in the text did. */
+function selectWord(input, at) {
+  const word = /[\p{L}\p{N}\p{M}_]/u, text = input.value;
+  let start = at, end = at;
+  while (start > 0 && word.test(text[start - 1])) start--;
+  while (end < text.length && word.test(text[end])) end++;
+  input.setSelectionRange(start, end);
+}
 document.addEventListener('focusin', (event) => {
   const t = event.target.id === 'task-description' && state.view === 'task' ? taskById(state.taskId) : null;
   if (!t) return;
@@ -263,27 +278,42 @@ Object.assign(App, {
     paintTitle(t); paintDescription(t);
   },
   /**
-   * Open the description's editor, focused with the caret at the end. A
-   * click that lands on a link, a box or a summary, or that ends a text
-   * selection, leaves the description as it is.
+   * Open the description's editor, focused with the caret where a click on
+   * its text landed, else at the end. The second press of a double-click
+   * selects the word the first one landed on. A click that lands on a link, a
+   * box or a summary, or that ends a text selection, leaves the description
+   * as it is.
    */
   editDescription(id, event) {
     const t = taskById(id);
     if (!t || state.view !== 'task' || taskById(state.taskId) !== t || !canBoard()) return;
     if (event && (event.target.closest('a,input,summary') || !getSelection().isCollapsed)) return;
+    // The editor takes the text's place, so the click's place is read first.
+    const reader = document.getElementById('task-description-content'), clicked = event && reader?.hasAttribute('data-markdown') ? clickedPlace(reader, event) : null;
     descriptionOpen = { taskId: t.id, userId: me()?.id };
     paintDescription(t);
     const input = document.getElementById('task-description');
     if (!input) return;
-    input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); input.scrollTop = input.scrollHeight;
+    const caret = clicked ?? input.value.length, text = input.value;
+    input.focus({ preventScroll: true });
+    // Not every browser scrolls a field to a caret placed by code, so the
+    // field measures the text before the caret, and shows the line where it
+    // ends once that text is taller than the field.
+    input.value = text.slice(0, caret); const line = input.scrollHeight; input.value = text;
+    input.setSelectionRange(caret, caret); input.scrollTop = line > input.clientHeight ? line - input.clientHeight / 2 : 0;
+    if (clicked !== null) input.addEventListener('mousedown', (press) => { if (press.detail !== 2) return; press.preventDefault(); selectWord(input, clicked); }, { once: true });
   },
-  /** Escape and Cmd/Ctrl+Enter leave the description, which saves it, and give focus to Edit. */
+  /**
+   * Escape and Cmd/Ctrl+Enter leave the description, which saves it, and
+   * give focus to Edit. An empty description has no Edit: its field, which
+   * stays, is what opens it again.
+   */
   descriptionKey(event) {
     if (event.isComposing || event.keyCode === 229 || !(event.key === 'Escape' || event.key === 'Enter' && (event.metaKey || event.ctrlKey))) return;
     event.preventDefault(); event.stopPropagation();
     const input = event.currentTarget, edit = input.closest('.task-description')?.querySelector('.description-edit');
     input.blur();
-    if (edit && !edit.hidden) edit.focus({ preventScroll: true });
+    (edit && !edit.hidden ? edit : document.getElementById('task-description'))?.focus({ preventScroll: true });
   },
   /**
    * Show the saved status, block and deadline of the open task around its

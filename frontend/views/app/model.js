@@ -41,6 +41,8 @@ export const state = {
 export const App = {};
 
 // ---------- project-scoped accessors ----------
+/** Whether the tracks, epics and people of the project on screen are loaded; an address can name another project before they are. */
+export const projectLoaded = () => D.bootstrapProjectId === state.projectId;
 export const project = () => D.projects.find((p) => p.id === state.projectId && canReadProject(p.id));
 export const tracks = () => D.tracks.filter((t) => t.projectId === state.projectId && canReadProject(t.projectId)).sort((a, b) => a.order - b.order);
 export const epics = () => { const tids = new Set(tracks().map((t) => t.id)); return D.epics.filter((e) => tids.has(e.trackId)); };
@@ -90,9 +92,11 @@ export const poolTotal = () => {
   const mine = D.poolPageInfo?.[`${state.projectId}:mine`]?.total, team = D.poolPageInfo?.[`${state.projectId}:project`]?.total;
   return Number.isFinite(mine) && Number.isFinite(team) ? mine + team : poolItems().length;
 };
+/** The open and done tasks of the project on screen; nothing until they are known, as while another project loads. */
 export const counts = () => {
   const aggregate = D.projectTaskCounts?.[state.projectId];
   if (aggregate) return { open:aggregate.open, done:aggregate.done };
+  if (!projectLoaded()) return { open:'', done:'' };
   const ts = tasks();
   return {
     open: ts.filter((t) => t.state !== 'done').length,

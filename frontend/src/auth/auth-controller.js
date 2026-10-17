@@ -17,18 +17,31 @@ function validateNewPassword(password) {
   if ([...password].length < 5) throw new ApiError('Use at least 5 characters.', { code:'validation_error' });
 }
 
-export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, onSessionChange = (_session) => {} }) {
+/** Set in local storage when someone signs out on purpose; it names them, for the browser's other tabs. */
+const SIGNED_OUT = 'oneloop.signedOut';
+
+export function createAuthController({ api, data, refresh, loadBootstrap, reportError, getApp = () => null, invalidate = () => {}, onSessionChange = (_session, _change = {}) => {}, windowObject = globalThis.window }) {
   let pendingCredentials = null;
   let pendingCompletion = null;
+  // The person whose session ended by itself here, until someone signs in. A
+  // request can meet the end of a session that is being signed out on purpose
+  // before that sign-out reaches the tab; the sign-out still applies then.
+  let endedFor = null;
   let generation=0;
   const begin=()=>{generation++;invalidate();return generation;};
   const current=(token)=>token===generation;
+  /** The person the tab shows, or whose session ended by itself here. */
+  const person=()=>data.session?.userId??endedFor;
+  /** Closes the Confirm your identity prompt that is open, as its session ended. */
+  let closePrompt=null;
 
-  function clearPrivateData(){
+  /** `signedOut`: on purpose, so nothing is kept for the person's next sign-in. */
+  function clearPrivateData(signedOut=false){
+    closePrompt?.();
     pendingCompletion=null;
     for(const key of ['users','projects','tracks','epics','milestones','tasks','pool','notifications','browserSessions','appGrants'])data[key]?.splice?.(0);
     data.session=null;data.inboxUnreadCount=0;data.boardPageInfo=null;data.projectTaskCounts={};data.poolPageInfo={};data.epicPageInfo={};data.adminUsers={ids:[],nextCursor:null,loaded:false};
-    onSessionChange(null);
+    onSessionChange(null,{signedOut});
   }
 
   /**
@@ -36,7 +49,30 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
    * own project, as the tab forgets what its address named. A session that
    * ends by itself keeps the address for its person.
    */
-  function signOut(){pendingCredentials=null;clearPrivateData();getApp()?.clearAddress();refresh();}
+  function signOut(){endedFor=null;pendingCredentials=null;clearPrivateData(true);getApp()?.clearAddress();refresh();}
+
+  /** Sign out `userId` on purpose here, and in the browser's other tabs that show them. */
+  function signOutEverywhere(userId){
+    signOut();
+    // The other tabs hear the change as a storage event; nothing stays stored.
+    if(userId)try{windowObject.localStorage.setItem(SIGNED_OUT,userId);windowObject.localStorage.removeItem(SIGNED_OUT);}catch{}
+  }
+
+  /**
+   * End this tab's session on the server. When the server refuses because the
+   * cookie now belongs to someone who signed in later, their session stays,
+   * and this tab still signs out, as its person asked.
+   */
+  async function logoutHere(){
+    try{await api.logout();}
+    catch(error){if(!(error instanceof ApiError&&error.status===401))throw error;}
+  }
+
+  /** Another tab signed out this tab's person on purpose, so this tab does the same, as its own Sign out would. */
+  function signedOutElsewhere(/** @type {StorageEvent} */ event){
+    if(event.key!==SIGNED_OUT||!event.newValue||event.newValue!==person())return;
+    begin();signOut();
+  }
 
   async function complete(auth,token) {
     if(!current(token))return false;
@@ -52,7 +88,7 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
       if(!current(token))return false;
       if(result?.stale)throw new ApiError('Workspace loading was interrupted.',{code:'load_interrupted'});
     }
-    pendingCompletion=null;
+    pendingCompletion=null;endedFor=null;
     onSessionChange(data.session);
     refresh();
     return true;
@@ -125,7 +161,8 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     retryButton.addEventListener('click',async()=>{retryButton.disabled=true;otherButton.disabled=true;try{await retry();}catch(error){reportError(error,section);}if(section.isConnected){retryButton.disabled=false;otherButton.disabled=false;}});
     otherButton.addEventListener('click',async()=>{
       retryButton.disabled=true;otherButton.disabled=true;
-      try{await api.logout();signOut();}
+      const signedIn=person();
+      try{await logoutHere();signOutEverywhere(signedIn);}
       catch(error){retryButton.disabled=false;otherButton.disabled=false;reportError(error,section);}
     });
     section.append(heading,copy,retryButton,otherButton);form.hidden=true;card.querySelector('.session-limit-list')?.remove();card.append(section);retryButton.focus();return true;
@@ -164,7 +201,9 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
   }
 
   return Object.freeze({
+    /** Read the browser's session, and from now on follow sign-outs on purpose in its other tabs. */
     async initialize() {
+      windowObject.addEventListener('storage',signedOutElsewhere);
       const token=begin();
       try {
         const auth = await api.me();
@@ -179,14 +218,15 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
     login,
     expire() {
       begin();
+      endedFor=person();
       pendingCredentials=null;
       clearPrivateData();
       refresh();
     },
     async logout() {
-      const token=begin();
-      await api.logout();
-      if(current(token))signOut();
+      const signedIn=person(),token=begin();
+      await logoutHere();
+      if(current(token)||!data.session&&endedFor===signedIn)signOutEverywhere(signedIn);
     },
     setTemporaryPassword,
     changePassword,
@@ -221,8 +261,10 @@ export function createAuthController({ api, data, refresh, loadBootstrap, report
       const dialog=openDialog({form,className:'confirmation-layer reauth-layer',inert:[document.getElementById('app')],onEscape:()=>{if(!cancel.disabled)cancel.click();}});
       let closed=false,phase='password';
       const authController=new AbortController();
-      const close=()=>{if(closed)return;closed=true;dialog.close();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
+      const close=()=>{if(closed)return;closed=true;closePrompt=null;dialog.close();if(previous instanceof HTMLElement&&previous.isConnected)previous.focus({preventScroll:true});};
       cancel.addEventListener('click',()=>{if(phase==='action'||phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('Authentication cancelled',{code:'reauth_cancelled'}));});
+      // A session that ends under the prompt leaves nothing to confirm: the sign-in page takes input, and the action stops quietly.
+      closePrompt=()=>{if(phase==='cancelled'||closed)return;phase='cancelled';authController.abort();close();reject(new ApiError('The session ended',{code:'stale_session'}));};
       form.addEventListener('submit',async(event)=>{
         event.preventDefault();
         if(phase!=='password'||isFormRetryPending(form))return;

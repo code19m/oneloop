@@ -23,24 +23,64 @@ test('Ctrl+S saves the task title where it is typed and never saves the page', {
   expect((await (await instance.api.get(`/api/tasks/${instance.projects[0].task.id}`)).json()).title).toBe('Saved with the shortcut');
 });
 
-test('a description shows as Markdown, opens for editing on a click, saves on Escape and links to app pages in place', async ({ page, instance }) => {
+test('a description shows as Markdown, opens for editing where it is clicked, saves on Escape and links to app pages in place', async ({ page, instance }) => {
   const { project, task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: '## Plan\n\nSee [the Board](#/board) and **this**.' }, task.revision);
   await openApp(page, instance);
   const reader = page.locator('#task-description-content');
   await expect(reader.getByRole('heading', { name: 'Plan' })).toBeVisible();
-  await reader.getByText('this').click();
+  // The caret lands where the click does, just before "this".
+  await reader.getByText('this').click({ position: { x: 1, y: 8 } });
   const editor = page.locator('#task-description');
   await expect(editor).toBeFocused();
-  await editor.pressSequentially(' More.');
+  await editor.pressSequentially('all of ');
   await editor.press('Escape');
   await expect(page.getByRole('button', { name: 'Edit description' })).toBeFocused();
-  await expect(reader).toContainText('this. More.');
-  expect((await (await instance.api.get(`/api/tasks/${task.id}`)).json()).description).toBe('## Plan\n\nSee [the Board](#/board) and **this**. More.');
+  await expect(reader).toContainText('all of this.');
+  // A double-click selects the word it lands on.
+  await reader.getByRole('heading', { name: 'Plan' }).dblclick();
+  await expect(editor).toBeFocused();
+  await editor.pressSequentially('Steps');
+  await editor.press('Escape');
+  await expect(reader.getByRole('heading', { name: 'Steps' })).toBeVisible();
+  expect((await (await instance.api.get(`/api/tasks/${task.id}`)).json()).description).toBe('## Steps\n\nSee [the Board](#/board) and **all of this**.');
   await reader.getByRole('link', { name: 'the Board' }).click();
   // An address without a project opens the Board of the project on screen.
   await expect(page).toHaveURL(new RegExp(`#/board/${project.id}$`));
   await expect(page.locator('.board')).toBeVisible();
+});
+
+test('a click in a long description opens the editor with its caret in view, near the end as near the top', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  const lines = Array.from({ length: 60 }, (_, index) => `Line ${index + 1} of the plan.`).join('\n\n');
+  await command(instance.api, 'task.update', { taskId: task.id, description: lines }, task.revision);
+  await openApp(page, instance);
+  await page.getByRole('button', { name: 'Show more' }).click();
+  const reader = page.locator('#task-description-content'), editor = page.locator('#task-description');
+  await reader.getByText('Line 55 of the plan.').click({ position: { x: 1, y: 8 } });
+  await expect(editor).toBeFocused();
+  // Line 55 of 60 shows near the end of the editor's text.
+  expect(await editor.evaluate(field => field.scrollTop > (field.scrollHeight - field.clientHeight) / 2)).toBe(true);
+  await page.keyboard.type('First ');
+  await expect(editor).toHaveValue(/\n\nFirst Line 55 of the plan\./);
+  await editor.press('Escape');
+  await reader.getByText('Line 3 of the plan.').click({ position: { x: 1, y: 8 } });
+  await expect(editor).toBeFocused();
+  expect(await editor.evaluate(field => field.scrollTop)).toBe(0);
+});
+
+test('a footnote link in a description brings its footnote into view, and its back link the reference', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  await command(instance.api, 'task.update', { taskId: task.id, description: 'See the note.[^1]\n\nOne.\n\nTwo.\n\nThree.\n\n[^1]: The note.' }, task.revision);
+  await page.setViewportSize({ width: 1280, height: 360 });
+  await openApp(page, instance);
+  const reader = page.locator('#task-description-content'), reference = reader.locator('[data-footnote-ref]'), note = reader.locator('.footnotes li');
+  await expect(reference).toBeInViewport();
+  await expect(note).not.toBeInViewport();
+  await reference.click();
+  await expect(note).toBeInViewport();
+  await note.locator('[data-footnote-backref]').click();
+  await expect(reference).toBeInViewport();
 });
 
 test('the task page keeps usable controls on a narrow phone viewport', async ({ page, instance }) => {

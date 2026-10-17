@@ -42,8 +42,10 @@ const needsHighlight=text=>/(?<![`~])[`~]{3,}[^\S\n]*[\w+-]+|<code\b[^<>]*\blang
 // GitHub's $`…`$, or $…$ on one line between two $ that no backslash escapes,
 // closed before a space, punctuation or the end of a run of text, as the math
 // extension reads it, also in quotes, lists and tables. Prices and shell
-// variables, such as "$5 and $10" or "$HOME", don't load KaTeX. One pass over
-// the lines, as marked splits them, so a long file stays quick.
+// variables, such as "$5 and $10" or "$HOME", don't load KaTeX. Each check is
+// a plain pass over the text or one of its lines, as marked splits them, so
+// the time grows with the length of the text, also when it is full of
+// escaped dollars.
 function needsMath(text){
   const pair=text.indexOf('$$');
   if(pair>=0&&text.indexOf('$$',pair+2)>=0)return true;
@@ -119,25 +121,42 @@ function diagramRenderer(){
   });
   return renderer;
 }
+/**
+ * A theme token as an opaque color, since a diagram is an image, which can't
+ * read the page's tokens. A see-through token shows over `over`.
+ * @param {string} name @param {string} [over] @returns {string}
+ */
+function tokenColor(name,over='--surface-canvas'){
+  const probe=document.createElement('i');probe.style.color=`var(${name})`;document.body.append(probe);
+  const [r,g,b,a=1]=(getComputedStyle(probe).color.match(/[\d.]+/g)??['0','0','0']).map(Number);probe.remove();
+  const base=a<1?(tokenColor(over).match(/[0-9a-f]{2}/g)??['00','00','00']).map(hex=>parseInt(hex,16)):[r,g,b];
+  return '#'+[r,g,b].map((channel,index)=>Math.round(channel*a+base[index]*(1-a)).toString(16).padStart(2,'0')).join('');
+}
+/** Mermaid's settings for the app's colors in the theme that shows. */
+function diagramTheme(){
+  const raised=tokenColor('--surface-raised'),canvas=tokenColor('--surface-canvas'),border=tokenColor('--line-strong','--surface-raised'),ink=tokenColor('--ink');
+  return {theme:'base',themeVariables:{darkMode:document.documentElement.dataset.theme==='dark',background:canvas,primaryColor:raised,secondaryColor:raised,tertiaryColor:canvas,primaryBorderColor:border,secondaryBorderColor:border,tertiaryBorderColor:border,lineColor:tokenColor('--ink-faint'),primaryTextColor:ink,secondaryTextColor:ink,tertiaryTextColor:ink,textColor:ink,edgeLabelBackground:canvas,clusterBkg:raised,clusterBorder:border,dropShadow:'none',useGradient:false}};
+}
 // What each drawn diagram was drawn from, so a new theme can draw it again.
 const diagramSources=new WeakMap();
 /**
- * Draw one diagram into its figure, in the current theme. A first drawing
- * that fails shows the source; a new drawing that fails keeps the old one.
+ * Draw one diagram into its figure, in the app's colors of the current theme.
+ * A first drawing that fails shows the source; a new drawing that fails
+ * keeps the old one.
  */
-function drawDiagram(figure,source,context,fallback=null){
+function drawDiagram(figure,source,fallback=null){
   diagramQueue=diagramQueue.then(async()=>{
     if(!figure.isConnected)return;
     try{
       const render=await diagramRenderer().catch(()=>null);if(!figure.isConnected)return;
       if(!render){fallback?.('Diagrams could not load. Check your connection.');return;}
-      const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,theme:document.documentElement.dataset.theme==='dark'?'dark':'default',...context.diagramTheme?.(),flowchart:{htmlLabels:false},htmlLabels:false,
+      const drawn=await render('attachment-diagram-'+(++diagramSequence),source,{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,maxTextSize:50000,maxEdges:500,...diagramTheme(),flowchart:{htmlLabels:false},htmlLabels:false,
         secure:['secure','securityLevel','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering','theme','themeCSS','themeVariables','htmlLabels','flowchart','fontFamily','dompurifyConfig']});
       if(!figure.isConnected)return;
       // The renderer returns sanitized SVG, shown as an image.
       const picture=document.createElement('img');picture.alt='Mermaid diagram';if(drawn.width&&drawn.height){picture.width=drawn.width;picture.height=drawn.height;}picture.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(drawn.svg);figure.replaceChildren(picture);figure.removeAttribute('aria-busy');
       if(fallback)UIMotion.fade(figure);
-      diagramSources.set(figure,{source,context});
+      diagramSources.set(figure,source);
     }catch{if(figure.isConnected&&fallback)fallback('This diagram could not be rendered. Check its Mermaid syntax.');}
   });
 }
@@ -149,16 +168,16 @@ function followTheme(){
   followingTheme=true;
   new MutationObserver((records)=>{
     if(records.every(record=>record.oldValue===document.documentElement.dataset.theme))return;
-    for(const figure of document.querySelectorAll('figure.markdown-diagram')){const drawn=diagramSources.get(figure);if(drawn)drawDiagram(figure,drawn.source,drawn.context);}
+    for(const figure of document.querySelectorAll('figure.markdown-diagram')){const source=diagramSources.get(figure);if(source!==undefined)drawDiagram(figure,source);}
   }).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme'],attributeOldValue:true});
 }
-function renderDiagrams(article,context){
+function renderDiagrams(article){
   for(const code of article.querySelectorAll('pre code.language-mermaid')){
     const source=code.textContent,pre=code.parentElement,figure=document.createElement('figure');figure.className='markdown-diagram';figure.setAttribute('aria-busy','true');
     const status=document.createElement('span');status.className='markdown-diagram-status';status.textContent='Rendering diagram…';figure.append(status);pre.replaceWith(figure);
     const fallback=message=>{figure.removeAttribute('aria-busy');status.textContent=message;figure.replaceChildren(status,pre);};
     if(source.length>50000){fallback('Diagram is too large to render. Source is shown below.');continue;}
-    followTheme();drawDiagram(figure,source,context,fallback);
+    followTheme();drawDiagram(figure,source,fallback);
   }
 }
 // Heading anchors follow src/knowledge/markdown.rs (inline_text, slug and
@@ -278,10 +297,10 @@ function nameHeadings(fragment,source,tokens,nonce){
 }
 /**
  * What a page adds to the Markdown it shows. Knowledge resolves relative links
- * and images inside its folder and themes diagrams. Descriptions break lines
- * where their text does, as GitHub shows an issue, and give the app route of
- * the task keys they link. Attachments add nothing.
- * @typedef {{resolveLink?:(href:string)=>unknown,resolveImage?:(src:string)=>unknown,diagramTheme?:()=>object,breaks?:boolean,taskLink?:(key:string)=>unknown}} MarkdownContext
+ * and images inside its folder. Descriptions break lines where their text
+ * does, as GitHub shows an issue, and give the app route of the task keys
+ * they link. Attachments add nothing.
+ * @typedef {{resolveLink?:(href:string)=>unknown,resolveImage?:(src:string)=>unknown,breaks?:boolean,taskLink?:(key:string)=>unknown}} MarkdownContext
  */
 
 /**
@@ -317,6 +336,30 @@ export function markdownView(host,file,text,truncated,context={}){
 export function markdownInto(view,text,context={},onLater=()=>{}){
   if(readyFor(text)){renderMarkdown(view,text,context);return;}
   loadMarkdown(text).then(()=>{if(view.isConnected&&renderMarkdown(view,text,context))onLater();},()=>{});
+}
+
+// Text the renderer adds where the source has none: KaTeX's hidden copy of
+// each formula, alert titles and the footnotes' heading.
+const ADDED_TEXT='.katex-mathml,.markdown-alert-title,.footnotes > .sr-only';
+/**
+ * Where a spot in Markdown that `root` shows falls in its `source`: `offset`
+ * into the text node `node`. The text before it is found in the source piece
+ * by piece, in order, so a link's address or a word shown again further on
+ * doesn't take its place. Null when the source has the text otherwise, as
+ * with a character reference such as `&amp;`.
+ * @param {Element} root @param {Node} node @param {number} offset @param {string} source
+ */
+export function sourcePosition(root,node,offset,source){
+  if(node.nodeType!==Node.TEXT_NODE||!root.contains(node)||node.parentElement?.closest(ADDED_TEXT))return null;
+  let cursor=0;
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  for(let current=walker.nextNode();current&&current!==node;current=walker.nextNode()){
+    if(!current.nodeValue.trim()||current.parentElement?.closest(ADDED_TEXT))continue;
+    const found=source.indexOf(current.nodeValue,cursor);
+    if(found>=0)cursor=found+current.nodeValue.length;
+  }
+  const at=source.indexOf(node.nodeValue,cursor);
+  return at<0?null:at+offset;
 }
 
 // A link to a page of oneloop, such as #/task/WEB-042 or this page's own
@@ -394,11 +437,13 @@ function renderMarkdown(view,text,context){
   // and columns start from. A direction the file sets stays.
   fragment.querySelectorAll('p,h1,h2,h3,h4,h5,h6,summary,ul,ol,dl,table').forEach(el=>{if(!el.hasAttribute('dir')&&!el.parentElement?.closest('ul,ol,dl,table'))el.setAttribute('dir','auto');});
   const article=document.createElement('article');article.className='markdown-body';article.append(fragment);
-  // In-document links, such as footnotes, move within whatever shows the article.
-  article.addEventListener('click',event=>{const href=/** @type {Element} */ (event.target).closest('a')?.getAttribute('href');if(!href?.startsWith('#md-'))return;event.preventDefault();const target=/** @type {HTMLElement|undefined} */ ([...article.querySelectorAll('[id]')].find(el=>el.id===href.slice(1)));if(!target)return;const holder=article.parentElement,scroller=holder.closest('.knowledge-reader')||holder;scroller.scrollTo({top:scroller.scrollTop+target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16,behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});});
+  // In-document links, such as a table of contents, footnotes and their back
+  // links, bring their target to the top, as a page's anchors do: in the box
+  // that shows the article, and in the page around it.
+  article.addEventListener('click',event=>{const href=/** @type {Element} */ (event.target).closest('a')?.getAttribute('href');if(!href?.startsWith('#md-'))return;event.preventDefault();const target=/** @type {HTMLElement|undefined} */ ([...article.querySelectorAll('[id]')].find(el=>el.id===href.slice(1)));if(!target)return;target.scrollIntoView({block:'start',behavior:UIMotion.reduced()?'auto':'smooth'});target.tabIndex=-1;target.focus({preventScroll:true});});
   view.replaceChildren(article);view.scrollTop=scroll;
   article.querySelectorAll('[data-md-math]').forEach((/** @type {HTMLElement} */ el)=>{const expression=maths[Number(el.dataset.mdMath)];el.removeAttribute('data-md-math');if(!expression||!vendor.katex)return;el.className=expression.display?'markdown-math-block':'markdown-math-inline';if(expression.text.length>10000){el.textContent=expression.text;return;}try{vendor.katex.render(expression.text,el,{displayMode:expression.display,throwOnError:false,trust:false,maxExpand:1000,maxSize:20,strict:'ignore',output:'htmlAndMathml',macros:{}});}catch{el.textContent=expression.text;}});
-  renderDiagrams(article,context);
+  renderDiagrams(article);
   return true;
 }
 export function htmlView(host,file,text){

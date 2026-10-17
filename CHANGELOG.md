@@ -6,6 +6,45 @@ All notable changes to oneloop are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sign out** now signs out your other open tabs in the browser at once.
+  They forget their project, the Board's filters and open dialogs too, so the
+  next person who signs in there starts from their own project. A session that
+  ends by itself still keeps each tab's address. A tab that still shows you
+  after someone else signed in elsewhere signs out too, and leaves their
+  session alone.
+- **Confirm your identity** now closes when the session ends while it asks,
+  as when you sign out in another tab, so the sign-in page can be used at
+  once instead of after **Cancel**.
+- Creating a project, or losing access to the one on screen, now adds one step
+  to the browser's history, so **Back** returns to the page you were on.
+- Choosing another project on **Page not found** or **Access denied** now opens
+  that project's page of the same kind, such as its **Knowledge**, or else its
+  **Board**.
+- While another project's **Roadmap** loads, its header and the sidebar's
+  **Board** count show no numbers instead of 0. The header's counts of tracks,
+  epics and milestones now also follow changes made elsewhere.
+- **Reload now** reloads the tab once. On a slow network, switching to another
+  tab before the new page arrived made the tab start a second reload, and the
+  new page then said **oneloop was updated**.
+- Dragging selected text no longer causes an error in Firefox.
+- Focus stays on a file's name, **Download**, **Delete**, **Temporary** and its
+  other controls when the task's files are drawn again, such as after a move
+  or a change made elsewhere. When the file is deleted, focus goes to the same
+  control of the file in its place, and when an upload ends or is dismissed,
+  to the drop area.
+- Esc or Ctrl+Enter (Cmd+Enter on macOS) in an empty description now keeps
+  focus on its field, instead of losing it to the page.
+- A click on a task's description now puts the cursor where you clicked, and
+  a double-click selects the word you clicked, instead of the cursor going to
+  the end.
+- A footnote link in a description now brings its footnote into view, and the
+  footnote's back link returns to the reference. Before, it scrolled only the
+  description's own box, so the footnote could stay out of view.
+- Mermaid diagrams in descriptions and file previews now use the app's colors
+  in light and dark, as Knowledge already did.
+
 ## [0.1.0-rc.6] - 2026-10-17
 
 The sixth release candidate. It adds task checklists, shows descriptions as

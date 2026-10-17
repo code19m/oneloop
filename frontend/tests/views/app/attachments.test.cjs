@@ -262,7 +262,7 @@ test('attachment order is shared by keyboard and pointer moves, which Escape and
   const keep = () => answerLast(t, 'reorderAttachment', { items: order().map(id => serverFile(id, task.attachments.find(f => f.id === id).name, 'text')) });
   const zone = () => d.querySelector('.task-attachments');
   const original = order(), grip = () => d.querySelector(`[data-reorder-file="${original[0]}"]`);
-  grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); assert.equal(task.attachments.at(-1).id, original[0]); assert.equal(d.activeElement.dataset.reorderFile, original[0]);
+  grip().focus(); grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); assert.equal(task.attachments.at(-1).id, original[0]); assert.equal(d.activeElement.dataset.reorderFile, original[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(moves()[0].args)), ['bir-079', { attachmentId: 'hello', targetId: 'third', after: true, expectedRevision: 1, idempotencyKey: moves()[0].args[1].idempotencyKey }]); await keep();
   assert.equal(d.activeElement, grip(), 'the moved file keeps focus once the server confirms its place, so the arrow keys go on moving it');
   grip().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); assert.deepEqual(order(), original); await keep();
@@ -459,4 +459,50 @@ test('closing a preview gives focus back to its file name after a live update dr
   await waitFor(() => !opener.isConnected, 'the live read draws the list again');
   t.d.querySelector('[data-file-close]').click();
   assert.equal(t.d.activeElement, t.d.querySelector('.attachment-title'));
+});
+
+test('each control of a file, and the drop area, keeps focus when a change from elsewhere draws the files again', async () => {
+  const t = await withServerFiles([serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown')]);
+  for (const control of ['[data-attachment-id="world"] .attachment-grip', '[data-attachment-id="world"] .attachment-thumbnail', '[data-attachment-id="world"] .attachment-title', '[data-attachment-id="world"] .retention-switch', '[data-attachment-id="world"] .file-download', '[data-attachment-id="world"] .file-remove', '.attachment-dropzone']) {
+    const old = t.d.querySelector(control); old.focus();
+    t.runtime.publish({ type: 'sse', taskId: 'BIR-079', entityType: 'attachment' });
+    await waitFor(() => !old.isConnected, 'the live read draws the files again');
+    assert.equal(t.d.activeElement, t.d.querySelector(control), control);
+  }
+});
+
+test('focus stays on a file\'s control when the server answers a move, and goes to the file in its place when it is deleted', async () => {
+  let listed = [serverFile('hello', 'hello.txt', 'text'), serverFile('world', 'world.md', 'markdown')];
+  const t = await withServerFiles(listed, {}, { api: { attachments: async () => ({ items: listed }), deleteAttachment: async () => { listed = listed.filter(file => file.id !== 'world'); return {}; } } });
+  const grip = t.d.querySelector('[data-reorder-file="hello"]');
+  grip.focus(); grip.dispatchEvent(new t.w.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+  // The person moves on to the file's name before the server answers.
+  t.d.querySelector('[data-attachment-id="hello"] .attachment-title').focus();
+  await answerLast(t, 'reorderAttachment', { items: [listed[1], listed[0]] });
+  assert.equal(t.d.activeElement, t.d.querySelector('[data-attachment-id="hello"] .attachment-title'));
+  // World is first now.
+  t.d.querySelector('[data-attachment-id="world"] .file-remove').focus();
+  t.A.delAttachment('BIR-079', t.task.attachments.findIndex(file => file.id === 'world'));
+  t.d.querySelector('[data-confirm-accept]').click();
+  await waitFor(() => !t.d.querySelector('[data-attachment-id="world"]'), 'the file is deleted');
+  assert.equal(t.d.activeElement, t.d.querySelector('[data-attachment-id="hello"] .file-remove'));
+});
+
+test('when an upload ends or is dismissed, focus on its controls goes to the drop area', async () => {
+  const t = bootApp({ route: 'task/BIR-079', api: { attachments: async () => ({ items: [] }) } });
+  const send = async () => {
+    t.A.attachFiles('BIR-079', { files: [new t.w.File(['notes'], 'notes.txt', { type: 'text/plain' })], value: '' });
+    await waitFor(() => t.calls.some(call => call.method === 'uploadAttachment' && !call.settled), 'the upload was sent');
+  };
+  await send();
+  t.d.querySelector('[data-upload-action="cancel"]').focus();
+  t.answer('uploadAttachment', serverFile('f1', 'notes.txt', 'text'));
+  await waitFor(() => !t.d.querySelector('.upload-row'), 'the upload ends');
+  assert.equal(t.d.activeElement, t.d.querySelector('.attachment-dropzone'), 'Cancel of an upload that ended');
+  await send();
+  t.calls.filter(call => call.method === 'uploadAttachment').at(-1).reject(new ApiError('The server is busy', { status: 503, code: 'unavailable' }));
+  await waitFor(() => !t.d.querySelector('[data-upload-action="remove"]').hidden, 'the failed upload offers Dismiss');
+  t.d.querySelector('[data-upload-action="remove"]').focus(); t.d.querySelector('[data-upload-action="remove"]').click();
+  assert.equal(t.d.querySelector('.upload-row'), null);
+  assert.equal(t.d.activeElement, t.d.querySelector('.attachment-dropzone'), 'Dismiss');
 });

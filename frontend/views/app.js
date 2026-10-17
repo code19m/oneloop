@@ -24,7 +24,7 @@ import {
 import { mountDescription, sizeDescription, sizeDescriptionEditors } from './app/forms.js';
 import {
   App, D, blockedCount, canBoard, canReadProject, canReadTask, counts, epicById, hasPermission, instanceNow,
-  isAdmin, knowledge, me, poolTotal, project, recovery, report, runtime, state, taskById, trackById,
+  isAdmin, knowledge, me, poolTotal, project, projectLoaded, recovery, report, runtime, state, taskById, trackById,
   visibleProjects,
 } from './app/model.js';
 import {
@@ -260,7 +260,7 @@ function renderContent() {
   const error = recovery.pageError || (state.view === 'notfound' && !awaitingServerTask() ? '404' : state.view === 'forbidden' ? '403' : null);
   // An address can name a project whose tracks, epics and people the route
   // loader still loads; the Board waits for its cards in the same way.
-  const loadingProject = ['roadmap','settings'].includes(state.view) && D.bootstrapProjectId !== state.projectId;
+  const loadingProject = ['roadmap','settings'].includes(state.view) && !projectLoaded();
   const view = state.view==='no-projects' ? `<div class="page-empty"><h2>No projects available</h2><p>${isAdmin()?'Create the first project to start planning work.':'Ask an admin to add you to a project.'}</p>${isAdmin()?`<button class="btn primary" ${UIAction('openModal', 'project')}>Create project</button>`:''}</div>` : error ? recovery.errorHtml(error) : awaitingServerTask() ? '<div class="pending-task-route" role="status" aria-label="Loading task"></div>' : loadingProject ? recovery.errorHtml('loading') : state.view === 'knowledge' ? knowledge.render(state.projectId) : state.view === 'roadmap' ? renderRoadmap() : state.view === 'board' ? renderBoard() : state.view === 'task' ? renderTask() : state.view === 'profile' ? renderProfile() : state.view === 'users' ? renderUsers() : state.view === 'inbox' ? inboxHtml() : state.view === 'storage' ? `<div class="workspace-page storage-page">${storageHtml()}</div>` : renderSettings();
   const appRoot = document.getElementById('app'), shell = document.createElement('template');
   setHTML(shell,`
@@ -335,14 +335,14 @@ Object.assign(App, {
   updateDocumentTitle,
   replaceAddress,
   /**
-   * Forget the project, page and Board filters the tab showed, with its
-   * address, as its person signed out on purpose: the next person to sign in
-   * here starts from their own project. A session that ends by itself keeps
+   * Forget the project, page, Board filters and dialogs the tab showed, with
+   * its address, as its person signed out on purpose: the next person to sign
+   * in here starts from their own project. A session that ends by itself keeps
    * them, for the same person to come back to.
    */
   clearAddress() {
     const {page}=readAddress(location.hash);
-    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;resetBoardFilters();
+    state.projectId=null;state.taskId=null;state.rmScrollLeft=null;state.modal=null;state.peek=null;state.menu=null;resetBoardFilters();
     // A task names its project too, so it gives way to the Board, as does an address that can't be read.
     state.view=['task','notfound'].includes(page)?'board':page;
     replaceAddress();
@@ -360,19 +360,23 @@ Object.assign(App, {
   followAddress,
   /**
    * Switch to a project whose data the caller loaded. The page stays, but a
-   * task page goes to the Board and Knowledge to its top folder. The switch is
-   * a new history entry, and this person's new tabs in this browser open the
-   * project.
+   * task page goes to the Board, Knowledge to its top folder, and Page not
+   * found or Access denied to the project's page of the kind the address
+   * names, else its Board. The switch is a new history entry.
    */
   selectProject(id) {
     if(!visibleProjects().some(project=>project.id===id))return;
-    const leaveTask=state.view==='task'&&state.projectId!==id;
-    state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);
-    if(leaveTask){state.view='board';state.taskId=null;}
-    if(state.view==='knowledge')knowledge.route('knowledge',id);
-    pushAddress(addressOf(state.view));render();
+    const view=pageAfterSwitch(id);
+    switchTo(id);recovery.clearPageError();state.view=view;
+    if(view!=='task')state.taskId=null;
+    if(view==='knowledge')knowledge.route('knowledge',id);
+    pushAddress(addressOf(view));render();
   },
-  nav(v) { recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash(addressOf(v)); render(); },
+  /** Go to page `v`, which then loads: of the project on screen, or of `projectId` as a switch to it, in the same history entry. */
+  nav(v, { projectId } = {}) {
+    if (projectId && visibleProjects().some(project => project.id === projectId)) switchTo(projectId);
+    recovery.clearPageError(); state.view = v; state.menu = null; state.peek = null; state.modal = null; state.sideOpen = false; if (v === 'knowledge') knowledge.route(v, state.projectId); setLocalHash(addressOf(v)); render();
+  },
   require(permission) {
     if (hasPermission(permission)) return true;
     App.toast(`${permission === 'manage_roadmap' ? 'Roadmap' : 'Board'}: read only`, 'info');
@@ -445,6 +449,14 @@ window.App = App;
 export { App };
 
 // ---------- routing ----------
+/** Show project `id` as someone switches to it: an unfiltered Board and the Roadmap at today. This person's new tabs in this browser open it. */
+function switchTo(id){state.projectId=id;state.rmScrollLeft=null;resetBoardFilters();rememberSwitch(me().id,id);}
+/** The page a switch to project `id` shows; see `selectProject`. */
+function pageAfterSwitch(id){
+  if(!['notfound','forbidden'].includes(state.view))return state.view==='task'&&state.projectId!==id?'board':state.view;
+  const {page}=readAddress(location.hash);
+  return ['board','roadmap','knowledge'].includes(page)||page==='settings'&&isAdmin()?page:'board';
+}
 /** The project to show when the address names none: the one on screen, else the loaded one, else the first. */
 const defaultProject=()=>[state.projectId,D.bootstrapProjectId].find(id=>visibleProjects().some(project=>project.id===id))??visibleProjects()[0]?.id;
 /**

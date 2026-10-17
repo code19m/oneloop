@@ -52,12 +52,14 @@ test('a Knowledge link names its project; an unknown project is not found', () =
   assert.match(t.d.querySelector('.page-error h2').textContent, /Page not found/);
 });
 
-test('switching projects keeps the Knowledge page and starts at its top folder', () => {
-  const t = boot('knowledge/p1/tree/guides');
-  t.A.selectProject('p2');
-  assert.equal(t.w.location.hash, '#/knowledge/p2/tree');
-  assert.deepEqual(t.calls.filter(([name]) => name === 'route').at(-1), ['route', 'knowledge', 'p2']);
-  assert.equal(t.d.querySelector('main .knowledge-workspace').dataset.project, 'p2');
+test('switching projects keeps the Knowledge page and starts at its top folder, also from a Knowledge page not found', () => {
+  for (const route of ['knowledge/p1/tree/guides', 'knowledge/missing/blob/guide.md']) {
+    const t = boot(route);
+    t.A.selectProject('p2');
+    assert.equal(t.w.location.hash, '#/knowledge/p2/tree', route);
+    assert.deepEqual(t.calls.filter(([name]) => name === 'route').at(-1), ['route', 'knowledge', 'p2']);
+    assert.equal(t.d.querySelector('main .knowledge-workspace').dataset.project, 'p2');
+  }
 });
 
 test('only administrators see the Knowledge base settings and its connection dialog', () => {

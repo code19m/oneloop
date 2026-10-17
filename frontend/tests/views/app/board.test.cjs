@@ -517,6 +517,15 @@ test('a card dropped below a long column follows its last shown card and stays d
   assert.deepEqual(t.doneCards(), [...shown, task.id]);
 });
 
+test('dragging selected text never drags a card, and outside a card it stays a text drag', () => {
+  const t = bootApp({ route: 'board' });
+  // Firefox starts the drag of selected text from its text node.
+  const drag = node => { const event = new t.w.Event('dragstart', { bubbles: true, cancelable: true }); node.dispatchEvent(event); return event.defaultPrevented; };
+  const text = root => { const walker = t.d.createTreeWalker(root, t.w.NodeFilter.SHOW_TEXT); for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.nodeValue.trim()) return node; };
+  assert.equal(drag(text(t.d.querySelector('.board .card[data-task]'))), true, 'a card moves only with the pointer code');
+  assert.equal(drag(text(t.d.querySelector('.topbar h1'))), false);
+});
+
 test('the click that ends a card drag never opens the card, however late it comes', () => {
   const t = bootApp({ route: 'board', actions: true });
   t.d.elementFromPoint = () => null;

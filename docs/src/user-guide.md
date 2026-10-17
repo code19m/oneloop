@@ -17,9 +17,9 @@ The address of the **Board**, the **Roadmap**, **Knowledge** and **Settings**
 names the project, so a refresh, a bookmark or a link opens the same project.
 An address without a project, such as an older bookmark, opens the project you
 last switched to in this browser, or else your first project. A link to a
-project you can't open shows **Page not found**. When you sign out, the tab's
-address drops the project and the Board's filters, so the next person who signs
-in there starts from their own project.
+project you can't open shows **Page not found**. When you sign out, the
+address drops the project and the Board's filters, so the next person who
+signs in there starts from their own project.
 
 What you can change depends on your access to the project. Without the
 **Roadmap** or **Board** permission, that page is **read only**, but you can
@@ -140,17 +140,17 @@ and it doesn't save the page as a file, except from inside an HTML file preview.
 
 ### Checklist
 
-A task's **Checklist**, below its description, splits the work into steps.
+A task's **Checklist**, below its description, splits the work into items.
 
-- **Add an item** stays ready after Enter, so you can type the next step at
-  once. A task has up to 50 steps, each one line of up to 140 characters.
-- A step's text saves when you press Enter or leave it. To move a step, drag
+- **Add an item** stays ready after Enter, so you can type the next item at
+  once, within the [checklist limits](reference.md#limits).
+- An item's text saves when you press Enter or leave it. To move an item, drag
   its handle, or focus the handle and use the arrow keys, Home and End.
-- **×** removes a step at once, without Undo.
-- The heading and the Board card count the done steps, such as **2/5**. The
-  card's count turns green once every step is done. Steps don't move the task,
-  so a task can be Done with steps open.
-- People who can't change the Board see the steps, but not an empty checklist.
+- **×** removes an item at once, without Undo.
+- The heading and the Board card count the done items, such as **2/5**. The
+  card's count turns green once every item is done. Items don't move the task,
+  so a task can be Done with items open.
+- People who can't change the Board see the items, but not an empty checklist.
 
 ### Blocking
 
@@ -303,9 +303,9 @@ Sessions end by themselves after a while; see
 
 If your session ends while you type, sign in again in the same tab and your
 text comes back. The tab keeps it only in memory, and drops it if someone else
-signs in there. Tabs of one browser share a session, so when you sign out and
-someone else signs in, your other open tabs show that your session ended
-instead of their work.
+signs in there. Tabs of one browser share a session: when you sign out, your
+other open tabs sign out too, and when someone else signs in, your open tabs
+show that your session ended instead of their work.
 
 If you forget your password, ask an admin to reset it. You get a temporary
 password and choose a new one when you sign in.

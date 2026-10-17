@@ -58,6 +58,9 @@ test('heading links scroll into view in the inline Knowledge reader and full vie
     await expect(heading).not.toBeInViewport();
     await reader.getByRole('link', { name: 'Jump to final section' }).click();
     await expect(heading).toBeInViewport({ ratio: 1 });
+    // The heading comes to the top of the reader, a little below its edge, with its section under it.
+    const below = await heading.evaluate((element, box) => element.getBoundingClientRect().top - box.getBoundingClientRect().top, await reader.elementHandle());
+    expect(below).toBeGreaterThan(0); expect(below).toBeLessThan(48);
     await expect(heading).toBeFocused();
     await expect(page).toHaveURL(route);
   }
