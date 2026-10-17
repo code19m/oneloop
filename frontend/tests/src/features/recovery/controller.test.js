@@ -457,13 +457,24 @@ test('only a reload the tab made by itself makes the next page say oneloop was u
   assert.equal(browser.reloads,0,'the browser reloads');assert.deepEqual(updatable({stores:browser.stores}).toasts,[]);
 });
 
-test('a page that the browser\'s prompt kept after Reload now still reloads by itself later',()=>{
+test('a page that the browser\'s prompt kept after Reload now still reloads by itself later',async()=>{
   const page=updatable();let typed=true;page.controller.trackUnsaved(()=>typed);
   page.controller.buildChanged(newVersion);page.controller.activateNotice();
   assert.equal(page.reloads,1,'Reload now asks the browser to reload');
   // Typed text made the browser ask to leave the page, and the person stayed: no pagehide. Then the text was saved.
-  typed=false;page.show(false);
-  assert.equal(page.reloads,2,'the tab reloads by itself once it hides');
+  typed=false;page.show(false);await page.advance(4*60_000+30_000);
+  assert.equal(page.reloads,1,'the page can\'t tell that the person stayed, so it waits as for a slow page');
+  await page.advance(30_000);
+  assert.equal(page.reloads,2,'then the hidden tab reloads by itself');
+});
+
+test('Reload now reloads once also when a running save made the browser ask first, and the person left',async()=>{
+  const page=updatable();page.saving=true;page.controller.buildChanged(newVersion);page.controller.activateNotice();
+  // The person chose to leave. The save ends, and the tab hides before the new page arrives.
+  page.saving=false;page.controller.interactionPending('task.update:t1:title',false);page.show(false);await page.advance(60_000);
+  assert.equal(page.reloads,1);
+  page.leave();
+  assert.deepEqual(updatable({stores:page.stores}).toasts,[],'the new page doesn\'t say oneloop was updated');
 });
 
 test('Reload now reloads once, also when the tab hides before the new page arrives',async()=>{

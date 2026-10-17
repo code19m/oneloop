@@ -242,7 +242,7 @@ export function createRecoveryController({
   /** @type {{version:string,revision:string}|null} */ let newBuild=null;
   // A page that is leaving (pagehide), by Reload now or the browser, hides on its way out: no moment to reload by itself.
   let autoReloaded=false,autoReloadTimer=null,hiddenCheckTimer=null,lastActivity=now(),leaving=false;
-  // When the browser began to load the next page here, as for Reload now, with nothing to ask first.
+  // When the browser was last about to load another page here, as for Reload now.
   let departedAt=-Infinity;
 
   function entityKey(entity){
@@ -310,7 +310,9 @@ export function createRecoveryController({
   }
 
   function warnBeforeUnload(event){
-    if(!hasUnsavedInput()){departedAt=now();return;}
+    // Even after the browser asks, the person may leave, and the next page may come slowly.
+    departedAt=now();
+    if(!hasUnsavedInput())return;
     // The browser shows its own prompt; returnValue is for older browsers.
     event.preventDefault();event.returnValue=true;
   }
@@ -350,7 +352,8 @@ export function createRecoveryController({
    * itself once per page load and once per version, so servers that disagree
    * about the version can't make it loop. A page on its way, as after Reload
    * now on a slow network, comes once: the tab waits for it as long as an
-   * idle tab waits, and if its load stopped, reloads by itself after that.
+   * idle tab waits, and if its load stopped, or the person stayed when the
+   * browser asked, reloads by itself after that.
    */
   function reloadWhenSafe(){
     clearTimer(autoReloadTimer);autoReloadTimer=null;
