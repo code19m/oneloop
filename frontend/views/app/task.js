@@ -297,9 +297,10 @@ Object.assign(App, {
     const caret = clicked ?? input.value.length, text = input.value;
     input.focus({ preventScroll: true });
     // Not every browser scrolls a field to a caret placed by code, so the
-    // field shows the line where the text before the caret ends.
+    // field measures the text before the caret, and shows the line where it
+    // ends once that text is taller than the field.
     input.value = text.slice(0, caret); const line = input.scrollHeight; input.value = text;
-    input.setSelectionRange(caret, caret); input.scrollTop = line - input.clientHeight / 2;
+    input.setSelectionRange(caret, caret); input.scrollTop = line > input.clientHeight ? line - input.clientHeight / 2 : 0;
     if (clicked !== null) input.addEventListener('mousedown', (press) => { if (press.detail !== 2) return; press.preventDefault(); selectWord(input, clicked); }, { once: true });
   },
   /**
