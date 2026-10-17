@@ -49,6 +49,8 @@ All notable changes to oneloop are recorded here. The format follows
 - Opening a task of another project just as a change made elsewhere reloaded
   the page could leave the task loading, or show **Access denied**. The
   reload now leaves the new page alone.
+- On a touch screen, a second finger now stops dragging a checklist item or a
+  file, as it does for a track.
 - **Sign out** now signs out your other open tabs in the browser at once. They
   go straight to the sign-in page, without first saying that the session
   ended. They forget their project, the Board's filters and open dialogs too,

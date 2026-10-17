@@ -69,6 +69,8 @@ function scroll() {
 
 function listen() {
   document.addEventListener('pointerdown', event => {
+    // A second finger, as in a pinch, ends the drag instead of moving the row on.
+    if (sorting && event.pointerId !== sorting.pointerId) { stop(); return; }
     const found = event.button === 0 ? gripOf(event.target) : null; if (!found || !ready(found)) return;
     const { list, handle } = found, row = handle.closest(list.row); if (!row) return;
     stop(); sorting = { list, handle, row, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY };

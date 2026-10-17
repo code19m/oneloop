@@ -323,6 +323,17 @@ test('while a track move saves, a key press on another grip says why and moves n
   assert.equal(t.calls.length, 2, 'once the move saved, the grip moves its track again');
 });
 
+test('a second finger stops a track drag, so a pinch zooms instead of moving the track', () => {
+  const t = withRuntime('roadmap', ['moveTrack']);
+  laneGeometry(t);
+  pointer(t, 'pointerdown', gripOf(t.d, 't1'), 20, 150); pointer(t, 'pointermove', t.d, 500, 380);
+  assert(t.d.querySelector('.sort-marker'), 'the drag shows where the track would land');
+  pointer(t, 'pointerdown', t.d.getElementById('rmScroll'), 600, 300, 2);
+  assert.equal(t.d.querySelector('.sort-marker'), null, 'the drag stops');
+  pointer(t, 'pointerup', t.d, 500, 380);
+  assert.deepEqual(laneOrder(t.d), ['t1', 't2', 't3', 't4', 't5']); assert.equal(t.calls.length, 0);
+});
+
 test('a change made elsewhere while a grip is held shows once the press ends, so a drag goes on', async () => {
   const t = withRuntime('roadmap', ['moveTrack']), renamed = () => t.d.querySelector('.lane[data-track="t5"] .name').textContent;
   laneGeometry(t);
