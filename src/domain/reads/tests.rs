@@ -188,6 +188,27 @@ mod epic_date_tests {
 }
 
 #[test]
+fn a_task_is_found_by_its_id_or_key_through_their_indexes_whatever_the_statistics() {
+    let (_root, c) = crate::db::migrated_connection();
+    // No statistics; those of an empty table, as `PRAGMA optimize` leaves
+    // them before any task exists; and those of a large one.
+    for statistics in [
+        "",
+        "ANALYZE;",
+        "INSERT INTO sqlite_stat1 VALUES('tasks','sqlite_autoindex_tasks_1','100000 1'),
+           ('tasks','sqlite_autoindex_tasks_2','100000 1');
+         ANALYZE sqlite_schema;",
+    ] {
+        c.execute_batch(statistics).unwrap();
+        let plan = query_plan(&c, TASK_BY_ID_OR_KEY_SQL);
+        assert!(
+            plan.matches("SEARCH tasks USING INDEX").count() == 2 && !plan.contains("SCAN"),
+            "{statistics}\n{plan}"
+        );
+    }
+}
+
+#[test]
 fn checklist_counts_read_only_the_items_of_the_page() {
     let (_root, c) = crate::db::migrated_connection();
     let plan = query_plan(&c, CHECKLIST_COUNTS_SQL);

@@ -455,8 +455,18 @@ fn pool_page_connection(
 /// The ID of the task that `value` names by its ID or its key, such as
 /// `WEB-042`. Callers check access to the task's project.
 pub(crate) fn resolve_task_id(connection: &rusqlite::Connection, value: &str) -> AppResult<String> {
-    connection.query_row("SELECT id FROM tasks WHERE (id=?1 OR task_key=?1 COLLATE NOCASE) AND deleted_at IS NULL",[value],|row|row.get(0)).optional()?.ok_or(AppError::NotFound { resource: "task" })
+    connection
+        .prepare_cached(TASK_BY_ID_OR_KEY_SQL)?
+        .query_row([value], |row| row.get(0))
+        .optional()?
+        .ok_or(AppError::NotFound { resource: "task" })
 }
+
+/// A task by its ID or its key, as two lookups, so that each searches its
+/// unique index whatever the statistics say. As one lookup with OR, it read
+/// every task when the statistics were those of a small table.
+const TASK_BY_ID_OR_KEY_SQL: &str = "SELECT id FROM tasks WHERE id=?1 AND deleted_at IS NULL
+    UNION ALL SELECT id FROM tasks WHERE task_key=?1 COLLATE NOCASE AND deleted_at IS NULL";
 
 #[cfg(test)]
 mod tests;
