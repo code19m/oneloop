@@ -338,22 +338,28 @@ export function markdownInto(view,text,context={},onLater=()=>{}){
   loadMarkdown(text).then(()=>{if(view.isConnected&&renderMarkdown(view,text,context))onLater();},()=>{});
 }
 
+// Text the renderer adds where the source has none: KaTeX's hidden copy of
+// each formula, alert titles and the footnotes' heading.
+const ADDED_TEXT='.katex-mathml,.markdown-alert-title,.footnotes > .sr-only';
 /**
  * Where a spot in Markdown that `root` shows falls in its `source`: `offset`
- * into the text node `node`. The node's text is found in the source as often
- * as it shows before the node; null when the source has it otherwise, as with
- * a character reference such as `&amp;`.
+ * into the text node `node`. The text before it is found in the source piece
+ * by piece, in order, so a link's address or a word shown again further on
+ * doesn't take its place. Null when the source has the text otherwise, as
+ * with a character reference such as `&amp;`.
  * @param {Element} root @param {Node} node @param {number} offset @param {string} source
  */
 export function sourcePosition(root,node,offset,source){
-  const text=node.nodeType===Node.TEXT_NODE&&root.contains(node)?node.nodeValue:'';
-  if(!text)return null;
-  let before='',seen=0,at=-1;
+  if(node.nodeType!==Node.TEXT_NODE||!root.contains(node)||node.parentElement?.closest(ADDED_TEXT))return null;
+  let cursor=0;
   const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
-  for(let current=walker.nextNode();current&&current!==node;current=walker.nextNode())before+=current.nodeValue;
-  for(let found=before.indexOf(text);found>=0;found=before.indexOf(text,found+1))seen++;
-  for(let count=0;count<=seen;count++){at=source.indexOf(text,at+1);if(at<0)return null;}
-  return at+offset;
+  for(let current=walker.nextNode();current&&current!==node;current=walker.nextNode()){
+    if(!current.nodeValue.trim()||current.parentElement?.closest(ADDED_TEXT))continue;
+    const found=source.indexOf(current.nodeValue,cursor);
+    if(found>=0)cursor=found+current.nodeValue.length;
+  }
+  const at=source.indexOf(node.nodeValue,cursor);
+  return at<0?null:at+offset;
 }
 
 // A link to a page of oneloop, such as #/task/WEB-042 or this page's own

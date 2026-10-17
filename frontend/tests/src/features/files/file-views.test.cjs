@@ -353,17 +353,21 @@ function directPreviews() {
   return { w, d: w.document, host: w.document.getElementById('host'), views: importModule(dom, 'src/features/files/file-views.js') };
 }
 
-test('a spot in rendered Markdown is found in its source, as often as its text shows before it', () => {
-  const { d, host, views } = directPreviews();
-  const source = '## Plan\n\nWrite **one** test and **one** more.\n\nTom &amp; Jerry';
+test('a spot in rendered Markdown is found in its source piece by piece, past link addresses, repeated words and math', () => {
+  const { d, views } = boot();
+  const host = d.createElement('div'); d.body.append(host);
+  const source = '## Plan\n\nSee [README](README.md) then **README**, and [the docs](https://example.com/docs) then **docs**.\n\nMath $x^2 + y$ is Tom &amp; Jerry.\n\n| Where | What |\n| - | - |\n| docs | two |';
   views.markdownInto(host, source, { breaks: true });
-  const nodes = [...host.querySelectorAll('h2,strong,p')].map(element => element.firstChild), at = (node, offset) => views.sourcePosition(host, node, offset, source);
-  const [heading, , first, second, entity] = nodes;
-  assert.equal(at(heading, 1), 4, 'after the P of ## Plan');
-  assert.equal(at(first, 2), 19, 'in the first **one**');
-  assert.equal(at(second, 2), 36, 'in the second, which repeats the first');
-  assert.equal(at(entity, 4), null, 'the source writes & otherwise');
-  assert.equal(at(d.createTextNode('one'), 0), null, 'text the description doesn\'t show');
+  // A text node that `selector` shows with the text `value`.
+  const text = (selector, value) => [...host.querySelectorAll(selector)].flatMap(element => [...element.childNodes]).find(node => node.nodeValue === value);
+  const at = (node, offset) => views.sourcePosition(host, node, offset, source);
+  assert.equal(at(text('h2', 'Plan'), 1), 4, 'after the P of ## Plan');
+  assert.equal(at(text('strong', 'README'), 2), source.indexOf('**README**') + 4, 'the bold README, not the link\'s address');
+  assert.equal(at(text('strong', 'docs'), 0), source.indexOf('**docs**') + 2, 'the bold docs, not the end of the URL');
+  assert.equal(at(text('td', 'docs'), 1), source.indexOf('| docs |') + 3, 'the table cell, not the bold docs before it');
+  assert.equal(at(text('.katex-html span', 'y'), 0), source.indexOf('+ y$') + 2, 'the y of the formula');
+  assert.equal(at(text('p', ' is Tom & Jerry.'), 4), null, 'the source writes & otherwise');
+  assert.equal(at(d.createTextNode('Plan'), 0), null, 'text the page doesn\'t show there');
 });
 
 test('a Knowledge context links relative files and shows relative images; attachments keep them inert', () => {
