@@ -294,10 +294,13 @@ Object.assign(App, {
     paintDescription(t);
     const input = document.getElementById('task-description');
     if (!input) return;
-    const caret = clicked ?? input.value.length;
-    input.focus({ preventScroll: true }); input.setSelectionRange(caret, caret);
-    if (clicked === null) { input.scrollTop = input.scrollHeight; return; }
-    input.addEventListener('mousedown', (press) => { if (press.detail !== 2) return; press.preventDefault(); selectWord(input, clicked); }, { once: true });
+    const caret = clicked ?? input.value.length, text = input.value;
+    input.focus({ preventScroll: true });
+    // Not every browser scrolls a field to a caret placed by code, so the
+    // field shows the line where the text before the caret ends.
+    input.value = text.slice(0, caret); const line = input.scrollHeight; input.value = text;
+    input.setSelectionRange(caret, caret); input.scrollTop = line - input.clientHeight / 2;
+    if (clicked !== null) input.addEventListener('mousedown', (press) => { if (press.detail !== 2) return; press.preventDefault(); selectWord(input, clicked); }, { once: true });
   },
   /**
    * Escape and Cmd/Ctrl+Enter leave the description, which saves it, and

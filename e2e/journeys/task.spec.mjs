@@ -50,6 +50,21 @@ test('a description shows as Markdown, opens for editing where it is clicked, sa
   await expect(page.locator('.board')).toBeVisible();
 });
 
+test('a click far down a long description opens the editor scrolled to its caret', async ({ page, instance }) => {
+  const { task } = instance.projects[0];
+  const lines = Array.from({ length: 60 }, (_, index) => `Line ${index + 1} of the plan.`).join('\n\n');
+  await command(instance.api, 'task.update', { taskId: task.id, description: lines }, task.revision);
+  await openApp(page, instance);
+  await page.getByRole('button', { name: 'Show more' }).click();
+  await page.locator('#task-description-content').getByText('Line 55 of the plan.').click({ position: { x: 1, y: 8 } });
+  const editor = page.locator('#task-description');
+  await expect(editor).toBeFocused();
+  // Line 55 of 60 shows near the end of the editor's text.
+  expect(await editor.evaluate(field => field.scrollTop > (field.scrollHeight - field.clientHeight) / 2)).toBe(true);
+  await page.keyboard.type('First ');
+  await expect(editor).toHaveValue(/\n\nFirst Line 55 of the plan\./);
+});
+
 test('a footnote link in a description brings its footnote into view, and its back link the reference', async ({ page, instance }) => {
   const { task } = instance.projects[0];
   await command(instance.api, 'task.update', { taskId: task.id, description: 'See the note.[^1]\n\nOne.\n\nTwo.\n\nThree.\n\n[^1]: The note.' }, task.revision);
